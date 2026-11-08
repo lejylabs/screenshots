@@ -71,6 +71,63 @@ impl FrameAnnotation {
 }
 
 impl PixelRegion {
+    /// Constrain a drag to a source-pixel square, keeping its starting corner anchored.
+    pub fn from_drag_constrained(
+        start: [f32; 2],
+        end: [f32; 2],
+        viewport: [f32; 2],
+        image: [u32; 2],
+        square: bool,
+    ) -> Option<Self> {
+        if !square {
+            return Self::from_drag(start, end, viewport, image);
+        }
+        if start == end
+            || start
+                .into_iter()
+                .chain(end)
+                .chain(viewport)
+                .any(|v| !v.is_finite())
+            || viewport.iter().any(|v| *v <= 0.0)
+            || image.contains(&0)
+        {
+            return None;
+        }
+        let mut anchor = [0; 2];
+        let mut reverse = [false; 2];
+        let mut side = 0;
+        for axis in 0..2 {
+            let scale = f64::from(image[axis]) / f64::from(viewport[axis]);
+            let a = (f64::from(start[axis].clamp(0.0, viewport[axis])) * scale)
+                .min(f64::from(image[axis]));
+            let b = (f64::from(end[axis].clamp(0.0, viewport[axis])) * scale)
+                .min(f64::from(image[axis]));
+            reverse[axis] = b < a;
+            anchor[axis] = if reverse[axis] { a.ceil() } else { a.floor() } as u32;
+            side = side.max((b - f64::from(anchor[axis])).abs().ceil() as u32);
+        }
+        for axis in 0..2 {
+            side = side.min(if reverse[axis] {
+                anchor[axis]
+            } else {
+                image[axis] - anchor[axis]
+            });
+        }
+        (side > 0).then(|| Self {
+            x: if reverse[0] {
+                anchor[0] - side
+            } else {
+                anchor[0]
+            },
+            y: if reverse[1] {
+                anchor[1] - side
+            } else {
+                anchor[1]
+            },
+            width: side,
+            height: side,
+        })
+    }
     /// Map window-local logical coordinates to the frozen image's physical pixels.
     pub fn from_drag(
         start: [f32; 2],
@@ -496,6 +553,140 @@ pub fn crop_snapshot(source: &CapturedImage, region: PixelRegion) -> Result<Capt
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    #[ignore = "short optimized constrained geometry comparison; no desktop, files or clipboard"]
+    fn drag_constraint_cost() {
+        use super::*;
+        for constrained in [false, true] {
+            let mut samples = Vec::with_capacity(2000);
+            for index in 0..2000 {
+                let start = std::time::Instant::now();
+                let end = std::hint::black_box([
+                    250.0 + (index % 200) as f32,
+                    180.0 + (index % 73) as f32,
+                ]);
+                std::hint::black_box(PixelRegion::from_drag_constrained(
+                    [100.0; 2],
+                    end,
+                    [1920.0, 1080.0],
+                    [3840, 2160],
+                    constrained,
+                ));
+                std::hint::black_box(crate::ArrowAnnotation::from_drag_constrained(
+                    [100.0; 2],
+                    end,
+                    [1920.0, 1080.0],
+                    [3840, 2160],
+                    0xef4444,
+                    constrained,
+                ));
+                samples.push(start.elapsed().as_nanos());
+            }
+            samples.sort_unstable();
+            eprintln!(
+                "Square + arrow geometry: constrained={constrained}, p95={} ns; no allocation or image work",
+                samples[1900]
+            );
+        }
+    }
+    #[test]
+    fn constrained_squares_use_source_pixels_and_remain_anchored_and_bounded() {
+        use super::*;
+        let square = PixelRegion::from_drag_constrained(
+            [40.0, 30.0],
+            [90.0, 40.0],
+            [200.0, 100.0],
+            [400, 200],
+            true,
+        )
+        .unwrap();
+        assert_eq!(
+            square,
+            PixelRegion {
+                x: 80,
+                y: 60,
+                width: 100,
+                height: 100
+            }
+        );
+        let reverse = PixelRegion::from_drag_constrained(
+            [90.0, 70.0],
+            [40.0, 60.0],
+            [200.0, 100.0],
+            [400, 200],
+            true,
+        )
+        .unwrap();
+        assert_eq!(
+            reverse,
+            PixelRegion {
+                x: 80,
+                y: 40,
+                width: 100,
+                height: 100
+            }
+        );
+        assert_eq!(
+            PixelRegion::from_drag_constrained(
+                [10.0, 10.0],
+                [40.0, 10.0],
+                [100.0; 2],
+                [100; 2],
+                true
+            ),
+            Some(PixelRegion {
+                x: 10,
+                y: 10,
+                width: 30,
+                height: 30
+            })
+        );
+        assert_eq!(
+            PixelRegion::from_drag_constrained(
+                [80.0, 80.0],
+                [200.0, 90.0],
+                [100.0; 2],
+                [100; 2],
+                true
+            ),
+            Some(PixelRegion {
+                x: 80,
+                y: 80,
+                width: 20,
+                height: 20
+            })
+        );
+        for viewport in [[200.0, 100.0], [333.3, 77.7], [0.1, 0.2]] {
+            for image in [[400, 400], [2560, 1440], [1, 200], [3, 7]] {
+                for (a, b) in [(0.0, 1.0), (1.0, 0.0), (0.13, 0.69), (0.91, 0.2)] {
+                    let start = [viewport[0] * a, viewport[1] * (1.0 - a)];
+                    let end = [viewport[0] * b, viewport[1] * b];
+                    if let Some(region) =
+                        PixelRegion::from_drag_constrained(start, end, viewport, image, true)
+                    {
+                        assert!(region.width > 0);
+                        assert_eq!(region.width, region.height);
+                        assert!(region.x + region.width <= image[0]);
+                        assert!(region.y + region.height <= image[1]);
+                    }
+                    assert_eq!(
+                        PixelRegion::from_drag_constrained(start, end, viewport, image, false),
+                        PixelRegion::from_drag(start, end, viewport, image)
+                    );
+                }
+            }
+        }
+        for (start, end, viewport, image) in [
+            ([1.0; 2], [1.0; 2], [10.0; 2], [10; 2]),
+            ([f32::NAN; 2], [2.0; 2], [10.0; 2], [10; 2]),
+            ([1.0; 2], [2.0; 2], [0.0; 2], [10; 2]),
+            ([1.0; 2], [2.0; 2], [10.0; 2], [0; 2]),
+        ] {
+            assert!(
+                PixelRegion::from_drag_constrained(start, end, viewport, image, true).is_none()
+            );
+        }
+    }
     use super::*;
     #[test]
     fn frames_match_segments_clip_to_crop_and_stay_below_redaction() -> Result<()> {

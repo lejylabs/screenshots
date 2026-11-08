@@ -69,7 +69,12 @@ fn clamp_pan(pan: [f32; 2], image: [f32; 2], viewport: [f32; 2]) -> [f32; 2] {
 
 actions!(
     redaction_editor,
-    [UndoRedaction, RedoRedaction, DeleteAnnotation]
+    [
+        UndoRedaction,
+        RedoRedaction,
+        DeleteAnnotation,
+        DuplicateAnnotation
+    ]
 );
 
 pub(super) fn bind_keys(cx: &mut App) {
@@ -96,6 +101,15 @@ pub(super) fn bind_keys(cx: &mut App) {
         KeyBinding::new("ctrl-y", RedoRedaction, Some("RedactionEditor")),
         KeyBinding::new("delete", DeleteAnnotation, Some("RedactionEditor")),
         KeyBinding::new("backspace", DeleteAnnotation, Some("RedactionEditor")),
+        KeyBinding::new(
+            if cfg!(target_os = "macos") {
+                "cmd-d"
+            } else {
+                "ctrl-d"
+            },
+            DuplicateAnnotation,
+            Some("RedactionEditor"),
+        ),
     ]);
 }
 
@@ -150,6 +164,43 @@ enum ResizeHandle {
     ArrowEnd,
 }
 impl EditState {
+    fn text_mask_bytes(&self) -> usize {
+        self.texts
+            .iter()
+            .map(|text| text.asset.stamp.mask.len())
+            .sum()
+    }
+    fn duplicate_target(&self, selected: Selected) -> Result<Selected, &'static str> {
+        self.bounds(selected)
+            .ok_or("Select an existing mark to duplicate.")?;
+        if self.order.len() + self.regions.len() + self.pixelations.len() + self.blurs.len() >= 100
+        {
+            return Err("The document already has 100 marks. Remove a mark before duplicating.");
+        }
+        match selected {
+            Selected::Pen(i)
+                if self.pen_points() + self.pens[i].points.len()
+                    > app_core::MAX_DOCUMENT_PEN_POINTS =>
+            {
+                Err("Pen point limit reached. Remove a stroke before duplicating.")
+            }
+            Selected::Text(i)
+                if self.text_mask_bytes() + self.texts[i].asset.stamp.mask.len()
+                    > 4 * 1024 * 1024 =>
+            {
+                Err("Text export limit reached. Remove a label before duplicating.")
+            }
+            Selected::Pen(_) => Ok(Selected::Pen(self.pens.len())),
+            Selected::Text(_) => Ok(Selected::Text(self.texts.len())),
+            Selected::Frame(_) => Ok(Selected::Frame(self.frames.len())),
+            Selected::Arrow(_) => Ok(Selected::Arrow(self.arrows.len())),
+            Selected::Ellipse(_) => Ok(Selected::Ellipse(self.ellipses.len())),
+            Selected::Highlight(_) => Ok(Selected::Highlight(self.highlights.len())),
+            Selected::Redaction(_) => Ok(Selected::Redaction(self.regions.len())),
+            Selected::Blur(_) => Ok(Selected::Blur(self.blurs.len())),
+            Selected::Pixelation(_) => Ok(Selected::Pixelation(self.pixelations.len())),
+        }
+    }
     fn stroke_width(&self, selected: Selected) -> Option<u8> {
         match selected {
             Selected::Pen(i) => self.pens.get(i).map(|mark| mark.width),
@@ -458,6 +509,80 @@ impl EditState {
     }
 }
 impl RectEdits {
+    fn duplicate(&mut self, selected: Selected, image: [u32; 2]) -> Result<Selected, &'static str> {
+        let target = self.duplicate_target(selected)?;
+        let area = self.bounds(selected).unwrap();
+        if area
+            .x
+            .checked_add(area.width)
+            .is_none_or(|right| right > image[0])
+            || area
+                .y
+                .checked_add(area.height)
+                .is_none_or(|bottom| bottom > image[1])
+        {
+            return Err("The selected mark is outside the image.");
+        }
+        let delta = std::array::from_fn(|axis| {
+            let (origin, extent) = if axis == 0 {
+                (area.x, area.width)
+            } else {
+                (area.y, area.height)
+            };
+            let available = image[axis] - origin - extent;
+            if available >= 10 {
+                10.0
+            } else if origin >= 10 {
+                -10.0
+            } else {
+                available as f32
+            }
+        });
+        self.checkpoint();
+        match selected {
+            Selected::Pen(i) => {
+                let copy = self.pens[i].clone();
+                self.pens.push(copy);
+            }
+            Selected::Text(i) => {
+                let copy = self.texts[i].clone();
+                self.texts.push(copy);
+            }
+            Selected::Frame(i) => {
+                let copy = self.frames[i];
+                self.frames.push(copy);
+            }
+            Selected::Arrow(i) => {
+                let copy = self.arrows[i];
+                self.arrows.push(copy);
+            }
+            Selected::Ellipse(i) => {
+                let copy = self.ellipses[i];
+                self.ellipses.push(copy);
+            }
+            Selected::Highlight(i) => {
+                let copy = self.highlights[i];
+                self.highlights.push(copy);
+            }
+            Selected::Redaction(i) => {
+                let copy = self.regions[i];
+                self.regions.push(copy);
+            }
+            Selected::Blur(i) => {
+                let copy = self.blurs[i];
+                self.blurs.push(copy);
+            }
+            Selected::Pixelation(i) => {
+                let copy = self.pixelations[i];
+                self.pixelations.push(copy);
+            }
+        }
+        if self.order.contains(&selected) {
+            self.order.push(target);
+        }
+        self.current.translate(target, delta, image);
+        Ok(target)
+    }
     fn add_pen(&mut self, pen: app_core::PenAnnotation) -> bool {
         if self.regions.len()
             + self.frames.len()
@@ -536,10 +661,16 @@ impl RectEdits {
             _ => unreachable!(),
         }
     }
-    fn set_text(&mut self, text: Caption, index: Option<usize>) {
+    fn set_text(&mut self, text: Caption, index: Option<usize>) -> bool {
+        let replaced_bytes = index
+            .and_then(|i| self.texts.get(i))
+            .map_or(0, |text| text.asset.stamp.mask.len());
+        if self.text_mask_bytes() - replaced_bytes + text.asset.stamp.mask.len() > 4 * 1024 * 1024 {
+            return false;
+        }
         if let Some(index) = index {
             if index >= self.texts.len() {
-                return;
+                return false;
             }
             self.checkpoint();
             self.texts[index] = text;
@@ -558,7 +689,10 @@ impl RectEdits {
             let index = self.texts.len();
             self.order.push(Selected::Text(index));
             self.texts.push(text);
+        } else {
+            return false;
         }
+        true
     }
     fn add_number(&mut self, caption: Caption) -> bool {
         let Some(number) = self.last_number.checked_add(1) else {
@@ -568,7 +702,9 @@ impl RectEdits {
         {
             return false;
         }
-        self.set_text(caption, None);
+        if !self.set_text(caption, None) {
+            return false;
+        }
         self.last_number = number;
         true
     }
@@ -820,6 +956,7 @@ impl RectEdits {
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Tool {
+    Spotlight,
     Number,
     Pen,
     Highlight,
@@ -847,6 +984,7 @@ impl Tool {
             "t" => Some(Self::Text),
             "n" => Some(Self::Number),
             "h" => Some(Self::Highlight),
+            "s" => Some(Self::Spotlight),
             "d" => Some(Self::Pen),
             _ => None,
         }
@@ -879,6 +1017,8 @@ pub(super) struct RedactionEditor {
     resize_handle: Option<ResizeHandle>,
     frame_color: u32,
     highlight_opacity: u8,
+    spotlight_color: u32,
+    spotlight_opacity: u8,
     stroke_width: u8,
     zoom: Option<f32>,
     pan: [f32; 2],
@@ -1166,7 +1306,10 @@ impl RedactionEditor {
                                     this.text_error=Some("The document cannot accept another number".into());
                                     this.prepare_pending_effect(cx);cx.notify();return;
                                 }
-                            } else {this.edits.set_text(Caption{area,asset:asset.clone()},editing);}
+                            } else if !this.edits.set_text(Caption{area,asset:asset.clone()},editing) {
+                                this.text_error=Some("The document mark or text export limit is reached. Remove a mark or use shorter text.".into());
+                                this.prepare_pending_effect(cx);cx.notify();return;
+                            }
                             this.text_assets.push(asset);this.text_draft=None;this.selected=Some(Selected::Text(selected));if this.tool==Tool::Text {this.tool=Tool::Select;}window.focus(&this.focus,cx);
                         }
                     }
@@ -1297,6 +1440,7 @@ impl RedactionEditor {
                 return Err("Text did not move above the vector layers".into());
             }
             self.edits.add_highlight(HighlightAnnotation {
+                outside: false,
                 opacity: 85,
                 area,
                 color: 0xfacc15,
@@ -1324,6 +1468,19 @@ impl RedactionEditor {
                 color: 0x22c55e,
                 width: 3,
             });
+            self.edits.add_highlight(HighlightAnnotation {
+                area,
+                color: 0,
+                opacity: 191,
+                outside: true,
+            });
+            self.edits
+                .set_highlight_opacity(Selected::Highlight(1), 128);
+            self.edits.undo();
+            if !self.edits.highlights[1].outside || self.edits.highlights[1].opacity != 191 {
+                return Err("Spotlight opacity undo lost its outside fill".into());
+            }
+            self.edits.redo();
             for selected in [Selected::Frame(0), Selected::Ellipse(0), Selected::Arrow(0)] {
                 self.edits.set_stroke_width(selected, 12);
                 self.edits.undo();
@@ -1417,6 +1574,44 @@ impl RedactionEditor {
                 {
                     return Err("Number placement did not clamp at the image edge".into());
                 }
+                self.edits.add(PixelRegion {
+                    x: 1,
+                    y: 1,
+                    width: 4,
+                    height: 4,
+                });
+                self.tool = Tool::Select;
+                for selected in [
+                    Selected::Text(2),
+                    Selected::Pen(0),
+                    Selected::Frame(0),
+                    Selected::Arrow(0),
+                    Selected::Ellipse(0),
+                    Selected::Highlight(0),
+                    Selected::Highlight(1),
+                    Selected::Blur(0),
+                    Selected::Pixelation(0),
+                    Selected::Redaction(0),
+                ] {
+                    self.selected = Some(selected);
+                    let history = self.edits.past.len();
+                    self.duplicate_selection(cx);
+                    let copy = self.selected.ok_or("Duplicate did not select a copy")?;
+                    if copy == selected || self.edits.past.len() != history + 1 {
+                        return Err("Duplicate did not create one undo step".into());
+                    }
+                    self.edits.undo();
+                    if self.edits.bounds(copy).is_some() || self.edits.bounds(selected).is_none() {
+                        return Err("Duplicate undo changed the original".into());
+                    }
+                    self.edits.redo();
+                    if self.edits.bounds(copy).is_none() || self.edits.last_number != 2 {
+                        return Err(
+                            "Duplicate redo changed the number sequence or lost a mark".into()
+                        );
+                    }
+                }
+                cx.notify();
                 Ok(true)
             }
             _ => Err("Unexpected numbering state".into()),
@@ -1550,6 +1745,25 @@ impl RedactionEditor {
             cx.notify();
         }
     }
+    fn duplicate_selection(&mut self, cx: &mut Context<Self>) {
+        if self.tool != Tool::Select
+            || self.drag.is_some()
+            || self.text_draft.is_some()
+            || self.text_loading
+        {
+            return;
+        }
+        if let Some(selected) = self.selected {
+            if let Ok(copy) = self
+                .edits
+                .duplicate(selected, [self.source.width, self.source.height])
+            {
+                self.selected = Some(copy);
+                self.resize_handle = None;
+                cx.notify();
+            }
+        }
+    }
     fn delete_selection(&mut self, cx: &mut Context<Self>) {
         if self.text_draft.is_some() || self.text_loading {
             return;
@@ -1652,6 +1866,8 @@ impl RedactionEditor {
             },
             frame_color: 0xef4444,
             highlight_opacity: 85,
+            spotlight_color: 0,
+            spotlight_opacity: 191,
             stroke_width: 3,
             selected: None,
             resize_handle: None,
@@ -1703,10 +1919,21 @@ impl Render for RedactionEditor {
                 | Tool::Text
                 | Tool::Number
                 | Tool::Highlight
+                | Tool::Spotlight
                 | Tool::Pen
         );
+        let spotlight_style = self.tool == Tool::Spotlight
+            || (self.tool == Tool::Select
+                && self.selected.is_some_and(|selected| match selected {
+                    Selected::Highlight(i) => {
+                        self.edits.highlights.get(i).is_some_and(|h| h.outside)
+                    }
+                    _ => false,
+                }));
         let palette_color = if self.tool == Tool::Select {
             self.selected.and_then(|mark| self.edits.color(mark))
+        } else if self.tool == Tool::Spotlight {
+            Some(self.spotlight_color)
         } else {
             Some(self.frame_color)
         };
@@ -1722,15 +1949,23 @@ impl Render for RedactionEditor {
         };
         let show_stroke_width =
             draws_stroke || (self.tool == Tool::Select && palette_stroke_width.is_some());
-        let show_opacity =
-            matches!(self.tool, Tool::Highlight | Tool::Select) && !show_stroke_width;
+        let show_opacity = matches!(self.tool, Tool::Highlight | Tool::Spotlight | Tool::Select)
+            && !show_stroke_width;
         let palette_opacity = if self.tool == Tool::Highlight {
             Some(self.highlight_opacity)
+        } else if self.tool == Tool::Spotlight {
+            Some(self.spotlight_opacity)
         } else {
             self.selected.and_then(|selected| match selected {
                 Selected::Highlight(index) => self.edits.highlights.get(index).map(|h| h.opacity),
                 _ => None,
             })
+        };
+        let duplicate_error = if self.tool == Tool::Select {
+            self.selected
+                .and_then(|selected| self.edits.duplicate_target(selected).err())
+        } else {
+            None
         };
         let toolbar_height = if show_palette { 220.0 } else { 172.0 }
             + if layout[0] < 900.0 {
@@ -1748,7 +1983,8 @@ impl Render for RedactionEditor {
                 0.0
             }
             + if self.text_draft.is_some() { 80.0 } else { 0.0 }
-            + if self.text_error.is_some() { 24.0 } else { 0.0 };
+            + if self.text_error.is_some() { 24.0 } else { 0.0 }
+            + if duplicate_error.is_some() { 24.0 } else { 0.0 };
         let inset = if self.direct_capture { 0.0 } else { 16.0 };
         let workspace_top = if self.direct_capture {
             0.0
@@ -1823,20 +2059,25 @@ impl Render for RedactionEditor {
                     pen_preview.push(pen);
                 }
             } else if self.tool == Tool::Arrow {
-                if let Some(mut arrow) = ArrowAnnotation::from_drag(
+                if let Some(mut arrow) = ArrowAnnotation::from_drag_constrained(
                     start,
                     self.end,
                     size,
                     [dimensions.0, dimensions.1],
                     self.frame_color,
+                    window.modifiers().shift,
                 ) {
                     arrow.width = self.stroke_width;
                     paint_order.push(Selected::Arrow(arrow_preview.len()));
                     arrow_preview.push(arrow);
                 }
-            } else if let Some(region) =
-                PixelRegion::from_drag(start, self.end, size, [dimensions.0, dimensions.1])
-            {
+            } else if let Some(region) = PixelRegion::from_drag_constrained(
+                start,
+                self.end,
+                size,
+                [dimensions.0, dimensions.1],
+                window.modifiers().shift,
+            ) {
                 if self.tool == Tool::Crop {
                     crop_preview = Some(region);
                 } else if self.tool == Tool::Pixelate {
@@ -1854,12 +2095,21 @@ impl Render for RedactionEditor {
                         area: region,
                         color: self.frame_color,
                     });
-                } else if self.tool == Tool::Highlight {
+                } else if matches!(self.tool, Tool::Highlight | Tool::Spotlight) {
                     paint_order.push(Selected::Highlight(highlight_preview.len()));
                     highlight_preview.push(HighlightAnnotation {
-                        opacity: self.highlight_opacity,
+                        outside: self.tool == Tool::Spotlight,
+                        opacity: if self.tool == Tool::Spotlight {
+                            self.spotlight_opacity
+                        } else {
+                            self.highlight_opacity
+                        },
                         area: region,
-                        color: self.frame_color,
+                        color: if self.tool == Tool::Spotlight {
+                            self.spotlight_color
+                        } else {
+                            self.frame_color
+                        },
                     });
                 } else {
                     if self.tool == Tool::Ellipse {
@@ -1907,6 +2157,12 @@ impl Render for RedactionEditor {
             }))
             .on_action(cx.listener(|this, _: &CloseOverlay, window, cx| {if this.text_draft.is_some(){this.cancel_text(window,cx);}else if this.tool==Tool::Pen && this.drag.is_some(){this.cancel_pen(cx);}else{this.cancel(cx);}}))
             .on_action(cx.listener(|this, _: &DeleteAnnotation, _, cx| this.delete_selection(cx)))
+            .on_action(cx.listener(|this, _: &DuplicateAnnotation, _, cx| this.duplicate_selection(cx)))
+            .on_modifiers_changed(cx.listener(|this, _, _, cx| {
+                if this.drag.is_some() && !matches!(this.tool, Tool::Select | Tool::Pen) {
+                    cx.notify();
+                }
+            }))
             .on_action(cx.listener(|this, _: &UndoRedaction, _, cx| {
                 if this.text_draft.is_some() || this.text_loading {return;}
                 this.edits.undo();
@@ -1968,19 +2224,20 @@ impl Render for RedactionEditor {
                     .child(div().text_sm().child(format!(
                         "{} · {} / 100 annotations · Export: {} × {}",
                         match self.tool {
+                            Tool::Spotlight=>"Drag a focus area; hold Shift for a square. Use Redact for sensitive content.",
                             Tool::Number=>if self.text_loading {"Preparing number..."}else{"Click to place the next step number; Select to move or edit it"},
                             Tool::Pen=>if self.pen_limit_hit {"Pen limit reached. Release or remove marks to continue."}else{"Draw freehand at the chosen width; release to finish"},
-                            Tool::Highlight=>"Drag a highlight at the chosen opacity",
+                            Tool::Highlight=>"Drag a highlight; hold Shift for a square",
                             Tool::Text => if self.text_loading {"Preparing text..."} else {"Click the image to place a label; Enter applies, Escape cancels text"},
                             Tool::Pixelate => if self.pixelation_loading || self.pending_effect==Some(Tool::Pixelate) { "Preparing pixelation preview..." } else if self.pixelation_error.is_some() { "Pixelation failed. Select Pixelate to retry." } else { "Drag to pixelate source pixels; use Redact for sensitive information" },
                             Tool::Blur => if self.blur_loading || self.pending_effect==Some(Tool::Blur) { "Preparing blur preview..." } else if self.blur_error.is_some() { "Blur failed. Select Blur to retry." } else { "Drag to blur source pixels; use Redact for sensitive information" },
                             Tool::Select =>
                                 "Drag a mark to move; handles resize; arrow keys move 1px (Shift: 10px); Delete removes it",
-                            Tool::Crop => "Drag to crop; shaded area is excluded",
-                            Tool::Frame => "Drag to highlight with a 3-pixel frame",
-                            Tool::Arrow => "Drag from arrow tail to tip",
-                            Tool::Ellipse => "Drag to highlight with an ellipse",
-                            Tool::Redact => "Drag to redact",
+                            Tool::Crop => "Drag to crop; hold Shift for a square",
+                            Tool::Frame => "Drag a frame; hold Shift for a square",
+                            Tool::Arrow => "Drag tail to tip; hold Shift to snap to 45 degrees",
+                            Tool::Ellipse => "Drag an ellipse; hold Shift for a circle",
+                            Tool::Redact => "Drag to redact; hold Shift for a square",
                         },
                         self.edits.regions.len()
                             + self.edits.frames.len() + self.edits.highlights.len() + self.edits.pens.len()
@@ -1996,6 +2253,7 @@ impl Render for RedactionEditor {
                             .gap_2()
                             .child(capture_button("tool-pen",if self.tool==Tool::Pen {"Pen (D) active"}else{"Pen (D)"},false,cx.listener(|this,_,_,cx|{this.tool=Tool::Pen;this.drag=None;this.pen_trace.clear();this.pen_limit_hit=false;cx.notify();})))
                             .child(capture_button("tool-highlight",if self.tool==Tool::Highlight {"Highlight (H) active"}else{"Highlight (H)"},false,cx.listener(|this,_,_,cx|{this.tool=Tool::Highlight;this.drag=None;cx.notify();})))
+                            .child(capture_button("tool-spotlight",if self.tool==Tool::Spotlight {"Spotlight (S) active"}else{"Spotlight (S)"},false,cx.listener(|this,_,_,cx|{this.tool=Tool::Spotlight;this.drag=None;cx.notify();})))
                             .child(capture_button("layer-forward","Bring forward",self.tool!=Tool::Select||self.drag.is_some()||self.text_draft.is_some()||self.text_loading||self.selected.and_then(|selected|self.edits.layer_target(selected,true)).is_none(),cx.listener(|this,_,_,cx|this.move_layer(true,cx))))
                             .child(capture_button("layer-backward","Send backward",self.tool!=Tool::Select||self.drag.is_some()||self.text_draft.is_some()||self.text_loading||self.selected.and_then(|selected|self.edits.layer_target(selected,false)).is_none(),cx.listener(|this,_,_,cx|this.move_layer(false,cx))))
                             .child(capture_button("tool-text",if self.tool==Tool::Text {"Text (T) active"}else{"Text (T)"},false,cx.listener(|this,_,_,cx|{this.tool=Tool::Text;this.drag=None;cx.notify();})))
@@ -2028,6 +2286,12 @@ impl Render for RedactionEditor {
                                 "Delete",
                                 self.tool != Tool::Select || self.selected.is_none(),
                                 cx.listener(|this, _, _, cx| this.delete_selection(cx)),
+                            ))
+                            .child(capture_button(
+                                "duplicate-annotation",
+                                "Duplicate",
+                                self.tool != Tool::Select || self.selected.is_none() || self.drag.is_some() || self.text_draft.is_some() || self.text_loading || duplicate_error.is_some(),
+                                cx.listener(|this, _, _, cx| this.duplicate_selection(cx)),
                             ))
                             .child(capture_button(
                                 "tool-redact",
@@ -2246,6 +2510,7 @@ impl Render for RedactionEditor {
                         ))
                     })
                     .children(self.text_error.clone().map(|error|div().text_sm().child(error)))
+                    .children(duplicate_error.map(|error|div().text_sm().child(error)))
                     .children(self.text_draft.as_ref().map(|draft|draft.input.clone()))
                     .when(self.text_draft.is_some(),|view|view.child(div().flex().gap_2()
                         .child(capture_button("apply-text","Apply text",self.text_loading||self.pixelation_loading||self.blur_loading,cx.listener(|this,_,window,cx|this.commit_text(window,cx))))
@@ -2261,6 +2526,7 @@ impl Render for RedactionEditor {
                                         ("frame-red", "Red", "Red ✓", 0xef4444),
                                         ("frame-yellow", "Yellow", "Yellow ✓", 0xfacc15),
                                         ("frame-green", "Green", "Green ✓", 0x22c55e),
+                                        ("frame-black", "Black", "Black ✓", 0),
                                     ]
                                     .into_iter()
                                     .map(
@@ -2274,7 +2540,7 @@ impl Render for RedactionEditor {
                                                 },
                                                 palette_color.is_none() || self.text_loading,
                                                 cx.listener(move |this, _, _, cx| {
-                                                    this.frame_color = color;
+                                                    if spotlight_style { this.spotlight_color = color; } else { this.frame_color = color; }
                                                     if this.tool == Tool::Select {
                                                         if let Some(selected) = this.selected {
                                                             this.edits.set_color(selected,color);
@@ -2299,7 +2565,7 @@ impl Render for RedactionEditor {
                                         if palette_opacity == Some(opacity) { active } else { label },
                                         palette_opacity.is_none() || self.text_loading || self.text_draft.is_some() || self.drag.is_some(),
                                         cx.listener(move |this,_,_,cx| {
-                                            this.highlight_opacity = opacity;
+                                            if spotlight_style { this.spotlight_opacity = opacity; } else { this.highlight_opacity = opacity; }
                                             if this.tool == Tool::Select {
                                                 if let Some(selected) = this.selected {
                                                     this.edits.set_highlight_opacity(selected, opacity);
@@ -2425,21 +2691,23 @@ impl Render for RedactionEditor {
                                             f32::from(event.position.y) - origin[1],
                                         ];
                                         if this.tool == Tool::Arrow {
-                                            if let Some(mut arrow) = ArrowAnnotation::from_drag(
+                                            if let Some(mut arrow) = ArrowAnnotation::from_drag_constrained(
                                                 start,
                                                 end,
                                                 size,
                                                 [dimensions.0, dimensions.1],
                                                 this.frame_color,
+                                                event.modifiers.shift,
                                             ) {
                                                 arrow.width = this.stroke_width;
                                                 this.edits.add_arrow(arrow);
                                             }
-                                        } else if let Some(region) = PixelRegion::from_drag(
+                                        } else if let Some(region) = PixelRegion::from_drag_constrained(
                                             start,
                                             end,
                                             size,
                                             [dimensions.0, dimensions.1],
+                                            event.modifiers.shift,
                                         ) {
                                             if this.tool == Tool::Crop {
                                                 this.edits.set_crop(Some(region));
@@ -2453,8 +2721,13 @@ impl Render for RedactionEditor {
                                                     area: region,
                                                     color: this.frame_color,
                                                 });
-                                            } else if this.tool==Tool::Highlight {
-                                                this.edits.add_highlight(HighlightAnnotation{area:region,color:this.frame_color,opacity:this.highlight_opacity});
+                                            } else if matches!(this.tool, Tool::Highlight | Tool::Spotlight) {
+                                                this.edits.add_highlight(HighlightAnnotation {
+                                                    outside: this.tool == Tool::Spotlight,
+                                                    area: region,
+                                                    color: if this.tool == Tool::Spotlight { this.spotlight_color } else { this.frame_color },
+                                                    opacity: if this.tool == Tool::Spotlight { this.spotlight_opacity } else { this.highlight_opacity },
+                                                });
                                             } else {
                                                 if this.tool == Tool::Ellipse {
                                                     this.edits.add_ellipse(FrameAnnotation {
@@ -2499,7 +2772,7 @@ impl Render for RedactionEditor {
                                 for item in &paint_order {
                                     match *item {
                                         Selected::Pen(i)=>{let pen=&pen_preview[i];if pen.points.len()==1{let p=pen.positions().next().unwrap();let width=f32::from(pen.width);window.paint_quad(gpui::fill(gpui::Bounds{origin:map([p[0]-width/2.0,p[1]-width/2.0]),size:gpui::size(px(width*scale),px(width*scale))},rgb(pen.color)));}else if let Some(path)=pen_path(pen,bounds.origin,scale){window.paint_path(path,rgb(pen.color));}}
-                                        Selected::Highlight(i)=>{let highlight=highlight_preview[i];window.paint_quad(gpui::fill(rect(highlight.area),rgba((highlight.color<<8)|u32::from(highlight.opacity))));}
+                                        Selected::Highlight(i)=>{let highlight=highlight_preview[i];for area in highlight.segments(PixelRegion{x:0,y:0,width:dimensions.0,height:dimensions.1}){if area.width>0 && area.height>0 {window.paint_quad(gpui::fill(rect(area),rgba((highlight.color<<8)|u32::from(highlight.opacity))));}}}
                                         Selected::Frame(i)=>{let frame=frame_preview[i];for area in frame.segments(){window.paint_quad(gpui::fill(rect(area),rgb(frame.color)));}}
                                         Selected::Arrow(i)=>{let arrow=arrow_preview[i];let vertices=arrow.vertices();let mut path=gpui::PathBuilder::fill();path.move_to(map(vertices[0]));for point in &vertices[1..]{path.line_to(map(*point));}path.line_to(map(vertices[0]));if let Ok(path)=path.build(){window.paint_path(path,rgb(arrow.color));}}
                                         Selected::Ellipse(i)=>{let ellipse=ellipse_preview[i];let mut path=gpui::PathBuilder::fill();for contour in ellipse.ellipse_contours(){path.move_to(map(contour[0]));for point in &contour[1..]{path.line_to(map(*point));}path.line_to(map(contour[0]));}if let Ok(path)=path.build(){window.paint_path(path,rgb(ellipse.color));}}
@@ -2595,6 +2868,338 @@ impl Render for RedactionEditor {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn spotlight_keeps_focus_selection_style_order_and_shared_admission() {
+        let mut edits = RectEdits::default();
+        let area = PixelRegion {
+            x: 10,
+            y: 10,
+            width: 20,
+            height: 20,
+        };
+        let mark = HighlightAnnotation {
+            area,
+            color: 0,
+            opacity: 191,
+            outside: true,
+        };
+        edits.add_highlight(mark);
+        let selected = Selected::Highlight(0);
+        assert_eq!(Tool::shortcut("s"), Some(Tool::Spotlight));
+        assert_eq!(edits.pick([20.0, 20.0], 0.0), Some(selected));
+        assert_eq!(edits.pick([0.0, 0.0], 0.0), None);
+        edits.set_highlight_opacity(selected, 128);
+        edits.undo();
+        assert_eq!(edits.highlights[0], mark);
+        edits.redo();
+        edits.set_color(selected, 0x22c55e);
+        assert!(edits.highlights[0].outside);
+        assert_eq!(edits.highlights[0].opacity, 128);
+        assert_eq!(edits.color(selected), Some(0x22c55e));
+        edits.transform_selected(
+            selected,
+            Some(ResizeHandle::Corner([true, true])),
+            [10.0, 5.0],
+            [100, 100],
+        );
+        assert_eq!(
+            edits.bounds(selected),
+            Some(PixelRegion {
+                width: 30,
+                height: 25,
+                ..area
+            })
+        );
+        assert!(edits.highlights[0].outside);
+        edits.undo();
+        assert_eq!(edits.bounds(selected), Some(area));
+        let copy = edits.duplicate(selected, [100, 100]).unwrap();
+        let Selected::Highlight(index) = copy else {
+            panic!("Spotlight changed annotation type");
+        };
+        assert!(edits.highlights[index].outside);
+        assert_eq!(edits.highlights[index].opacity, 128);
+        assert_eq!(edits.order.last(), Some(&copy));
+        edits.shift_layer(copy, false);
+        assert_eq!(edits.order.last(), Some(&selected));
+        edits.delete_selected(copy);
+        edits.undo();
+        assert!(edits.highlights[index].outside);
+        for _ in 0..100 {
+            edits.add_highlight(mark);
+        }
+        assert_eq!(edits.highlights.len(), 100);
+        assert_eq!(edits.ordered_annotations().len(), 100);
+        assert!(edits.past.len() <= 100);
+        edits.reset();
+        assert!(edits.highlights.is_empty());
+    }
+    fn caption_fixture(text: &str, area: PixelRegion) -> Caption {
+        Caption {
+            area,
+            asset: Arc::new(TextAsset {
+                text: text.into(),
+                font_size: 24,
+                stamp: app_core::TextAnnotation {
+                    area,
+                    color: 0xef4444,
+                    width: area.width,
+                    height: area.height,
+                    mask: vec![255; (area.width * area.height) as usize].into(),
+                },
+                preview: Arc::new(gpui::RenderImage::new(vec![image::Frame::new(
+                    image::RgbaImage::new(area.width, area.height),
+                )])),
+            }),
+        }
+    }
+    #[test]
+    fn duplicate_all_marks_shares_assets_preserves_style_and_undoes_once() {
+        let area = PixelRegion {
+            x: 10,
+            y: 10,
+            width: 20,
+            height: 20,
+        };
+        for selected in [
+            Selected::Text(0),
+            Selected::Pen(0),
+            Selected::Frame(0),
+            Selected::Arrow(0),
+            Selected::Ellipse(0),
+            Selected::Highlight(0),
+            Selected::Blur(0),
+            Selected::Pixelation(0),
+            Selected::Redaction(0),
+        ] {
+            let mut edits = RectEdits::default();
+            let caption = caption_fixture("2.", area);
+            let mut pen =
+                app_core::PenAnnotation::from_trace(&[[10, 10], [29, 29]], 0x22c55e).unwrap();
+            pen.width = 6;
+            let points = pen.points.clone();
+            let shape = FrameAnnotation {
+                area,
+                color: 0x22c55e,
+                width: 6,
+            };
+            match selected {
+                Selected::Text(_) => {
+                    assert!(edits.set_text(caption.clone(), None));
+                }
+                Selected::Pen(_) => {
+                    assert!(edits.add_pen(pen));
+                }
+                Selected::Frame(_) => edits.add_frame(shape),
+                Selected::Arrow(_) => edits.add_arrow(ArrowAnnotation {
+                    start: [29, 29],
+                    end: [10, 10],
+                    color: 0x22c55e,
+                    width: 6,
+                }),
+                Selected::Ellipse(_) => edits.add_ellipse(shape),
+                Selected::Highlight(_) => edits.add_highlight(HighlightAnnotation {
+                    outside: false,
+                    area,
+                    color: 0x22c55e,
+                    opacity: 128,
+                }),
+                Selected::Blur(_) => edits.add_blur(area),
+                Selected::Pixelation(_) => edits.add_pixelation(area),
+                Selected::Redaction(_) => edits.add(area),
+            }
+            edits.last_number = 2;
+            let history = edits.past.len();
+            let order = edits.order.clone();
+            let color = edits.color(selected);
+            let width = edits.stroke_width(selected);
+            let copy = edits.duplicate(selected, [100, 100]).unwrap();
+            assert_eq!(edits.past.len(), history + 1);
+            assert_ne!(copy, selected);
+            assert_eq!(edits.bounds(selected), Some(area));
+            assert_eq!(
+                edits.bounds(copy),
+                Some(PixelRegion {
+                    x: 20,
+                    y: 20,
+                    ..area
+                })
+            );
+            assert_eq!(edits.color(copy), color);
+            assert_eq!(edits.stroke_width(copy), width);
+            assert_eq!(edits.last_number, 2);
+            if order.contains(&selected) {
+                assert_eq!(edits.order.last(), Some(&copy));
+            } else {
+                assert_eq!(edits.order, order);
+            }
+            if let Selected::Text(index) = copy {
+                assert!(Arc::ptr_eq(&edits.texts[index].asset, &caption.asset));
+            }
+            if let Selected::Pen(index) = copy {
+                assert!(Arc::ptr_eq(&edits.pens[index].points, &points));
+            }
+            if let Selected::Arrow(index) = copy {
+                assert_eq!(edits.arrows[index].start, [39, 39]);
+                assert_eq!(edits.arrows[index].end, [20, 20]);
+            }
+            if let Selected::Highlight(index) = copy {
+                assert_eq!(edits.highlights[index].opacity, 128);
+            }
+            edits.undo();
+            assert_eq!(edits.bounds(copy), None);
+            assert_eq!(edits.bounds(selected), Some(area));
+            assert_eq!(edits.order, order);
+            edits.redo();
+            assert!(edits.bounds(copy).is_some());
+            edits.delete_selected(copy);
+            edits.undo();
+            assert!(edits.bounds(copy).is_some());
+        }
+    }
+    #[test]
+    fn duplicate_clamps_at_image_edges_and_rejects_full_or_invalid_documents() {
+        let mut edits = RectEdits::default();
+        let area = PixelRegion {
+            x: 90,
+            y: 90,
+            width: 10,
+            height: 10,
+        };
+        edits.add(area);
+        let copy = edits.duplicate(Selected::Redaction(0), [100, 100]).unwrap();
+        assert_eq!(
+            edits.bounds(copy),
+            Some(PixelRegion {
+                x: 80,
+                y: 80,
+                ..area
+            })
+        );
+        let history = edits.past.len();
+        assert!(edits.duplicate(Selected::Redaction(9), [100, 100]).is_err());
+        assert!(edits.duplicate(Selected::Redaction(0), [50, 50]).is_err());
+        assert_eq!(edits.past.len(), history);
+        for _ in 0..98 {
+            edits.add_blur(area);
+        }
+        assert!(edits.duplicate(Selected::Redaction(0), [100, 100]).is_err());
+        assert_eq!(edits.past.len(), 100);
+        assert_eq!(edits.regions.len(), 2);
+        edits.reset();
+        let full = PixelRegion {
+            x: 0,
+            y: 0,
+            width: 100,
+            height: 100,
+        };
+        edits.add(full);
+        let copy = edits.duplicate(Selected::Redaction(0), [100, 100]).unwrap();
+        assert_eq!(edits.bounds(copy), Some(full));
+    }
+    #[test]
+    fn duplication_keeps_pen_and_text_documents_within_export_limits() {
+        let mut edits = RectEdits::default();
+        let trace = (0..app_core::MAX_PEN_POINTS)
+            .map(|x| [x as u32, 0])
+            .collect::<Vec<_>>();
+        let pen = app_core::PenAnnotation::from_trace(&trace, 0).unwrap();
+        let points = pen.points.clone();
+        assert!(edits.add_pen(pen));
+        for _ in 0..7 {
+            edits.duplicate(Selected::Pen(0), [2048, 1024]).unwrap();
+        }
+        assert_eq!(edits.pen_points(), app_core::MAX_DOCUMENT_PEN_POINTS);
+        let history = edits.past.len();
+        assert!(edits.duplicate(Selected::Pen(0), [2048, 1024]).is_err());
+        assert_eq!(edits.past.len(), history);
+        assert!(
+            edits
+                .pens
+                .iter()
+                .all(|pen| Arc::ptr_eq(&pen.points, &points))
+        );
+        edits.undo();
+        assert!(edits.duplicate(Selected::Pen(0), [2048, 1024]).is_ok());
+        assert!(edits.undone.is_empty());
+        edits.reset();
+        let large = caption_fixture(
+            "Large",
+            PixelRegion {
+                x: 0,
+                y: 0,
+                width: 1024,
+                height: 128,
+            },
+        );
+        let small = caption_fixture(
+            "Small",
+            PixelRegion {
+                x: 0,
+                y: 0,
+                width: 16,
+                height: 16,
+            },
+        );
+        assert!(edits.set_text(large.clone(), None));
+        for _ in 0..31 {
+            edits.duplicate(Selected::Text(0), [2048, 1024]).unwrap();
+        }
+        assert_eq!(edits.text_mask_bytes(), 4 * 1024 * 1024);
+        assert!(
+            edits
+                .texts
+                .iter()
+                .all(|text| Arc::ptr_eq(&text.asset, &large.asset))
+        );
+        let history = edits.past.len();
+        edits.last_number = 7;
+        assert!(edits.duplicate(Selected::Text(0), [2048, 1024]).is_err());
+        assert!(!edits.set_text(small.clone(), None));
+        assert!(!edits.add_number(small.clone()));
+        assert_eq!(edits.last_number, 7);
+        assert_eq!(edits.past.len(), history);
+        assert!(edits.set_text(large.clone(), Some(0)));
+        assert!(edits.set_text(small.clone(), Some(0)));
+        assert!(edits.set_text(small, None));
+        let history = edits.past.len();
+        assert!(!edits.set_text(large, Some(0)));
+        assert_eq!(edits.past.len(), history);
+        assert_eq!(edits.texts[0].asset.text, "Small");
+    }
+    #[test]
+    #[ignore = "short optimized duplication timing; no desktop, files or clipboard"]
+    fn duplication_metadata_cost() {
+        for count in [1, 99] {
+            let mut edits = RectEdits::default();
+            for _ in 0..count {
+                edits.add_frame(FrameAnnotation {
+                    area: PixelRegion {
+                        x: 10,
+                        y: 10,
+                        width: 20,
+                        height: 20,
+                    },
+                    color: 0xef4444,
+                    width: 6,
+                });
+            }
+            let mut samples = Vec::with_capacity(2000);
+            for _ in 0..2000 {
+                let start = std::time::Instant::now();
+                std::hint::black_box(edits.duplicate(Selected::Frame(0), [3840, 2160]).unwrap());
+                samples.push(start.elapsed().as_nanos());
+                edits.undo();
+            }
+            assert!(edits.past.len() <= 100);
+            assert_eq!(edits.frames.len(), count);
+            samples.sort_unstable();
+            eprintln!(
+                "Duplicate {count} marks: metadata command p95={} ns; shared pixels/assets, no image job",
+                samples[1900]
+            );
+        }
+    }
     #[test]
     fn shape_width_selection_and_undo_keep_geometry_color_and_order() {
         let area = PixelRegion {
@@ -2775,6 +3380,7 @@ mod tests {
     fn highlight_opacity_changes_only_metadata_and_supports_undo() {
         let mut edits = RectEdits::default();
         let mark = HighlightAnnotation {
+            outside: false,
             area: PixelRegion {
                 x: 10,
                 y: 10,
@@ -2801,6 +3407,7 @@ mod tests {
         assert_eq!(
             edits.highlights[0],
             HighlightAnnotation {
+                outside: false,
                 opacity: 128,
                 ..mark
             }
@@ -2893,6 +3500,7 @@ mod tests {
             height: 20,
         };
         edits.add_highlight(HighlightAnnotation {
+            outside: false,
             opacity: 85,
             area,
             color: 0xfacc15,
@@ -2925,6 +3533,7 @@ mod tests {
         edits.undo();
         assert_eq!(edits.order.last(), Some(&selected));
         edits.add_highlight(HighlightAnnotation {
+            outside: false,
             opacity: 85,
             area,
             color: 0xfacc15,
@@ -2935,6 +3544,7 @@ mod tests {
         assert_eq!(edits.ordered_annotations().len(), 2);
         for _ in 0..100 {
             edits.add_highlight(HighlightAnnotation {
+                outside: false,
                 opacity: 85,
                 area,
                 color: 0xfacc15,

@@ -10,6 +10,47 @@ pub struct ArrowAnnotation {
 }
 
 impl ArrowAnnotation {
+    /// Snap the source-pixel direction to the nearest horizontal, vertical or 45-degree axis.
+    pub fn from_drag_constrained(
+        start: [f32; 2],
+        end: [f32; 2],
+        viewport: [f32; 2],
+        image: [u32; 2],
+        color: u32,
+        snap: bool,
+    ) -> Option<Self> {
+        let mut arrow = Self::from_drag(start, end, viewport, image, color)?;
+        if !snap {
+            return Some(arrow);
+        }
+        let dx = arrow.start[0].abs_diff(arrow.end[0]);
+        let dy = arrow.start[1].abs_diff(arrow.end[1]);
+        let threshold = 1.0 + std::f64::consts::SQRT_2;
+        if f64::from(dx) > f64::from(dy) * threshold {
+            arrow.end[1] = arrow.start[1];
+        } else if f64::from(dy) > f64::from(dx) * threshold {
+            arrow.end[0] = arrow.start[0];
+        } else {
+            let reverse: [bool; 2] =
+                std::array::from_fn(|axis| arrow.end[axis] < arrow.start[axis]);
+            let mut side = ((u64::from(dx) + u64::from(dy) + 1) / 2) as u32;
+            for axis in 0..2 {
+                side = side.min(if reverse[axis] {
+                    arrow.start[axis]
+                } else {
+                    image[axis] - 1 - arrow.start[axis]
+                });
+            }
+            arrow.end = std::array::from_fn(|axis| {
+                if reverse[axis] {
+                    arrow.start[axis] - side
+                } else {
+                    arrow.start[axis] + side
+                }
+            });
+        }
+        (arrow.start != arrow.end).then_some(arrow)
+    }
     pub fn from_drag(
         start: [f32; 2],
         end: [f32; 2],
@@ -171,6 +212,86 @@ pub(crate) fn paint_shapes(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn constrained_arrows_snap_in_source_pixels_and_stay_in_image() {
+        let horizontal = ArrowAnnotation::from_drag_constrained(
+            [10.0; 2],
+            [80.0, 20.0],
+            [100.0; 2],
+            [100; 2],
+            0,
+            true,
+        )
+        .unwrap();
+        assert_eq!(horizontal.end, [80, 10]);
+        let vertical = ArrowAnnotation::from_drag_constrained(
+            [10.0; 2],
+            [20.0, 80.0],
+            [100.0; 2],
+            [100; 2],
+            0,
+            true,
+        )
+        .unwrap();
+        assert_eq!(vertical.end, [10, 80]);
+        let diagonal = ArrowAnnotation::from_drag_constrained(
+            [10.0; 2],
+            [60.0; 2],
+            [200.0, 100.0],
+            [400; 2],
+            0,
+            true,
+        )
+        .unwrap();
+        assert_eq!(diagonal.start, [20, 40]);
+        assert_eq!(diagonal.end, [170, 190]);
+        for viewport in [[100.0; 2], [200.0, 100.0], [333.3, 77.7]] {
+            for image in [[100; 2], [400, 200], [1, 200]] {
+                for end in [
+                    [0.0; 2],
+                    [1000.0; 2],
+                    [13.5, 69.2],
+                    [90.0, 20.0],
+                    [30.0, 75.0],
+                ] {
+                    let start = [viewport[0] / 2.0, viewport[1] / 2.0];
+                    if let Some(arrow) = ArrowAnnotation::from_drag_constrained(
+                        start, end, viewport, image, 0x22c55e, true,
+                    ) {
+                        let dx = arrow.start[0].abs_diff(arrow.end[0]);
+                        let dy = arrow.start[1].abs_diff(arrow.end[1]);
+                        assert!(dx == 0 || dy == 0 || dx == dy);
+                        assert!(arrow.start != arrow.end);
+                        assert!(arrow.end[0] < image[0] && arrow.end[1] < image[1]);
+                        assert_eq!(arrow.color, 0x22c55e);
+                    }
+                    assert_eq!(
+                        ArrowAnnotation::from_drag_constrained(
+                            start, end, viewport, image, 0, false
+                        ),
+                        ArrowAnnotation::from_drag(start, end, viewport, image, 0)
+                    );
+                }
+            }
+        }
+        assert!(
+            ArrowAnnotation::from_drag_constrained(
+                [1.0; 2], [1.0; 2], [100.0; 2], [100; 2], 0, true
+            )
+            .is_none()
+        );
+        assert!(
+            ArrowAnnotation::from_drag_constrained(
+                [f32::NAN; 2],
+                [2.0; 2],
+                [100.0; 2],
+                [100; 2],
+                0,
+                true
+            )
+            .is_none()
+        );
+    }
     #[test]
     fn arrow_hit_testing_follows_width_polygon_direction_and_tolerance() {
         for width in [1, 3, 6, 12] {

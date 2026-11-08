@@ -6,6 +6,68 @@ pub struct HighlightAnnotation {
     pub area: PixelRegion,
     pub color: u32,
     pub opacity: u8,
+    pub outside: bool,
+}
+impl HighlightAnnotation {
+    /// Non-overlapping filled rectangles, clipped to the output canvas.
+    pub fn segments(self, canvas: PixelRegion) -> [PixelRegion; 4] {
+        let right = canvas.x.saturating_add(canvas.width);
+        let bottom = canvas.y.saturating_add(canvas.height);
+        let left = self.area.x.clamp(canvas.x, right);
+        let top = self.area.y.clamp(canvas.y, bottom);
+        let hole_right = self
+            .area
+            .x
+            .saturating_add(self.area.width)
+            .clamp(canvas.x, right);
+        let hole_bottom = self
+            .area
+            .y
+            .saturating_add(self.area.height)
+            .clamp(canvas.y, bottom);
+        let empty = PixelRegion {
+            x: canvas.x,
+            y: canvas.y,
+            width: 0,
+            height: 0,
+        };
+        if !self.outside {
+            return [
+                PixelRegion {
+                    x: left,
+                    y: top,
+                    width: hole_right - left,
+                    height: hole_bottom - top,
+                },
+                empty,
+                empty,
+                empty,
+            ];
+        }
+        [
+            PixelRegion {
+                height: top - canvas.y,
+                ..canvas
+            },
+            PixelRegion {
+                y: hole_bottom,
+                height: bottom - hole_bottom,
+                ..canvas
+            },
+            PixelRegion {
+                y: top,
+                width: left - canvas.x,
+                height: hole_bottom - top,
+                ..canvas
+            },
+            PixelRegion {
+                x: hole_right,
+                y: top,
+                width: right - hole_right,
+                height: hole_bottom - top,
+            },
+        ]
+    }
 }
 
 #[derive(Clone)]
@@ -89,17 +151,22 @@ pub(crate) fn paint_ordered(
     for annotation in annotations {
         match annotation {
             DrawAnnotation::Highlight(highlight) => {
-                let area = highlight.area;
-                if let Some(layer) = &mut layer {
-                    flush(layer, pixels, crop, raster, area);
-                }
-                for y in area.y.max(crop.y)..(area.y + area.height).min(crop.y + crop.height) {
-                    for x in area.x.max(crop.x)..(area.x + area.width).min(crop.x + crop.width) {
-                        crate::text::blend_ink(
-                            pixels.get_pixel_mut(x - crop.x, y - crop.y),
-                            highlight.color,
-                            u32::from(highlight.opacity),
-                        );
+                for area in highlight.segments(crop) {
+                    if area.width == 0 || area.height == 0 {
+                        continue;
+                    }
+                    if let Some(layer) = &mut layer {
+                        flush(layer, pixels, crop, raster, area);
+                    }
+                    for y in area.y.max(crop.y)..(area.y + area.height).min(crop.y + crop.height) {
+                        for x in area.x.max(crop.x)..(area.x + area.width).min(crop.x + crop.width)
+                        {
+                            crate::text::blend_ink(
+                                pixels.get_pixel_mut(x - crop.x, y - crop.y),
+                                highlight.color,
+                                u32::from(highlight.opacity),
+                            );
+                        }
                     }
                 }
             }
@@ -164,6 +231,186 @@ pub(crate) fn paint_ordered(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn spotlight_segments_cover_only_the_outside_once_even_when_cropped() {
+        let mark = HighlightAnnotation {
+            area: PixelRegion {
+                x: 10,
+                y: 8,
+                width: 20,
+                height: 16,
+            },
+            color: 0,
+            opacity: 191,
+            outside: true,
+        };
+        for crop in [
+            PixelRegion {
+                x: 0,
+                y: 0,
+                width: 48,
+                height: 32,
+            },
+            PixelRegion {
+                x: 12,
+                y: 10,
+                width: 4,
+                height: 4,
+            },
+            PixelRegion {
+                x: 0,
+                y: 0,
+                width: 6,
+                height: 6,
+            },
+            PixelRegion {
+                x: 5,
+                y: 4,
+                width: 12,
+                height: 12,
+            },
+            PixelRegion {
+                x: 32,
+                y: 10,
+                width: 8,
+                height: 8,
+            },
+            PixelRegion {
+                x: 12,
+                y: 26,
+                width: 8,
+                height: 4,
+            },
+        ] {
+            for outside in [false, true] {
+                let segments = HighlightAnnotation { outside, ..mark }.segments(crop);
+                for y in crop.y..crop.y + crop.height {
+                    for x in crop.x..crop.x + crop.width {
+                        let hits = segments
+                            .iter()
+                            .filter(|r| {
+                                x >= r.x && x < r.x + r.width && y >= r.y && y < r.y + r.height
+                            })
+                            .count();
+                        let inside = x >= 10 && x < 30 && y >= 8 && y < 24;
+                        assert_eq!(hits, usize::from(inside != outside));
+                    }
+                }
+            }
+        }
+    }
+    #[test]
+    fn spotlight_crop_order_alpha_and_redaction_use_the_same_covered_regions() -> Result<()> {
+        let mut source = source(48, 32);
+        source.pixels = std::sync::Arc::new(image::RgbaImage::from_pixel(
+            48,
+            32,
+            image::Rgba([255, 255, 255, 255]),
+        ));
+        let area = PixelRegion {
+            x: 10,
+            y: 8,
+            width: 20,
+            height: 16,
+        };
+        let mark = HighlightAnnotation {
+            area,
+            color: 0,
+            opacity: 191,
+            outside: true,
+        };
+        let spotlight = DrawAnnotation::Highlight(mark);
+        let render = |items: &[DrawAnnotation], crop| {
+            crate::render_ordered_snapshot(&source, &[], crop, items, &[], None, &[])
+        };
+        let full = render(std::slice::from_ref(&spotlight), None)?;
+        assert_eq!(full.pixels.get_pixel(0, 0).0, [64, 64, 64, 255]);
+        assert_eq!(full.pixels.get_pixel(12, 12).0, [255, 255, 255, 255]);
+        for crop in [
+            PixelRegion {
+                x: 5,
+                y: 4,
+                width: 12,
+                height: 12,
+            },
+            area,
+            PixelRegion {
+                x: 32,
+                y: 10,
+                width: 8,
+                height: 8,
+            },
+        ] {
+            let clipped = render(std::slice::from_ref(&spotlight), Some(crop))?;
+            for (x, y, pixel) in clipped.pixels.enumerate_pixels() {
+                assert_eq!(pixel, full.pixels.get_pixel(x + crop.x, y + crop.y));
+            }
+        }
+        let ellipse = DrawAnnotation::Ellipse(FrameAnnotation {
+            area: PixelRegion {
+                x: 2,
+                y: 2,
+                width: 42,
+                height: 28,
+            },
+            color: 0x22c55e,
+            width: 6,
+        });
+        let base = render(std::slice::from_ref(&ellipse), None)?;
+        let ordered = render(&[ellipse.clone(), spotlight.clone()], None)?;
+        for (x, y, pixel) in ordered.pixels.enumerate_pixels() {
+            let mut expected = *base.pixels.get_pixel(x, y);
+            if !(10..30).contains(&x) || !(8..24).contains(&y) {
+                crate::text::blend_ink(&mut expected, 0, 191);
+            }
+            assert_eq!(*pixel, expected);
+        }
+        let above = render(&[spotlight.clone(), ellipse], None)?;
+        assert_ne!(above.pixels, ordered.pixels);
+        let redactions = [
+            PixelRegion {
+                x: 0,
+                y: 0,
+                width: 3,
+                height: 3,
+            },
+            PixelRegion {
+                x: 12,
+                y: 12,
+                width: 2,
+                height: 2,
+            },
+        ];
+        let redacted = crate::render_ordered_snapshot(
+            &source,
+            &redactions,
+            None,
+            &[spotlight.clone()],
+            &[],
+            None,
+            &[],
+        )?;
+        assert_eq!(redacted.pixels.get_pixel(0, 0).0, [0, 0, 0, 255]);
+        assert_eq!(redacted.pixels.get_pixel(12, 12).0, [0, 0, 0, 255]);
+        let second = DrawAnnotation::Highlight(HighlightAnnotation {
+            area: PixelRegion { x: 20, ..area },
+            ..mark
+        });
+        let stacked = render(&[spotlight.clone(), second], None)?;
+        assert_eq!(stacked.pixels.get_pixel(0, 0).0, [16, 16, 16, 255]);
+        assert_eq!(stacked.pixels.get_pixel(15, 12).0, [64, 64, 64, 255]);
+        assert_eq!(stacked.pixels.get_pixel(25, 12).0, [255, 255, 255, 255]);
+        source.pixels = std::sync::Arc::new(image::RgbaImage::from_pixel(
+            48,
+            32,
+            image::Rgba([19, 37, 61, 0]),
+        ));
+        let transparent =
+            crate::render_ordered_snapshot(&source, &[], None, &[spotlight], &[], None, &[])?;
+        assert_eq!(transparent.pixels.get_pixel(0, 0).0, [0, 0, 0, 191]);
+        assert_eq!(transparent.pixels.get_pixel(12, 12).0, [19, 37, 61, 0]);
+        Ok(())
+    }
     #[test]
     fn vector_crop_padding_stays_inside_source_and_bounds_skinny_image_cost() -> Result<()> {
         let full = PixelRegion {
@@ -379,6 +626,7 @@ mod tests {
                 std::sync::Arc::new(image::RgbaImage::from_pixel(8, 8, image::Rgba(background)));
             for opacity in [64, 85, 128, 191, 255] {
                 let highlight = DrawAnnotation::Highlight(HighlightAnnotation {
+                    outside: false,
                     area,
                     color: 0xfacc15,
                     opacity,
@@ -401,6 +649,7 @@ mod tests {
             }
         }
         let invisible = DrawAnnotation::Highlight(HighlightAnnotation {
+            outside: false,
             area,
             color: 0xfacc15,
             opacity: 0,
@@ -426,6 +675,7 @@ mod tests {
             height: 16,
         };
         let highlight = DrawAnnotation::Highlight(HighlightAnnotation {
+            outside: false,
             opacity: 85,
             area,
             color: 0xfacc15,
@@ -474,12 +724,14 @@ mod tests {
         )?;
         assert_eq!(redacted.pixels.get_pixel(12, 12).0, [0, 0, 0, 255]);
         let invalid = DrawAnnotation::Highlight(HighlightAnnotation {
+            outside: false,
             opacity: 85,
             area,
             color: 0x1000000,
         });
         assert!(render(&[invalid], None).is_err());
         let invalid = DrawAnnotation::Highlight(HighlightAnnotation {
+            outside: false,
             opacity: 85,
             area: PixelRegion {
                 x: 47,
@@ -675,19 +927,30 @@ mod tests {
             width: 3840,
             height: 2160,
         };
-        for (name, opacity) in [
-            ("copy", 0),
-            ("highlight-33", 85),
-            ("highlight-50", 128),
-            ("highlight-100", 255),
+        for (name, opacity, outside) in [
+            ("copy", 0, false),
+            ("highlight-33", 85, false),
+            ("highlight-50", 128, false),
+            ("highlight-100", 255, false),
+            ("spotlight-75", 191, true),
         ] {
             let annotations = if opacity == 0 {
                 Vec::new()
             } else {
                 vec![DrawAnnotation::Highlight(HighlightAnnotation {
+                    outside,
                     opacity,
-                    area,
-                    color: 0xfacc15,
+                    area: if outside {
+                        PixelRegion {
+                            x: 960,
+                            y: 540,
+                            width: 1920,
+                            height: 1080,
+                        }
+                    } else {
+                        area
+                    },
+                    color: if outside { 0 } else { 0xfacc15 },
                 })]
             };
             let mut samples = Vec::new();
