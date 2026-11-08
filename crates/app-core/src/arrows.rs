@@ -347,6 +347,7 @@ mod tests {
             source_format: crate::PixelFormat::Rgba8UnormSrgb,
         };
         let ellipse = crate::FrameAnnotation {
+            filled: false,
             width: 3,
             area: PixelRegion {
                 x: 8,

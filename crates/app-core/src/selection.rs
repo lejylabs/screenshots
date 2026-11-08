@@ -16,6 +16,7 @@ pub struct FrameAnnotation {
     pub area: PixelRegion,
     pub color: u32,
     pub width: u8,
+    pub filled: bool,
 }
 
 impl FrameAnnotation {
@@ -35,14 +36,22 @@ impl FrameAnnotation {
         };
         let mut contours = vec![contour(rx, ry, false)];
         let width = f32::from(self.width);
-        if rx > width && ry > width {
+        if !self.filled && rx > width && ry > width {
             contours.push(contour(rx - width, ry - width, true));
         }
         contours
     }
-    /// Shared preview/export geometry: an inset border in source pixels.
+    /// Shared preview/export geometry: an inset border or filled rectangle in source pixels.
     pub fn segments(self) -> [PixelRegion; 4] {
         let area = self.area;
+        if self.filled {
+            let empty = PixelRegion {
+                width: 0,
+                height: 0,
+                ..area
+            };
+            return [area, empty, empty, empty];
+        }
         let horizontal = u32::from(self.width).min(area.height);
         let vertical = u32::from(self.width).min(area.width);
         [
@@ -702,6 +711,7 @@ mod tests {
             source_format: crate::PixelFormat::Rgba8UnormSrgb,
         };
         let frame = FrameAnnotation {
+            filled: false,
             width: 3,
             area: PixelRegion {
                 x: 1,
@@ -753,6 +763,7 @@ mod tests {
                 &[],
                 None,
                 &[FrameAnnotation {
+                    filled: false,
                     width: 3,
                     color: 0xff000000,
                     ..frame

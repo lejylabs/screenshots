@@ -15,6 +15,42 @@ pub struct TextAnnotation {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn ink_fast_paths_match_general_straight_alpha_for_every_alpha_pair() {
+        for previous_alpha in 0..=255u32 {
+            for alpha in 0..=255u32 {
+                for (color, channels) in [
+                    (0, [255, 0, 128]),
+                    (0xffffff, [0, 255, 127]),
+                    (0x22c55e, [19, 37, 61]),
+                    (0xff8000, [241, 113, 7]),
+                ] {
+                    let original =
+                        image::Rgba([channels[0], channels[1], channels[2], previous_alpha as u8]);
+                    let mut expected = original;
+                    if alpha > 0 {
+                        let a = u64::from(alpha);
+                        let old_a = u64::from(previous_alpha);
+                        let out_a = a * 255 + old_a * (255 - a);
+                        for (channel, shift) in [16, 8, 0].into_iter().enumerate() {
+                            let ink = u64::from((color >> shift) & 255);
+                            expected[channel] = ((ink * a * 255
+                                + u64::from(original[channel]) * old_a * (255 - a)
+                                + out_a / 2)
+                                / out_a) as u8;
+                        }
+                        expected[3] = ((out_a + 127) / 255) as u8;
+                    }
+                    let mut actual = original;
+                    blend_ink(&mut actual, color, alpha);
+                    assert_eq!(
+                        actual, expected,
+                        "source alpha={alpha}, background alpha={previous_alpha}, color={color:x}"
+                    );
+                }
+            }
+        }
+    }
     fn source() -> crate::CapturedImage {
         crate::CapturedImage {
             display_id: "fixture".into(),
@@ -211,6 +247,23 @@ pub(crate) fn blend_ink(destination: &mut image::Rgba<u8>, color: u32, alpha: u3
         return;
     }
     let previous_alpha = u32::from(destination[3]);
+    if alpha == 255 || previous_alpha == 0 {
+        *destination = image::Rgba([
+            (color >> 16) as u8,
+            (color >> 8) as u8,
+            color as u8,
+            alpha as u8,
+        ]);
+        return;
+    }
+    if previous_alpha == 255 {
+        for (channel, shift) in [16, 8, 0].into_iter().enumerate() {
+            let ink = (color >> shift) & 255;
+            destination[channel] =
+                ((ink * alpha + u32::from(destination[channel]) * (255 - alpha) + 127) / 255) as u8;
+        }
+        return;
+    }
     let out_alpha = alpha * 255 + previous_alpha * (255 - alpha);
     for (channel, shift) in [16, 8, 0].into_iter().enumerate() {
         let color = (color >> shift) & 255;

@@ -3286,9 +3286,41 @@ mod tests {
                     this.output_directory = Some(directory);
                     this.backend = XcapBackend::new(this.output_directory.as_ref().unwrap());
                 });
+                let style_fonts = cx.global::<caption::CaptionFonts>().0.clone();
                 let owner = controller.downgrade();
                 cx.spawn(async move |cx| {
                     let checked = async {
+                        cx.background_spawn(async move {
+                            let mut masks = Vec::new();
+                            for (bold, italic) in [(false, false), (true, false), (false, true), (true, true)] {
+                                let asset = caption::rasterize(style_fonts.as_ref(), "Style 123".into(), 24, 0x22c55e, bold, italic, || false)?;
+                                if asset.bold != bold || asset.italic != italic || asset.stamp.width > 1024 || asset.stamp.height > 128 || asset.bytes() > 4 * 1024 * 1024 {
+                                    return Err("Native text style lost metadata or exceeded its admission bounds".to_string());
+                                }
+                                masks.push(asset.stamp.mask);
+                            }
+                            if (1..masks.len()).any(|index| masks[..index].contains(&masks[index])) {
+                                return Err("Native style variants did not change the shaped glyphs".to_string());
+                            }
+                            let single = caption::rasterize(style_fonts.as_ref(), "Row".into(), 16, 0x22c55e, false, false, || false)?;
+                            for (text, rows) in [("Row\n\nRow", 3), ("Row\n", 2)] {
+                                let block = caption::rasterize(style_fonts.as_ref(), text.into(), 16, 0x22c55e, false, false, || false)?;
+                                let row_bytes = single.stamp.mask.len();
+                                if block.stamp.width != single.stamp.width || block.stamp.height != single.stamp.height * rows
+                                    || block.stamp.mask[..row_bytes] != *single.stamp.mask
+                                    || block.stamp.mask[row_bytes..2*row_bytes].iter().any(|alpha| *alpha != 0)
+                                    || (rows == 3 && block.stamp.mask[2*row_bytes..] != *single.stamp.mask)
+                                {
+                                    return Err("Native multiline layout did not preserve blank/trailing rows or glyph pixels".to_string());
+                                }
+                            }
+                            for (text, size) in [("A\nB\nC\nD\nE", 16), ("Row\nRow\nRow\nRow", 36)] {
+                                if caption::rasterize(style_fonts.as_ref(), text.into(), size, 0, false, false, || false).is_ok() {
+                                    return Err("Native multiline rasterization exceeded its line/mask limits".to_string());
+                                }
+                            }
+                            Ok::<_, String>(())
+                        }).await?;
                         let deadline = std::time::Instant::now();
                         loop {
                             if owner

@@ -203,6 +203,9 @@ pub(crate) fn paint_ordered(
                     255,
                 ]);
                 for area in frame.segments() {
+                    if area.width == 0 || area.height == 0 {
+                        continue;
+                    }
                     if let Some(layer) = &mut layer {
                         flush(layer, pixels, crop, raster, area);
                     }
@@ -231,6 +234,87 @@ pub(crate) fn paint_ordered(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn filled_shapes_cover_interiors_preserve_crop_order_alpha_and_redaction() -> Result<()> {
+        let source = source(48, 32);
+        let area = PixelRegion {
+            x: 8,
+            y: 6,
+            width: 32,
+            height: 20,
+        };
+        let shape = FrameAnnotation {
+            area,
+            color: 0x22c55e,
+            width: 3,
+            filled: true,
+        };
+        assert_eq!(shape.segments()[0], area);
+        assert!(
+            shape.segments()[1..]
+                .iter()
+                .all(|r| r.width == 0 && r.height == 0)
+        );
+        assert_eq!(shape.ellipse_contours().len(), 1);
+        assert_eq!(
+            FrameAnnotation {
+                filled: false,
+                ..shape
+            }
+            .ellipse_contours()
+            .len(),
+            2
+        );
+        let render = |items: &[DrawAnnotation], crop| {
+            crate::render_ordered_snapshot(&source, &[], crop, items, &[], None, &[])
+        };
+        for draw in [DrawAnnotation::Frame(shape), DrawAnnotation::Ellipse(shape)] {
+            let full = render(std::slice::from_ref(&draw), None)?;
+            assert_eq!(full.pixels.get_pixel(24, 16).0, [34, 197, 94, 255]);
+            assert_eq!(full.pixels.get_pixel(0, 0), source.pixels.get_pixel(0, 0));
+            for crop in [
+                PixelRegion {
+                    x: 18,
+                    y: 12,
+                    width: 8,
+                    height: 8,
+                },
+                PixelRegion {
+                    x: 10,
+                    y: 7,
+                    width: 26,
+                    height: 18,
+                },
+                PixelRegion {
+                    x: 0,
+                    y: 0,
+                    width: 4,
+                    height: 4,
+                },
+            ] {
+                let clipped = render(std::slice::from_ref(&draw), Some(crop))?;
+                for (x, y, pixel) in clipped.pixels.enumerate_pixels() {
+                    assert_eq!(pixel, full.pixels.get_pixel(x + crop.x, y + crop.y));
+                }
+            }
+            let redacted =
+                crate::render_ordered_snapshot(&source, &[area], None, &[draw], &[], None, &[])?;
+            assert_eq!(redacted.pixels.get_pixel(24, 16).0, [0, 0, 0, 255]);
+        }
+        let ellipse = DrawAnnotation::Ellipse(shape);
+        let frame = DrawAnnotation::Frame(FrameAnnotation {
+            color: 0xef4444,
+            ..shape
+        });
+        let frame_above = render(&[ellipse.clone(), frame.clone()], None)?;
+        let ellipse_above = render(&[frame, ellipse], None)?;
+        assert_eq!(frame_above.pixels.get_pixel(24, 16).0, [239, 68, 68, 255]);
+        assert_eq!(ellipse_above.pixels.get_pixel(24, 16).0, [34, 197, 94, 255]);
+        let invalid = FrameAnnotation { width: 0, ..shape };
+        assert!(render(&[DrawAnnotation::Frame(invalid)], None).is_err());
+        assert!(render(&[DrawAnnotation::Ellipse(invalid)], None).is_err());
+        Ok(())
+    }
     #[test]
     fn spotlight_segments_cover_only_the_outside_once_even_when_cropped() {
         let mark = HighlightAnnotation {
@@ -347,6 +431,7 @@ mod tests {
             }
         }
         let ellipse = DrawAnnotation::Ellipse(FrameAnnotation {
+            filled: false,
             area: PixelRegion {
                 x: 2,
                 y: 2,
@@ -476,12 +561,14 @@ mod tests {
         };
         for width in [1, 3, 6, 12] {
             let shape = FrameAnnotation {
+                filled: false,
                 area,
                 color: 0xef4444,
                 width,
             };
             assert_eq!(shape.segments()[0].height, u32::from(width));
             let tiny = FrameAnnotation {
+                filled: false,
                 area: PixelRegion {
                     x: 0,
                     y: 0,
@@ -497,6 +584,7 @@ mod tests {
             );
             if width >= 6 {
                 let small = FrameAnnotation {
+                    filled: false,
                     area: PixelRegion {
                         x: 0,
                         y: 0,
@@ -589,6 +677,7 @@ mod tests {
         }
         for width in [0, 13, 255] {
             let shape = FrameAnnotation {
+                filled: false,
                 area,
                 color: 0,
                 width,
@@ -687,6 +776,7 @@ mod tests {
         assert_eq!(output.pixels.get_pixel(12, 12).0, [253, 238, 177, 255]);
         assert_eq!(output.pixels.get_pixel(0, 0).0, [255, 255, 255, 255]);
         let frame = DrawAnnotation::Frame(FrameAnnotation {
+            filled: false,
             width: 3,
             area,
             color: 0xef4444,
@@ -763,6 +853,7 @@ mod tests {
         );
         assert_eq!(tinted.pixels.get_pixel(12, 12).0, [250, 204, 21, 85]);
         let ellipse = DrawAnnotation::Ellipse(FrameAnnotation {
+            filled: false,
             width: 3,
             area,
             color: 0x22c55e,
@@ -807,6 +898,7 @@ mod tests {
             height: 16,
         };
         let frame = DrawAnnotation::Frame(FrameAnnotation {
+            filled: false,
             width: 3,
             area,
             color: 0x22c55e,
@@ -870,6 +962,7 @@ mod tests {
     fn partial_flush_preserves_vectors_outside_later_text() -> Result<()> {
         let source = source(48, 40);
         let ellipse = DrawAnnotation::Ellipse(FrameAnnotation {
+            filled: false,
             width: 3,
             area: PixelRegion {
                 x: 4,
@@ -983,6 +1076,7 @@ mod tests {
         let mut annotations = Vec::new();
         for index in 0..50 {
             annotations.push(DrawAnnotation::Ellipse(FrameAnnotation {
+                filled: false,
                 width: 3,
                 area: PixelRegion {
                     x: index * 8,
@@ -993,6 +1087,7 @@ mod tests {
                 color: 0x22c55e,
             }));
             annotations.push(DrawAnnotation::Frame(FrameAnnotation {
+                filled: false,
                 width: 3,
                 area: PixelRegion {
                     x: index * 8,
@@ -1026,10 +1121,24 @@ mod tests {
                 item
             })
             .collect::<Vec<_>>();
+        let filled = annotations
+            .iter()
+            .cloned()
+            .map(|mut item| {
+                match &mut item {
+                    DrawAnnotation::Frame(shape) | DrawAnnotation::Ellipse(shape) => {
+                        shape.filled = true
+                    }
+                    _ => unreachable!(),
+                }
+                item
+            })
+            .collect::<Vec<_>>();
         for (name, items) in [
             ("grouped-3px", &grouped),
             ("interleaved-3px", &annotations),
             ("interleaved-12px", &wide),
+            ("interleaved-filled", &filled),
         ] {
             let mut samples = Vec::new();
             for _ in 0..3 {

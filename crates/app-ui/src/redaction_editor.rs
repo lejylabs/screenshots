@@ -164,6 +164,13 @@ enum ResizeHandle {
     ArrowEnd,
 }
 impl EditState {
+    fn filled(&self, selected: Selected) -> Option<bool> {
+        match selected {
+            Selected::Frame(i) => self.frames.get(i).map(|shape| shape.filled),
+            Selected::Ellipse(i) => self.ellipses.get(i).map(|shape| shape.filled),
+            _ => None,
+        }
+    }
     fn text_mask_bytes(&self) -> usize {
         self.texts
             .iter()
@@ -443,7 +450,12 @@ impl EditState {
                 | Selected::Text(_)
                 | Selected::Highlight(_) => x >= 0.0 && y >= 0.0 && x < w && y < h,
                 Selected::Frame(i) => {
-                    x.min(w - x).min(y.min(h - y)) <= f32::from(self.frames[i].width) + tolerance
+                    if self.frames[i].filled {
+                        x >= 0.0 && y >= 0.0 && x < w && y < h
+                    } else {
+                        x.min(w - x).min(y.min(h - y))
+                            <= f32::from(self.frames[i].width) + tolerance
+                    }
                 }
                 Selected::Ellipse(i) => {
                     let width = f32::from(self.ellipses[i].width);
@@ -451,7 +463,10 @@ impl EditState {
                     let ry = h / 2.0;
                     let outer = ((x - rx) / (rx + tolerance)).powi(2)
                         + ((y - ry) / (ry + tolerance)).powi(2);
-                    let inner = if rx > width + tolerance && ry > width + tolerance {
+                    let inner = if !self.ellipses[i].filled
+                        && rx > width + tolerance
+                        && ry > width + tolerance
+                    {
                         ((x - rx) / (rx - width - tolerance)).powi(2)
                             + ((y - ry) / (ry - width - tolerance)).powi(2)
                     } else {
@@ -643,6 +658,20 @@ impl RectEdits {
         }
         self.checkpoint();
         self.highlights[index].opacity = opacity;
+    }
+    fn set_filled(&mut self, selected: Selected, filled: bool) {
+        if self
+            .filled(selected)
+            .is_none_or(|previous| previous == filled)
+        {
+            return;
+        }
+        self.checkpoint();
+        match selected {
+            Selected::Frame(i) => self.frames[i].filled = filled,
+            Selected::Ellipse(i) => self.ellipses[i].filled = filled,
+            _ => unreachable!(),
+        }
     }
     fn set_stroke_width(&mut self, selected: Selected, width: u8) {
         if !(1..=12).contains(&width)
@@ -1020,6 +1049,7 @@ pub(super) struct RedactionEditor {
     spotlight_color: u32,
     spotlight_opacity: u8,
     stroke_width: u8,
+    shape_filled: bool,
     zoom: Option<f32>,
     pan: [f32; 2],
     pixelation: Option<(Arc<app_core::PixelationGrid>, Arc<gpui::RenderImage>)>,
@@ -1033,6 +1063,8 @@ pub(super) struct RedactionEditor {
     text_draft: Option<TextDraft>,
     text_assets: Vec<Arc<TextAsset>>,
     text_size: u32,
+    text_bold: bool,
+    text_italic: bool,
     text_loading: bool,
     text_error: Option<String>,
     text_job: u64,
@@ -1175,6 +1207,8 @@ impl RedactionEditor {
             .and_then(|index| self.edits.texts.get(index))
             .map(|text| {
                 self.text_size = text.asset.font_size;
+                self.text_bold = text.asset.bold;
+                self.text_italic = text.asset.italic;
                 self.frame_color = text.asset.stamp.color;
                 text.asset.text.clone()
             })
@@ -1261,6 +1295,7 @@ impl RedactionEditor {
         };
         let number = self.tool == Tool::Number && self.text_draft.is_none();
         let (font_size, color) = (self.text_size, self.frame_color);
+        let (bold, italic) = (self.text_bold, self.text_italic);
         let cancelled = self.effects_cancel.clone();
         let text_cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
         self.text_cancel = Some(text_cancel.clone());
@@ -1277,7 +1312,7 @@ impl RedactionEditor {
         self.text_error = None;
         cx.notify();
         cx.spawn(async move|_,cx|{
-            let result=cx.background_spawn(async move{crate::caption::rasterize(fonts.as_ref(),text,font_size,color,||cancelled.load(std::sync::atomic::Ordering::Relaxed)||text_cancel.load(std::sync::atomic::Ordering::Relaxed))}).await;
+            let result=cx.background_spawn(async move{crate::caption::rasterize(fonts.as_ref(),text,font_size,color,bold,italic,||cancelled.load(std::sync::atomic::Ordering::Relaxed)||text_cancel.load(std::sync::atomic::Ordering::Relaxed))}).await;
             owner.update(cx,|this,window,cx|{
                 this.text_loading=false;
                 this.text_cancel=None;
@@ -1368,7 +1403,7 @@ impl RedactionEditor {
                 gpui::EntityInputHandler::replace_text_in_range(
                     input,
                     None,
-                    "Hello Grüße العربية 中文 😀",
+                    "Hello Grüße العربية\r\n\r\n中文 😀",
                     window,
                     cx,
                 )
@@ -1383,6 +1418,11 @@ impl RedactionEditor {
                 .is_some_and(|text| text.asset.text != "😀")
         {
             self.begin_text([10, 10], Some(0), window, cx);
+            if self.text_bold || self.text_italic {
+                return Err("Editing a regular label did not restore its font style".into());
+            }
+            self.text_bold = true;
+            self.text_italic = true;
             let input = self.text_draft.as_ref().unwrap().input.clone();
             input.update(cx, |input, cx| {
                 gpui::EntityInputHandler::replace_text_in_range(input, None, "😀", window, cx)
@@ -1394,6 +1434,10 @@ impl RedactionEditor {
                 .as_ref()
                 .is_some_and(|draft| draft.input.read(cx).has_current_layout())
         {
+            let input = self.text_draft.as_ref().unwrap().input.clone();
+            if input.read(cx).content.contains('\n') {
+                input.update(cx, |input, cx| input.verify_multiline_input(window, cx))?;
+            }
             self.commit_text(window, cx);
         }
         if !self.text_loading
@@ -1414,10 +1458,16 @@ impl RedactionEditor {
                 return Err("Native monochrome emoji mask is empty".into());
             }
             self.edits.undo();
-            if self.edits.texts[0].asset.text != "Hello Grüße العربية 中文 😀" {
+            if self.edits.texts[0].asset.bold || self.edits.texts[0].asset.italic {
+                return Err("Text style undo did not restore the regular asset".into());
+            }
+            if self.edits.texts[0].asset.text != "Hello Grüße العربية\n\n中文 😀" {
                 return Err("Text edit did not preserve undo".into());
             }
             self.edits.redo();
+            if !self.edits.texts[0].asset.bold || !self.edits.texts[0].asset.italic {
+                return Err("Text style redo did not restore the bold italic asset".into());
+            }
             let area = PixelRegion {
                 x: 0,
                 y: 0,
@@ -1425,16 +1475,29 @@ impl RedactionEditor {
                 height: self.source.height.min(64),
             };
             self.edits.add_frame(FrameAnnotation {
+                filled: false,
                 width: 3,
                 area,
                 color: 0x22c55e,
             });
             self.edits.add_ellipse(FrameAnnotation {
+                filled: false,
                 width: 3,
                 area,
                 color: 0xef4444,
             });
             self.edits.shift_layer(Selected::Text(0), true);
+            for selected in [Selected::Frame(0), Selected::Ellipse(0)] {
+                self.edits.set_filled(selected, true);
+                self.edits.undo();
+                if self.edits.filled(selected) != Some(false) {
+                    return Err("Shape fill undo failed".into());
+                }
+                self.edits.redo();
+                if self.edits.filled(selected) != Some(true) {
+                    return Err("Shape fill redo failed".into());
+                }
+            }
             self.edits.shift_layer(Selected::Text(0), true);
             if self.edits.order.last() != Some(&Selected::Text(0)) {
                 return Err("Text did not move above the vector layers".into());
@@ -1542,10 +1605,20 @@ impl RedactionEditor {
         }
         match self.edits.last_number {
             0 => {
+                self.text_bold = false;
+                self.text_italic = true;
                 self.begin_number([100, 100], window, cx);
                 Ok(false)
             }
             1 => {
+                if self
+                    .edits
+                    .texts
+                    .last()
+                    .is_none_or(|text| text.asset.bold || !text.asset.italic)
+                {
+                    return Err("First number did not keep its italic style".into());
+                }
                 if self
                     .edits
                     .texts
@@ -1562,11 +1635,16 @@ impl RedactionEditor {
                 if self.edits.last_number != 1 || self.edits.texts.len() != 2 {
                     return Err("Number redo did not restore the sequence".into());
                 }
+                self.text_bold = true;
+                self.text_italic = false;
                 self.begin_number([self.source.width, self.source.height], window, cx);
                 Ok(false)
             }
             2 => {
                 let label = self.edits.texts.last().unwrap();
+                if !label.asset.bold || label.asset.italic {
+                    return Err("Second number did not keep its bold style".into());
+                }
                 if label.asset.text != "2."
                     || label.area.x + label.area.width != self.source.width
                     || label.area.y + label.area.height != self.source.height
@@ -1869,6 +1947,7 @@ impl RedactionEditor {
             spotlight_color: 0,
             spotlight_opacity: 191,
             stroke_width: 3,
+            shape_filled: false,
             selected: None,
             resize_handle: None,
             zoom: None,
@@ -1884,6 +1963,8 @@ impl RedactionEditor {
             text_draft: None,
             text_assets: Vec::new(),
             text_size: 24,
+            text_bold: false,
+            text_italic: false,
             text_loading: false,
             text_error: None,
             text_job: 0,
@@ -1937,6 +2018,14 @@ impl Render for RedactionEditor {
         } else {
             Some(self.frame_color)
         };
+        let palette_filled = if matches!(self.tool, Tool::Frame | Tool::Ellipse) {
+            Some(self.shape_filled)
+        } else if self.tool == Tool::Select {
+            self.selected
+                .and_then(|selected| self.edits.filled(selected))
+        } else {
+            None
+        };
         let draws_stroke = matches!(
             self.tool,
             Tool::Pen | Tool::Frame | Tool::Ellipse | Tool::Arrow
@@ -1982,7 +2071,9 @@ impl Render for RedactionEditor {
             } else {
                 0.0
             }
-            + if self.text_draft.is_some() { 80.0 } else { 0.0 }
+            + self.text_draft.as_ref().map_or(0.0, |draft| {
+                80.0 + 24.0 * (draft.input.read(cx).line_count() - 1) as f32
+            })
             + if self.text_error.is_some() { 24.0 } else { 0.0 }
             + if duplicate_error.is_some() { 24.0 } else { 0.0 };
         let inset = if self.direct_capture { 0.0 } else { 16.0 };
@@ -2091,6 +2182,7 @@ impl Render for RedactionEditor {
                 } else if self.tool == Tool::Frame {
                     paint_order.push(Selected::Frame(frame_preview.len()));
                     frame_preview.push(FrameAnnotation {
+                        filled: self.shape_filled,
                         width: self.stroke_width,
                         area: region,
                         color: self.frame_color,
@@ -2115,6 +2207,7 @@ impl Render for RedactionEditor {
                     if self.tool == Tool::Ellipse {
                         paint_order.push(Selected::Ellipse(ellipse_preview.len()));
                         ellipse_preview.push(FrameAnnotation {
+                            filled: self.shape_filled,
                             width: self.stroke_width,
                             area: region,
                             color: self.frame_color,
@@ -2228,7 +2321,7 @@ impl Render for RedactionEditor {
                             Tool::Number=>if self.text_loading {"Preparing number..."}else{"Click to place the next step number; Select to move or edit it"},
                             Tool::Pen=>if self.pen_limit_hit {"Pen limit reached. Release or remove marks to continue."}else{"Draw freehand at the chosen width; release to finish"},
                             Tool::Highlight=>"Drag a highlight; hold Shift for a square",
-                            Tool::Text => if self.text_loading {"Preparing text..."} else {"Click the image to place a label; Enter applies, Escape cancels text"},
+                            Tool::Text => if self.text_loading {"Preparing text..."} else {"Up to 4 lines / 512 bytes; Shift+Enter adds a line, Enter applies, Escape cancels"},
                             Tool::Pixelate => if self.pixelation_loading || self.pending_effect==Some(Tool::Pixelate) { "Preparing pixelation preview..." } else if self.pixelation_error.is_some() { "Pixelation failed. Select Pixelate to retry." } else { "Drag to pixelate source pixels; use Redact for sensitive information" },
                             Tool::Blur => if self.blur_loading || self.pending_effect==Some(Tool::Blur) { "Preparing blur preview..." } else if self.blur_error.is_some() { "Blur failed. Select Blur to retry." } else { "Drag to blur source pixels; use Redact for sensitive information" },
                             Tool::Select =>
@@ -2516,7 +2609,7 @@ impl Render for RedactionEditor {
                         .child(capture_button("apply-text","Apply text",self.text_loading||self.pixelation_loading||self.blur_loading,cx.listener(|this,_,window,cx|this.commit_text(window,cx))))
                         .child(capture_button("cancel-text","Cancel text",false,cx.listener(|this,_,window,cx|this.cancel_text(window,cx))))))
                     .when(self.tool==Tool::Number,|view|view.child(div().flex().gap_2().child(format!("Next: {}",self.edits.last_number.checked_add(1).map(|n|n.to_string()).unwrap_or_else(||"limit reached".into()))).child(capture_button("restart-numbers","Restart numbering",self.edits.last_number==0||self.text_loading||self.text_draft.is_some(),cx.listener(|this,_,_,cx|{this.edits.restart_numbers();this.text_error=None;cx.notify();})))))
-                    .when(matches!(self.tool,Tool::Text|Tool::Number),|view|view.child(div().flex().gap_2().children([16,24,36].into_iter().map(|size|capture_button(match size{16=>"text-size-16",24=>"text-size-24",_=>"text-size-36"},match size{16=>"16 px",24=>"24 px",_=>"36 px"},self.text_loading||self.text_size==size,cx.listener(move|this,_,_,cx|{this.text_size=size;cx.notify();}))))))
+                    .when(matches!(self.tool,Tool::Text|Tool::Number),|view|view.child(div().flex().flex_wrap().gap_2().child(capture_button("text-bold",if self.text_bold {"Bold active"}else{"Bold"},self.text_loading,cx.listener(|this,_,_,cx|{this.text_bold=!this.text_bold;cx.notify();}))).child(capture_button("text-italic",if self.text_italic {"Italic active"}else{"Italic"},self.text_loading,cx.listener(|this,_,_,cx|{this.text_italic=!this.text_italic;cx.notify();}))).children([16,24,36].into_iter().map(|size|capture_button(match size{16=>"text-size-16",24=>"text-size-24",_=>"text-size-36"},match size{16=>"16 px",24=>"24 px",_=>"36 px"},self.text_loading||self.text_size==size,cx.listener(move|this,_,_,cx|{this.text_size=size;cx.notify();}))))))
                     .when(
                         show_palette,
                         |toolbar| {
@@ -2583,13 +2676,28 @@ impl Render for RedactionEditor {
                                     ].into_iter().map(|(id,label,active,width)| capture_button(
                                         id,
                                         if palette_stroke_width == Some(width) { active } else { label },
-                                        palette_stroke_width.is_none() || self.text_loading || self.text_draft.is_some() || self.drag.is_some(),
+                                        palette_stroke_width.is_none() || palette_filled == Some(true) || self.text_loading || self.text_draft.is_some() || self.drag.is_some(),
                                         cx.listener(move |this,_,_,cx| {
                                             this.stroke_width = width;
                                             if this.tool == Tool::Select {
                                                 if let Some(selected) = this.selected {
                                                     this.edits.set_stroke_width(selected, width);
                                                 }
+                                            }
+                                            cx.notify();
+                                        }),
+                                    )))).when(palette_filled.is_some(), |row| row
+                                    .children([
+                                        ("shape-outline", "Outline", "Outline ✓", false),
+                                        ("shape-filled", "Filled", "Filled ✓", true),
+                                    ].into_iter().map(|(id,label,active,filled)| capture_button(
+                                        id,
+                                        if palette_filled == Some(filled) { active } else { label },
+                                        self.text_loading || self.text_draft.is_some() || self.drag.is_some(),
+                                        cx.listener(move |this,_,_,cx| {
+                                            this.shape_filled = filled;
+                                            if this.tool == Tool::Select {
+                                                if let Some(selected) = this.selected { this.edits.set_filled(selected, filled); }
                                             }
                                             cx.notify();
                                         }),
@@ -2717,6 +2825,7 @@ impl Render for RedactionEditor {
                                                 if this.blur.is_some() { this.edits.add_blur(region); }
                                             } else if this.tool == Tool::Frame {
                                                 this.edits.add_frame(FrameAnnotation {
+    filled: this.shape_filled,
     width: this.stroke_width,
                                                     area: region,
                                                     color: this.frame_color,
@@ -2731,6 +2840,7 @@ impl Render for RedactionEditor {
                                             } else {
                                                 if this.tool == Tool::Ellipse {
                                                     this.edits.add_ellipse(FrameAnnotation {
+    filled: this.shape_filled,
     width: this.stroke_width,
                                                         area: region,
                                                         color: this.frame_color,
@@ -2773,7 +2883,7 @@ impl Render for RedactionEditor {
                                     match *item {
                                         Selected::Pen(i)=>{let pen=&pen_preview[i];if pen.points.len()==1{let p=pen.positions().next().unwrap();let width=f32::from(pen.width);window.paint_quad(gpui::fill(gpui::Bounds{origin:map([p[0]-width/2.0,p[1]-width/2.0]),size:gpui::size(px(width*scale),px(width*scale))},rgb(pen.color)));}else if let Some(path)=pen_path(pen,bounds.origin,scale){window.paint_path(path,rgb(pen.color));}}
                                         Selected::Highlight(i)=>{let highlight=highlight_preview[i];for area in highlight.segments(PixelRegion{x:0,y:0,width:dimensions.0,height:dimensions.1}){if area.width>0 && area.height>0 {window.paint_quad(gpui::fill(rect(area),rgba((highlight.color<<8)|u32::from(highlight.opacity))));}}}
-                                        Selected::Frame(i)=>{let frame=frame_preview[i];for area in frame.segments(){window.paint_quad(gpui::fill(rect(area),rgb(frame.color)));}}
+                                        Selected::Frame(i)=>{let frame=frame_preview[i];for area in frame.segments(){if area.width>0 && area.height>0 {window.paint_quad(gpui::fill(rect(area),rgb(frame.color)));}}}
                                         Selected::Arrow(i)=>{let arrow=arrow_preview[i];let vertices=arrow.vertices();let mut path=gpui::PathBuilder::fill();path.move_to(map(vertices[0]));for point in &vertices[1..]{path.line_to(map(*point));}path.line_to(map(vertices[0]));if let Ok(path)=path.build(){window.paint_path(path,rgb(arrow.color));}}
                                         Selected::Ellipse(i)=>{let ellipse=ellipse_preview[i];let mut path=gpui::PathBuilder::fill();for contour in ellipse.ellipse_contours(){path.move_to(map(contour[0]));for point in &contour[1..]{path.line_to(map(*point));}path.line_to(map(contour[0]));}if let Ok(path)=path.build(){window.paint_path(path,rgb(ellipse.color));}}
                                         Selected::Text(i)=>{let text=&text_preview[i];let area=rect(text.area);window.paint_image(area,area,Default::default(),text.asset.preview.clone(),0,false).ok();}
@@ -2869,6 +2979,110 @@ impl Render for RedactionEditor {
 mod tests {
     use super::*;
     #[test]
+    fn text_styles_follow_assets_through_undo_duplication_and_transforms() {
+        let area = PixelRegion {
+            x: 10,
+            y: 10,
+            width: 20,
+            height: 10,
+        };
+        let regular = caption_fixture("Style", area);
+        let styled = Caption {
+            area,
+            asset: Arc::new(TextAsset {
+                bold: true,
+                italic: true,
+                text: regular.asset.text.clone(),
+                font_size: regular.asset.font_size,
+                stamp: regular.asset.stamp.clone(),
+                preview: regular.asset.preview.clone(),
+            }),
+        };
+        let mut edits = RectEdits::default();
+        assert!(edits.set_text(regular.clone(), None));
+        assert!(edits.set_text(styled.clone(), Some(0)));
+        edits.undo();
+        assert!(!edits.texts[0].asset.bold && !edits.texts[0].asset.italic);
+        assert!(Arc::ptr_eq(&edits.texts[0].asset, &regular.asset));
+        edits.redo();
+        assert!(edits.texts[0].asset.bold && edits.texts[0].asset.italic);
+        assert!(Arc::ptr_eq(&edits.texts[0].asset, &styled.asset));
+        let copy = edits.duplicate(Selected::Text(0), [100, 100]).unwrap();
+        let Selected::Text(index) = copy else {
+            panic!("Styled text changed annotation type");
+        };
+        assert!(Arc::ptr_eq(&edits.texts[index].asset, &styled.asset));
+        edits.transform_selected(
+            copy,
+            Some(ResizeHandle::Corner([true, true])),
+            [10.0, 5.0],
+            [100, 100],
+        );
+        assert!(edits.texts[index].asset.bold && edits.texts[index].asset.italic);
+        assert!(Arc::ptr_eq(
+            &edits.texts[index].asset.stamp.mask,
+            &styled.asset.stamp.mask
+        ));
+        assert_eq!(edits.texts[index].asset.bytes(), regular.asset.bytes());
+    }
+    #[test]
+    fn filled_shapes_share_selection_style_duplication_and_undo() {
+        let shape = FrameAnnotation {
+            area: PixelRegion {
+                x: 10,
+                y: 10,
+                width: 80,
+                height: 80,
+            },
+            color: 0x22c55e,
+            width: 6,
+            filled: false,
+        };
+        for selected in [Selected::Frame(0), Selected::Ellipse(0)] {
+            let mut edits = RectEdits::default();
+            match selected {
+                Selected::Frame(_) => edits.add_frame(shape),
+                _ => edits.add_ellipse(shape),
+            }
+            let history = edits.past.len();
+            edits.set_filled(selected, false);
+            edits.set_filled(Selected::Frame(99), true);
+            edits.set_filled(Selected::Highlight(0), true);
+            assert_eq!(edits.past.len(), history);
+            assert_eq!(edits.pick([50.0, 50.0], 0.0), None);
+            edits.set_filled(selected, true);
+            assert_eq!(edits.past.len(), history + 1);
+            assert_eq!(edits.pick([50.0, 50.0], 0.0), Some(selected));
+            if matches!(selected, Selected::Ellipse(_)) {
+                assert_eq!(edits.pick([11.0, 11.0], 0.0), None);
+            }
+            assert_eq!(edits.stroke_width(selected), Some(6));
+            assert_eq!(edits.color(selected), Some(0x22c55e));
+            assert_eq!(edits.order, [selected]);
+            edits.undo();
+            assert_eq!(edits.filled(selected), Some(false));
+            edits.redo();
+            assert_eq!(edits.filled(selected), Some(true));
+            edits.transform_selected(
+                selected,
+                Some(ResizeHandle::Corner([true, true])),
+                [5.0, 7.0],
+                [120, 120],
+            );
+            edits.set_color(selected, 0);
+            let copy = edits.duplicate(selected, [120, 120]).unwrap();
+            assert_eq!(edits.filled(copy), Some(true));
+            assert_eq!(edits.color(copy), Some(0));
+            assert_eq!(edits.stroke_width(copy), Some(6));
+            edits.delete_selected(copy);
+            edits.undo();
+            assert_eq!(edits.filled(copy), Some(true));
+            edits.set_filled(copy, false);
+            assert_eq!(edits.stroke_width(copy), Some(6));
+            assert_eq!(edits.filled(selected), Some(true));
+        }
+    }
+    #[test]
     fn spotlight_keeps_focus_selection_style_order_and_shared_admission() {
         let mut edits = RectEdits::default();
         let area = PixelRegion {
@@ -2938,6 +3152,8 @@ mod tests {
         Caption {
             area,
             asset: Arc::new(TextAsset {
+                bold: false,
+                italic: false,
                 text: text.into(),
                 font_size: 24,
                 stamp: app_core::TextAnnotation {
@@ -2979,6 +3195,7 @@ mod tests {
             pen.width = 6;
             let points = pen.points.clone();
             let shape = FrameAnnotation {
+                filled: false,
                 area,
                 color: 0x22c55e,
                 width: 6,
@@ -3174,6 +3391,7 @@ mod tests {
             let mut edits = RectEdits::default();
             for _ in 0..count {
                 edits.add_frame(FrameAnnotation {
+                    filled: false,
                     area: PixelRegion {
                         x: 10,
                         y: 10,
@@ -3215,6 +3433,7 @@ mod tests {
         ] {
             let mut edits = RectEdits::default();
             let shape = FrameAnnotation {
+                filled: false,
                 area,
                 color: 0xef4444,
                 width: 3,
@@ -3280,6 +3499,8 @@ mod tests {
         let caption = |text: &str| Caption {
             area,
             asset: Arc::new(TextAsset {
+                bold: false,
+                italic: false,
                 text: text.into(),
                 font_size: 24,
                 stamp: app_core::TextAnnotation {
@@ -3522,6 +3743,7 @@ mod tests {
         edits.undo();
         assert_eq!(edits.bounds(selected), Some(area));
         edits.add_frame(FrameAnnotation {
+            filled: false,
             width: 3,
             area,
             color: 0xef4444,
@@ -3567,6 +3789,7 @@ mod tests {
             height: 40,
         };
         let shape = FrameAnnotation {
+            filled: false,
             width: 3,
             area,
             color: 0xff0000,
@@ -3624,6 +3847,8 @@ mod tests {
             height: 2,
         };
         let asset = Arc::new(TextAsset {
+            bold: false,
+            italic: false,
             text: "label".into(),
             font_size: 24,
             stamp: app_core::TextAnnotation {
@@ -3766,6 +3991,7 @@ mod tests {
             height: 40,
         };
         let mark = FrameAnnotation {
+            filled: false,
             width: 3,
             area,
             color: 0xef4444,
@@ -3873,6 +4099,7 @@ mod tests {
             height: 40,
         };
         let frame = FrameAnnotation {
+            filled: false,
             width: 3,
             area: original,
             color: 0x22c55e,
@@ -4007,6 +4234,7 @@ mod tests {
             height: 40,
         };
         let shape = FrameAnnotation {
+            filled: false,
             width: 3,
             area,
             color: 0xff0000,
@@ -4065,6 +4293,7 @@ mod tests {
             height: 40,
         };
         edits.add_frame(FrameAnnotation {
+            filled: false,
             width: 3,
             area,
             color: 0xff0000,
@@ -4072,6 +4301,7 @@ mod tests {
         assert_eq!(edits.pick([30.0, 30.0], 1.0), None);
         assert_eq!(edits.pick([10.0, 30.0], 1.0), Some(Selected::Frame(0)));
         edits.add_ellipse(FrameAnnotation {
+            filled: false,
             width: 3,
             area,
             color: 0xff0000,
@@ -4093,10 +4323,11 @@ mod tests {
     #[test]
     #[ignore = "short optimized command timing; no desktop or clipboard"]
     fn keyboard_and_color_metadata_cost() {
-        for command in ["nudge", "recolor", "width"] {
+        for command in ["nudge", "recolor", "width", "fill"] {
             let mut edits = RectEdits::default();
             for _ in 0..100 {
                 edits.add_frame(FrameAnnotation {
+                    filled: false,
                     width: 3,
                     area: PixelRegion {
                         x: 10,
@@ -4115,6 +4346,8 @@ mod tests {
                     edits.set_color(selected, if index % 2 == 0 { 0x22c55e } else { 0xef4444 });
                 } else if command == "width" {
                     edits.set_stroke_width(selected, if index % 2 == 0 { 12 } else { 3 });
+                } else if command == "fill" {
+                    edits.set_filled(selected, index % 2 == 0);
                 } else {
                     edits.transform_selected(
                         selected,
@@ -4174,6 +4407,7 @@ mod tests {
     #[test]
     fn ellipses_share_undo_and_annotation_admission() {
         let ellipse = FrameAnnotation {
+            filled: false,
             width: 3,
             area: PixelRegion {
                 x: 1,
@@ -4270,6 +4504,7 @@ mod tests {
             height: 8,
         };
         let frame = FrameAnnotation {
+            filled: false,
             width: 3,
             area: region,
             color: 0xfacc15,

@@ -1,13 +1,49 @@
 use crate::redaction_editor::{RedactionEditor, RedoRedaction, UndoRedaction};
 use gpui::{
     App, Bounds, ClipboardItem, ContentMask, Context, ElementInputHandler, EntityInputHandler,
-    FocusHandle, Font, FontRun, Global, KeyBinding, KeyDownEvent, Keystroke, MouseButton,
-    MouseDownEvent, Pixels, PlatformTextSystem, Point, Render, RenderGlyphParams, RenderImage,
-    ShapedLine, SharedString, TextAlign, TextRun, UTF16Selection, Window, WindowHandle, actions,
-    canvas, div, fill, point, prelude::*, px, rgb, rgba, size,
+    FocusHandle, Font, FontRun, FontStyle, FontWeight, Global, KeyBinding, KeyDownEvent, Keystroke,
+    MouseButton, MouseDownEvent, Pixels, PlatformTextSystem, Point, Render, RenderGlyphParams,
+    RenderImage, ShapedLine, SharedString, TextAlign, TextRun, UTF16Selection, Window,
+    WindowHandle, actions, canvas, div, fill, point, prelude::*, px, rgb, rgba, size,
 };
 use std::{ops::Range, sync::Arc};
 use unicode_segmentation::UnicodeSegmentation;
+
+const MAX_LINES: usize = 4;
+const LINE_HEIGHT: f32 = 24.0;
+
+fn line_range(text: &str, row: usize) -> Range<usize> {
+    text.split('\n')
+        .scan(0, |start, line| {
+            let range = *start..*start + line.len();
+            *start = range.end + 1;
+            Some(range)
+        })
+        .nth(row)
+        .unwrap_or(text.len()..text.len())
+}
+fn row_for_index(text: &str, index: usize) -> usize {
+    text[..index].bytes().filter(|byte| *byte == b'\n').count()
+}
+fn normalize_input(text: &str) -> Option<std::borrow::Cow<'_, str>> {
+    if text.len() > 512 + MAX_LINES - 1 {
+        return None;
+    }
+    Some(if text.contains('\r') {
+        std::borrow::Cow::Owned(text.replace("\r\n", "\n").replace('\r', "\n"))
+    } else {
+        std::borrow::Cow::Borrowed(text)
+    })
+}
+fn normalized_utf16_offset(text: &str, offset: usize) -> usize {
+    let prefix = &text[..utf8(text, offset)];
+    prefix.encode_utf16().count()
+        - prefix
+            .as_bytes()
+            .windows(2)
+            .filter(|pair| *pair == b"\r\n")
+            .count()
+}
 actions!(caption, [InputBackspace, InputDelete]);
 pub(super) fn bind_keys(cx: &mut App) {
     cx.bind_keys([
@@ -22,6 +58,8 @@ impl Global for CaptionFonts {}
 pub(super) struct TextAsset {
     pub text: String,
     pub font_size: u32,
+    pub bold: bool,
+    pub italic: bool,
     pub stamp: app_core::TextAnnotation,
     pub preview: Arc<RenderImage>,
 }
@@ -36,78 +74,107 @@ pub(super) fn rasterize(
     text: String,
     font_size: u32,
     color: u32,
+    bold: bool,
+    italic: bool,
     cancelled: impl Fn() -> bool,
 ) -> Result<TextAsset, String> {
     #[cfg(test)]
     let started = std::time::Instant::now();
     if text.trim().is_empty()
         || text.len() > 512
-        || text.chars().any(char::is_control)
+        || text.bytes().filter(|byte| *byte == b'\n').count() >= MAX_LINES
+        || text.chars().any(|ch| ch.is_control() && ch != '\n')
         || ![16, 24, 36].contains(&font_size)
         || color > 0xffffff
     {
-        return Err("Use a single text line of up to 512 bytes".into());
+        return Err("Use up to four lines and 512 UTF-8 bytes".into());
     }
-    let font_id = fonts.font_id(&Font::default()).map_err(|e| e.to_string())?;
-    let layout = fonts.layout_line(
-        &text,
-        px(font_size as f32),
-        &[FontRun {
-            len: text.len(),
-            font_id,
-        }],
-    );
-
+    let font_id = fonts
+        .font_id(&Font {
+            weight: if bold {
+                FontWeight::BOLD
+            } else {
+                FontWeight::NORMAL
+            },
+            style: if italic {
+                FontStyle::Italic
+            } else {
+                FontStyle::Normal
+            },
+            ..Font::default()
+        })
+        .map_err(|e| e.to_string())?;
     let mut glyphs = Vec::new();
-    let (mut left, mut top, mut right, mut bottom) = (
-        0,
-        0,
-        f32::from(layout.width).ceil() as i32,
-        (f32::from(layout.ascent) + f32::from(layout.descent)).ceil() as i32,
-    );
-    for run in &layout.runs {
-        for glyph in &run.glyphs {
-            if cancelled() {
-                return Err("Text preparation canceled".into());
-            }
-            let params = RenderGlyphParams {
-                font_id: run.font_id,
-                glyph_id: glyph.id,
-                font_size: px(font_size as f32),
-                subpixel_variant: Default::default(),
-                scale_factor: 1.0,
-                // Color glyphs use the UI's shared D3D context; workers only rasterize coverage.
-                is_emoji: false,
-                subpixel_rendering: false,
-                dilation: 0,
-            };
-            let bounds = fonts
-                .glyph_raster_bounds(&params)
-                .map_err(|e| e.to_string())?;
-            if bounds.size.width.0 == 0 || bounds.size.height.0 == 0 {
-                continue;
-            }
-            if bounds.size.width.0 < 0
-                || bounds.size.width.0 > 1024
-                || bounds.size.height.0 < 0
-                || bounds.size.height.0 > 128
-            {
-                return Err("Text glyph exceeds the label size limit".into());
-            }
-            let x = f32::from(glyph.position.x).floor() as i32 + bounds.origin.x.0;
-            let y = (f32::from(layout.ascent) + f32::from(glyph.position.y)).floor() as i32
-                + bounds.origin.y.0;
-            left = left.min(x);
-            top = top.min(y);
-            right = right.max(x + bounds.size.width.0);
-            bottom = bottom.max(y + bounds.size.height.0);
-            glyphs.push((params, bounds, x, y));
+    let (mut left, mut top, mut right, mut bottom) = (0, 0, 0, 0);
+    let mut line_y = 0;
+    for line in text.split('\n') {
+        if cancelled() {
+            return Err("Text preparation canceled".into());
         }
+        let display = if line.is_empty() { " " } else { line };
+        let layout = fonts.layout_line(
+            display,
+            px(font_size as f32),
+            &[FontRun {
+                len: display.len(),
+                font_id,
+            }],
+        );
+        let line_height = (f32::from(layout.ascent) + f32::from(layout.descent))
+            .ceil()
+            .max(1.0) as i32;
+        right = right.max(f32::from(layout.width).ceil() as i32);
+        bottom = bottom.max(line_y + line_height);
+        if bottom - top > 128 {
+            return Err("Text is too tall. Use fewer lines or a smaller size.".into());
+        }
+        for run in &layout.runs {
+            for glyph in &run.glyphs {
+                if cancelled() {
+                    return Err("Text preparation canceled".into());
+                }
+                let params = RenderGlyphParams {
+                    font_id: run.font_id,
+                    glyph_id: glyph.id,
+                    font_size: px(font_size as f32),
+                    subpixel_variant: Default::default(),
+                    scale_factor: 1.0,
+                    // Color glyphs use the UI's shared D3D context; workers only rasterize coverage.
+                    is_emoji: false,
+                    subpixel_rendering: false,
+                    dilation: 0,
+                };
+                let bounds = fonts
+                    .glyph_raster_bounds(&params)
+                    .map_err(|e| e.to_string())?;
+                if bounds.size.width.0 == 0 || bounds.size.height.0 == 0 {
+                    continue;
+                }
+                if bounds.size.width.0 < 0
+                    || bounds.size.width.0 > 1024
+                    || bounds.size.height.0 < 0
+                    || bounds.size.height.0 > 128
+                {
+                    return Err("Text glyph exceeds the label size limit".into());
+                }
+                let x = f32::from(glyph.position.x).floor() as i32 + bounds.origin.x.0;
+                let y = line_y
+                    + (f32::from(layout.ascent) + f32::from(glyph.position.y)).floor() as i32
+                    + bounds.origin.y.0;
+                left = left.min(x);
+                top = top.min(y);
+                right = right.max(x + bounds.size.width.0);
+                bottom = bottom.max(y + bounds.size.height.0);
+                glyphs.push((params, bounds, x, y));
+            }
+        }
+        line_y += line_height;
     }
     let (width, height) = (right - left, bottom - top);
     if width <= 0 || width > 1024 || height <= 0 || height > 128 || glyphs.is_empty() {
         return Err(
-            "Text is too wide or has no visible glyphs; shorten it or choose a smaller size".into(),
+            "Text is too wide/tall or has no visible glyphs; shorten it or choose a smaller size"
+                .into(),
         );
     }
     let mut mask = vec![0u8; (width * height) as usize];
@@ -162,6 +229,8 @@ pub(super) fn rasterize(
     Ok(TextAsset {
         text,
         font_size,
+        bold,
+        italic,
         stamp: app_core::TextAnnotation {
             area: app_core::PixelRegion {
                 x: 0,
@@ -187,7 +256,9 @@ pub(super) struct CaptionInput {
     marked: Option<Range<usize>>,
     past: Vec<String>,
     redo: Vec<String>,
-    layout: Option<ShapedLine>,
+    layout: Vec<ShapedLine>,
+    layout_text: String,
+    rows: usize,
     bounds: Option<Bounds<Pixels>>,
     offset: Pixels,
     owner: WindowHandle<RedactionEditor>,
@@ -207,10 +278,88 @@ fn utf16(text: &str, offset: usize) -> usize {
 }
 impl CaptionInput {
     #[cfg(test)]
+    pub(super) fn verify_multiline_input(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Result<(), String> {
+        let original = self.content.clone();
+        let last_row = self.line_count() - 1;
+        let last = line_range(&self.content, last_row);
+        let bounds = self.bounds.ok_or("Multiline input was not painted")?;
+        let index = self
+            .character_index_for_point(
+                point(
+                    bounds.left(),
+                    bounds.top() + px(last_row as f32 * LINE_HEIGHT + 1.0),
+                ),
+                window,
+                cx,
+            )
+            .ok_or("Multiline point lookup failed")?;
+        if index != utf16(&self.content, last.start) {
+            return Err("Pointer mapping used the wrong text row".into());
+        }
+        let caret = self
+            .bounds_for_range(index..index, bounds, window, cx)
+            .ok_or("Multiline caret bounds missing")?;
+        if caret.top() != bounds.top() + px(last_row as f32 * LINE_HEIGHT) {
+            return Err("IME caret bounds used the wrong row".into());
+        }
+        let event = |key| KeyDownEvent {
+            keystroke: Keystroke::parse(key).unwrap(),
+            is_held: false,
+            prefer_character_input: false,
+        };
+        self.select_to(last.end, false);
+        self.key(&event("home"), window, cx);
+        if self.cursor() != last.start {
+            return Err("Home did not move to the current line start".into());
+        }
+        self.key(&event("up"), window, cx);
+        if row_for_index(&self.content, self.cursor()) != last_row - 1 {
+            return Err("Up did not navigate to the previous row".into());
+        }
+        self.key(&event("down"), window, cx);
+        if row_for_index(&self.content, self.cursor()) != last_row {
+            return Err("Down did not navigate to the next row".into());
+        }
+        self.key(&event("end"), window, cx);
+        self.key(&event("shift-enter"), window, cx);
+        if self.line_count() != last_row + 2 {
+            return Err("Shift+Enter did not insert a line break".into());
+        }
+        self.undo(false, window, cx);
+        if self.content != original {
+            return Err("Input undo did not restore the multiline text".into());
+        }
+        self.replace_text_in_range(Some(0..usize::MAX), "A\r\n😀\r\nB\r\nC", window, cx);
+        let full = self.content.clone();
+        let history = self.past.len();
+        self.replace_text_in_range(None, "\n", window, cx);
+        if self.content != full || self.past.len() != history || self.line_count() != MAX_LINES {
+            return Err("Input did not preserve its four-line admission limit".into());
+        }
+        self.undo(false, window, cx);
+        self.replace_and_mark_text_in_range(Some(0..usize::MAX), "A\r\n😀", Some(3..5), window, cx);
+        let selection = self
+            .selected_text_range(false, window, cx)
+            .ok_or("Composition selection missing")?;
+        if self.content != "A\n😀" || selection.range != (2..4) {
+            return Err("CRLF composition offsets were not normalized".into());
+        }
+        self.undo(false, window, cx);
+        if self.content != original || self.marked.is_some() {
+            return Err("Input probe did not restore its text/composition".into());
+        }
+        Ok(())
+    }
+    #[cfg(test)]
     pub(super) fn has_current_layout(&self) -> bool {
-        self.layout
-            .as_ref()
-            .is_some_and(|line| line.text.as_ref() == self.content.as_str())
+        !self.layout.is_empty() && self.layout_text == self.content
+    }
+    pub(super) fn line_count(&self) -> usize {
+        self.content.bytes().filter(|byte| *byte == b'\n').count() + 1
     }
     pub fn new(
         content: String,
@@ -218,6 +367,7 @@ impl CaptionInput {
         cx: &mut Context<Self>,
     ) -> Self {
         let end = content.len();
+        let rows = content.bytes().filter(|byte| *byte == b'\n').count() + 1;
         Self {
             enabled: true,
             focus: cx.focus_handle(),
@@ -227,7 +377,9 @@ impl CaptionInput {
             marked: None,
             past: Vec::new(),
             redo: Vec::new(),
-            layout: None,
+            layout: Vec::new(),
+            layout_text: String::new(),
+            rows,
             bounds: None,
             offset: px(0.0),
             owner,
@@ -237,7 +389,15 @@ impl CaptionInput {
         let start = utf8(&self.content, range.start);
         start..utf8(&self.content, range.end).max(start)
     }
-    fn changed(&self, window: &mut Window, cx: &mut Context<Self>) {
+    fn changed(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let rows = self.line_count();
+        if rows != self.rows {
+            self.rows = rows;
+            let owner = self.owner;
+            cx.defer(move |cx| {
+                owner.update(cx, |_, _, cx| cx.notify()).ok();
+            });
+        }
         window.notify_text_input_changed(&self.focus);
         cx.notify();
     }
@@ -247,6 +407,23 @@ impl CaptionInput {
         } else {
             self.selection.end
         }
+    }
+    fn index_at(&self, position: Point<Pixels>) -> Option<usize> {
+        let bounds = self.bounds?;
+        if self.layout.is_empty() || self.layout_text != self.content {
+            return None;
+        }
+        let row = ((f32::from(position.y - bounds.top()) / LINE_HEIGHT)
+            .floor()
+            .max(0.0) as usize)
+            .min(self.layout.len() - 1);
+        let range = line_range(&self.content, row);
+        Some(
+            range.start
+                + self.layout[row]
+                    .closest_index_for_x(position.x - bounds.left() + self.offset)
+                    .min(range.len()),
+        )
     }
     fn select_to(&mut self, position: usize, extend: bool) {
         let anchor = if extend {
@@ -265,10 +442,15 @@ impl CaptionInput {
         if !self.enabled {
             return false;
         }
-        if text.chars().any(char::is_control) {
+        if text.chars().any(|ch| ch.is_control() && ch != '\n') {
             return false;
         }
         if self.content.len() - range.len() + text.len() > 512 {
+            return false;
+        }
+        let breaks = |text: &str| text.bytes().filter(|byte| *byte == b'\n').count();
+        if breaks(&self.content) - breaks(&self.content[range.clone()]) + breaks(text) >= MAX_LINES
+        {
             return false;
         }
         if self.past.len() == 100 {
@@ -312,12 +494,16 @@ impl CaptionInput {
             return;
         }
         if key == "enter" && self.marked.is_none() {
-            let owner = self.owner;
-            cx.defer(move |cx| {
-                owner
-                    .update(cx, |editor, window, cx| editor.commit_text(window, cx))
-                    .ok();
-            });
+            if modifiers.shift {
+                self.replace(self.selection.clone(), "\n");
+            } else {
+                let owner = self.owner;
+                cx.defer(move |cx| {
+                    owner
+                        .update(cx, |editor, window, cx| editor.commit_text(window, cx))
+                        .ok();
+                });
+            }
         } else if key == "escape" {
             let owner = self.owner;
             cx.defer(move |cx| {
@@ -327,6 +513,13 @@ impl CaptionInput {
             });
         } else if (modifiers.control || modifiers.platform) && !modifiers.alt {
             match key {
+                "home" | "end" => {
+                    self.select_to(
+                        if key == "home" { 0 } else { self.content.len() },
+                        modifiers.shift,
+                    );
+                    self.marked = None;
+                }
                 "a" => {
                     self.selection = 0..self.content.len();
                     self.reversed = false;
@@ -370,11 +563,36 @@ impl CaptionInput {
                         self.marked = None;
                     }
                 }
-                "left" | "right" | "home" | "end" => {
+                "left" | "right" | "home" | "end" | "up" | "down" => {
                     let cursor = self.cursor();
+                    let row = row_for_index(&self.content, cursor);
+                    let current = line_range(&self.content, row);
                     let position = match key {
-                        "home" => 0,
-                        "end" => self.content.len(),
+                        "home" => current.start,
+                        "end" => current.end,
+                        "up" | "down" => {
+                            let next_row = if key == "up" {
+                                row.saturating_sub(1)
+                            } else {
+                                (row + 1).min(self.line_count() - 1)
+                            };
+                            let next = line_range(&self.content, next_row);
+                            if self.layout_text == self.content
+                                && self.layout.len() == self.line_count()
+                            {
+                                let x = self.layout[row].x_for_index(cursor - current.start);
+                                next.start
+                                    + self.layout[next_row].closest_index_for_x(x).min(next.len())
+                            } else {
+                                let column =
+                                    self.content[current.start..cursor].graphemes(true).count();
+                                next.start
+                                    + self.content[next.clone()]
+                                        .grapheme_indices(true)
+                                        .nth(column)
+                                        .map_or(next.len(), |(index, _)| index)
+                            }
+                        }
                         "left" if !modifiers.shift && !self.selection.is_empty() => {
                             self.selection.start
                         }
@@ -458,11 +676,14 @@ impl EntityInputHandler for CaptionInput {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let Some(text) = normalize_input(text) else {
+            return;
+        };
         let range = range
             .map(|range| self.range(range))
             .or(self.marked.clone())
             .unwrap_or(self.selection.clone());
-        if self.replace(range, text) {
+        if self.replace(range, &text) {
             self.marked = None;
             self.changed(window, cx);
         }
@@ -475,12 +696,20 @@ impl EntityInputHandler for CaptionInput {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let original = text;
+        let Some(text) = normalize_input(original) else {
+            return;
+        };
+        let selection = selection.map(|range| {
+            normalized_utf16_offset(original, range.start)
+                ..normalized_utf16_offset(original, range.end)
+        });
         let range = range
             .map(|range| self.range(range))
             .or(self.marked.clone())
             .unwrap_or(self.selection.clone());
         let start = range.start;
-        if self.replace(range, text) {
+        if self.replace(range, &text) {
             self.marked = (!text.is_empty()).then_some(start..start + text.len());
             if let Some(selection) = selection {
                 let base = utf16(&self.content, start);
@@ -500,19 +729,29 @@ impl EntityInputHandler for CaptionInput {
         _: &mut Context<Self>,
     ) -> Option<Bounds<Pixels>> {
         let range = self.range(range);
-        let layout = self.layout.as_ref()?;
-        if layout.text.as_ref() != self.content.as_str() {
+        if self.layout.is_empty() || self.layout_text != self.content {
             return None;
         }
+        let row = row_for_index(&self.content, range.start);
+        let end_row = row_for_index(&self.content, range.end);
+        let top = bounds.top() + px(row as f32 * LINE_HEIGHT);
+        if row != end_row {
+            return Some(Bounds::new(
+                point(bounds.left(), top),
+                size(
+                    bounds.size.width,
+                    px((end_row - row + 1) as f32 * LINE_HEIGHT),
+                ),
+            ));
+        }
+        let line = line_range(&self.content, row);
+        let start =
+            bounds.left() - self.offset + self.layout[row].x_for_index(range.start - line.start);
+        let end =
+            bounds.left() - self.offset + self.layout[row].x_for_index(range.end - line.start);
         Some(Bounds::from_corners(
-            point(
-                bounds.left() - self.offset + layout.x_for_index(range.start),
-                bounds.top(),
-            ),
-            point(
-                bounds.left() - self.offset + layout.x_for_index(range.end),
-                bounds.bottom(),
-            ),
+            point(start.min(end), top),
+            point(start.max(end), top + px(LINE_HEIGHT)),
         ))
     }
     fn character_index_for_point(
@@ -521,15 +760,8 @@ impl EntityInputHandler for CaptionInput {
         _: &mut Window,
         _: &mut Context<Self>,
     ) -> Option<usize> {
-        let bounds = self.bounds?;
-        if self.layout.as_ref()?.text.as_ref() != self.content.as_str() {
-            return None;
-        }
-        let index = self
-            .layout
-            .as_ref()?
-            .closest_index_for_x(position.x - bounds.left() + self.offset);
-        Some(utf16(&self.content, index.min(self.content.len())))
+        self.index_at(position)
+            .map(|index| utf16(&self.content, index))
     }
 }
 impl Render for CaptionInput {
@@ -537,10 +769,11 @@ impl Render for CaptionInput {
         let entity = cx.entity();
         let focus = self.focus.clone();
         let text = self.content.clone();
+        let layout_text = text.clone();
         let cursor = self.cursor();
         let marked = self.marked.clone();
         div()
-            .h(px(32.0))
+            .h(px(self.line_count() as f32 * LINE_HEIGHT + 8.0))
             .w_full()
             .overflow_hidden()
             .bg(rgb(0x252830))
@@ -576,16 +809,8 @@ impl Render for CaptionInput {
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(|this, event: &MouseDownEvent, window, cx| {
-                    if let Some(bounds) = this.bounds {
-                        if let Some(layout) = &this.layout {
-                            if layout.text.as_ref() != this.content.as_str() {
-                                return;
-                            }
-                            let index = layout
-                                .closest_index_for_x(event.position.x - bounds.left() + this.offset)
-                                .min(this.content.len());
-                            this.select_to(index, event.modifiers.shift);
-                        }
+                    if let Some(index) = this.index_at(event.position) {
+                        this.select_to(index, event.modifiers.shift);
                     }
                     window.focus(&this.focus, cx);
                     this.changed(window, cx);
@@ -594,88 +819,114 @@ impl Render for CaptionInput {
             .child(
                 canvas(
                     move |bounds, window, _| {
-                        let display: SharedString = if text.is_empty() {
-                            "Type a label; Enter applies it".into()
-                        } else {
-                            text.clone().into()
-                        };
-                        let run = TextRun {
-                            len: display.len(),
-                            font: Font::default(),
-                            color: rgb(0xf1f5f9).into(),
-                            background_color: None,
-                            underline: None,
-                            strikethrough: None,
-                        };
-                        let line = window
-                            .text_system()
-                            .shape_line(display, px(16.0), &[run], None);
-                        let offset =
-                            (line.x_for_index(cursor) - bounds.size.width + px(8.0)).max(px(0.0));
-                        (line, offset)
+                        let lines = text
+                            .split('\n')
+                            .map(|part| {
+                                let display: SharedString = if text.is_empty() {
+                                    "Type a label; Shift+Enter adds a line".into()
+                                } else {
+                                    part.to_owned().into()
+                                };
+                                let run = TextRun {
+                                    len: display.len(),
+                                    font: Font::default(),
+                                    color: rgb(0xf1f5f9).into(),
+                                    background_color: None,
+                                    underline: None,
+                                    strikethrough: None,
+                                };
+                                window
+                                    .text_system()
+                                    .shape_line(display, px(16.0), &[run], None)
+                            })
+                            .collect::<Vec<_>>();
+                        let row = row_for_index(&text, cursor);
+                        let range = line_range(&text, row);
+                        let offset = (lines[row].x_for_index(cursor - range.start)
+                            - bounds.size.width
+                            + px(8.0))
+                        .max(px(0.0));
+                        (lines, offset)
                     },
-                    move |bounds, (line, offset), window, cx| {
+                    move |bounds, (lines, offset), window, cx| {
+                        let text_bounds = Bounds::new(
+                            point(bounds.left(), bounds.top() + px(4.0)),
+                            size(bounds.size.width, px(lines.len() as f32 * LINE_HEIGHT)),
+                        );
                         window.handle_input(
                             &focus,
-                            ElementInputHandler::new(bounds, entity.clone()),
+                            ElementInputHandler::new(text_bounds, entity.clone()),
                             cx,
                         );
                         let selection = entity.read(cx).selection.clone();
                         window.with_content_mask(Some(ContentMask { bounds }), |window| {
-                            if !selection.is_empty() {
-                                window.paint_quad(fill(
-                                    Bounds::from_corners(
-                                        point(
-                                            bounds.left() - offset
-                                                + line.x_for_index(selection.start),
-                                            bounds.top(),
+                            for (row, line) in lines.iter().enumerate() {
+                                let range = line_range(&layout_text, row);
+                                let top = text_bounds.top() + px(row as f32 * LINE_HEIGHT);
+                                let x_for = |index: usize| {
+                                    text_bounds.left() - offset
+                                        + line.x_for_index(
+                                            index.saturating_sub(range.start).min(range.len()),
+                                        )
+                                };
+                                if !selection.is_empty()
+                                    && selection.start <= range.end
+                                    && selection.end > range.start
+                                {
+                                    let start = x_for(selection.start.max(range.start));
+                                    let mut end = x_for(selection.end.min(range.end));
+                                    if selection.end > range.end && range.end < layout_text.len() {
+                                        end = end.max(
+                                            text_bounds.left() - offset + line.width + px(4.0),
+                                        );
+                                    }
+                                    window.paint_quad(fill(
+                                        Bounds::from_corners(
+                                            point(start.min(end), top),
+                                            point(start.max(end), top + px(LINE_HEIGHT)),
                                         ),
-                                        point(
-                                            bounds.left() - offset
-                                                + line.x_for_index(selection.end),
-                                            bounds.bottom(),
+                                        rgba(0x22d3ee55),
+                                    ));
+                                }
+                                line.paint(
+                                    point(text_bounds.left() - offset, top),
+                                    px(LINE_HEIGHT),
+                                    TextAlign::Left,
+                                    None,
+                                    window,
+                                    cx,
+                                )
+                                .ok();
+                                if selection.is_empty()
+                                    && row == row_for_index(&layout_text, cursor)
+                                {
+                                    window.paint_quad(fill(
+                                        Bounds::new(
+                                            point(x_for(cursor), top),
+                                            size(px(1.0), px(LINE_HEIGHT)),
                                         ),
-                                    ),
-                                    rgba(0x22d3ee55),
-                                ));
-                            }
-                            line.paint(
-                                point(bounds.left() - offset, bounds.top()),
-                                bounds.size.height,
-                                TextAlign::Left,
-                                None,
-                                window,
-                                cx,
-                            )
-                            .ok();
-                            if selection.is_empty() {
-                                window.paint_quad(fill(
-                                    Bounds::new(
-                                        point(
-                                            bounds.left() - offset
-                                                + line.x_for_index(selection.end),
-                                            bounds.top(),
-                                        ),
-                                        size(px(1.0), bounds.size.height),
-                                    ),
-                                    rgb(0x22d3ee),
-                                ));
-                            }
-                            if let Some(marked) = &marked {
-                                let x = bounds.left() - offset + line.x_for_index(marked.start);
-                                let end = bounds.left() - offset + line.x_for_index(marked.end);
-                                window.paint_quad(fill(
-                                    Bounds::new(
-                                        point(x, bounds.bottom() - px(2.0)),
-                                        size(end - x, px(1.0)),
-                                    ),
-                                    rgb(0x22d3ee),
-                                ));
+                                        rgb(0x22d3ee),
+                                    ));
+                                }
+                                if let Some(marked) = &marked {
+                                    if marked.start < range.end && marked.end > range.start {
+                                        let x = x_for(marked.start.max(range.start));
+                                        let end = x_for(marked.end.min(range.end));
+                                        window.paint_quad(fill(
+                                            Bounds::new(
+                                                point(x.min(end), top + px(LINE_HEIGHT - 2.0)),
+                                                size((end - x).abs(), px(1.0)),
+                                            ),
+                                            rgb(0x22d3ee),
+                                        ));
+                                    }
+                                }
                             }
                         });
                         entity.update(cx, |this, _| {
-                            this.layout = Some(line);
-                            this.bounds = Some(bounds);
+                            this.layout = lines;
+                            this.layout_text = layout_text;
+                            this.bounds = Some(text_bounds);
                             this.offset = offset;
                         });
                     },
@@ -688,6 +939,36 @@ impl Render for CaptionInput {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn multiline_ranges_and_crlf_mapping_keep_utf16_positions_valid() {
+        let text = "A😀\n\n日e\u{301}\n";
+        assert_eq!(line_range(text, 0), 0..5);
+        assert_eq!(line_range(text, 1), 6..6);
+        assert_eq!(line_range(text, 2), 7..13);
+        assert_eq!(line_range(text, 3), 14..14);
+        for (index, row) in [(0, 0), (5, 0), (6, 1), (7, 2), (13, 2), (14, 3)] {
+            assert_eq!(row_for_index(text, index), row);
+        }
+        assert_eq!(normalize_input("😀\r\nA\rB\n").unwrap(), "😀\nA\nB\n");
+        let raw = "😀\r\nA\rB\n";
+        for (raw_offset, normalized) in [
+            (0, 0),
+            (1, 0),
+            (2, 2),
+            (3, 3),
+            (4, 3),
+            (5, 4),
+            (6, 5),
+            (7, 6),
+            (8, 7),
+        ] {
+            assert_eq!(normalized_utf16_offset(raw, raw_offset), normalized);
+        }
+        assert!(normalize_input(&"x".repeat(516)).is_none());
+        for (byte, _) in text.char_indices() {
+            assert_eq!(utf8(text, utf16(text, byte)), byte);
+        }
+    }
     #[test]
     fn utf16_ranges_keep_unicode_and_grapheme_boundaries_valid() {
         let text = "A😀e\u{301}日";
