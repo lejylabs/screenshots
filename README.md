@@ -1,9 +1,22 @@
 # screenshots
 
-Open-source desktop capture and sharing application.
+Open-source desktop capture and sharing application. English is the default UI language. Native system dialogs and OS error messages follow the operating system language.
 
 Windows renderer lifecycle and its explicit release probe are documented in [control-window latency](docs/control-open-latency.md). The pinned Windows GPUI backend includes a small [local teardown patch](vendor/gpui-windows-gpui-unofficial/LOCAL-PATCH.md); build through this workspace so Cargo applies the override.
 
+The [region-selection release probe](docs/region-latency.md) measures native Ctrl+Shift+R delivery through capture and compositor synchronization, with 101 real capture/cancel cycles. Its explicit test injects keyboard input; leave keyboard and clipboard untouched while running it. Normal launches contain no probe instrumentation.
+
+## Capture home
+
+Open the control window with `cargo run -p screenshots -- --show` (Windows otherwise starts in the tray). The home screen offers region selection, primary/all displays, individual displays and window capture. The last capture has a bounded preview, recopy and **Show file**. Technical controls are under **Diagnostics**.
+
+New captures use the user's Pictures/Screenshots folder by default (application config storage is the fallback if no Pictures directory is available). **Change folder…** opens the native directory picker and persists the selection in the platform application's `settings.json`. A canceled or failed change preserves the previous folder. Settings load/save run on workers; capture is disabled while settings are loading/changing. Existing files under `target/captures` are left in place. Hardware tests keep their isolated test directories and do not read or alter user settings.
+
+**Save as…** exports the last capture through a native save dialog. PNG is the export format; existing files are never replaced, including after an overwrite confirmation from the native picker. Choose a free name if a destination already exists. Saved PNGs stream directly to the new destination without image decoding/re-encoding; unsaved captures export from their retained pixels. Canceling preserves the capture, clipboard and default folder. Quit waits for an active export, and export failure keeps the source available.
+
+The current home layout is provisional. Final visual design is still planned.
+
+The sections below include historical spike controls and evidence; their old default `target/captures` path applies to the spike/test setup, not the normal application's new default.
 ## Workspace
 
 ```text
@@ -27,14 +40,14 @@ On Windows the app starts in the system tray without a control window or GPU ren
 See [Phase 0 evidence and remaining checks](docs/phase-0.md).
 
 - Open small overlay: red card at the top-left of each display.
-- Fenster aufnehmen: click a listed window near the top of the control window to capture it directly, save it and copy it. Use Fensterliste aktualisieren after opening or closing windows. Minimized, untitled and own-process windows are excluded from the picker. A window that closes before capture produces an error and restores the control window.
+- Capture a window: click a listed window near the top of the control window to capture it directly, save it and copy it. Use Fensterliste aktualisieren after opening or closing windows. Minimized, untitled and own-process windows are excluded from the picker. A window that closes before capture produces an error and restores the control window.
 - Capture buttons, hotkey and tray write PNGs under `target/captures/`, show a thumbnail, and automatically copy the last image to the clipboard directly from shared RGBA pixels. This replaces the current clipboard contents.
-- Bereich auswählen (Strg+Umschalt+F), directly below the window heading: hides existing overlays and the control window, captures each display, then opens a fullscreen PopUp showing that display's frozen image. Drag with the left mouse button; release saves the selection as `target/captures/selection-<uuid>.png`, restores the control window, and copies the selection. Escape cancels without changing the clipboard. Canceled previews are never written to disk.
+- Select region (Strg+Umschalt+F), directly below the window heading: hides existing overlays and the control window, captures each display, then opens a fullscreen PopUp showing that display's frozen image. Drag with the left mouse button; release saves the selection as `target/captures/selection-<uuid>.png`, restores the control window, and copies the selection. Escape cancels without changing the clipboard. Canceled previews are never written to disk.
 - Copy last capture: uses live pixels if still retained, otherwise loads the successfully saved PNG on demand. This replaces the current clipboard contents.
 - Escape or Close overlays dismisses overlay windows.
 - On Windows, Ctrl+Shift+S captures the primary display even when another app has focus. Registration failures (for example, a shortcut already in use) appear in the control window. The capture is saved and copied automatically.
 - On Windows, Ctrl+Shift+R starts region selection even when another app has focus. Ctrl+Shift+F remains a local shortcut in the control window. Each global shortcut registers independently: a conflict with one does not disable the other. The status line reports unavailable keys.
-- On Windows, right-click the blue camera icon in the system tray (possibly under hidden icons): Bereich auswählen, Capture primary, Show control window, or Quit. Region selection uses the same frozen-image workflow as the button. Capture primary uses the same save-and-copy path as the buttons and hotkey. Closing the control window returns to the resident tray state.
+- On Windows, right-click the blue camera icon in the system tray (possibly under hidden icons): Select region, Capture primary, Show control window, or Quit. Region selection uses the same frozen-image workflow as the button. Capture primary uses the same save-and-copy path as the buttons and hotkey. Closing the control window returns to the resident tray state.
 
 The clipboard button and its result appear near the top, above the diagnostic lists and thumbnail. On Windows, closing the control window releases its windows and renderer; Ctrl+Q quits through the output-safe cleanup path. Native WM_CLOSE is intercepted so Windows does not destroy the window ahead of GPUI cleanup.
 

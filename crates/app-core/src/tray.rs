@@ -25,7 +25,7 @@ impl SpikeTray {
     pub fn new() -> Result<Self> {
         let menu = Menu::new();
         let capture = MenuItem::new("Capture primary (Ctrl+Shift+S)", true, None);
-        let region = MenuItem::new("Bereich auswählen (Ctrl+Shift+R)", true, None);
+        let region = MenuItem::new("Select region (Ctrl+Shift+R)", true, None);
         let show = MenuItem::new("Show control window", true, None);
         let quit = MenuItem::new("Quit", true, None);
         menu.append_items(&[&region, &capture, &show, &quit])?;

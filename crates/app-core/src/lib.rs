@@ -7,7 +7,9 @@ mod desktop_events;
 #[cfg(target_os = "windows")]
 pub use desktop_events::{DesktopEvent, desktop_events};
 mod selection;
+mod settings;
 pub use selection::{PixelRegion, crop_snapshot};
+pub use settings::CaptureSettings;
 
 pub use clipboard::ImageClipboard;
 
@@ -28,7 +30,7 @@ pub use desktop_window::{DesktopWindow, wait_for_desktop_compositor};
 
 pub use capture::{
     CaptureBackend, CaptureCapabilities, CaptureError, CaptureRequest, CapturedImage, DisplayInfo,
-    MAX_CAPTURE_BYTES, PixelFormat, WindowInfo, XcapBackend, capture_output_dir,
+    MAX_CAPTURE_BYTES, PixelFormat, WindowInfo, XcapBackend, capture_output_dir, export_saved_png,
     validate_image_size,
 };
 

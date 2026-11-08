@@ -273,7 +273,7 @@ Clipboard ownership can be a live consumer even with every window hidden, partic
 
 #### Prototype debt that must not ship
 
-The initial polling loops and file-based frame handoffs have been replaced with native events and shared in-memory pixels. Canceled previews no longer save PNGs, and clipboard read-back runs only in tests. Windows now keeps controller/tray/hotkeys alive independently of windows, attaches graphics on demand and detaches after closing its UI. Capture groups now admit at most 256 MiB of decoded RGBA source data before native capture and recheck actual returned dimensions; individual capture, crop and recopy share the image limit. XCap still controls its internal allocations, including size-change races; a hard native allocation bound, other-platform resident integration and unmeasured reference-hardware memory/latency budgets remain production debt. See [Windows resident evidence](docs/performance-resident.md) and [control frame-callback timings/teardown regression](docs/control-open-latency.md); these callback timings do not establish physical presentation or usable-input latency. Passing the functional spike is not a performance result. See [Phase 0 evidence](docs/phase-0.md).
+The initial polling loops and file-based frame handoffs have been replaced with native events and shared in-memory pixels. Canceled previews no longer save PNGs, and clipboard read-back runs only in tests. Windows now keeps controller/tray/hotkeys alive independently of windows, attaches graphics on demand and detaches after closing its UI. Capture groups now admit at most 256 MiB of decoded RGBA source data before native capture and recheck actual returned dimensions; individual capture, crop and recopy share the image limit. XCap still controls its internal allocations, including size-change races; a hard native allocation bound, other-platform resident integration and unmeasured reference-hardware memory/latency budgets remain production debt. See [Windows resident evidence](docs/performance-resident.md) and [control frame-callback timings/teardown regression](docs/control-open-latency.md); these callback timings do not establish physical presentation or usable-input latency. The [1440p native-hotkey region probe](docs/region-latency.md) records 101 real capture/cancel cycles and stage timings; 4K, physical presentation/input and reference-hardware acceptance remain open. Passing the functional spike is not a performance result. See [Phase 0 evidence](docs/phase-0.md).
 
 ### Process lifecycle
 
@@ -734,6 +734,9 @@ The overlay should be quick, unobtrusive, and easy to use.
 
 ### UX principles
 
+English is the default application language at launch, independently of the OS locale. All app-owned labels, menus, prompts, status text and errors must start in English. Localization may be added later; native OS dialog chrome and system error messages follow the OS language.
+
+
 - Clean and modern interface.
 - Minimal unnecessary UI elements.
 - Clear visual hierarchy.
@@ -902,6 +905,12 @@ Tasks:
 **Deliverable:** A short spike note with the pinned revisions, what worked, what failed, and the capture decision.
 
 ### Phase 1 – Foundation
+
+Implementation progress (Windows-first, not a completed cross-platform phase gate): the usable capture home now groups region/display/window actions, last-output controls and optional diagnostics. Native folder selection persists the capture destination with worker-side bounded settings IO. Remaining phase/release gates stay open; feature work proceeds without repeating exploratory performance runs for every UI change.
+
+UI direction: the current capture home is a functional placeholder. Its layout, typography, visual hierarchy and component styling are not the final design; a deliberate, polished UI pass remains required. Functional progress should continue without treating this temporary appearance as a design commitment. One-off PNG export now uses a native Save As dialog, preserving the default capture folder and existing files.
+
+
 
 **Estimated duration: Weeks 1–2**
 

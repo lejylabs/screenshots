@@ -499,6 +499,25 @@ mod tests {
             1,
             "temporary files leaked"
         );
+        let exported = dir.join("export.png");
+        export_saved_png(&shot.png_path, &exported).unwrap();
+        assert_eq!(fs::read(&exported).unwrap(), original);
+        assert!(export_saved_png(&shot.png_path, &exported).is_err());
+        assert!(export_saved_png(&shot.png_path, &shot.png_path).is_err());
+        assert_eq!(fs::read(&shot.png_path).unwrap(), original);
+        let recovered = dir.join("recovered.png");
+        different.save_png_as(&recovered).unwrap();
+        assert_eq!(
+            image::open(&recovered).unwrap().into_rgba8(),
+            *different.pixels
+        );
+        assert_eq!(
+            fs::read_dir(&dir).unwrap().count(),
+            3,
+            "export temporary files leaked"
+        );
+        fs::remove_file(exported).unwrap();
+        fs::remove_file(recovered).unwrap();
         fs::remove_file(&shot.png_path).unwrap();
         fs::remove_dir(dir).unwrap();
     }
@@ -571,51 +590,82 @@ mod tests {
 
 impl CapturedImage {
     pub fn save_png(&self) -> Result<(), CaptureError> {
+        self.save_png_as(&self.png_path)
+    }
+
+    pub fn save_png_as(&self, destination: &Path) -> Result<(), CaptureError> {
         use image::{
             ImageEncoder,
             codecs::png::{CompressionType, FilterType, PngEncoder},
         };
-        let parent = self
-            .png_path
-            .parent()
-            .filter(|path| !path.as_os_str().is_empty())
-            .unwrap_or_else(|| Path::new("."));
-        fs::create_dir_all(parent)?;
-        let temporary = parent.join(format!(".screenshots-{}.part", uuid::Uuid::new_v4()));
-        let mut file = fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&temporary)?;
-        let result = (|| {
-            {
-                let mut writer = BufWriter::with_capacity(64 * 1024, &mut file);
-                PngEncoder::new_with_quality(
-                    &mut writer,
-                    CompressionType::Fast,
-                    FilterType::Adaptive,
-                )
+        write_output(destination, |file| {
+            let mut writer = BufWriter::with_capacity(64 * 1024, file);
+            PngEncoder::new_with_quality(&mut writer, CompressionType::Fast, FilterType::Adaptive)
                 .write_image(
                     self.pixels.as_raw(),
                     self.pixels.width(),
                     self.pixels.height(),
                     image::ExtendedColorType::Rgba8,
                 )?;
-                writer.flush()?;
-            }
-            file.sync_all()?;
-            drop(file);
-            publish_png(&temporary, &self.png_path)?;
-            Ok::<(), CaptureError>(())
-        })();
-        if let Err(error) = fs::remove_file(&temporary) {
-            if error.kind() != std::io::ErrorKind::NotFound {
-                tracing::warn!(%error, "temporary capture file cleanup failed");
-            }
-        }
-        result
+            writer.flush()?;
+            Ok(())
+        })
     }
 }
 
+/// Export an already saved capture without decoding, allocating another frame or encoding again.
+pub fn export_saved_png(source: &Path, destination: &Path) -> Result<(), CaptureError> {
+    use std::io::Read;
+    let mut source = fs::File::open(source)?;
+    let mut signature = [0; 8];
+    source.read_exact(&mut signature)?;
+    if signature != [137, 80, 78, 71, 13, 10, 26, 10] {
+        return Err(CaptureError::Backend(
+            "The source file is not a PNG image".into(),
+        ));
+    }
+    write_output(destination, |file| {
+        file.write_all(&signature)?;
+        // Bounded streaming also handles a source modified by another process.
+        let limit = MAX_CAPTURE_BYTES + 16 * 1024 * 1024;
+        let copied = std::io::copy(&mut source.take(limit + 1), file)?;
+        if copied > limit {
+            return Err(CaptureError::Backend(
+                "The PNG source file exceeds the export limit".into(),
+            ));
+        }
+        Ok(())
+    })
+}
+
+fn write_output(
+    destination: &Path,
+    write: impl FnOnce(&mut fs::File) -> Result<(), CaptureError>,
+) -> Result<(), CaptureError> {
+    let parent = destination
+        .parent()
+        .filter(|path| !path.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    fs::create_dir_all(parent)?;
+    let temporary = parent.join(format!(".screenshots-{}.part", uuid::Uuid::new_v4()));
+    let result = (|| {
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temporary)?;
+        write(&mut file)?;
+        file.sync_all()?;
+        drop(file);
+        publish_png(&temporary, destination)?;
+        Ok(())
+    })();
+    if let Err(error) = fs::remove_file(&temporary) {
+        if error.kind() != std::io::ErrorKind::NotFound {
+            tracing::warn!(%error, "temporary capture file cleanup failed");
+        }
+    }
+    result
+}
 #[cfg(target_os = "windows")]
 fn publish_png(temporary: &Path, destination: &Path) -> std::io::Result<()> {
     use std::os::windows::ffi::OsStrExt;

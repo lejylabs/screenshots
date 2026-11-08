@@ -45,6 +45,24 @@ struct ControlLatencyProbe {
 #[cfg(all(test, target_os = "windows"))]
 impl gpui::Global for ControlLatencyProbe {}
 
+#[cfg(all(test, target_os = "windows"))]
+#[derive(Clone)]
+struct RegionLatencyProbe {
+    started: std::time::Instant,
+    events: Arc<Mutex<Vec<(&'static str, f64)>>>,
+}
+#[cfg(all(test, target_os = "windows"))]
+impl gpui::Global for RegionLatencyProbe {}
+#[cfg(all(test, target_os = "windows"))]
+impl RegionLatencyProbe {
+    fn mark(&self, stage: &'static str) {
+        self.events
+            .lock()
+            .unwrap()
+            .push((stage, self.started.elapsed().as_secs_f64() * 1000.0));
+    }
+}
+
 #[derive(Clone, Copy)]
 enum UiRequest {
     Control,
@@ -63,6 +81,11 @@ pub struct SpikeShell {
     xcap_displays: Vec<DisplayInfo>,
     xcap_windows: Vec<WindowInfo>,
     refreshing: bool,
+    diagnostics: bool,
+    settings_loading: bool,
+    settings_saving: bool,
+    output_directory: Option<PathBuf>,
+    settings_status: String,
     list_status: String,
     capture_status: String,
     last_capture: Option<CapturedImage>,
@@ -102,6 +125,10 @@ impl SpikeShell {
                 match result {
                     Ok(()) => {
                         this.graphics = true;
+                        #[cfg(all(test, target_os = "windows"))]
+                        if let Some(probe) = cx.try_global::<RegionLatencyProbe>() {
+                            probe.mark("graphics_ready");
+                        }
                         if this.quitting {
                             this.finish_quit_if_idle(cx);
                             return;
@@ -150,7 +177,7 @@ impl SpikeShell {
                 cx,
             ))),
             titlebar: Some(TitlebarOptions {
-                title: Some("screenshots — phase 0 spike".into()),
+                title: Some("screenshots".into()),
                 ..Default::default()
             }),
             ..Default::default()
@@ -347,8 +374,17 @@ impl SpikeShell {
             xcap_displays: Vec::new(),
             xcap_windows: Vec::new(),
             refreshing: false,
+            diagnostics: false,
+            settings_loading: !cfg!(test),
+            settings_saving: false,
+            output_directory: if cfg!(test) {
+                Some(app_core::capture_output_dir())
+            } else {
+                None
+            },
+            settings_status: String::new(),
             list_status: String::new(),
-            capture_status: "idle".into(),
+            capture_status: "Ready".into(),
             last_capture: None,
             last_saved: None,
             last_render: None,
@@ -358,7 +394,7 @@ impl SpikeShell {
             saving: false,
             quitting: false,
             save_status: String::new(),
-            clipboard_status: "Clipboard: capture an image first".into(),
+            clipboard_status: "No capture yet".into(),
             #[cfg(target_os = "windows")]
             hotkey: None,
             hotkey_status: "Global hotkey: not tested on this platform".into(),
@@ -367,12 +403,36 @@ impl SpikeShell {
             tray_status: "Tray: not tested on this platform".into(),
         };
         shell.refresh_xcap_lists(cx);
+        #[cfg(not(test))]
+        cx.spawn(async move |this, cx| {
+            let settings = cx
+                .background_spawn(async { app_core::CaptureSettings::load() })
+                .await;
+            this.update(cx, |this, cx| {
+                this.settings_loading = false;
+                match settings {
+                    Ok(settings) => {
+                        this.backend = XcapBackend::new(&settings.output_directory);
+                        this.output_directory = Some(settings.output_directory);
+                    }
+                    Err(error) => {
+                        this.settings_status = format!(
+                            "Could not load the save folder: {error:#}. Please choose a folder."
+                        );
+                        this.show_control(cx);
+                    }
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
         #[cfg(target_os = "windows")]
         match app_core::SpikeTray::new() {
             Ok(tray) => {
                 shell.tray = Some(tray);
                 shell.tray_status =
-                    "Tray: Bereich auswählen / Capture / Show control window / Quit".into();
+                    "Tray: Select region / Capture / Show control window / Quit".into();
                 tracing::info!("tray icon created");
             }
             Err(error) => {
@@ -412,6 +472,10 @@ impl SpikeShell {
                                         this.capture_primary(cx)
                                     }
                                     Some(app_core::CaptureCommand::Region) => {
+                                        #[cfg(all(test, target_os = "windows"))]
+                                        if let Some(probe) = cx.try_global::<RegionLatencyProbe>() {
+                                            probe.mark("region_command_received");
+                                        }
                                         this.open_overlays(OverlayMode::Fullscreen, cx)
                                     }
                                     None => {}
@@ -444,12 +508,78 @@ impl SpikeShell {
         shell
     }
 
+    fn choose_output_directory(&mut self, cx: &mut Context<Self>) {
+        if self.capturing
+            || self.copying
+            || self.saving
+            || self.quitting
+            || self.settings_loading
+            || self.settings_saving
+        {
+            return;
+        }
+        self.settings_saving = true;
+        let dialog = cx.prompt_for_paths(gpui::PathPromptOptions {
+            files: false,
+            directories: true,
+            multiple: false,
+            prompt: Some("Choose screenshot folder".into()),
+        });
+        cx.spawn(async move |this, cx| {
+            let chosen = match dialog.await {
+                Ok(Ok(Some(paths))) => paths.into_iter().next(),
+                Ok(Ok(None)) => None,
+                result => {
+                    this.update(cx, |this, cx| {
+                        this.settings_saving = false;
+                        this.settings_status = format!("Folder selection failed: {result:?}");
+                        this.finish_quit_if_idle(cx);
+                        cx.notify();
+                    })
+                    .ok();
+                    return;
+                }
+            };
+            let result = if let Some(path) = chosen {
+                cx.background_spawn(async move {
+                    let settings = app_core::CaptureSettings::for_directory(path)
+                        .map_err(|error| format!("{error:#}"))?;
+                    settings.save().map_err(|error| format!("{error:#}"))?;
+                    Ok::<_, String>(settings.output_directory)
+                })
+                .await
+                .map(Some)
+            } else {
+                Ok(None)
+            };
+            this.update(cx, |this, cx| {
+                this.settings_saving = false;
+                match result {
+                    Ok(Some(path)) => {
+                        this.backend = XcapBackend::new(&path);
+                        this.output_directory = Some(path);
+                        this.settings_status = "Save folder updated".into();
+                    }
+                    Ok(None) => {}
+                    Err(error) => {
+                        this.settings_status = format!("Save folder unchanged: {error:#}")
+                    }
+                }
+                this.finish_quit_if_idle(cx);
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+        cx.notify();
+    }
+
     fn refresh_xcap_lists(&mut self, cx: &mut Context<Self>) {
         if self.refreshing || self.quitting {
             return;
         }
         self.refreshing = true;
-        self.list_status = "Displays/Fenster werden geladen…".into();
+        self.list_status = "Loading displays and windows…".into();
         cx.notify();
         let backend = self.backend.clone();
         cx.spawn(async move |this, cx| {
@@ -474,13 +604,13 @@ impl SpikeShell {
                     Ok(windows) => this.xcap_windows = windows,
                     Err(error) => {
                         tracing::warn!(%error, "window enumeration failed");
-                        errors.push(format!("Fenster: {error}"));
+                        errors.push(format!("Windows: {error}"));
                         this.xcap_windows.clear();
                     }
                 }
                 this.list_status = if errors.is_empty() {
                     format!(
-                        "{} Display(s), {} Fenster geladen",
+                        "{} display(s), {} window(s) loaded",
                         this.xcap_displays.len(),
                         this.xcap_windows.len()
                     )
@@ -540,6 +670,9 @@ impl SpikeShell {
     }
 
     fn open_overlays(&mut self, mode: OverlayMode, cx: &mut Context<Self>) {
+        if self.settings_loading || self.settings_saving || self.output_directory.is_none() {
+            return;
+        }
         if self.capturing || self.copying || self.saving || self.quitting || self.switching_graphics
         {
             return;
@@ -641,7 +774,7 @@ impl SpikeShell {
                     if matches!(mode, OverlayMode::Fullscreen) {
                         window.activate_window();
                     }
-                    log_overlay_geometry(window, display_bounds);
+                    log_overlay_geometry(window, display_bounds, cx);
                     cx.notify();
                 });
                 if let Err(error) = result {
@@ -698,7 +831,7 @@ impl SpikeShell {
                     });
                     let focus = overlay.read(cx).focus_handle.clone();
                     window.focus(&focus, cx);
-                    log_overlay_geometry(window, display_bounds);
+                    log_overlay_geometry(window, display_bounds, cx);
                     overlay
                 },
             ) {
@@ -802,6 +935,7 @@ impl SpikeShell {
             && !self.copying
             && !self.saving
             && !self.switching_graphics
+            && !self.settings_saving
         {
             cx.defer(close_application);
         }
@@ -809,6 +943,74 @@ impl SpikeShell {
 
     fn copy_last_capture(&mut self, cx: &mut Context<Self>) {
         self.copy_and_save(Vec::new(), cx);
+    }
+
+    fn save_capture_as(&mut self, cx: &mut Context<Self>) {
+        if self.capturing || self.copying || self.saving || self.settings_saving || self.quitting {
+            return;
+        }
+        let shot = self.last_capture.clone();
+        let Some(source) = shot
+            .as_ref()
+            .map(|shot| shot.png_path.clone())
+            .or_else(|| self.last_saved.clone())
+        else {
+            return;
+        };
+        let directory = self.output_directory.clone().unwrap_or_else(|| {
+            source
+                .parent()
+                .unwrap_or(std::path::Path::new("."))
+                .to_path_buf()
+        });
+        let dialog = cx.prompt_for_new_path(&directory, Some("Screenshot.png"));
+        self.saving = true;
+        cx.spawn(async move |this, cx| {
+            let chosen = match dialog.await {
+                Ok(Ok(path)) => path,
+                error => {
+                    this.update(cx, |this, cx| {
+                        this.saving = false;
+                        this.save_status = format!("Save dialog failed: {error:?}");
+                        this.finish_quit_if_idle(cx);
+                        cx.notify();
+                    }).ok();
+                    return;
+                }
+            };
+            let Some(mut path) = chosen else {
+                this.update(cx, |this, cx| { this.saving = false; this.finish_quit_if_idle(cx); cx.notify(); }).ok();
+                return;
+            };
+            if !path.extension().is_some_and(|extension| extension.eq_ignore_ascii_case("png")) { path.set_extension("png"); }
+            let result = cx.background_spawn(async move {
+                let result = if let Some(shot) = shot { shot.save_png_as(&path) } else { app_core::export_saved_png(&source, &path) };
+                result.map(|_| path).map_err(|error| match error {
+                    app_core::CaptureError::Io(error) if error.kind() == std::io::ErrorKind::AlreadyExists =>
+                        "The file already exists. Choose a new name; existing files are never overwritten.".to_owned(),
+                    error => error.to_string(),
+                })
+            }).await;
+            this.update(cx, |this, cx| {
+                this.saving = false;
+                match result {
+                    Ok(path) => {
+                        this.save_status = format!("PNG saved: {}", path.display());
+                        this.last_saved = Some(path);
+                        this.last_capture = None;
+                    }
+                    Err(error) => {
+                        this.quitting = false;
+                        this.save_status = format!("PNG not saved: {error}");
+                        this.restore_control(cx);
+                        if this.resident && this.control.is_none() { this.show_control(cx); }
+                    }
+                }
+                this.finish_quit_if_idle(cx);
+                cx.notify();
+            }).ok();
+        }).detach();
+        cx.notify();
     }
 
     fn copy_and_save(&mut self, saves: Vec<CapturedImage>, cx: &mut Context<Self>) {
@@ -971,6 +1173,9 @@ impl SpikeShell {
         preview: bool,
         cx: &mut Context<Self>,
     ) {
+        if self.settings_loading || self.settings_saving || self.output_directory.is_none() {
+            return;
+        }
         if self.capturing || self.copying || self.saving || self.quitting || self.switching_graphics
         {
             return;
@@ -993,6 +1198,8 @@ impl SpikeShell {
 
         let backend = self.backend.clone();
         let control = self.control;
+        #[cfg(all(test, target_os = "windows"))]
+        let probe = cx.try_global::<RegionLatencyProbe>().cloned();
         #[cfg(target_os = "windows")]
         let mut hidden_windows: Vec<_> = self
             .overlays
@@ -1050,6 +1257,10 @@ impl SpikeShell {
                 .await;
             let result = cx
                 .background_spawn(async move {
+                    #[cfg(all(test, target_os = "windows"))]
+                    if let Some(probe) = &probe {
+                        probe.mark("worker_started");
+                    }
                     #[cfg(target_os = "windows")]
                     {
                         for window in hidden_windows {
@@ -1062,7 +1273,16 @@ impl SpikeShell {
                     }
                     let mut shots = Vec::new();
                     let mut renders = HashMap::new();
-                    for shot in backend.capture_batch(jobs)? {
+                    #[cfg(all(test, target_os = "windows"))]
+                    if let Some(probe) = &probe {
+                        probe.mark("hidden_and_compositor_ready");
+                    }
+                    let captured = backend.capture_batch(jobs)?;
+                    #[cfg(all(test, target_os = "windows"))]
+                    if let Some(probe) = &probe {
+                        probe.mark("capture_complete");
+                    }
+                    for shot in captured {
                         tracing::info!(
                             display_id = %shot.display_id,
                             window_id = ?shot.window_id,
@@ -1082,6 +1302,10 @@ impl SpikeShell {
                             },
                         );
                         shots.push(shot);
+                    }
+                    #[cfg(all(test, target_os = "windows"))]
+                    if let Some(probe) = &probe {
+                        probe.mark("render_conversion_complete");
                     }
                     Ok::<_, app_core::CaptureError>((shots, renders))
                 })
@@ -1146,250 +1370,293 @@ impl Focusable for SpikeShell {
 
 impl Render for SpikeShell {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let displays: Vec<(u64, Bounds<Pixels>)> = cx
-            .displays()
-            .iter()
-            .map(|display| (u64::from(display.id()), display.bounds()))
-            .collect();
-        let live_count = self.live_overlay_count(cx);
-        let handle_count = self.overlays.len();
-        let capturing = self.capturing || self.copying || self.saving || self.quitting;
-        let capture_status = self.capture_status.clone();
-        let last_path = self.last_render.clone();
-        let xcap_displays = self.xcap_displays.clone();
-        let window_count = self.xcap_windows.len();
-        let window_preview: Vec<(String, String)> = self
+        let busy = self.capturing
+            || self.copying
+            || self.saving
+            || self.quitting
+            || self.settings_loading
+            || self.settings_saving
+            || self.switching_graphics;
+        let unavailable = busy || self.output_directory.is_none();
+        let displays = self.xcap_displays.clone();
+        let windows: Vec<_> = self
             .xcap_windows
             .iter()
             .filter(|window| {
                 !window.is_minimized && !window.title.is_empty() && window.pid != std::process::id()
             })
             .map(|window| {
-                let title: String = window.title.chars().take(48).collect();
-                let title = if window.title.chars().count() > 48 {
-                    format!("{title}…")
-                } else {
-                    title
-                };
                 (
                     window.id.clone(),
-                    format!(
-                        "{title}  {}×{}  ({}, {})",
-                        window.width, window.height, window.x, window.y
-                    ),
+                    window.title.chars().take(70).collect::<String>(),
                 )
             })
             .collect();
-
+        let folder = self
+            .output_directory
+            .as_ref()
+            .map(|path| path.display().to_string())
+            .unwrap_or_else(|| "Loading save folder…".into());
+        let last_saved = self.last_saved.clone();
         div()
-            .id("spike-shell")
+            .id("capture-home")
             .track_focus(&self.focus_handle)
             .key_context("SpikeShell")
             .flex()
             .flex_col()
             .size_full()
             .p_6()
-            .gap_3()
+            .gap_4()
             .overflow_y_scroll()
-            .bg(rgb(0x1a1a1a))
-            .text_color(rgb(0xf5f5f5))
+            .bg(rgb(0x111318))
+            .text_color(rgb(0xf1f5f9))
             .on_action(cx.listener(|this, _: &OpenProbeOverlays, _, cx| {
-                this.open_overlays(OverlayMode::Probe, cx);
+                this.open_overlays(OverlayMode::Probe, cx)
             }))
             .on_action(cx.listener(|this, _: &OpenFullscreenOverlays, _, cx| {
-                this.open_overlays(OverlayMode::Fullscreen, cx);
+                this.open_overlays(OverlayMode::Fullscreen, cx)
             }))
-            .on_action(cx.listener(|this, _: &CloseOverlay, _, cx| {
-                tracing::info!("CloseOverlay on spike shell");
-                this.close_overlays(cx);
-            }))
-            .on_action(cx.listener(|this, _: &CapturePrimary, _, cx| {
-                this.capture_primary(cx);
-            }))
-            .on_action(cx.listener(|this, _: &CaptureAll, _, cx| {
-                this.capture_all(cx);
-            }))
-            .on_action(cx.listener(|this, _: &CaptureCenterRegion, _, cx| {
-                this.capture_center_region(cx);
-            }))
+            .on_action(cx.listener(|this, _: &CloseOverlay, _, cx| this.close_overlays(cx)))
+            .on_action(cx.listener(|this, _: &CapturePrimary, _, cx| this.capture_primary(cx)))
+            .on_action(cx.listener(|this, _: &CaptureAll, _, cx| this.capture_all(cx)))
+            .on_action(
+                cx.listener(|this, _: &CaptureCenterRegion, _, cx| this.capture_center_region(cx)),
+            )
             .on_action(|_: &Quit, _, cx| cx.defer(close_application))
-            .child("Phase 0 — overlay + XCap spike")
-            .child(capture_button(
-                "select-region",
-                "Bereich auswählen (Strg+Umschalt+F)",
-                capturing,
-                cx.listener(|this, _, _, cx| this.open_overlays(OverlayMode::Fullscreen, cx)),
-            ))
-            .child(div().text_sm().child(self.hotkey_status.clone()))
-            .child(div().text_sm().child(self.tray_status.clone()))
-            .child(capture_button(
-                "copy-last-capture",
-                "Copy last capture",
-                self.copying || (self.last_capture.is_none() && self.last_saved.is_none()),
-                cx.listener(|this, _, _, cx| this.copy_last_capture(cx)),
-            ))
-            .child(div().text_sm().child(self.clipboard_status.clone()))
-            .child(div().text_sm().child(self.save_status.clone()))
-            .child(div().text_sm().child(self.list_status.clone()))
-            .child(capture_button(
-                "refresh-windows",
-                "Fensterliste aktualisieren",
-                capturing || self.refreshing,
-                cx.listener(|this, _, _, cx| { this.refresh_xcap_lists(cx); }),
-            ))
-            .child(div().text_sm().child("Fenster aufnehmen — zum Aufnehmen anklicken"))
-            .child(
-                div().id("window-picker").flex_none().max_h(px(180.0)).overflow_y_scroll()
-                    .flex().flex_col().gap_1().text_sm()
-                    .children(window_preview.into_iter().enumerate().map(|(index, (id, label))| {
-                        div().id(("capture-window", index)).flex_none().px_3().py_2()
-                            .rounded_md().bg(rgb(0x27272a)).cursor_pointer()
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                if !capturing { this.start_capture(vec![CaptureJob::Window(id.clone())], cx); }
-                            })).child(label)
-                    })),
-            )
+            .child(div().text_2xl().child("Screenshots"))
             .child(
                 div()
                     .text_sm()
-                    .text_color(rgb(0xa3a3a3))
-                    .child("Fullscreen: freeze each desktop without the control window. Escape returns. Capture saves PNG and copies it."),
+                    .text_color(rgb(0x94a3b8))
+                    .child("Capture. Copy. Done."),
             )
             .child(
                 div()
                     .flex()
-                    .flex_col()
-                    .gap_1()
-                    .text_sm()
-                    .children(displays.into_iter().map(|(id, bounds)| {
-                        div().child(format!(
-                            "display {id}  origin=({}, {})  size={}×{}",
-                            bounds.origin.x,
-                            bounds.origin.y,
-                            bounds.size.width,
-                            bounds.size.height
-                        ))
-                    })),
-            )
-            .child(
-                div()
-                    .text_sm()
-                    .text_color(rgb(0xa3a3a3))
-                    .child(format!(
-                        "{live_count} live overlay(s), {handle_count} handle(s)"
-                    )),
-            )
-            .child(
-                div()
-                    .flex()
-                    .gap_2()
-                    .child(
-                        div()
-                            .id("open-probe")
-                            .px_3()
-                            .py_2()
-                            .rounded_md()
-                            .bg(rgb(0x2563eb))
-                            .cursor_pointer()
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.open_overlays(OverlayMode::Probe, cx);
-                            }))
-                            .child("Open small overlay"),
-                    )
-                    .child(
-                        div()
-                            .id("close-overlays")
-                            .px_3()
-                            .py_2()
-                            .rounded_md()
-                            .bg(rgb(0x3f3f46))
-                            .cursor_pointer()
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.close_overlays(cx);
-                            }))
-                            .child("Close overlays"),
-                    ),
-            )
-            .child(
-                div()
-                    .mt_2()
-                    .text_sm()
-                    .text_color(rgb(0xa3a3a3))
-                    .child("XCap displays (compare origin/size with GPUI above)"),
-            )
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap_1()
-                    .text_sm()
-                    .children(xcap_displays.into_iter().map(|display| {
-                        div().child(format!(
-                            "xcap {}  {}  origin=({}, {})  size={}×{}  scale={:.2}  rot={}{}",
-                            display.id,
-                            display.name,
-                            display.x,
-                            display.y,
-                            display.width,
-                            display.height,
-                            display.scale_factor,
-                            display.rotation,
-                            if display.is_primary { "  primary" } else { "" }
-                        ))
-                    })),
-            )
-            .child(
-                div()
-                    .text_sm()
-                    .text_color(rgb(0xa3a3a3))
-                    .child(format!("{window_count} XCap window(s)")),
-            )
-            .child(
-                div()
-                    .flex()
+                    .flex_wrap()
                     .gap_2()
                     .child(capture_button(
+                        "select-region",
+                        "Select region",
+                        unavailable,
+                        cx.listener(|this, _, _, cx| {
+                            this.open_overlays(OverlayMode::Fullscreen, cx)
+                        }),
+                    ))
+                    .child(capture_button(
                         "capture-primary",
-                        "Capture primary",
-                        capturing,
+                        "Primary display",
+                        unavailable,
                         cx.listener(|this, _, _, cx| this.capture_primary(cx)),
                     ))
                     .child(capture_button(
                         "capture-all",
-                        "Capture all displays",
-                        capturing,
+                        "All displays",
+                        unavailable,
                         cx.listener(|this, _, _, cx| this.capture_all(cx)),
-                    ))
-                    .child(capture_button(
-                        "capture-region",
-                        "Capture 400×300 center",
-                        capturing,
-                        cx.listener(|this, _, _, cx| this.capture_center_region(cx)),
                     )),
             )
             .child(
                 div()
                     .text_sm()
-                    .text_color(rgb(0xa3a3a3))
-                    .child(capture_status),
+                    .text_color(rgb(0x94a3b8))
+                    .child(self.hotkey_status.clone()),
             )
-            .children(last_path.map(|path| {
+            .child(div().text_sm().child(self.capture_status.clone()))
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .p_4()
+                    .gap_2()
+                    .rounded_lg()
+                    .bg(rgb(0x1d222c))
+                    .child("Last capture")
+                    .children(
+                        self.last_render
+                            .clone()
+                            .map(|render| img(render).h(px(160.0)).max_w_full().rounded_md()),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .flex_wrap()
+                            .gap_2()
+                            .child(capture_button(
+                                "copy-last-capture",
+                                "Copy again",
+                                busy || (self.last_capture.is_none() && self.last_saved.is_none()),
+                                cx.listener(|this, _, _, cx| this.copy_last_capture(cx)),
+                            ))
+                            .child(capture_button(
+                                "save-capture-as",
+                                "Save as…",
+                                busy || (self.last_capture.is_none() && self.last_saved.is_none()),
+                                cx.listener(|this, _, _, cx| this.save_capture_as(cx)),
+                            ))
+                            .child(capture_button(
+                                "reveal-last-capture",
+                                "Show file",
+                                last_saved.is_none(),
+                                move |_, _, cx| {
+                                    if let Some(path) = &last_saved {
+                                        cx.reveal_path(path);
+                                    }
+                                },
+                            )),
+                    )
+                    .child(div().text_sm().child(self.clipboard_status.clone()))
+                    .child(div().text_sm().child(self.save_status.clone())),
+            )
+            .child(
                 div()
                     .flex()
                     .flex_col()
                     .gap_2()
-                    .child(
-                        img(path)
-                            .id("last-capture")
-                            .h(px(200.0))
-                            .max_w_full()
-                            .rounded_md(),
-                    )
-                    .into_any_element()
-            }))
+                    .child("Capture a display")
+                    .children(displays.into_iter().enumerate().map(|(index, display)| {
+                        let id = display.id;
+                        div()
+                            .id(("display-capture", index))
+                            .px_3()
+                            .py_2()
+                            .rounded_md()
+                            .bg(rgb(0x242b36))
+                            .cursor_pointer()
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                if !unavailable {
+                                    this.start_capture(vec![CaptureJob::Display(id.clone())], cx);
+                                }
+                            }))
+                            .child(format!(
+                                "{} · {} × {}{}",
+                                display.name,
+                                display.width,
+                                display.height,
+                                if display.is_primary {
+                                    " · Primary display"
+                                } else {
+                                    ""
+                                }
+                            ))
+                    })),
+            )
+            .when(self.backend.capabilities().capture_window, |view| {
+                view.child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap_2()
+                        .child(
+                            div()
+                                .flex()
+                                .justify_between()
+                                .items_center()
+                                .child("Capture a window")
+                                .child(capture_button(
+                                    "refresh-windows",
+                                    "Refresh",
+                                    busy || self.refreshing,
+                                    cx.listener(|this, _, _, cx| this.refresh_xcap_lists(cx)),
+                                )),
+                        )
+                        .child(
+                            div()
+                                .id("window-picker")
+                                .max_h(px(180.0))
+                                .overflow_y_scroll()
+                                .flex()
+                                .flex_col()
+                                .gap_1()
+                                .children(windows.into_iter().enumerate().map(
+                                    |(index, (id, title))| {
+                                        div()
+                                            .id(("capture-window", index))
+                                            .flex_none()
+                                            .px_3()
+                                            .py_2()
+                                            .rounded_md()
+                                            .bg(rgb(0x242b36))
+                                            .cursor_pointer()
+                                            .on_click(cx.listener(move |this, _, _, cx| {
+                                                if !unavailable {
+                                                    this.start_capture(
+                                                        vec![CaptureJob::Window(id.clone())],
+                                                        cx,
+                                                    );
+                                                }
+                                            }))
+                                            .child(title)
+                                    },
+                                )),
+                        )
+                        .child(
+                            div()
+                                .text_sm()
+                                .text_color(rgb(0x94a3b8))
+                                .child(self.list_status.clone()),
+                        ),
+                )
+            })
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .p_4()
+                    .gap_2()
+                    .rounded_lg()
+                    .bg(rgb(0x1d222c))
+                    .child("Save folder")
+                    .child(div().text_sm().child(folder))
+                    .child(capture_button(
+                        "choose-output-directory",
+                        "Change folder…",
+                        busy,
+                        cx.listener(|this, _, _, cx| this.choose_output_directory(cx)),
+                    ))
+                    .child(div().text_sm().child(self.settings_status.clone())),
+            )
+            .child(capture_button(
+                "toggle-diagnostics",
+                if self.diagnostics {
+                    "Hide diagnostics"
+                } else {
+                    "Diagnostics"
+                },
+                false,
+                cx.listener(|this, _, _, cx| {
+                    this.diagnostics = !this.diagnostics;
+                    cx.notify();
+                }),
+            ))
+            .when(self.diagnostics, |view| {
+                view.child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap_2()
+                        .text_sm()
+                        .text_color(rgb(0x94a3b8))
+                        .child(self.tray_status.clone())
+                        .child(format!("{} overlay window(s)", self.overlays.len()))
+                        .child(capture_button(
+                            "open-probe",
+                            "Open test overlay",
+                            unavailable,
+                            cx.listener(|this, _, _, cx| {
+                                this.open_overlays(OverlayMode::Probe, cx)
+                            }),
+                        ))
+                        .child(capture_button(
+                            "close-overlays",
+                            "Close overlays",
+                            false,
+                            cx.listener(|this, _, _, cx| this.close_overlays(cx)),
+                        )),
+                )
+            })
     }
 }
-
 fn render_frame(shot: &CapturedImage) -> Arc<gpui::RenderImage> {
     let mut bgra = shot.pixels.as_ref().clone();
     for pixel in bgra.pixels_mut() {
@@ -1628,8 +1895,18 @@ fn show_control_window(window: &Window) -> Result<(), String> {
     Ok(())
 }
 
-fn log_overlay_geometry(window: &Window, expected: Bounds<Pixels>) {
+fn log_overlay_geometry(window: &Window, expected: Bounds<Pixels>, _cx: &App) {
+    #[cfg(all(test, target_os = "windows"))]
+    let probe = _cx.try_global::<RegionLatencyProbe>().cloned();
+    #[cfg(all(test, target_os = "windows"))]
+    if let Some(probe) = &probe {
+        probe.mark("overlay_setup");
+    }
     window.on_next_frame(move |window, _| {
+        #[cfg(all(test, target_os = "windows"))]
+        if let Some(probe) = &probe {
+            probe.mark("overlay_first_callback");
+        }
         window.on_next_frame(move |window, _| {
             let actual = window.bounds();
             let viewport = window.viewport_size();
@@ -1640,6 +1917,10 @@ fn log_overlay_geometry(window: &Window, expected: Bounds<Pixels>) {
                 scale = window.scale_factor(),
                 "overlay geometry after presentation"
             );
+            #[cfg(all(test, target_os = "windows"))]
+            if let Some(probe) = &probe {
+                probe.mark("overlay_second_callback");
+            }
         });
     });
 }
@@ -1685,7 +1966,11 @@ fn close_application(cx: &mut App) {
         let entity = cx.global::<ResidentController>().0.clone();
         let busy = entity.update(cx, |this, cx| {
             this.quitting = true;
-            let busy = this.capturing || this.copying || this.saving || this.switching_graphics;
+            let busy = this.capturing
+                || this.copying
+                || this.saving
+                || this.switching_graphics
+                || this.settings_saving;
             if busy {
                 this.capture_status = "Quitting: waiting for active work…".into();
                 cx.notify();
@@ -1702,7 +1987,8 @@ fn close_application(cx: &mut App) {
             let waiting = control
                 .update(cx, |this, _, cx| {
                     this.quitting = true;
-                    let busy = this.capturing || this.copying || this.saving;
+                    let busy =
+                        this.capturing || this.copying || this.saving || this.settings_saving;
                     if busy {
                         this.capture_status = "Quitting: waiting for active work to finish…".into();
                         this.restore_control(cx);
@@ -1753,7 +2039,7 @@ pub fn run() {
                 WindowOptions {
                     window_bounds: Some(WindowBounds::Windowed(bounds)),
                     titlebar: Some(TitlebarOptions {
-                        title: Some("screenshots — phase 0 spike".into()),
+                        title: Some("screenshots".into()),
                         ..Default::default()
                     }),
                     ..Default::default()
@@ -1904,6 +2190,219 @@ mod tests {
             .try_init()
             .unwrap();
         errors
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    #[ignore = "captures the real desktop and opens/cancels region overlays 101 times; release measurement only"]
+    fn resident_region_latency() {
+        assert!(
+            !cfg!(debug_assertions),
+            "run this measurement with --release"
+        );
+        let errors = track_gui_errors();
+        let result = Arc::new(Mutex::new(None));
+        let report = result.clone();
+        let output = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(format!(
+            "../../target/captures/region-latency-{}",
+            probe_timestamp()
+        ));
+        let destination = output.clone();
+        let clipboard =
+            unsafe { windows_sys::Win32::System::DataExchange::GetClipboardSequenceNumber() };
+        gpui_platform::application().with_windowing(gpui::WindowingRequest::Headless).run(move |cx| {
+            cx.set_quit_mode(gpui::QuitMode::Explicit);
+            let controller = cx.new(|cx| SpikeShell::new_controller(None, cx));
+            cx.set_global(ResidentController(controller.clone()));
+            controller.update(cx, |this, _| this.backend = XcapBackend::new(destination));
+            let owner = controller.downgrade();
+            cx.spawn(async move |cx| {
+                let measured = async {
+                    let deadline = std::time::Instant::now();
+                    loop {
+                        if !owner.update(cx, |this, _| this.refreshing).map_err(|e| e.to_string())? { break; }
+                        if deadline.elapsed().as_secs() > 10 { return Err("metadata timeout".to_string()); }
+                        cx.background_executor().timer(std::time::Duration::from_millis(5)).await;
+                    }
+                    let displays = owner.update(cx, |this, _| this.xcap_displays.clone()).map_err(|e| e.to_string())?;
+                    if displays.is_empty() { return Err("no displays available".to_string()); }
+                    let mut samples = Vec::new();
+                    for cycle in 0..101 {
+                        let probe = RegionLatencyProbe { started: std::time::Instant::now(), events: Arc::new(Mutex::new(Vec::new())) };
+                        owner.update(cx, |this, cx| {
+                            if !this.hotkey.as_ref().is_some_and(|key| key.status().split('|').any(|part| part.trim() == "Ctrl+Shift+R: region")) {
+                                return Err("region hotkey is unavailable; no input injected".to_string());
+                            }
+                            cx.set_global(probe.clone());
+                            Ok(())
+                        }).map_err(|e| e.to_string())??;
+                        send_region_probe_hotkey().map_err(|error| format!("cycle {cycle}: {error}"))?;
+                        loop {
+                            cx.background_executor().timer(std::time::Duration::from_millis(2)).await;
+                            let count = probe.events.lock().unwrap().iter().filter(|(stage, _)| *stage == "overlay_second_callback").count();
+                            if count == displays.len() { break; }
+                            if probe.started.elapsed().as_secs() > 10 {
+                                let status = owner.update(cx, |this, _| this.capture_status.clone()).unwrap_or_default();
+                                return Err(format!("region cycle {cycle} timed out: {status}"));
+                            }
+                        }
+                        let compositor_probe = probe.clone();
+                        cx.background_spawn(async move {
+                            app_core::wait_for_desktop_compositor().map_err(|e| e.to_string())?;
+                            compositor_probe.mark("compositor_complete_proxy");
+                            Ok::<_, String>(())
+                        }).await?;
+                        let overlays = owner.update(cx, |this, _| this.overlays.clone()).map_err(|e| e.to_string())?;
+                        if overlays.len() != displays.len() { return Err("missing display overlay".to_string()); }
+                        for handle in &overlays {
+                            let valid = handle.update(cx, |overlay, window, _| {
+                                let Some(snapshot) = &overlay.snapshot else { return false; };
+                                let viewport = window.viewport_size();
+                                overlay.active && overlay.render_image.is_some()
+                                    && (f32::from(viewport.width) * window.scale_factor() - snapshot.width as f32).abs() <= 1.0
+                                    && (f32::from(viewport.height) * window.scale_factor() - snapshot.height as f32).abs() <= 1.0
+                                    && window.bounds().origin == overlay.bounds.origin
+                            }).map_err(|e| e.to_string())?;
+                            if !valid { return Err(format!("overlay geometry/snapshot mismatch in cycle {cycle}")); }
+                        }
+                        probe.mark("geometry_checked");
+                        samples.push(probe.events.lock().unwrap().clone());
+                        // Route cancellation through the rendered overlay's action listener.
+                        overlays[0].update(cx, |_, window, cx| window.dispatch_action(Box::new(CloseOverlay), cx)).map_err(|e| e.to_string())?;
+                        let deadline = std::time::Instant::now();
+                        loop {
+                            cx.background_executor().timer(std::time::Duration::from_millis(5)).await;
+                            if owner.update(cx, |this, cx| !this.switching_graphics && !this.graphics && cx.windows().is_empty()).map_err(|e| e.to_string())? { break; }
+                            if deadline.elapsed().as_secs() > 10 { return Err(format!("cancel action/detach timeout in cycle {cycle}")); }
+                        }
+                        if unsafe { windows_sys::Win32::System::DataExchange::GetClipboardSequenceNumber() } != clipboard {
+                            return Err("region cancel changed clipboard (or external clipboard activity)".into());
+                        }
+                    }
+                    Ok((displays, samples))
+                }.await;
+                *report.lock().unwrap() = Some(measured);
+                cx.update(|cx| cx.quit());
+            }).detach();
+        });
+        let (displays, samples) = result
+            .lock()
+            .unwrap()
+            .take()
+            .expect("region probe did not finish")
+            .unwrap();
+        assert_eq!(
+            errors.load(std::sync::atomic::Ordering::Relaxed),
+            0,
+            "GPUI logged region lifecycle errors"
+        );
+        assert!(!output.exists(), "canceled previews wrote files");
+        let displays = displays
+            .iter()
+            .map(|d| {
+                format!(
+                    "{{\"width\":{},\"height\":{},\"scale\":{}}}",
+                    d.width, d.height, d.scale_factor
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(",");
+        let rows = samples
+            .iter()
+            .enumerate()
+            .map(|(cycle, events)| {
+                let events = events
+                    .iter()
+                    .map(|(stage, ms)| format!("{{\"stage\":\"{stage}\",\"elapsed_ms\":{ms}}}"))
+                    .collect::<Vec<_>>()
+                    .join(",");
+                format!("{{\"cycle\":{cycle},\"events\":[{events}]}}")
+            })
+            .collect::<Vec<_>>()
+            .join(",\n");
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../target/performance/region-latency.json");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, format!("{{\"scenario\":\"injected native region hotkey to compositor proxy\",\"displays\":[{displays}],\"samples\":[{rows}]}}\n")).unwrap();
+        let mut warm: Vec<f64> = samples[1..]
+            .iter()
+            .map(|events| {
+                events
+                    .iter()
+                    .find(|(stage, _)| *stage == "compositor_complete_proxy")
+                    .unwrap()
+                    .1
+            })
+            .collect();
+        warm.sort_by(f64::total_cmp);
+        println!(
+            "region compositor proxy: n=100 p50={:.2} p95={:.2} p99={:.2} max={:.2} ms",
+            warm[49], warm[94], warm[98], warm[99]
+        );
+    }
+
+    #[cfg(target_os = "windows")]
+    fn probe_timestamp() -> u128 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    }
+
+    #[cfg(target_os = "windows")]
+    fn send_region_probe_hotkey() -> Result<(), String> {
+        use windows_sys::Win32::UI::Input::KeyboardAndMouse::*;
+        let keys = [VK_CONTROL, VK_SHIFT, 0x52];
+        let pressed: Vec<_> = [VK_CONTROL, VK_SHIFT, VK_MENU, VK_LWIN, VK_RWIN, 0x52]
+            .iter()
+            .copied()
+            .filter(|key| unsafe { GetAsyncKeyState(i32::from(*key)) } < 0)
+            .collect();
+        if !pressed.is_empty() {
+            return Err(format!(
+                "release modifier/R keys before running the hotkey probe: {pressed:?}"
+            ));
+        }
+        let event = |key, flags| INPUT {
+            r#type: INPUT_KEYBOARD,
+            Anonymous: INPUT_0 {
+                ki: KEYBDINPUT {
+                    wVk: key,
+                    wScan: 0,
+                    dwFlags: flags,
+                    time: 0,
+                    dwExtraInfo: 0,
+                },
+            },
+        };
+        let mut inputs = Vec::new();
+        inputs.extend(keys.iter().map(|key| event(*key, 0)));
+        inputs.extend(keys.iter().rev().map(|key| event(*key, KEYEVENTF_KEYUP)));
+        let sent = unsafe {
+            SendInput(
+                inputs.len() as u32,
+                inputs.as_ptr(),
+                std::mem::size_of::<INPUT>() as i32,
+            )
+        };
+        if sent != inputs.len() as u32 {
+            let releases: Vec<_> = keys
+                .iter()
+                .rev()
+                .map(|key| event(*key, KEYEVENTF_KEYUP))
+                .collect();
+            unsafe {
+                SendInput(
+                    releases.len() as u32,
+                    releases.as_ptr(),
+                    std::mem::size_of::<INPUT>() as i32,
+                );
+            }
+            return Err(format!(
+                "native hotkey injection failed after {sent} events"
+            ));
+        }
+        Ok(())
     }
 
     #[cfg(target_os = "windows")]
