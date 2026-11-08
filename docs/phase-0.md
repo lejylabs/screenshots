@@ -2,6 +2,8 @@
 
 Phase 0 is open. The Windows prototype is usable; the cross-platform exit gate has not passed.
 
+Performance rework: native hotkey/menu callbacks now feed a bounded 32-event async channel instead of two 50ms polling loops. The receiver sleeps until an event arrives and does not need a Tokio runtime. Queue overflow ignores additional actions with a warning; callbacks never block waiting for capacity. Build, routing/bounded-queue tests and the explicit GPUI repeat/cancel test pass. Native hotkey/tray interaction and release-mode CPU/wakeup measurements remain to be checked; this is not a measured idle-budget pass. File-based frame transfers and clipboard read-back remain prototype debt.
+
 ## Evaluated versions
 
 - `gpui-unofficial` and `gpui-platform-gpui-unofficial`: exactly 1.27.0, the named Zed v1.27.0 snapshot. Cargo uses exact requirements because Cargo.lock is intentionally not versioned in this repository.

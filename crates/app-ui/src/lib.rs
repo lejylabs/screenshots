@@ -95,32 +95,6 @@ impl SpikeShell {
                 shell.tray_status =
                     "Tray: Bereich auswählen / Capture / Show control window / Quit".into();
                 tracing::info!("tray icon created");
-                let control = window.window_handle();
-                cx.spawn(async move |this, cx| {
-                    loop {
-                        cx.background_executor().timer(std::time::Duration::from_millis(50)).await;
-                        if this.update(cx, |this, cx| {
-                            let commands = this.tray.as_ref().map(|tray| tray.take_commands()).unwrap_or_default();
-                            for command in commands {
-                                tracing::info!(?command, "tray command");
-                                match command {
-                                    app_core::TrayCommand::Capture => this.capture_primary(cx),
-                                    app_core::TrayCommand::Region => this.open_overlays(OverlayMode::Fullscreen, cx),
-                                    app_core::TrayCommand::Show => {
-                                        if this.capturing || this.preview_active { continue; }
-                                        if let Err(error) = control.update(cx, |_, window, cx| {
-                                            if let Err(error) = show_control_window(window) {
-                                                tracing::error!(%error, "could not show control window");
-                                            }
-                                            cx.activate(true);
-                                        }) { tracing::warn!(%error, "could not show control window"); }
-                                    }
-                                    app_core::TrayCommand::Quit => cx.defer(close_application),
-                                }
-                            }
-                        }).is_err() { break; }
-                    }
-                }).detach();
             }
             Err(error) => {
                 tracing::warn!(%error, "tray creation failed");
@@ -134,43 +108,46 @@ impl SpikeShell {
                     shell.hotkey_status = hotkey.status().to_string();
                     tracing::info!(status = %shell.hotkey_status, "global hotkey registration complete");
                     shell.hotkey = Some(hotkey);
-                    cx.spawn(async move |this, cx| {
-                        loop {
-                            cx.background_executor()
-                                .timer(std::time::Duration::from_millis(50))
-                                .await;
-                            if this
-                                .update(cx, |this, cx| {
-                                    let commands = this
-                                        .hotkey
-                                        .as_ref()
-                                        .map(|hotkey| hotkey.take_commands())
-                                        .unwrap_or_default();
-                                    for command in commands {
-                                        tracing::info!(?command, "global capture hotkey pressed");
-                                        match command {
-                                            app_core::CaptureCommand::Primary => {
-                                                this.capture_primary(cx)
-                                            }
-                                            app_core::CaptureCommand::Region => {
-                                                this.open_overlays(OverlayMode::Fullscreen, cx)
-                                            }
-                                        }
-                                    }
-                                })
-                                .is_err()
-                            {
-                                break;
-                            }
-                        }
-                    })
-                    .detach();
                 }
                 Err(error) => {
                     tracing::warn!(%error, "global capture hotkey registration failed");
                     shell.hotkey_status = format!("Global hotkeys unavailable: {error}");
                 }
             }
+        }
+        #[cfg(target_os = "windows")]
+        {
+            let mut events = app_core::desktop_events();
+            let control = window.window_handle();
+            cx.spawn(async move |this, cx| {
+                while let Some(event) = events.recv().await {
+                    if this.update(cx, |this, cx| {
+                        match event {
+                            app_core::DesktopEvent::Hotkey(event) => {
+                                match this.hotkey.as_ref().and_then(|hotkey| hotkey.command(event)) {
+                                    Some(app_core::CaptureCommand::Primary) => this.capture_primary(cx),
+                                    Some(app_core::CaptureCommand::Region) => this.open_overlays(OverlayMode::Fullscreen, cx),
+                                    None => {},
+                                }
+                            }
+                            app_core::DesktopEvent::Menu(event) => {
+                                match this.tray.as_ref().and_then(|tray| tray.command(event)) {
+                                    Some(app_core::TrayCommand::Capture) => this.capture_primary(cx),
+                                    Some(app_core::TrayCommand::Region) => this.open_overlays(OverlayMode::Fullscreen, cx),
+                                    Some(app_core::TrayCommand::Show) if !this.capturing && !this.preview_active => {
+                                        if let Err(error) = control.update(cx, |_, window, cx| {
+                                            if let Err(error) = show_control_window(window) { tracing::error!(%error, "could not show control window"); }
+                                            cx.activate(true);
+                                        }) { tracing::warn!(%error, "could not show control window"); }
+                                    }
+                                    Some(app_core::TrayCommand::Quit) => cx.defer(close_application),
+                                    _ => {},
+                                }
+                            }
+                        }
+                    }).is_err() { break; }
+                }
+            }).detach();
         }
         shell
     }

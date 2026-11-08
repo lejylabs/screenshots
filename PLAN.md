@@ -2,6 +2,8 @@
 
 > **Simple for beginners. Powerful for professionals.**
 
+**Status (2026-11-08):** This is a production delivery plan, not a claim that the current application is production-ready. Phase 0 remains open; see [the measured spike evidence](docs/phase-0.md). The performance contract below applies to the entire application and every future feature. Budgets are acceptance targets, not measurements of the current prototype.
+
 ## 1. Project Vision
 
 Build a modern, open-source desktop application for screenshots, screen recording, image editing, and sharing.
@@ -14,7 +16,7 @@ Rather than simply copying ShareX's feature set, the application should make pow
 
 - **Balanced UX:** Simple for beginners, powerful for professionals.
 - **Cross-platform:** Windows, Linux, and macOS from day one.
-- **Performance:** Native desktop performance with low resource consumption.
+- **Performance:** Near-zero idle activity, small bounded memory use, and immediate visible input response. Performance is a feature and a release gate from Phase 0 onward, including all future extensions.
 - **Open source:** Transparent, community-driven development.
 - **Local-first:** Fully usable without an account or cloud service.
 - **Extensible:** Modular architecture for future integrations and workflows.
@@ -66,11 +68,12 @@ Dependencies are initial candidates, not unconditional commitments. Check mainte
 
 ### Stack constraints
 
-- Pin an exact GPUI source in Phase 0, either a Zed revision or a named crates.io snapshot of upstream GPUI. Upstream GPUI is pre-1.0. Forks that bundle a system tray, global hotkeys, or overlay windows are different projects and are not adopted just because they advertise those features.
+- Pin an exact GPUI source in Phase 0, either a Zed revision or a reviewed crates.io snapshot. The current evaluated packages are `gpui-unofficial` / `gpui-platform-gpui-unofficial` 1.27.0. Record source provenance, packaging/platform patches, licenses and maintenance ownership; a version label is not proof of an unmodified or officially maintained upstream build. Forks that bundle tray/hotkeys/overlays are not adopted solely for those features.
 - System tray, global hotkeys, clipboard, notifications, and file dialogs are platform crates. They are not GPUI features.
 - GPUI's foreground executor is the UI runtime. Tokio is not. See the execution model below.
-- Still images go through the `image` crate. tiny-skia draws vector annotations only. Blur and pixelate are pixel operations, applied when the image is exported.
-- FFmpeg stays out of the MVP. Before a later version bundles it, check the license. A GPL FFmpeg build cannot be statically linked into this MIT application. Prefer a separate FFmpeg process, or a build whose license fits, and record that decision before writing the integration.
+- Still-image codecs/CPU operations use the `image` crate. tiny-skia is a vector rasterization candidate; text requires a shaping/font pipeline. Blur and pixelate have an immediate bounded-resolution preview and are flattened in document order during export.
+- FFmpeg stays out of the MVP. Before bundling it, review the exact build, enabled components and distribution obligations. A GPL-enabled build can impose GPL obligations on the combined distributed program; the MIT license on our own source does not remove those obligations. A separate executable is not a blanket exemption. Record a compatible distribution decision before integration.
+- Keep default features and platform dependencies narrow. Load optional services only when used. Measure release profiles, LTO and dependency changes; do not assume Rust, a GPU renderer or more threads automatically make the application fast.
 
 ### Database decision: rusqlite
 
@@ -92,7 +95,7 @@ Implementation guidelines:
 - Enable SQLite WAL mode.
 - Use prepared statements.
 - Use transactions for related database changes.
-- Add schema migrations from the beginning.
+- Add migrations with the first real database schema (Phase 5), not an otherwise unused database service during startup.
 - Keep database access off the GPUI foreground executor. The render path is part of that executor.
 - Execute blocking operations through a dedicated database worker or controlled blocking tasks.
 - Start with a single database connection; introduce additional connections only when justified by actual workloads.
@@ -107,7 +110,7 @@ Use a modular Rust workspace with clear boundaries between the UI, application l
 
 ### Architectural principles
 
-1. GPUI must not contain application business logic.
+1. GPUI views contain presentation and interaction, not business logic.
 2. The application core must not depend on GPUI.
 3. Platform-specific implementations must be hidden behind common interfaces.
 4. Database and filesystem operations must be isolated from UI rendering.
@@ -169,7 +172,7 @@ project/
 └── README.md
 ```
 
-This is the intended long-term structure, not a requirement to create every crate immediately.
+This is a responsibility map, not a list of crates to create. The existing four-crate workspace is the starting point; most responsibilities should initially remain modules.
 
 Start with a smaller number of crates and split modules when their responsibilities and complexity justify it.
 
@@ -204,21 +207,81 @@ Start with a smaller number of crates and split modules when their responsibilit
 
 ### Execution model
 
-GPUI runs the interface on its own foreground executor. That executor is not a Tokio runtime. Do not start the process with `#[tokio::main]`, and do not call Tokio from the foreground executor.
+GPUI runs the interface on its own foreground executor. That executor is not a Tokio runtime. Do not start the process with `#[tokio::main]`; do not block it or poll futures that require a Tokio reactor there. Sending a request to an infrastructure-owned runtime is allowed.
 
 Use three places for work:
 
-- **Foreground:** GPUI state, rendering, and short input handling. No capture, database, filesystem, image encoding, or HTTP here.
+- **Foreground:** GPUI state, rendering, short input handling, and native event registration/window calls that require this thread. No blocking enumeration, capture, database, filesystem, image encode/decode, filters, synchronous logging or HTTP here. Defer native work that can synchronously re-enter borrowed toolkit state.
 - **Blocking workers:** SQLite, image encode and decode, thumbnail generation, and native capture calls that are synchronous. One database connection on one worker is enough to start.
 - **Tokio runtime:** HTTP uploads and similar network I/O, owned by the infrastructure layer. Completed work is delivered back to the foreground executor.
 
 Native capture APIs that must run on a specific thread stay on that thread. The core talks to them with a message. It does not pretend that every platform API is async.
+
+### Performance contract — all versions and features
+
+The application should feel absent when idle and immediate when used. Zero RAM use and zero physical latency are impossible; hidden work, unbounded caches and visibly stalled input are not acceptable substitutes. Do not lower budgets silently to make a benchmark pass. A failing backend or UI toolkit must be reduced, replaced, or explicitly reconsidered before its gate passes.
+
+#### Reference workloads and initial budgets
+
+Use a documented modest reference machine: four CPU cores, 8 GiB RAM, an integrated GPU, SSD, and a 60 Hz display. Record actual model, OS/compositor, power mode, display resolution/DPI and driver. Run on AC and repeat responsiveness checks in the normal battery power mode. Also exercise 120/144 Hz input/rendering where available. A high-end development GPU is not the release baseline.
+
+The following are initial release acceptance targets. Establish actual baselines in Phase 0 and retain results for each supported platform/session; these numbers are not claimed to be achieved today.
+
+| Scenario | Acceptance target |
+|---|---|
+| Resident tray, all windows hidden, no jobs | Mean process CPU <=0.1% of one logical core over 5 minutes after warmup; no application polling timers, periodic enumeration, idle redraw loop or idle disk/network traffic |
+| Resident tray memory, no live image consumers | <=50 MiB process private committed/footprint memory and <=16 MiB app-owned GPU resources; also report resident memory and driver allocations separately, without hiding them by trimming the working set |
+| Visible empty control/history shell | <=100 MiB private memory and <=32 MiB app-owned GPU resources; no frames when unchanged; first usable window <=150 ms p95 when resident |
+| Cold launch | Tray/hotkeys usable <=1 s p95; database history, upload runtime and editor loading must not gate readiness |
+| Input response | Visible acknowledgment <=50 ms p95 for clicks/commands; selection/drag feedback by the next presented frame, without waiting for workers |
+| Foreground work during interaction | <=4 ms p95 application CPU work per frame; <=16.7 ms p95 presented-frame intervals at 60 Hz, <=8.3 ms at 120 Hz; no application-caused stall >50 ms in the reference run |
+| Warm resident region capture | Hotkey received to correct frozen overlay accepting input <=150 ms p95 at 2560×1440, <=250 ms at 3840×2160, excluding explicit OS permission UI |
+| Copy selected region / full display | Release of selection or receipt of capture command to clipboard ready <=300 ms p95 at 1440p, <=500 ms at 4K; local save completion measured separately, target <=1 s p95 on the reference SSD |
+| Return to tray | Release session pixel buffers, editor/overlay textures and temporary image references within 5 s after their last consumer; after 30 s, private memory <=idle baseline +16 MiB |
+| Repeated use | After cache warmup, 500 capture/cancel/open/close cycles show no persistent upward allocation trend; retained private memory <=warm baseline +10 MiB, with OS/driver caches reported separately |
+
+CPU means accumulated process user+kernel CPU time divided by elapsed wall time, multiplied by 100; it is not divided again by logical processor count. On Windows report Private Bytes as the private-memory budget and private working set separately; on macOS report physical footprint and resident size; on Linux report private mappings and PSS/RSS. These metrics are not interchangeable. Keep per-platform baselines and explain driver/shared-memory costs instead of claiming cross-platform byte equivalence.
+
+Active-image memory is budgeted by pixels, not by a fixed idle number. Let `S` be the total decoded source bytes for the current session (including row stride and every selected display) and `E` the bytes of the selected output. For 8-bit RGBA, one tightly packed 4K image is about 31.6 MiB. Start with a total CPU-image-buffer limit of `2*S + 2*E + 32 MiB` above the shell baseline, and a GPU image allocation limit of `S + E + 32 MiB`. Every pool/cache counts against these limits; HDR/float buffers use their real byte depth. OS-owned clipboard copies and backend/driver allocations must be reported as additional costs, not silently omitted. Set an admission ceiling of 256 MiB decoded source data per job initially; larger desktops/images need an explained limit or a separately measured bounded/tiled path before acceptance. Never allocate to exhaustion or partially capture a desktop without telling the user.
+
+Clipboard ownership can be a live consumer even with every window hidden, particularly on Linux. Preserve paste semantics: never clear the clipboard just to meet an idle number. Retain at most the single required output representation, release the larger source/preview data, and report its actual retained bytes separately; the private-memory ceiling in that state is the 50 MiB idle base plus that representation. Avoid an extra decoded copy when the native clipboard can serve encoded data. The return-to-idle and soak checks must compare identical clipboard ownership states, not disguise a retained image as a leak or exclude a real allocation from the total.
+
+#### Mandatory implementation rules
+
+- Idle is event-driven. Deliver hotkey/tray/IPC events through native callbacks and an executor wakeup/channel. No 20 Hz event-receiver polling, permanent capture streams, busy waits or resident housekeeping timers. A bounded, operation-scoped visibility wait is allowed; long-lived idle polling is not.
+- Render only on invalidation. Coalesce mouse moves to the latest position per frame; avoid one task per move. Hidden windows must not schedule frames or retain full-resolution image textures. Reuse a bounded set of native overlay shells only if images/textures are released and measurements justify keeping the shells.
+- Keep a captured frame in memory through selection, crop, preview and clipboard. Do not PNG-encode to disk and decode it again to feed the next stage. Store source buffers with explicit ownership; reuse immutable data where possible and copy only when a consumer requires a different representation. Record unavoidable backend/clipboard copies. Do not promise zero-copy without measuring it.
+- A canceled selection must not save a full-desktop PNG, create history or change the clipboard. Release its buffers. Full-desktop debug dumps are explicit opt-in diagnostics with short retention, never the production default.
+- Copy from pixels and encode once per required export representation. Clipboard round-trip reads and whole-image pixel comparisons belong in tests/diagnostics, not every production copy. Reuse encoded output for saving/uploading when the representation matches.
+- Allocate each image/texture once per required representation. No full-bitmap undo snapshots, full-frame re-upload for moving a selection rectangle, per-frame filesystem reads or whole-frame filters on the UI thread. Use cropped/dirty-region work and cancel obsolete results. A reusable buffer pool is bounded in bytes and released when idle; it is not an excuse for permanent peak RAM.
+- Every worker queue, cache and undo history has a byte/item bound. Start with one active capture job and no unbounded capture backlog; duplicate triggers coalesce or receive a busy response. Allow at most two uploads and one CPU-heavy image job initially. Inactive workers sleep; optional network/editor services initialize on demand. Benchmark before increasing concurrency.
+- Capture and interactive preview work take priority over optional thumbnails/indexing. Do not place a hotkey capture behind a queue of background image jobs. Use the existing executors with bounded admission and measured scheduling before introducing a separate thread pool per feature.
+- Add cancellation, deadlines, job/session IDs and stale-result checks to every long operation. A late result must not reopen a canceled overlay, copy an old image, replace a newer document, or dereference a removed window. Blocking APIs that cannot be interrupted need a bounded lifecycle or an isolated fallback; spawning another thread after each timeout does not solve a hung call.
+- Enumerate displays/windows on demand or OS topology notifications, off the foreground executor where permitted. Refresh only affected metadata. Never enumerate every window after every capture just to update diagnostics.
+- History uses indexed, paged queries and a virtualized list/grid. Decode only visible thumbnails with bounded prefetch and a byte-limited cache. Search cancels obsolete queries. Loading 10,000 history rows must not create 10,000 views or decode their originals.
+- Recording, OCR, uploads, plugins and later features follow the same idle/UI/memory contract. They consume resources only when requested; hidden background work, streaming capture and automatic network checks require an explicit product need and their own measured active-work budget.
+
+#### Measurement and regression gate
+
+- Measure optimized packaged/release builds, not `cargo run` debug timings. Keep a profiling build with symbols. Compare LTO/codegen/startup tradeoffs rather than adopting every optimization flag by default.
+- Record cold launch separately from warm resident capture. Timestamp input receipt, capture start/end, hide/compositor wait, first correct presented overlay, crop, clipboard completion and durable save separately. Report end-to-end latency as well as stage timings; native capture alone is not the user-facing result.
+- Run at least 100 warm captures per latency scenario and 20 cold launches, report p50/p95/p99 and max (cold-launch percentiles are provisional with only 20 samples). Use fixed image fixtures plus real 1440p/4K, mixed-DPI and permission/portal sessions. Exclude user decision time only when it is also reported separately. Consent/backend delays are not excuses to freeze input or hide end-to-end latency.
+- Measure idle before and after captures, editing, history scrolling and uploads; include CPU, wakeups, disk/network activity, private/resident memory, allocation high-water marks and GPU usage. Do not keep CPU sampling, frame counters or full-resolution dumps enabled in ordinary production idle.
+- Test input while encoding, uploading, paging history and exporting large images. Verify queue admission, cancellation, disk-full and worker-failure behavior under load. Unit tests do not replace hardware presentation/energy measurements.
+- Run deterministic allocation/copy/queue tests in CI. Use a stable reference machine for latency/energy comparisons; noisy shared-runner timings are reports, not trustworthy hard latency gates. Any repeatable >10% p95 latency/private-memory regression on the same workload requires a recorded cause and remediation before merge, even if the absolute budget still passes. Report small/noisy differences as inconclusive.
+- Every phase has performance evidence for its new path. New dependencies, caches, background services and high-resolution pipelines need a stated resource cost. Performance is not deferred to Phase 6.
+
+#### Prototype debt that must not ship
+
+The initial spike's two 50 ms receiver-polling loops have been replaced with a bounded native-event bridge. Foreground window enumeration, file-based frame handoffs, full-desktop preview PNGs on cancellation, repeated PNG decoding, and clipboard read-back verification on every copy remain. Image queues/caches still lack production byte limits and measured memory baselines. Replace these remaining paths before production acceptance; passing the functional spike is not a performance result. See [Phase 0 evidence](docs/phase-0.md) for what was actually exercised.
 
 ### Process lifecycle
 
 A capture tool should run as a single instance. A second launch forwards its request to the running instance and exits. Two instances would register the same hotkeys and write the same history.
 
 The running instance owns the tray icon, the hotkeys, and the database worker. Closing the main window hides the window. Quitting is explicit.
+
+Use authenticated/user-scoped local IPC with bounded messages; a second launch must never silently create another tray/hotkey owner when forwarding fails. Native registrations stay on their required event-loop thread. Tray availability is a capability: sessions without a tray get an accessible window/launcher alternative, never a hidden process the user cannot reopen. Hide-on-close requires such a working reopen path. On quit, stop accepting jobs, cancel or bound outstanding work, release registrations and close storage in order. Test restart, sleep/resume, display disconnect, device loss and session lock; no stale frames or callbacks after shutdown.
 
 ---
 
@@ -241,11 +304,13 @@ It should be designed around a common API with platform-specific implementations
 - Permission handling.
 - Clipboard integration.
 
-### Initial implementation candidate: Scap
+Define modes precisely: primary-display capture and explicitly selected-display capture return one image; all-displays capture returns one image per output in the MVP. Region selection is confined to one selected output initially. A stitched virtual desktop or a drag spanning mixed-DPI monitors is separate scope and must not be implied by the phrase multi-monitor support. Display/window IDs are session-scoped and can become stale; validate them and the topology at capture time and cancel selection on an incompatible topology change.
+
+### Stream candidate for evaluation: Scap
 
 Repository: https://github.com/CapSoftware/scap
 
-Evaluate Scap first because it provides a potential cross-platform abstraction for screen capture.
+The existing Windows still-image spike uses XCap. Evaluate Scap only where a stream API or missing backend capability justifies it, especially future recording/PipeWire work. Do not replace the measured still-image path just to use one library everywhere.
 
 It advertises support for:
 
@@ -263,7 +328,7 @@ Test its actual capabilities before deciding whether to build additional native 
 
 Repository: https://github.com/nashaofu/xcap
 
-Evaluate XCap as an alternative or complementary implementation for still images on Windows, macOS, and X11.
+XCap 0.9.8 is the evaluated Windows still-image candidate. Measure its suitability on macOS and X11 before claiming those targets work. Pin accepted backend revisions and record the exact platform/session in the spike notes.
 
 On Wayland, measure it before trusting it. Expect incomplete window lists, limited screen capture, and monitor positions that cannot be used to crop a region. A reported origin of `(0, 0)` for every output is a known class of failure. Do not build region selection on those coordinates.
 
@@ -271,7 +336,7 @@ On Wayland, measure it before trusting it. Expect incomplete window lists, limit
 
 Also evaluate the XDG Desktop Portal directly, through a Rust portal client such as `ashpd`.
 
-The portal is the supported still-image path on GNOME, and it works on other compositors that ship a portal backend. It can be the Wayland backend even when Scap or XCap is used on Windows, macOS, and X11.
+Use the portal as the Wayland still-image candidate on GNOME and other compositors with an appropriate backend. Introspect the available interface version and runtime capabilities; installed portal software is not proof that a particular capture mode works. It can be the Wayland backend while XCap handles Windows/macOS/X11.
 
 Portal cancellation is a normal outcome, not an application error. Permission denial must be shown to the user with the next step, not swallowed as an empty image.
 
@@ -319,19 +384,19 @@ pub trait CaptureBackend: Send {
 }
 ```
 
-`capabilities` is part of the contract. A method the platform cannot perform returns a typed unsupported error, and the UI does not offer that action. On many Wayland sessions, window listing and window capture are unavailable. Display capture may also be available only through a portal flow.
+`capabilities` is part of the contract and reflects the current session/API/permissions, not just `cfg!(target_os)`. Distinguish direct window enumeration/capture from portal-mediated user selection: a portal may offer a user-picked window without exposing a window list to the application. Unsupported actions stay absent or unavailable with an explanation. Display capture may be available only through a portal flow.
 
-The example is synchronous on purpose. Windows Graphics Capture, ScreenCaptureKit, and X11 grabs are synchronous or callback-based, and several of those types are `Send` without being `Sync`. Do not require `Sync`, and do not wrap them in an async trait just to look uniform.
+The example is synchronous on purpose. Native grabs may be synchronous or callback-based. The `Send` contract applies to a core-facing handle; thread-affine native objects stay on their owner thread behind that handle. Do not require `Sync`, transfer objects that are not transferable, or wrap an operation in an async trait just to look uniform.
 
-Portal calls are the exception: they wait on D-Bus. Await that wait in the infrastructure runtime, or run it on the blocking worker. Do not await it on the GPUI foreground executor.
+Portal calls wait on D-Bus. Poll their runtime-dependent futures on the integration's executor and return a completion to GPUI. GPUI may await a compatible completion receiver without blocking; it must not block a worker for the entire time a user is deciding in a consent dialog. Portal requests support cancellation and do not occupy the image-processing queue while waiting.
 
-The final type can be a trait or an enum. Prefer an enum if a trait object cannot be made object-safe without hiding platform types. The application core depends on the common result types either way.
+The final type can be a trait or an enum. The application core depends on common result types either way. A production capture result owns or references validated in-memory pixels with dimensions, stride, channel/alpha format, color metadata and source identity; a filesystem path is an export result, not the transport between capture, overlay, crop and clipboard. Check byte-size arithmetic before allocation.
 
 ### Region selection
 
 Region selection is not one portable workflow. Use the path the platform actually allows.
 
-**Custom overlay.** Windows, macOS, X11, and Wayland compositors that support layer-shell. The pinned UI toolkit must be able to create that surface. A transparent toplevel is enough on Windows, macOS, and X11. On Wayland it is not. Upstream GPUI does not speak layer-shell. If the spike cannot show a layer-shell surface, Wayland uses portal selection even on compositors that support the protocol.
+**Custom overlay.** Windows, macOS and X11 use validated native overlay windows. A Wayland custom overlay requires a compositor advertising the appropriate layer-shell protocol and a validated capture coordinate/input path. The pinned `gpui-unofficial` 1.27.0 source contains `WindowKind::LayerShell` and a `layer_shell` example; upstream also includes it. The old claim that GPUI has no layer-shell support is incorrect. An API/example alone does not validate output targeting, exclusive keyboard input, fractional scaling or our capture path. Layer-shell does not grant screen-capture permission or a usable global image coordinate system. Until those checks pass for a session, use portal selection/editor crop.
 
 1. Hide this application's own windows, or exclude them from the capture, so the overlay is not part of the image.
 2. Capture the selected display when the platform provides a frame and a usable coordinate space.
@@ -340,9 +405,9 @@ Region selection is not one portable workflow. Use the path the platform actuall
 5. Crop the captured frame.
 6. Return the image.
 
-**Portal selection.** Wayland sessions where a custom overlay cannot cover the desktop. GNOME is in this group, because Mutter does not implement wlr-layer-shell. An XWayland fullscreen window is not a substitute: it is not a desktop overlay, and it does not reliably receive the keyboard when another application is focused.
+**Portal selection.** Use this for Wayland sessions where our custom overlay/capture path is unavailable or unvalidated, including the planned GNOME path. Detect protocol availability on the running compositor rather than hardcoding support from a desktop name. An XWayland fullscreen window is not a substitute for a validated native Wayland overlay with correct keyboard access.
 
-1. Ask the XDG Desktop Portal for an interactive screenshot, or for a source the user picks.
+1. Inspect the portal version. With Screenshot interface version 3 or later, request a `target` only when advertised in `AvailableTargets`. On older backends, `interactive` is a customization hint, not a guaranteed area/window picker; validate the actual UX and provide editor crop where necessary.
 2. Treat cancellation as a normal outcome.
 3. Use the image the portal returns. Do not invent a global monitor origin the compositor did not provide.
 
@@ -354,7 +419,7 @@ A normal toplevel window is not an overlay. On Wayland, covering the screen requ
 
 Store still captures as PNG. Width and height in the database are physical pixels.
 
-Keep the pixel format explicit at the capture boundary: channel order, premultiplied alpha, and color space. Convert once into the editor's working image. macOS frames may be wide-gamut. Do not assume every source is sRGB, and do not drop the color space silently. The default export is PNG in the working color space. JPEG can be added later as an explicit export option.
+Keep channel order, stride, alpha representation and color space explicit at the capture boundary. MVP export targets SDR sRGB PNG with appropriate color metadata. Convert supported tagged sources into that space once; validate HDR/tone mapping and wide-gamut inputs per backend or mark the mode unsupported. Unknown color metadata is an explicit limitation, not proof of sRGB. Do not claim HDR preservation for an 8-bit RGBA backend. Budget conversion buffers. JPEG can be added later as an explicit export option.
 
 ### Important edge cases
 
@@ -369,7 +434,7 @@ Keep the pixel format explicit at the capture boundary: channel order, premultip
 - Window movement during capture.
 - Display changes during application runtime.
 - The application's own overlay, editor, or main window appearing in the shot.
-- Portal cancellation and a denied or not-yet-granted permission. An empty or black frame is a failure to report, not a successful capture.
+- Portal cancellation and denied/not-yet-granted permission are typed outcomes. Empty or structurally invalid frames fail. All-black pixels alone are not a reliable failure detector: a valid selection can be black. Use backend status/permissions to distinguish protected or unavailable content; never fabricate a successful frame after a backend error.
 - No global coordinate space, including Wayland outputs reported at `(0, 0)`.
 - Windows.Graphics.Capture consent UI and capture border.
 - macOS Screen Recording permission that behaves differently for `cargo run` than for a signed, stable bundle. The spike must include the packaged form, not only a debug binary.
@@ -408,6 +473,7 @@ OpenSettings
 ```text
 CaptureStarted
 CaptureCompleted(CaptureId)
+CaptureCanceled
 CaptureFailed
 
 UploadStarted
@@ -421,6 +487,8 @@ CaptureDeleted
 The UI sends commands to the application core and receives state updates or events.
 
 The application core handles the actual workflows and communicates with the required services.
+
+Model a capture session explicitly: idle, preparing, awaiting permission, selecting, processing, completed, canceled or failed. A terminal state restores or hides UI according to the initiating context and releases ownership exactly once. Give each session an ID; topology changes, cancellation and shutdown invalidate late callbacks. Restore UI on every failure path without forcing focus away from another application for a background capture unless the workflow needs it.
 
 ---
 
@@ -476,6 +544,8 @@ Additional tables can be introduced when necessary for recordings, workflows, or
 - Dedicated database worker or controlled blocking execution.
 - No database access from the GPUI foreground executor, including during render.
 
+When the first database schema is introduced in Phase 5, include migrations, foreign keys and indexes from its first version. Keep the database on a local application-data filesystem: SQLite WAL is not a network-filesystem design. The user-configurable export directory is separate. Bound busy waits and checkpoint work on the database worker; document the chosen synchronous/durability policy and test power-loss behavior. Do not disable durability merely to improve benchmark numbers. Back up before destructive migrations, test upgrades from every released schema, and open newer unknown schemas without destructive changes (or explain incompatibility).
+
 ### Filesystem
 
 Use platform-appropriate application data directories.
@@ -490,6 +560,10 @@ Support:
 - Exported images.
 
 The user should be able to configure the storage location.
+
+File saving and SQLite are not one atomic transaction. Write to a uniquely named temporary file on the destination filesystem, finish/flush according to the stated durability policy, atomically publish without unintended overwrite, then commit ready metadata. Track pending operations and reconcile interrupted saves/deletes with bounded recovery work. Mark thumbnails as derived data that can be rebuilt lazily. A disk-full, permission or rename failure must not create a success notification or a history entry pointing at a missing file. Report Copy and Save independently when only one succeeds.
+
+Retention is explicit and bounded for history, thumbnails, temporary files and logs. Cleanup may delete only app-owned files under validated storage roots; it must not traverse symlinks or delete arbitrary user exports. Changing folders, unplugging an export drive, and deleting records/files are tested workflows. Export deletion and metadata deletion have a documented order and recoverable partial-failure state. Do not keep sensitive full-desktop preview files after a canceled selection.
 
 MVP history search covers metadata only: file name, date, capture source, and upload URL. Searching the pixels waits for OCR.
 
@@ -538,6 +612,8 @@ URL extraction stays declarative: HTTP status, a response header, or a JSON poin
 
 This makes it possible to integrate many existing upload services without implementing a dedicated provider for every service.
 
+Uploads are explicit opt-in actions, disabled until a destination is configured; capture and editing never upload implicitly. Default to HTTPS. Support user-configured local/self-hosted destinations deliberately, not through URLs taken from images or untrusted responses. Do not forward credentials or replay captured content to a different host through redirects; disable redirects by default. Stream files rather than loading a second full file into RAM. Start with bounded connect/transfer timeouts (5 s / 60 s), a 1 MiB response-body limit and the concurrency limits in the performance contract. Expose cancel and progress without per-packet UI updates. Retry with a finite policy only when safe; a POST is not automatically idempotent. Never auto-open extracted URLs; validate http/https before offering them, and treat returned text/HTML as data.
+
 ### Future providers
 
 - S3-compatible storage.
@@ -560,9 +636,13 @@ A major architectural decision is to use non-destructive editing.
 
 Instead of modifying the original image whenever the user adds an annotation, store annotations as individual objects and render them during export.
 
-Crop is not an annotation. It changes the document canvas and is stored as a crop rectangle so it can be undone. Arrow, rectangle, ellipse, and text are vector objects drawn with tiny-skia. Blur and pixelate are pixel filters applied to a region at export time. The original pixels stay available until the user exports.
+Crop changes the document canvas and is stored as a crop rectangle so it can be undone. Arrow, rectangle and ellipse are vector objects; tiny-skia is a rasterization candidate, not a text layout engine. Choose and test text shaping, font fallback and glyph rendering explicitly, with consistent preview/export layout. Blur and pixelate are ordered image effects: preview them during editing and flatten them into the exported pixels. Draw and apply effects in document order, not in separate passes that silently reorder overlapping objects. Immutable original pixels remain available in memory for undo until the document closes.
 
 Undo and redo record document changes. They do not snapshot the full bitmap on every edit.
+
+Render an immediate bounded-resolution preview while dragging effects; perform expensive refinement/export off-thread with stale-result checks. Limit undo by bytes and commands. Use the same crop/transforms, text layout, alpha handling and layer order in preview and export, verified by deterministic image fixtures. Zoom/pan/selection must not rerasterize the whole full-resolution document on each mouse move.
+
+Only a finalized, flattened document may be copied, saved or uploaded after edits. Never upload the original as a shortcut when redaction/export is still processing or has failed. Raw unredacted originals, undo data and thumbnails must not survive in app-managed history or temporary files by default after a sanitized export; retaining originals is an explicit choice with a clear privacy implication. Previously exported user-owned originals are not silently deleted; explain that sanitizing a new export does not sanitize those earlier copies. Blur/pixelation are visual obscuring tools, not a guarantee of irreversible removal: offer an opaque redaction rectangle and explain the distinction when choosing the tool. Do not promise forensic secure deletion on SSDs or external filesystems.
 
 ### MVP editing tools
 
@@ -573,6 +653,7 @@ Undo and redo record document changes. They do not snapshot the full bitmap on e
 - Text.
 - Blur.
 - Pixelate.
+- Opaque redaction rectangle.
 - Undo.
 - Redo.
 
@@ -661,6 +742,9 @@ The overlay should be quick, unobtrusive, and easy to use.
 - Discoverable functionality for beginners.
 - Native platform behavior where appropriate.
 - Dark and light themes.
+- Immediate pressed/selection feedback; no debounce on direct manipulation. Search may coalesce input and cancel stale requests without blocking typing.
+- No layout-blocking spinners, ornamental perpetual animations or simulated loading delays. Load fonts/assets on demand; respect reduced motion.
+- Keyboard navigation, visible focus, scalable text and accessible labels. Verify actual assistive-technology behavior on each target; GPU rendering does not establish accessibility by itself.
 
 ### GPUI technical evaluation
 
@@ -786,7 +870,7 @@ A platform that cannot list windows, register a global hotkey, or show a custom 
 
 ## 12. Development Roadmap
 
-The following timeline is a rough estimate for an experienced solo developer. Phase 0 is unscheduled on purpose. The weeks below start only after Phase 0 has passed.
+The following timeline is a rough estimate, not a production deadline. Phase 0 is unscheduled; platform, correctness and performance evidence determine the gates. The weeks below start only after Phase 0 has passed. A functional Windows demo does not establish cross-platform readiness or the resource budgets.
 
 If the spike shows that a platform needs its own capture backend, Phase 2 takes as long as that backend takes. Do not drop DPI handling, permissions, or Wayland behavior to protect the two-week estimate.
 
@@ -802,7 +886,7 @@ Tasks:
 - Build a minimal GPUI window on Windows, Linux X11, Linux Wayland, and macOS.
 - Test transparent, frameless, and always-on-top windows on the pinned source.
 - Test placing that window on a non-primary monitor, including a negative origin and a scale factor other than 1.
-- Evaluate Scap for a one-shot frame, including a current PipeWire on Linux.
+- Evaluate Scap where needed to resolve stream/PipeWire questions; a redundant backend is not a gate requirement when an accepted still-image path already meets the target.
 - Evaluate XCap for a still image on Windows, macOS, and X11, and measure its Wayland coordinates and window list.
 - Evaluate an XDG Desktop Portal still capture, including interactive selection and user cancellation.
 - Decide the region-selection path per session type: custom overlay, portal UI, or editor crop.
@@ -810,8 +894,10 @@ Tasks:
 - Register a global hotkey on Windows, macOS, and X11, and record the Wayland result through the GlobalShortcuts portal.
 - Show a system tray icon and a menu on each platform.
 - On macOS, repeat the capture check from a stable signed bundle, not only from `cargo run`.
+- Measure release-mode idle, startup, UI/input latency, end-to-end capture and CPU/GPU memory against the performance contract on modest reference hardware. Test the idle cost of the pinned GPUI renderer before building on it.
+- Compare an in-memory still-image path against the spike's disk/PNG handoff and count allocations/copies. Prove bounded ownership and cancellation; record any capability or budget failure.
 
-**Exit gate:** Continue only if the notes name a capture approach for each target and a UI approach for the region overlay. If the pinned GPUI cannot host the overlay on Windows, macOS, or X11, switch the UI before Phase 1. If the only gap is Wayland layer-shell, Wayland region selection uses the portal. Do not leave that choice implicit.
+**Exit gate:** The notes must name and demonstrate a capture approach and region UI on each declared target/session, distinguish unavailable modes, and include measured performance results or an explicitly unresolved failure. A candidate name or documented failure is not a passing result. Measure the implemented slices (empty resident shell, reference capture and overlay), not future history/editor features. Replace prototype event polling before accepting its idle results. The UI/renderer must meet the idle/input budgets and the capture design must demonstrate a feasible bounded in-memory path; functional correctness alone does not pass the gate. If GPUI cannot support the required overlays or performance, reconsider it before Phase 1. If the only gap is Wayland layer-shell, use validated portal selection/editor crop. Changing supported release targets or relaxing budgets requires an explicit product decision, not an unchecked box silently removed.
 
 **Deliverable:** A short spike note with the pinned revisions, what worked, what failed, and the capture decision.
 
@@ -828,9 +914,11 @@ Tasks:
 - Implement basic navigation for the sections that exist.
 - Establish a small design system: color, type, and spacing. Leave the editor's visual design until Phase 4.
 - Create the application core and the foreground, worker, and Tokio split.
-- Implement logging to a file in the application data directory, and error handling.
+- Replace spike polling with event-driven hotkey/tray/IPC delivery and lazy service startup. Implement bounded queues, session IDs, cancellation and a repeatable performance harness now.
+- Implement bounded asynchronous logging in the application-data directory; rotate/cap files, redact secrets and avoid logging paths/window titles/content by default. Crash reports/full-frame diagnostics require explicit opt-in. Error logging must not become a render-path lock or idle disk writer.
 - Add settings infrastructure without a secret store yet.
 - Set up CI for all three platforms. macOS hosted runners are a cost; record that choice instead of assuming they are free.
+- Record shell idle/private-memory and cold/warm startup baselines; fail this phase if the framework alone exceeds the contract without an agreed replacement/rework.
 
 **Deliverable:** A functioning cross-platform application shell.
 
@@ -848,9 +936,11 @@ Tasks:
 - Implement region selection with the path chosen in Phase 0. Hide the application's own UI before a custom-overlay capture.
 - Add multi-monitor support, including negative origins and mixed scale factors.
 - Handle DPI and coordinate conversion with tests that do not need a display.
-- Preserve pixel format and color space into the PNG.
+- Preserve source metadata, implement the declared SDR sRGB conversion/export policy, and explicitly reject unsupported HDR/wide-gamut paths.
 - Implement permission handling, including denial and portal cancellation.
 - Test X11 and Wayland as separate sessions.
+- Replace file-based frame handoffs with the bounded in-memory ownership model. Test valid all-black images, malformed/oversized frames, late callbacks, device loss and monitor hotplug during selection.
+- Meet overlay/clipboard latency and active-memory budgets; do not encode a canceled preview to disk or retain peak-resolution textures in idle overlay caches.
 
 **Deliverable:** A working screenshot engine whose unsupported modes are explicit.
 
@@ -863,12 +953,14 @@ Tasks:
 - Single-instance lifecycle, tray ownership, and hide-on-close.
 - Global hotkeys, with an explained unavailable state on Wayland when the portal cannot bind them.
 - System tray.
-- Clipboard integration for a PNG round trip.
+- Native clipboard representations from the in-memory frame, including PNG where supported. Run RGBA/PNG round-trip checks in tests rather than reading/comparing the clipboard after every production copy.
 - Save the PNG into the configured folder. This path does not need SQLite yet.
 - Quick-access overlay on the monitor that was captured.
 - Native file dialogs.
 - Notifications.
 - Multi-window behavior.
+- Validate hotkey conflict handling, hide/restore, no-tray fallback, IPC/single-instance races, sleep/resume and clean shutdown. Quitting must release registrations and not lose an already acknowledged save.
+- Verify end-to-end latency and return-to-tray memory after repeated use; no polling loops or background capture streams may remain.
 
 **Deliverable:** A screenshot workflow that feels like a native desktop application.
 
@@ -887,6 +979,8 @@ Tasks:
 - Add blur and pixelate.
 - Implement undo and redo.
 - Implement image export.
+- Add opaque redaction and consistent text shaping/export. Test layer ordering, preview/export parity, sanitized clipboard/upload/history paths, and bounded undo memory.
+- Meet drag/frame-time budgets while background export/filter work is running; release document buffers/textures on close.
 
 **Deliverable:** A functional screenshot editor.
 
@@ -905,6 +999,9 @@ Tasks:
 - Implement generic HTTP uploads.
 - Add URL extraction and automatic copying.
 - Add upload history.
+- Add paged/indexed history with a virtualized viewport, bounded thumbnail decoding/cache, and tests with at least 10,000 records.
+- Test interrupted saves, migrations, partial delete recovery, disk-full, unavailable storage and retention. Test upload timeout/cancel, redirects, response limits and safe retry behavior.
+- Meet idle and input budgets while history/search/uploads are active; no eager history load or network-service initialization on resident startup. A lazily initialized runtime may remain parked only if its retained threads/memory meet the idle budgets.
 
 **Deliverable:** A complete local capture and sharing workflow.
 
@@ -914,8 +1011,8 @@ Tasks:
 
 Tasks:
 
-- Performance optimization.
-- Memory usage optimization.
+- Verify the accumulated performance budgets and remedy remaining regressions; the architecture and measurements have been required in every preceding phase.
+- Run the memory/cancellation soak and resource-admission tests, not just a fast-path demo.
 - Multi-monitor testing.
 - DPI testing.
 - Wayland testing.
@@ -930,11 +1027,20 @@ Tasks:
 
 **Deliverable:** A usable first public release.
 
+### Production verification and release engineering
+
+- Pin the Rust toolchain and release dependency resolution. The user's current development policy leaves Cargo.lock unversioned; keep that policy unchanged in this planning edit, but do not call floating dependency builds reproducible. Prefer versioning the application lockfile before release, or archive the exact resolved lockfile with immutable release inputs, restore it in every release build, and use `--locked`. Exact GPUI/XCap pins alone do not freeze transitive dependencies. Document repeatable dependency/toolchain builds separately from any unproven bit-for-bit build claim.
+- CI runs formatting, linting, deterministic unit/component tests, migration/recovery tests, dependency vulnerability/license checks and builds for each declared target. Isolate hardware tests as explicit jobs; skipped hardware tests must not count as platform validation. Package/install/upgrade/uninstall smoke tests use the actual artifacts, with published checksums, version and dependency/license notices. Audit the real dependency graph, including GPUI packaging, not just top-level crate names.
+- Treat imported images, clipboard images, portal-returned files, IPC messages and uploader responses as untrusted boundaries. Enforce dimension/decoded-byte/stride/path/response limits before allocation or use. Fuzz coordinate/size parsing and uploader response extraction; maintain deterministic regression fixtures. No shell execution from user-provided filenames, URLs or upload response text.
+- Test cancellation and failures at every asynchronous boundary with fake backends and controlled faults: permission revocation, hung/failed capture, renderer/device loss, stale callbacks, full disk, database busy/corruption and shutdown while exporting/uploading. Keep UI available and ownership bounded. Recovery must preserve user-owned files and explain what was or was not saved.
+- Test packaged apps as standard users. Document supported OS/architecture and Linux session/portal versions, signed macOS permissions, Windows signing/SmartScreen status, accessibility and startup/tray fallback. An update mechanism is out of MVP unless explicitly scoped; any later auto-updater must authenticate artifacts, handle failed installs/rollback and meet the same idle/privacy contract.
+- Final release evidence includes the platform capability matrix, hardware/performance reports, storage/migration recovery results, security/privacy review and known limitations. A document or green compile alone does not establish production readiness.
+
 ---
 
 ## 13. Future Development
 
-After the MVP, gradually expand the application.
+After the MVP, gradually expand the application. Every future feature inherits the performance contract, bounded-resource/cancellation rules and production gates. Add an explicit active-work budget for recording, OCR, plugins or synchronization before implementation; no feature may add a permanent idle cost by default.
 
 ### V1.1 – Recording
 
@@ -982,9 +1088,9 @@ The MVP is ready for its first public release when the following requirements ar
 
 ### Cross-platform
 
-- [ ] Reproducible builds on Windows.
-- [ ] Reproducible builds on Linux.
-- [ ] Reproducible builds on macOS.
+- [ ] Windows release builds use the documented frozen dependency/toolchain inputs.
+- [ ] Linux release builds use the documented frozen dependency/toolchain inputs.
+- [ ] macOS release builds use the documented frozen dependency/toolchain inputs.
 - [ ] Linux X11 tested independently.
 - [ ] Linux Wayland tested independently.
 - [ ] Platform-specific permissions handled correctly.
@@ -997,7 +1103,7 @@ The MVP is ready for its first public release when the following requirements ar
 - [ ] Where window capture is unavailable, the action is absent.
 - [ ] Region capture uses the custom overlay where that overlay can cover the captured display.
 - [ ] Wayland sessions that cannot host that overlay use portal selection or editor crop.
-- [ ] A denied permission or a cancelled portal request is shown as such, and does not save a black image.
+- [ ] Denied permission/canceled requests produce typed outcomes and no fabricated image, history entry or clipboard change; a legitimate all-black image is accepted.
 - [ ] The application's own overlay and windows are not part of the captured image.
 - [ ] Multi-monitor support works, including a monitor with a negative origin.
 - [ ] DPI and coordinate handling are correct on mixed scale factors.
@@ -1010,6 +1116,8 @@ The MVP is ready for its first public release when the following requirements ar
 - [ ] Text works.
 - [ ] Blur and pixelate work.
 - [ ] Undo and redo work.
+- [ ] Export and preview agree on text, alpha, layer order and crop/effect coordinates.
+- [ ] Sanitized copy/save/upload/history do not leak the unredacted source; original retention is explicit.
 
 ### Sharing and storage
 
@@ -1019,24 +1127,31 @@ The MVP is ready for its first public release when the following requirements ar
 - [ ] Uploaded URLs can be copied automatically.
 - [ ] Capture history survives application restarts.
 - [ ] Database migrations work.
+- [ ] Interrupted save/delete/migration, disk-full and unavailable storage recovery are tested; success is acknowledged only for completed stages.
+- [ ] Upload timeouts, cancellation, response limits, redirect policy and credential handling pass tests.
 
 ### Desktop integration
 
 - [ ] Global hotkeys work where the platform supports them.
 - [ ] Where a global hotkey cannot be registered, the settings screen says so.
-- [ ] System tray works.
+- [ ] Tray works where available; other sessions retain an accessible reopen/quit path.
 - [ ] Quick-access overlay works.
 - [ ] Native dialogs work.
 - [ ] Notifications work.
+- [ ] Single-instance forwarding, hotkey conflicts, hide/restore, sleep/resume and shutdown are exercised.
 
 ### Quality
 
-- [ ] No capture, database, filesystem, or image-encoding work runs on the GPUI foreground executor.
+- [ ] No blocking enumeration/capture/database/filesystem/image decode/encode/filter/network work runs on the foreground executor; required native UI-thread callbacks stay short and reentrancy-safe.
 - [ ] Coordinate conversion and annotation export are tested without a physical display.
 - [ ] No unnecessary background infrastructure.
 - [ ] Errors are handled gracefully.
 - [ ] Upload credentials are not stored in the TOML file and do not appear in logs.
-- [ ] Resource consumption is reasonable.
+- [ ] The performance contract passes on documented reference hardware/session types; results include idle CPU/wakeups, private/resident/GPU memory, input/presentation, startup and end-to-end capture latency.
+- [ ] No idle polling, hidden redraw loop, production clipboard read-back verification or PNG/disk round trip in the hot path remains.
+- [ ] Queues, caches, decoded images, undo and concurrency are bounded; the 500-cycle test returns to the measured idle budget.
+- [ ] Canceled sessions create no persisted desktop previews and stale results cannot mutate later sessions.
+- [ ] Untrusted input limits, dependency/license checks, recovery tests and packaged install/upgrade/uninstall checks pass.
 - [ ] Installers or documented packages are available.
 - [ ] macOS builds that request Screen Recording are signed and notarized.
 - [ ] Basic documentation is complete, including the Wayland limitations.
@@ -1050,7 +1165,8 @@ These decisions should guide development throughout the project.
 | Decision | Direction |
 |---|---|
 | Main language | Rust |
-| UI framework | Pinned upstream GPUI, not a feature fork by default |
+| UI framework | Pinned, reviewed GPUI source/snapshot; packaging provenance and platform patches recorded |
+| Performance | Mandatory idle/latency/memory budgets, measured from Phase 0 and inherited by every future feature |
 | UI runtime | GPUI foreground executor |
 | Network I/O | Tokio, off the UI executor |
 | Application architecture | Modular Cargo workspace |
@@ -1058,6 +1174,8 @@ These decisions should guide development throughout the project.
 | Database access | rusqlite |
 | Migrations | rusqlite_migration |
 | Image storage | Filesystem, PNG, physical pixel size |
+| Hot path | In-memory frames with bounded ownership; encoding/storage only for required outputs |
+| Scheduling | Native events, invalidation-driven rendering, bounded queues and cancelable jobs |
 | Secrets | OS secret store, never the TOML file |
 | Capture architecture | Common API with native backends and capability flags |
 | Region selection | Custom overlay, portal UI, or editor crop, per session |
@@ -1099,10 +1217,10 @@ Recommended starting order:
 2. Run Phase 0 in a small prototype, with a pinned GPUI revision.
 3. Build and run that prototype on Windows, Linux X11, Linux Wayland, and macOS.
 4. Test transparent, frameless, always-on-top, and multi-monitor window placement before writing application screens.
-5. Evaluate Scap, XCap, and a portal still-capture on the session types above.
-6. Implement one minimal screenshot path that returns a PNG.
+5. Validate XCap/portal still-capture paths; evaluate Scap only for unresolved stream/backend requirements.
+6. Implement a bounded in-memory screenshot path and export its PNG off-thread.
 7. Validate clipboard, hotkeys, and the system tray, and write down where each one is unavailable.
-8. Pass or fail the Phase 0 exit gate.
+8. Measure release-mode idle/startup/input/capture/memory behavior and pass or fail the Phase 0 gate with evidence.
 9. Only then create the application workspace and the shell described in Phase 1.
 
 **Do not start with the full UI or the editor.**
@@ -1120,3 +1238,14 @@ The goal is to build a fast, modern, reliable, and extensible desktop capture pl
 **Rust + GPUI + native platform integrations + SQLite/rusqlite** is the chosen starting direction.
 
 Keep the architecture clean, the implementation pragmatic, and the application useful even without cloud services or an account.
+
+## Technical references for the production review
+
+These sources inform the contracts above; benchmark budgets are project requirements, not numbers taken from these documents.
+
+- [Cargo: manifests versus lockfiles](https://doc.rust-lang.org/cargo/guide/cargo-toml-vs-cargo-lock.html) — freezing resolved dependencies for release inputs.
+- [XDG Screenshot portal](https://flatpak.github.io/xdg-desktop-portal/docs/doc-org.freedesktop.portal.Screenshot.html) — versioned target capabilities and the older interactive hint.
+- [Upstream GPUI layer-shell example](https://github.com/zed-industries/zed/blob/main/crates/gpui/examples/layer_shell.rs) — confirms that a blanket claim of no GPUI layer-shell support is obsolete; the local 1.27.0 package also includes the example/API. Runtime validation remains necessary. Do not copy the example's timer-driven clock redraw into an idle capture application.
+- [SQLite WAL](https://www.sqlite.org/wal.html) and [atomic commit](https://www.sqlite.org/atomiccommit.html) — local-filesystem constraints and database durability; not a transaction across external PNG files.
+- [tiny-skia API](https://docs.rs/tiny-skia/0.12.0/tiny_skia/) — low-level rasterization; text layout must be designed separately.
+- [FFmpeg license and legal considerations](https://ffmpeg.org/legal.html) — obligations depend on the build and distribution.

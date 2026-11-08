@@ -2,6 +2,10 @@
 
 mod capture;
 mod clipboard;
+#[cfg(target_os = "windows")]
+mod desktop_events;
+#[cfg(target_os = "windows")]
+pub use desktop_events::{DesktopEvent, desktop_events};
 mod selection;
 pub use selection::{PixelRegion, crop_snapshot};
 

@@ -55,6 +55,10 @@ impl CaptureHotkey {
             .filter_map(|event| command_for_event(&self.keys, event))
             .collect()
     }
+
+    pub fn command(&self, event: GlobalHotKeyEvent) -> Option<CaptureCommand> {
+        command_for_event(&self.keys, event)
+    }
 }
 
 fn command_for_event(

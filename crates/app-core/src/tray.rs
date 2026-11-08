@@ -74,6 +74,20 @@ impl SpikeTray {
             })
             .collect()
     }
+
+    pub fn command(&self, event: MenuEvent) -> Option<TrayCommand> {
+        if event.id == *self.capture.id() {
+            Some(TrayCommand::Capture)
+        } else if event.id == *self.region.id() {
+            Some(TrayCommand::Region)
+        } else if event.id == *self.show.id() {
+            Some(TrayCommand::Show)
+        } else if event.id == *self.quit.id() {
+            Some(TrayCommand::Quit)
+        } else {
+            None
+        }
+    }
 }
 
 #[cfg(test)]
