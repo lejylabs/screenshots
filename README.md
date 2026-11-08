@@ -2,6 +2,8 @@
 
 Open-source desktop capture and sharing application.
 
+Windows renderer lifecycle and its explicit release probe are documented in [control-window latency](docs/control-open-latency.md). The pinned Windows GPUI backend includes a small [local teardown patch](vendor/gpui-windows-gpui-unofficial/LOCAL-PATCH.md); build through this workspace so Cargo applies the override.
+
 ## Workspace
 
 ```text
@@ -102,3 +104,4 @@ powershell -NoProfile -File scripts/measure-idle.ps1 -Seconds 30 -Mode resident-
 ```
 
 The explicit GUI test captures the real desktop, replaces clipboard contents, reopens/closes the control window (including native WM_CLOSE), and cancels region selection. Run with no other app instance and leave the clipboard untouched. `resident` measures the actual tray/hotkey controller; `resident-after-ui` opens and closes its control window before sampling. Both use an explicit diagnostic exit deadline, absent from ordinary launches. See [resident measurements](docs/performance-resident.md).
+Capture admission: all requested displays/windows/regions must fit a combined 256 MiB decoded RGBA source limit before the first native capture. Actual returned dimensions are checked again before retaining frames or rendering. A failed group publishes no partial captures and leaves the clipboard unchanged. Individual capture APIs, crop and saved-image recopy share the limit. Empty, negative or out-of-display regions are rejected. This bounds application admission, not XCap's internal/native allocations during a monitor/window size-change race. No new idle work is added; checks run on capture/image workers.

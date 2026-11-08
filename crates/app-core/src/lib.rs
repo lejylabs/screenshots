@@ -27,8 +27,9 @@ mod desktop_window;
 pub use desktop_window::{DesktopWindow, wait_for_desktop_compositor};
 
 pub use capture::{
-    CaptureBackend, CaptureCapabilities, CaptureError, CapturedImage, DisplayInfo, PixelFormat,
-    WindowInfo, XcapBackend, capture_output_dir,
+    CaptureBackend, CaptureCapabilities, CaptureError, CaptureRequest, CapturedImage, DisplayInfo,
+    MAX_CAPTURE_BYTES, PixelFormat, WindowInfo, XcapBackend, capture_output_dir,
+    validate_image_size,
 };
 
 pub fn version() -> &'static str {

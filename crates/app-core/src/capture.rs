@@ -15,6 +15,66 @@ use image::RgbaImage;
 use thiserror::Error;
 use xcap::{Monitor, Window};
 
+pub const MAX_CAPTURE_BYTES: u64 = 256 * 1024 * 1024;
+
+pub fn validate_image_size(width: u32, height: u32) -> Result<(), CaptureError> {
+    CaptureBudget::default().admit(width, height)
+}
+
+/// Admit an entire group before allocating pixels; failed admission leaves the budget intact.
+#[derive(Default)]
+struct CaptureBudget(u64);
+
+impl CaptureBudget {
+    fn admit(&mut self, width: u32, height: u32) -> Result<(), CaptureError> {
+        if width == 0 || height == 0 {
+            return Err(CaptureError::EmptyFrame);
+        }
+        let total = u64::from(width)
+            .checked_mul(u64::from(height))
+            .and_then(|pixels| pixels.checked_mul(4))
+            .and_then(|bytes| self.0.checked_add(bytes))
+            .filter(|bytes| *bytes <= MAX_CAPTURE_BYTES)
+            .ok_or(CaptureError::MemoryLimit)?;
+        self.0 = total;
+        Ok(())
+    }
+}
+
+pub enum CaptureRequest {
+    Display(String),
+    Window(String),
+    Region {
+        display_id: String,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    },
+}
+
+enum PreparedCapture {
+    Display(Monitor, String),
+    Window(Window, String, String),
+    Region(Monitor, String, u32, u32, u32, u32),
+}
+
+impl PreparedCapture {
+    fn dimensions(&self) -> Result<(u32, u32), CaptureError> {
+        match self {
+            Self::Display(monitor, _) => Ok((
+                monitor.width().map_err(backend_error)?,
+                monitor.height().map_err(backend_error)?,
+            )),
+            Self::Window(window, _, _) => Ok((
+                window.width().map_err(backend_error)?,
+                window.height().map_err(backend_error)?,
+            )),
+            Self::Region(_, _, _, _, width, height) => Ok((*width, *height)),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct CaptureCapabilities {
     pub list_displays: bool,
@@ -80,6 +140,10 @@ pub enum CaptureError {
     WindowNotFound(String),
     #[error("empty frame")]
     EmptyFrame,
+    #[error("capture group exceeds the 256 MiB decoded RGBA limit")]
+    MemoryLimit,
+    #[error("region is outside the display")]
+    InvalidRegion,
     #[error("{0}")]
     Backend(String),
     #[error(transparent)]
@@ -113,6 +177,112 @@ impl XcapBackend {
     pub fn new(output_dir: impl Into<PathBuf>) -> Self {
         Self {
             output_dir: output_dir.into(),
+        }
+    }
+
+    /// One admission group, with no partial outputs if any request fails.
+    pub fn capture_batch(
+        &self,
+        requests: Vec<CaptureRequest>,
+    ) -> Result<Vec<CapturedImage>, CaptureError> {
+        let mut budget = CaptureBudget::default();
+        let prepared = requests
+            .into_iter()
+            .map(|request| {
+                let prepared = self.prepare(request)?;
+                let (width, height) = prepared.dimensions()?;
+                budget.admit(width, height)?;
+                Ok(prepared)
+            })
+            .collect::<Result<Vec<_>, CaptureError>>()?;
+        let mut actual = CaptureBudget::default();
+        prepared
+            .into_iter()
+            .map(|prepared| {
+                let (width, height) = prepared.dimensions()?;
+                CaptureBudget(actual.0).admit(width, height)?;
+                let started = Instant::now();
+                let (display_id, window_id, image, label) = match prepared {
+                    PreparedCapture::Display(monitor, id) => (
+                        id,
+                        None,
+                        monitor.capture_image().map_err(backend_error)?,
+                        "display".to_owned(),
+                    ),
+                    PreparedCapture::Window(window, display, id) => {
+                        let image = window.capture_image().map_err(backend_error)?;
+                        (display, Some(id.clone()), image, format!("window-{id}"))
+                    }
+                    PreparedCapture::Region(monitor, id, x, y, width, height) => (
+                        id,
+                        None,
+                        monitor
+                            .capture_region(x, y, width, height)
+                            .map_err(backend_error)?,
+                        "region".to_owned(),
+                    ),
+                };
+                // shortcut: XCap allocates before returning; isolate/cap the backend for a hard native allocation bound.
+                actual.admit(image.width(), image.height())?;
+                let mut shot =
+                    self.frame(&display_id, image, started.elapsed().as_millis(), &label)?;
+                shot.window_id = window_id;
+                Ok(shot)
+            })
+            .collect()
+    }
+
+    fn prepare(&self, request: CaptureRequest) -> Result<PreparedCapture, CaptureError> {
+        match request {
+            CaptureRequest::Display(id) => {
+                Ok(PreparedCapture::Display(self.find_monitor(&id)?, id))
+            }
+            CaptureRequest::Region {
+                display_id,
+                x,
+                y,
+                width,
+                height,
+            } => {
+                let monitor = self.find_monitor(&display_id)?;
+                let x = u32::try_from(x).map_err(|_| CaptureError::InvalidRegion)?;
+                let y = u32::try_from(y).map_err(|_| CaptureError::InvalidRegion)?;
+                let display_width = monitor.width().map_err(backend_error)?;
+                let display_height = monitor.height().map_err(backend_error)?;
+                if width == 0
+                    || height == 0
+                    || x.checked_add(width).is_none_or(|end| end > display_width)
+                    || y.checked_add(height).is_none_or(|end| end > display_height)
+                {
+                    return Err(CaptureError::InvalidRegion);
+                }
+                Ok(PreparedCapture::Region(
+                    monitor, display_id, x, y, width, height,
+                ))
+            }
+            CaptureRequest::Window(id) => {
+                if !self.capabilities().capture_window {
+                    return Err(CaptureError::Unsupported("window capture"));
+                }
+                let numeric_id = id
+                    .parse::<u32>()
+                    .map_err(|_| CaptureError::WindowNotFound(id.clone()))?;
+                let window = Window::all()
+                    .map_err(backend_error)?
+                    .into_iter()
+                    .find(|window| window.id().is_ok_and(|value| value == numeric_id))
+                    .ok_or_else(|| CaptureError::WindowNotFound(id.clone()))?;
+                if window.pid().map_err(backend_error)? == std::process::id() {
+                    return Err(CaptureError::Unsupported(
+                        "capturing this application's own window",
+                    ));
+                }
+                if window.is_minimized().map_err(backend_error)? {
+                    return Err(CaptureError::Unsupported("capturing a minimized window"));
+                }
+                let display = monitor_id(&window.current_monitor().map_err(backend_error)?)?;
+                Ok(PreparedCapture::Window(window, display, id))
+            }
         }
     }
 
@@ -189,10 +359,9 @@ impl CaptureBackend for XcapBackend {
     }
 
     fn capture_display(&self, display_id: &str) -> Result<CapturedImage, CaptureError> {
-        let monitor = self.find_monitor(display_id)?;
-        let started = Instant::now();
-        let image = monitor.capture_image().map_err(backend_error)?;
-        self.frame(display_id, image, started.elapsed().as_millis(), "display")
+        Ok(self
+            .capture_batch(vec![CaptureRequest::Display(display_id.into())])?
+            .remove(0))
     }
 
     fn capture_region(
@@ -203,48 +372,21 @@ impl CaptureBackend for XcapBackend {
         width: u32,
         height: u32,
     ) -> Result<CapturedImage, CaptureError> {
-        let monitor = self.find_monitor(display_id)?;
-        let x = u32::try_from(x).unwrap_or(0);
-        let y = u32::try_from(y).unwrap_or(0);
-        let started = Instant::now();
-        let image = monitor
-            .capture_region(x, y, width, height)
-            .map_err(backend_error)?;
-        self.frame(display_id, image, started.elapsed().as_millis(), "region")
+        Ok(self
+            .capture_batch(vec![CaptureRequest::Region {
+                display_id: display_id.into(),
+                x,
+                y,
+                width,
+                height,
+            }])?
+            .remove(0))
     }
 
     fn capture_window(&self, window_id: &str) -> Result<CapturedImage, CaptureError> {
-        if !self.capabilities().capture_window {
-            return Err(CaptureError::Unsupported("window capture"));
-        }
-        let numeric_id = window_id
-            .parse::<u32>()
-            .map_err(|_| CaptureError::WindowNotFound(window_id.to_string()))?;
-        let window = Window::all()
-            .map_err(backend_error)?
-            .into_iter()
-            .find(|window| window.id().is_ok_and(|id| id == numeric_id))
-            .ok_or_else(|| CaptureError::WindowNotFound(window_id.to_string()))?;
-        if window.pid().map_err(backend_error)? == std::process::id() {
-            return Err(CaptureError::Unsupported(
-                "capturing this application's own window",
-            ));
-        }
-        if window.is_minimized().map_err(backend_error)? {
-            return Err(CaptureError::Unsupported("capturing a minimized window"));
-        }
-        let display_id = monitor_id(&window.current_monitor().map_err(backend_error)?)?;
-        let started = Instant::now();
-        let image = window.capture_image().map_err(backend_error)?;
-        let id = window.id().map_err(backend_error)?.to_string();
-        let mut shot = self.frame(
-            &display_id,
-            image,
-            started.elapsed().as_millis(),
-            &format!("window-{id}"),
-        )?;
-        shot.window_id = Some(id);
-        Ok(shot)
+        Ok(self
+            .capture_batch(vec![CaptureRequest::Window(window_id.into())])?
+            .remove(0))
     }
 }
 
@@ -299,6 +441,33 @@ pub fn capture_output_dir() -> PathBuf {
 mod tests {
     use super::*;
     use image::Rgba;
+
+    #[test]
+    fn capture_admission_bounds_total_without_allocating_pixels() {
+        let mut budget = CaptureBudget::default();
+        // Two 8192x4096 images fit exactly; another must fail before capture.
+        budget.admit(8192, 4096).unwrap();
+        budget.admit(8192, 4096).unwrap();
+        assert_eq!(budget.0, MAX_CAPTURE_BYTES);
+        assert!(matches!(budget.admit(1, 1), Err(CaptureError::MemoryLimit)));
+        assert_eq!(budget.0, MAX_CAPTURE_BYTES);
+        assert!(matches!(
+            validate_image_size(u32::MAX, u32::MAX),
+            Err(CaptureError::MemoryLimit)
+        ));
+        assert!(matches!(
+            validate_image_size(0, 100),
+            Err(CaptureError::EmptyFrame)
+        ));
+        validate_image_size(7680, 4320).unwrap();
+
+        let mut partial = CaptureBudget::default();
+        partial.admit(3840, 2160).unwrap();
+        let before = partial.0;
+        assert!(partial.admit(8192, 8192).is_err());
+        assert_eq!(partial.0, before);
+        partial.admit(3840, 2160).unwrap();
+    }
 
     #[test]
     fn png_publication_is_complete_and_never_overwrites() {

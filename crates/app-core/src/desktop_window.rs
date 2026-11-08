@@ -47,6 +47,19 @@ impl DesktopWindow {
             std::thread::sleep(std::time::Duration::from_millis(5));
         }
     }
+
+    /// GPUI destroys HWNDs asynchronously; finish that work before detaching the platform.
+    pub fn wait_until_destroyed(&self) -> Result<()> {
+        let started = std::time::Instant::now();
+        while unsafe { IsWindow(self.0 as windows_sys::Win32::Foundation::HWND) } != 0 {
+            ensure!(
+                started.elapsed() < std::time::Duration::from_secs(2),
+                "application window did not finish closing"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        Ok(())
+    }
 }
 
 /// Call on the capture worker after the UI has hidden its windows.
@@ -188,6 +201,7 @@ mod tests {
         assert!(window.request_visible(false).is_err());
         assert!(window.request_visible(true).is_err());
         assert!(window.wait_until_hidden().is_err());
+        assert!(window.wait_until_destroyed().is_ok());
     }
 
     #[test]

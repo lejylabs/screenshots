@@ -6,6 +6,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 
+use app_core::CaptureRequest as CaptureJob;
 use app_core::{CaptureBackend, CapturedImage, DisplayInfo, WindowInfo, XcapBackend};
 use gpui::{
     AnyWindowHandle, App, Bounds, Context, DisplayId, FocusHandle, Focusable, IntoElement,
@@ -35,6 +36,14 @@ enum OverlayMode {
 
 struct ResidentController(gpui::Entity<SpikeShell>);
 impl gpui::Global for ResidentController {}
+
+#[cfg(all(test, target_os = "windows"))]
+struct ControlLatencyProbe {
+    started: std::time::Instant,
+    frames_ms: Arc<Mutex<Vec<f64>>>,
+}
+#[cfg(all(test, target_os = "windows"))]
+impl gpui::Global for ControlLatencyProbe {}
 
 #[derive(Clone, Copy)]
 enum UiRequest {
@@ -158,6 +167,23 @@ impl SpikeShell {
                     false
                 });
                 window.focus(&focus, cx);
+                #[cfg(all(test, target_os = "windows"))]
+                if let Some(probe) = cx.try_global::<ControlLatencyProbe>() {
+                    let started = probe.started;
+                    let frames = probe.frames_ms.clone();
+                    window.on_next_frame(move |window, _| {
+                        frames
+                            .lock()
+                            .unwrap()
+                            .push(started.elapsed().as_secs_f64() * 1000.0);
+                        window.on_next_frame(move |_, _| {
+                            frames
+                                .lock()
+                                .unwrap()
+                                .push(started.elapsed().as_secs_f64() * 1000.0);
+                        });
+                    });
+                }
                 entity
             });
             completion
@@ -212,14 +238,17 @@ impl SpikeShell {
                 #[cfg(target_os = "windows")]
                 let settled = cx
                     .background_spawn(async move {
-                        for window in hidden? {
+                        let hidden = hidden?;
+                        for window in &hidden {
                             window
                                 .wait_until_hidden()
                                 .map_err(|error| error.to_string())?;
                         }
                         app_core::wait_for_desktop_compositor()
                             .map_err(|error| error.to_string())?;
-                        app_core::wait_for_desktop_compositor().map_err(|error| error.to_string())
+                        app_core::wait_for_desktop_compositor()
+                            .map_err(|error| error.to_string())?;
+                        Ok::<_, String>(hidden)
                     })
                     .await;
                 #[cfg(not(target_os = "windows"))]
@@ -249,6 +278,28 @@ impl SpikeShell {
                             .ok();
                     }
                 });
+                #[cfg(target_os = "windows")]
+                if let Err(error) = cx
+                    .background_spawn(async move {
+                        for window in settled.unwrap() {
+                            window
+                                .wait_until_destroyed()
+                                .map_err(|error| error.to_string())?;
+                        }
+                        Ok::<_, String>(())
+                    })
+                    .await
+                {
+                    tracing::error!(%error, "native window teardown did not finish");
+                    owner
+                        .update(cx, |this, cx| {
+                            this.switching_graphics = false;
+                            this.capture_status = format!("Could not detach UI: {error}");
+                            this.finish_quit_if_idle(cx);
+                        })
+                        .ok();
+                    return;
+                }
                 let result = cx
                     .update(|cx| cx.request_windowing(gpui::WindowingRequest::Headless))
                     .await;
@@ -791,15 +842,11 @@ impl SpikeShell {
                             let mut reader = image::ImageReader::open(&path)
                                 .map_err(|error| error.to_string())?;
                             let mut limits = image::Limits::default();
-                            limits.max_alloc = Some(256 * 1024 * 1024);
+                            limits.max_alloc = Some(app_core::MAX_CAPTURE_BYTES);
                             reader.limits(limits);
                             let decoded = reader.decode().map_err(|error| error.to_string())?;
-                            let bytes = u64::from(decoded.width())
-                                .checked_mul(u64::from(decoded.height()))
-                                .and_then(|pixels| pixels.checked_mul(4));
-                            if bytes.is_none_or(|bytes| bytes > 256 * 1024 * 1024) {
-                                return Err("saved image exceeds the 256 MiB RGBA limit".into());
-                            }
+                            app_core::validate_image_size(decoded.width(), decoded.height())
+                                .map_err(|error| error.to_string())?;
                             Arc::new(decoded.into_rgba8())
                         }
                     };
@@ -1015,18 +1062,7 @@ impl SpikeShell {
                     }
                     let mut shots = Vec::new();
                     let mut renders = HashMap::new();
-                    for job in jobs {
-                        let shot = match &job {
-                            CaptureJob::Display(id) => backend.capture_display(id)?,
-                            CaptureJob::Window(id) => backend.capture_window(id)?,
-                            CaptureJob::Region {
-                                display_id,
-                                x,
-                                y,
-                                width,
-                                height,
-                            } => backend.capture_region(display_id, *x, *y, *width, *height)?,
-                        };
+                    for shot in backend.capture_batch(jobs)? {
                         tracing::info!(
                             display_id = %shot.display_id,
                             window_id = ?shot.window_id,
@@ -1100,18 +1136,6 @@ impl SpikeShell {
         })
         .detach();
     }
-}
-
-enum CaptureJob {
-    Display(String),
-    Window(String),
-    Region {
-        display_id: String,
-        x: i32,
-        y: i32,
-        width: u32,
-        height: u32,
-    },
 }
 
 impl Focusable for SpikeShell {
@@ -1857,14 +1881,172 @@ mod tests {
     use super::*;
 
     #[cfg(target_os = "windows")]
+    fn track_gui_errors() -> Arc<std::sync::atomic::AtomicUsize> {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use tracing_subscriber::prelude::*;
+        struct CountErrors(Arc<AtomicUsize>);
+        impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for CountErrors {
+            fn on_event(
+                &self,
+                event: &tracing::Event<'_>,
+                _: tracing_subscriber::layer::Context<'_, S>,
+            ) {
+                if *event.metadata().level() == tracing::Level::ERROR {
+                    self.0.fetch_add(1, Ordering::Relaxed);
+                }
+            }
+        }
+        let errors = Arc::new(AtomicUsize::new(0));
+        tracing_subscriber::registry()
+            .with(CountErrors(errors.clone()))
+            .with(tracing_subscriber::fmt::layer().with_test_writer())
+            .with(tracing_subscriber::filter::LevelFilter::ERROR)
+            .try_init()
+            .unwrap();
+        errors
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    #[ignore = "opens and closes the real resident control window 101 times; release measurement only"]
+    fn resident_control_render_latency() {
+        assert!(
+            !cfg!(debug_assertions),
+            "run this measurement with --release"
+        );
+        let errors = track_gui_errors();
+        let result = Arc::new(Mutex::new(None));
+        let report = result.clone();
+        gpui_platform::application()
+            .with_windowing(gpui::WindowingRequest::Headless)
+            .run(move |cx| {
+                cx.set_quit_mode(gpui::QuitMode::Explicit);
+                let controller = cx.new(|cx| SpikeShell::new_controller(None, cx));
+                cx.set_global(ResidentController(controller.clone()));
+                let owner = controller.downgrade();
+                cx.spawn(async move |cx| {
+                    let measured = async {
+                        let ready = std::time::Instant::now();
+                        loop {
+                            if !owner
+                                .update(cx, |this, _| this.refreshing)
+                                .map_err(|e| e.to_string())?
+                            {
+                                break;
+                            }
+                            if ready.elapsed().as_secs() > 10 {
+                                return Err("metadata startup timed out".to_string());
+                            }
+                            cx.background_executor()
+                                .timer(std::time::Duration::from_millis(5))
+                                .await;
+                        }
+                        let mut samples = Vec::new();
+                        for cycle in 0..101 {
+                            let frames = Arc::new(Mutex::new(Vec::new()));
+                            let observed = frames.clone();
+                            owner
+                                .update(cx, |this, cx| {
+                                    cx.set_global(ControlLatencyProbe {
+                                        started: std::time::Instant::now(),
+                                        frames_ms: frames,
+                                    });
+                                    this.show_control(cx);
+                                })
+                                .map_err(|e| e.to_string())?;
+                            let deadline = std::time::Instant::now();
+                            loop {
+                                cx.background_executor()
+                                    .timer(std::time::Duration::from_millis(5))
+                                    .await;
+                                if observed.lock().unwrap().len() == 2 {
+                                    break;
+                                }
+                                if deadline.elapsed().as_secs() > 10 {
+                                    return Err(format!("render timeout in cycle {cycle}"));
+                                }
+                            }
+                            let times = observed.lock().unwrap().clone();
+                            samples.push([times[0], times[1]]);
+                            owner
+                                .update(cx, |this, cx| this.retire_ui(cx))
+                                .map_err(|e| e.to_string())?;
+                            let deadline = std::time::Instant::now();
+                            loop {
+                                cx.background_executor()
+                                    .timer(std::time::Duration::from_millis(5))
+                                    .await;
+                                if owner
+                                    .update(cx, |this, cx| {
+                                        !this.switching_graphics
+                                            && !this.graphics
+                                            && cx.windows().is_empty()
+                                    })
+                                    .map_err(|e| e.to_string())?
+                                {
+                                    break;
+                                }
+                                if deadline.elapsed().as_secs() > 10 {
+                                    return Err(format!("detach timeout in cycle {cycle}"));
+                                }
+                            }
+                        }
+                        Ok(samples)
+                    }
+                    .await;
+                    *report.lock().unwrap() = Some(measured);
+                    cx.update(|cx| cx.quit());
+                })
+                .detach();
+            });
+        let samples = result
+            .lock()
+            .unwrap()
+            .take()
+            .expect("probe did not finish")
+            .unwrap();
+        assert_eq!(
+            errors.load(std::sync::atomic::Ordering::Relaxed),
+            0,
+            "GPUI logged errors during the measured lifecycle"
+        );
+        let rows = samples
+            .iter()
+            .enumerate()
+            .map(|(cycle, times)| {
+                format!(
+                    "{{\"cycle\":{cycle},\"first_frame_callback_ms\":{},\"second_frame_callback_ms\":{}}}",
+                    times[0], times[1]
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(",\n");
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../target/performance/control-open-latency.json");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, format!("{{\"scenario\":\"resident control reopen after graphics detach\",\"release\":true,\"samples\":[{rows}]}}\n")).unwrap();
+        println!(
+            "first renderer attach: {:.2} ms to first frame callback",
+            samples[0][0]
+        );
+        for (index, label) in ["first_frame_callback", "second_frame_callback"]
+            .iter()
+            .enumerate()
+        {
+            let mut warm: Vec<f64> = samples[1..].iter().map(|times| times[index]).collect();
+            warm.sort_by(f64::total_cmp);
+            println!(
+                "{label}: n=100 p50={:.2} p95={:.2} p99={:.2} max={:.2} ms",
+                warm[49], warm[94], warm[98], warm[99]
+            );
+        }
+    }
+
+    #[cfg(target_os = "windows")]
     #[test]
     #[ignore = "opens real UI, saves a desktop capture and replaces clipboard contents"]
     fn resident_capture_reopen_and_graphics_detach() {
-        tracing_subscriber::fmt()
-            .with_max_level(tracing::Level::ERROR)
-            .with_test_writer()
-            .try_init()
-            .unwrap();
+        let errors = track_gui_errors();
         let result = Arc::new(Mutex::new(None));
         let report = result.clone();
         gpui_platform::application().with_windowing(gpui::WindowingRequest::Headless).run(move |cx| {
@@ -1928,6 +2110,11 @@ mod tests {
                 cx.update(|cx| cx.quit());
             }).detach();
         });
+        assert_eq!(
+            errors.load(std::sync::atomic::Ordering::Relaxed),
+            0,
+            "GPUI logged lifecycle errors"
+        );
         result
             .lock()
             .unwrap()

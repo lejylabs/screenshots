@@ -1,0 +1,14 @@
+﻿{
+    "capturedAtUtc":  "2026-11-08T17:41:43.7415892Z",
+    "durationSeconds":  30.055328099999997,
+    "cpuSeconds":  0,
+    "cpuPercentOneLogicalCore":  0,
+    "privateBytesMax":  44691456,
+    "workingSetBytesMax":  31703040,
+    "executableSha256":  "875C0637EBD933B0C406A65C3F54B20CCDA9F8F445AD98F8A14285ECFC185607",
+    "cpuModel":  "AMD Ryzen 7 9800X3D 8-Core Processor           ",
+    "osVersion":  "Microsoft Windows NT 10.0.26300.0",
+    "sourceCommit":  "86e1ff6e2030cba52855ef14193214bf25f83ad1",
+    "sourceDirty":  true,
+    "privateBytesFinal":  8478720
+}

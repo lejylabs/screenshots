@@ -1,5 +1,7 @@
 # Windows resident controller
 
+Follow-up: [control-window callback latency and teardown fix](control-open-latency.md) records the subsequent release regression, local Windows backend patch and short idle recheck. The measurements below describe the earlier executable hashes.
+
 2026-11-08. The Windows application now starts with its real tray, global hotkeys and capture controller, without opening GPUI windows or attaching DirectX. Primary capture/copy/save works in this state. Control windows and selection overlays attach graphics on demand. Closing the control window or dismissing the last selection without a control window hides and settles native windows before removing them and requesting headless windowing. Tray Quit still waits for output jobs.
 
 Ordinary launch has no periodic housekeeping or diagnostic exit timer. `--show` opens the control window immediately. Measurement-only invocations explicitly supply `--exit-after`.

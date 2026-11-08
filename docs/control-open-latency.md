@@ -1,0 +1,30 @@
+# Windows control-window latency probe
+
+2026-11-08. Optimized test binary, real resident controller/tray/hotkeys, metadata loaded, control window opened from detached graphics. One first attachment and 100 reopen/detach cycles in one process. This is a development-PC diagnostic, not reference-hardware acceptance or a cold-process launch benchmark.
+
+| Command dispatch to callback | First attachment (n=1) | Reopen p50 | p95 | p99 | Max |
+| --- | --- | --- | --- | --- | --- |
+| First GPUI frame callback | 86.45 ms | 40.69 ms | 50.42 ms | 51.54 ms | 53.45 ms |
+| Following frame callback | 105.20 ms | 43.55 ms | 52.86 ms | 54.96 ms | 55.87 ms |
+
+Raw samples and test-executable SHA256 are in [control-open-latency.json](control-open-latency.json). Percentiles use nearest rank over the 100 reopen samples, excluding first attachment. The timer starts before `show_control`, so graphics attachment and deferred window creation are included; enumeration completes before timing. Teardown occurs between samples. No captures, physical input injection or clipboard changes occur in this probe.
+
+Despite its documentation saying “after rendering”, the pinned GPUI implementation invokes `on_next_frame` callbacks before that frame's draw/present section. The first callback therefore measures a frame opportunity, not a completed render. The second callback follows the preceding frame's draw/present submission. Neither proves physical scanout, visual correctness, accessibility readiness or input-to-photon latency. The <=150 ms usable-window target is not marked passed from these numbers. The probe deliberately requests one extra frame; no instrumentation or probe timers compile into the ordinary application.
+
+## Teardown race found and fixed
+
+The initial 101-cycle run produced invalid-HWND errors despite the functional test returning success. The controller now waits for GPUI's asynchronous native destruction before requesting headless mode, with a two-second operation-scoped worker deadline. No idle timer was added.
+
+A separate race remained in GPUI Windows: its VSync thread could call RedrawWindow on a destroyed HWND until a posted close notification removed it from the tracked list. The locally pinned Windows backend synchronously removes tracking during WM_DESTROY using the existing validated close handler and read/write lock. See [local patch](../vendor/gpui-windows-gpui-unofficial/LOCAL-PATCH.md). The vendored source adds about 0.53 MiB to the repository, with no additional runtime service or dependency version.
+
+The final 101-cycle measurement and five consecutive real capture/copy/save/reopen/cancel regressions passed with ERROR logs counted as failures. Ordinary core/UI tests and the release application build also pass. Measurements across preliminary builds are not a controlled performance comparison; this report preserves the final run, including its slower samples.
+
+A subsequent 30.06-second release-app idle check after opening/closing the UI measured 42.62 MiB peak Private Bytes, falling to 8.09 MiB in the final sample, with no additional measured CPU ticks. See [idle recheck](control-lifecycle-idle.json) for exact counts and the application executable hash. This short recheck does not replace the five-minute/reference-hardware gate or GPU-memory measurements. Vendored source hashes were compared with the original registry package: only `src/events.rs` differs.
+
+Run explicitly with no other screenshots instance:
+
+```powershell
+cargo test --release -p app-ui resident_control_render_latency -- --ignored --nocapture --test-threads=1
+```
+
+The probe opens/closes real windows 101 times and writes `target/performance/control-open-latency.json`. Capture/overlay p95, physical presentation, cold launch, mixed DPI and the 500-cycle memory gate remain open.

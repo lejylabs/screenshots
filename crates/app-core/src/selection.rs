@@ -53,6 +53,7 @@ impl PixelRegion {
 pub fn crop_snapshot(source: &CapturedImage, region: PixelRegion) -> Result<CapturedImage> {
     let started = Instant::now();
     let image = &source.pixels;
+    crate::capture::validate_image_size(region.width, region.height)?;
     ensure!(
         region.width > 0
             && region.height > 0

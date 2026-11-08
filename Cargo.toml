@@ -57,3 +57,6 @@ xcap = "=0.9.8"
 
 [profile.dev.package."*"]
 opt-level = 1
+
+[patch.crates-io]
+gpui-windows-gpui-unofficial = { path = "vendor/gpui-windows-gpui-unofficial" }
