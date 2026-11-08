@@ -33,8 +33,20 @@ enum OverlayMode {
     Fullscreen,
 }
 
+struct ResidentController(gpui::Entity<SpikeShell>);
+impl gpui::Global for ResidentController {}
+
+#[derive(Clone, Copy)]
+enum UiRequest {
+    Control,
+    Overlay(OverlayMode),
+}
+
 pub struct SpikeShell {
-    control: AnyWindowHandle,
+    control: Option<AnyWindowHandle>,
+    resident: bool,
+    graphics: bool,
+    switching_graphics: bool,
     preview_active: bool,
     focus_handle: FocusHandle,
     overlays: Vec<WindowHandle<Overlay>>,
@@ -63,7 +75,205 @@ pub struct SpikeShell {
 }
 
 impl SpikeShell {
+    fn attach_ui(&mut self, request: UiRequest, cx: &mut Context<Self>) {
+        if self.switching_graphics || self.quitting {
+            return;
+        }
+        self.switching_graphics = true;
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .update(|cx| {
+                    cx.request_windowing(gpui::WindowingRequest::Windowed(
+                        gpui::GraphicalEnvironment::detect(),
+                    ))
+                })
+                .await;
+            this.update(cx, |this, cx| {
+                this.switching_graphics = false;
+                match result {
+                    Ok(()) => {
+                        this.graphics = true;
+                        if this.quitting {
+                            this.finish_quit_if_idle(cx);
+                            return;
+                        }
+                        match request {
+                            UiRequest::Control => this.show_control(cx),
+                            UiRequest::Overlay(mode) => this.open_overlays(mode, cx),
+                        }
+                    }
+                    Err(error) => {
+                        tracing::error!(%error, "could not attach graphical UI");
+                        this.capture_status = format!("UI unavailable: {error}");
+                        #[cfg(target_os = "windows")]
+                        if this.tray.is_none() {
+                            this.quitting = true;
+                        }
+                        this.finish_quit_if_idle(cx);
+                    }
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    fn show_control(&mut self, cx: &mut Context<Self>) {
+        if self.quitting || self.capturing || self.preview_active || self.switching_graphics {
+            return;
+        }
+        if !self.graphics {
+            self.attach_ui(UiRequest::Control, cx);
+            return;
+        }
+        if self.control.is_some() {
+            self.restore_control(cx);
+            return;
+        }
+        let entity = cx.entity();
+        let focus = self.focus_handle.clone();
+        let owner = entity.downgrade();
+        let options = WindowOptions {
+            window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
+                None,
+                size(px(820.0), px(720.0)),
+                cx,
+            ))),
+            titlebar: Some(TitlebarOptions {
+                title: Some("screenshots — phase 0 spike".into()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        self.switching_graphics = true;
+        let completion = owner.clone();
+        cx.defer(move |cx| {
+            let result = cx.open_window(options, move |window, cx| {
+                window.on_window_should_close(cx, move |_, cx| {
+                    let owner = owner.clone();
+                    cx.defer(move |cx| {
+                        owner.update(cx, |this, cx| this.retire_ui(cx)).ok();
+                    });
+                    false
+                });
+                window.focus(&focus, cx);
+                entity
+            });
+            completion
+                .update(cx, |this, cx| {
+                    this.switching_graphics = false;
+                    match result {
+                        Ok(handle) => this.control = Some(handle.into()),
+                        Err(error) => {
+                            tracing::error!(%error, "could not open control window");
+                            this.retire_ui(cx);
+                        }
+                    }
+                    this.finish_quit_if_idle(cx);
+                })
+                .ok();
+        });
+    }
+
+    fn retire_ui(&mut self, cx: &mut Context<Self>) {
+        #[cfg(target_os = "windows")]
+        if self.resident && self.tray.is_none() {
+            cx.defer(close_application);
+            return;
+        }
+        if !self.resident || self.switching_graphics || self.capturing {
+            return;
+        }
+        self.preview_active = false;
+        self.last_render = None;
+        let mut windows: Vec<AnyWindowHandle> = self.overlays.drain(..).map(Into::into).collect();
+        windows.extend(self.control.take());
+        let owner = cx.entity().downgrade();
+        self.switching_graphics = true;
+        cx.defer(move |cx| {
+            #[cfg(target_os = "windows")]
+            let hidden: Result<Vec<_>, String> = windows
+                .iter()
+                .map(|handle| {
+                    handle
+                        .update(cx, |_, window, _| {
+                            let native = native_window(window)?;
+                            native
+                                .request_visible(false)
+                                .map_err(|error| error.to_string())?;
+                            Ok(native)
+                        })
+                        .map_err(|error| error.to_string())
+                        .and_then(|result| result)
+                })
+                .collect();
+            cx.spawn(async move |cx| {
+                #[cfg(target_os = "windows")]
+                let settled = cx
+                    .background_spawn(async move {
+                        for window in hidden? {
+                            window
+                                .wait_until_hidden()
+                                .map_err(|error| error.to_string())?;
+                        }
+                        app_core::wait_for_desktop_compositor()
+                            .map_err(|error| error.to_string())?;
+                        app_core::wait_for_desktop_compositor().map_err(|error| error.to_string())
+                    })
+                    .await;
+                #[cfg(not(target_os = "windows"))]
+                let settled = Ok::<(), String>(());
+                if let Err(error) = settled {
+                    owner
+                        .update(cx, |this, cx| {
+                            this.switching_graphics = false;
+                            this.control = windows
+                                .iter()
+                                .find(|handle| handle.downcast::<SpikeShell>().is_some())
+                                .copied();
+                            this.overlays = windows
+                                .iter()
+                                .filter_map(|handle| handle.downcast::<Overlay>())
+                                .collect();
+                            this.capture_status = format!("Could not close UI: {error}");
+                            this.restore_control(cx);
+                        })
+                        .ok();
+                    return;
+                }
+                cx.update(|cx| {
+                    for handle in windows {
+                        handle
+                            .update(cx, |_, window, _| window.remove_window())
+                            .ok();
+                    }
+                });
+                let result = cx
+                    .update(|cx| cx.request_windowing(gpui::WindowingRequest::Headless))
+                    .await;
+                owner
+                    .update(cx, |this, cx| {
+                        this.switching_graphics = false;
+                        if result.is_ok() {
+                            this.graphics = false;
+                        } else {
+                            tracing::warn!(?result, "could not detach graphics");
+                        }
+                        this.finish_quit_if_idle(cx);
+                    })
+                    .ok();
+            })
+            .detach();
+        });
+    }
+
+    #[cfg(any(test, not(target_os = "windows")))]
     fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+        Self::new_controller(Some(window.window_handle()), cx)
+    }
+
+    fn new_controller(control: Option<AnyWindowHandle>, cx: &mut Context<Self>) -> Self {
         let backend = XcapBackend::new(app_core::capture_output_dir());
         let caps = backend.capabilities();
         tracing::info!(
@@ -75,7 +285,10 @@ impl SpikeShell {
         );
 
         let mut shell = Self {
-            control: window.window_handle(),
+            resident: control.is_none(),
+            graphics: control.is_some(),
+            switching_graphics: false,
+            control,
             preview_active: false,
             focus_handle: cx.focus_handle(),
             overlays: Vec::new(),
@@ -133,36 +346,49 @@ impl SpikeShell {
         #[cfg(target_os = "windows")]
         {
             let mut events = app_core::desktop_events();
-            let control = window.window_handle();
+
             cx.spawn(async move |this, cx| {
                 while let Some(event) = events.recv().await {
-                    if this.update(cx, |this, cx| {
-                        match event {
+                    if this
+                        .update(cx, |this, cx| match event {
                             app_core::DesktopEvent::Hotkey(event) => {
-                                match this.hotkey.as_ref().and_then(|hotkey| hotkey.command(event)) {
-                                    Some(app_core::CaptureCommand::Primary) => this.capture_primary(cx),
-                                    Some(app_core::CaptureCommand::Region) => this.open_overlays(OverlayMode::Fullscreen, cx),
-                                    None => {},
+                                match this
+                                    .hotkey
+                                    .as_ref()
+                                    .and_then(|hotkey| hotkey.command(event))
+                                {
+                                    Some(app_core::CaptureCommand::Primary) => {
+                                        this.capture_primary(cx)
+                                    }
+                                    Some(app_core::CaptureCommand::Region) => {
+                                        this.open_overlays(OverlayMode::Fullscreen, cx)
+                                    }
+                                    None => {}
                                 }
                             }
                             app_core::DesktopEvent::Menu(event) => {
                                 match this.tray.as_ref().and_then(|tray| tray.command(event)) {
-                                    Some(app_core::TrayCommand::Capture) => this.capture_primary(cx),
-                                    Some(app_core::TrayCommand::Region) => this.open_overlays(OverlayMode::Fullscreen, cx),
-                                    Some(app_core::TrayCommand::Show) if !this.capturing && !this.preview_active => {
-                                        if let Err(error) = control.update(cx, |_, window, cx| {
-                                            if let Err(error) = show_control_window(window) { tracing::error!(%error, "could not show control window"); }
-                                            cx.activate(true);
-                                        }) { tracing::warn!(%error, "could not show control window"); }
+                                    Some(app_core::TrayCommand::Capture) => {
+                                        this.capture_primary(cx)
                                     }
-                                    Some(app_core::TrayCommand::Quit) => cx.defer(close_application),
-                                    _ => {},
+                                    Some(app_core::TrayCommand::Region) => {
+                                        this.open_overlays(OverlayMode::Fullscreen, cx)
+                                    }
+                                    Some(app_core::TrayCommand::Show) => this.show_control(cx),
+                                    Some(app_core::TrayCommand::Quit) => {
+                                        cx.defer(close_application)
+                                    }
+                                    _ => {}
                                 }
                             }
-                        }
-                    }).is_err() { break; }
+                        })
+                        .is_err()
+                    {
+                        break;
+                    }
                 }
-            }).detach();
+            })
+            .detach();
         }
         shell
     }
@@ -224,6 +450,7 @@ impl SpikeShell {
     }
 
     fn close_overlays(&mut self, cx: &mut Context<Self>) {
+        let retire = self.resident && self.preview_active && self.control.is_none();
         tracing::info!(count = self.overlays.len(), "closing overlays");
         for handle in &self.overlays {
             match handle.update(cx, |overlay, window, cx| {
@@ -255,11 +482,19 @@ impl SpikeShell {
             self.preview_active = false;
             self.restore_control(cx);
         }
+        if retire {
+            self.retire_ui(cx);
+        }
         cx.notify();
     }
 
     fn open_overlays(&mut self, mode: OverlayMode, cx: &mut Context<Self>) {
-        if self.capturing || self.copying || self.saving || self.quitting {
+        if self.capturing || self.copying || self.saving || self.quitting || self.switching_graphics
+        {
+            return;
+        }
+        if !self.graphics {
+            self.attach_ui(UiRequest::Overlay(mode), cx);
             return;
         }
         if matches!(mode, OverlayMode::Fullscreen) {
@@ -275,7 +510,9 @@ impl SpikeShell {
     }
 
     fn restore_control(&self, cx: &mut Context<Self>) {
-        let control = self.control;
+        let Some(control) = self.control else {
+            return;
+        };
         cx.defer(move |cx| {
             let result = control
                 .update(cx, |_, window, _| show_control_window(window))
@@ -423,6 +660,9 @@ impl SpikeShell {
             matches!(mode, OverlayMode::Fullscreen) && self.live_overlay_count(cx) > 0;
         if matches!(mode, OverlayMode::Fullscreen) && !self.preview_active {
             self.restore_control(cx);
+            if self.resident && self.control.is_none() {
+                self.retire_ui(cx);
+            }
         }
 
         cx.notify();
@@ -486,8 +726,13 @@ impl SpikeShell {
     }
 
     fn replace_last_render(&mut self, render: Arc<gpui::RenderImage>, cx: &mut Context<Self>) {
+        if self.resident && self.control.is_none() {
+            return;
+        }
         if let Some(previous) = self.last_render.replace(render) {
-            let control = self.control;
+            let Some(control) = self.control else {
+                return;
+            };
             cx.defer(move |cx| {
                 control
                     .update(cx, |_, window, _| {
@@ -501,7 +746,12 @@ impl SpikeShell {
     }
 
     fn finish_quit_if_idle(&self, cx: &mut Context<Self>) {
-        if self.quitting && !self.capturing && !self.copying && !self.saving {
+        if self.quitting
+            && !self.capturing
+            && !self.copying
+            && !self.saving
+            && !self.switching_graphics
+        {
             cx.defer(close_application);
         }
     }
@@ -569,6 +819,9 @@ impl SpikeShell {
                     }
                     Err(error) => {
                         tracing::error!(%error, "clipboard copy failed");
+                        if this.resident && this.control.is_none() {
+                            this.show_control(cx);
+                        }
                         format!("Clipboard failed: {error}")
                     }
                 };
@@ -610,6 +863,9 @@ impl SpikeShell {
                     } else {
                         this.quitting = false;
                         this.restore_control(cx);
+                        if this.resident && this.control.is_none() {
+                            this.show_control(cx);
+                        }
                         tracing::error!(errors = %errors.join("; "), "capture output save failed");
                         format!("Save failed: {}", errors.join("; "))
                     };
@@ -668,7 +924,8 @@ impl SpikeShell {
         preview: bool,
         cx: &mut Context<Self>,
     ) {
-        if self.capturing || self.copying || self.saving || self.quitting {
+        if self.capturing || self.copying || self.saving || self.quitting || self.switching_graphics
+        {
             return;
         }
         if jobs.is_empty() {
@@ -697,24 +954,29 @@ impl SpikeShell {
             .collect();
         cx.spawn(async move |this, cx| {
             // Defer until the button/action has released its borrow of the control window.
-            let hidden = control
-                .update(cx, |_, window, _| {
-                    #[cfg(target_os = "windows")]
-                    {
-                        let native = native_window(window)?;
-                        native
-                            .request_visible(false)
-                            .map_err(|error| error.to_string())?;
-                        Ok(native)
-                    }
-                    #[cfg(not(target_os = "windows"))]
-                    {
-                        window.minimize_window();
-                        Ok::<(), String>(())
-                    }
-                })
-                .map_err(|error| error.to_string())
-                .and_then(|result| result);
+            let hidden = if let Some(control) = control {
+                control
+                    .update(cx, |_, window, _| {
+                        #[cfg(target_os = "windows")]
+                        {
+                            let native = native_window(window)?;
+                            native
+                                .request_visible(false)
+                                .map_err(|error| error.to_string())?;
+                            Ok(native)
+                        }
+                        #[cfg(not(target_os = "windows"))]
+                        {
+                            window.minimize_window();
+                            Ok::<(), String>(())
+                        }
+                    })
+                    .map_err(|error| error.to_string())
+                    .and_then(|result| result)
+                    .map(Some)
+            } else {
+                Ok(None)
+            };
             let _hidden_control = match hidden {
                 Ok(control) => control,
                 Err(error) => {
@@ -733,7 +995,7 @@ impl SpikeShell {
                 }
             };
             #[cfg(target_os = "windows")]
-            hidden_windows.push(_hidden_control);
+            hidden_windows.extend(_hidden_control);
             // shortcut: other platforms still need a native visibility/compositor spike.
             #[cfg(not(target_os = "windows"))]
             cx.background_executor()
@@ -826,6 +1088,9 @@ impl SpikeShell {
                     Err(error) => {
                         tracing::error!(%error, "capture failed");
                         this.capture_status = format!("capture failed: {error}");
+                        if this.resident && this.control.is_none() {
+                            this.show_control(cx);
+                        }
                     }
                 }
 
@@ -1392,6 +1657,22 @@ fn overlay_options(
 }
 
 fn close_application(cx: &mut App) {
+    if cx.has_global::<ResidentController>() {
+        let entity = cx.global::<ResidentController>().0.clone();
+        let busy = entity.update(cx, |this, cx| {
+            this.quitting = true;
+            let busy = this.capturing || this.copying || this.saving || this.switching_graphics;
+            if busy {
+                this.capture_status = "Quitting: waiting for active work…".into();
+                cx.notify();
+            }
+            busy
+        });
+        if !busy {
+            cx.quit();
+        }
+        return;
+    }
     for handle in cx.windows() {
         if let Some(control) = handle.downcast::<SpikeShell>() {
             let waiting = control
@@ -1421,45 +1702,93 @@ pub fn run() {
         run_resource_probe(&mode);
         return;
     }
-    tracing::info!(
-        version = app_core::version(),
-        "starting overlay + capture spike"
-    );
+    #[cfg(target_os = "windows")]
+    {
+        run_resident();
+        return;
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        tracing::info!(
+            version = app_core::version(),
+            "starting overlay + capture spike"
+        );
 
-    gpui_platform::application().run(|cx: &mut App| {
-        cx.on_action(|_: &Quit, cx| cx.defer(close_application));
-        cx.bind_keys([
-            KeyBinding::new("escape", CloseOverlay, None),
-            KeyBinding::new("ctrl-shift-o", OpenProbeOverlays, Some("SpikeShell")),
-            KeyBinding::new("ctrl-shift-f", OpenFullscreenOverlays, Some("SpikeShell")),
-            KeyBinding::new("ctrl-shift-c", CapturePrimary, Some("SpikeShell")),
-            KeyBinding::new("ctrl-q", Quit, None),
-        ]);
+        gpui_platform::application().run(|cx: &mut App| {
+            cx.on_action(|_: &Quit, cx| cx.defer(close_application));
+            cx.bind_keys([
+                KeyBinding::new("escape", CloseOverlay, None),
+                KeyBinding::new("ctrl-shift-o", OpenProbeOverlays, Some("SpikeShell")),
+                KeyBinding::new("ctrl-shift-f", OpenFullscreenOverlays, Some("SpikeShell")),
+                KeyBinding::new("ctrl-shift-c", CapturePrimary, Some("SpikeShell")),
+                KeyBinding::new("ctrl-q", Quit, None),
+            ]);
 
-        let bounds = Bounds::centered(None, size(px(820.0), px(720.0)), cx);
-        cx.open_window(
-            WindowOptions {
-                window_bounds: Some(WindowBounds::Windowed(bounds)),
-                titlebar: Some(TitlebarOptions {
-                    title: Some("screenshots — phase 0 spike".into()),
+            let bounds = Bounds::centered(None, size(px(820.0), px(720.0)), cx);
+            cx.open_window(
+                WindowOptions {
+                    window_bounds: Some(WindowBounds::Windowed(bounds)),
+                    titlebar: Some(TitlebarOptions {
+                        title: Some("screenshots — phase 0 spike".into()),
+                        ..Default::default()
+                    }),
                     ..Default::default()
-                }),
-                ..Default::default()
-            },
-            |window, cx| {
-                let shell = cx.new(|cx| SpikeShell::new(window, cx));
-                window.on_window_should_close(cx, |_, cx| {
-                    cx.defer(close_application);
-                    false
-                });
-                let focus = shell.read(cx).focus_handle.clone();
-                window.focus(&focus, cx);
-                shell
-            },
-        )
-        .expect("failed to open spike window");
-        cx.activate(true);
-    });
+                },
+                |window, cx| {
+                    let shell = cx.new(|cx| SpikeShell::new(window, cx));
+                    window.on_window_should_close(cx, |_, cx| {
+                        cx.defer(close_application);
+                        false
+                    });
+                    let focus = shell.read(cx).focus_handle.clone();
+                    window.focus(&focus, cx);
+                    shell
+                },
+            )
+            .expect("failed to open spike window");
+            cx.activate(true);
+        });
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn run_resident() {
+    let show = std::env::args().any(|arg| arg == "--show");
+    let deadline = std::env::args()
+        .find_map(|arg| {
+            arg.strip_prefix("--exit-after=")
+                .and_then(|value| value.parse::<u64>().ok())
+        })
+        .map(|seconds| seconds.clamp(10, 660));
+    gpui_platform::application()
+        .with_windowing(gpui::WindowingRequest::Headless)
+        .run(move |cx| {
+            cx.set_quit_mode(gpui::QuitMode::Explicit);
+            let controller = cx.new(|cx| SpikeShell::new_controller(None, cx));
+            cx.set_global(ResidentController(controller.clone()));
+            cx.on_action(|_: &Quit, cx| cx.defer(close_application));
+            cx.bind_keys([
+                KeyBinding::new("escape", CloseOverlay, None),
+                KeyBinding::new("ctrl-shift-o", OpenProbeOverlays, Some("SpikeShell")),
+                KeyBinding::new("ctrl-shift-f", OpenFullscreenOverlays, Some("SpikeShell")),
+                KeyBinding::new("ctrl-shift-c", CapturePrimary, Some("SpikeShell")),
+                KeyBinding::new("ctrl-q", Quit, None),
+            ]);
+            controller.update(cx, |this, cx| {
+                if show || this.tray.is_none() {
+                    this.show_control(cx);
+                }
+            });
+            if let Some(seconds) = deadline {
+                cx.spawn(async move |cx| {
+                    cx.background_executor()
+                        .timer(std::time::Duration::from_secs(seconds))
+                        .await;
+                    cx.update(close_application);
+                })
+                .detach();
+            }
+        });
 }
 
 /// Explicit diagnostic mode, never enabled by an ordinary application launch.
@@ -1526,6 +1855,86 @@ fn run_resource_probe(mode: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    #[ignore = "opens real UI, saves a desktop capture and replaces clipboard contents"]
+    fn resident_capture_reopen_and_graphics_detach() {
+        tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::ERROR)
+            .with_test_writer()
+            .try_init()
+            .unwrap();
+        let result = Arc::new(Mutex::new(None));
+        let report = result.clone();
+        gpui_platform::application().with_windowing(gpui::WindowingRequest::Headless).run(move |cx| {
+            cx.set_quit_mode(gpui::QuitMode::Explicit);
+            let controller = cx.new(|cx| SpikeShell::new_controller(None, cx));
+            cx.set_global(ResidentController(controller.clone()));
+            controller.update(cx, |this, _| this.backend = XcapBackend::new(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/captures/resident-test")));
+            let owner = controller.downgrade();
+            cx.spawn(async move |cx| {
+                let checked = async {
+                    let started = std::time::Instant::now();
+                    loop {
+                        if !owner.update(cx, |this, _| this.refreshing).map_err(|e| e.to_string())? { break; }
+                        if started.elapsed().as_secs() > 8 { return Err("initial enumeration timed out".to_string()); }
+                        cx.background_executor().timer(std::time::Duration::from_millis(20)).await;
+                    }
+                    let mut clipboard_sequence = 0;
+                    for phase in 0..7 {
+                        owner.update(cx, |this, cx| match phase {
+                            0 => this.capture_primary(cx),
+                            1 | 3 => this.show_control(cx),
+                                2 => {
+                                    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+                                    this.control.unwrap().update(cx, |_, window, _| {
+                                        if let RawWindowHandle::Win32(handle) = HasWindowHandle::window_handle(window).unwrap().as_raw() {
+                                            unsafe { windows_sys::Win32::UI::WindowsAndMessaging::PostMessageW(handle.hwnd.get() as _, 0x0010, 0, 0); }
+                                        }
+                                    }).unwrap();
+                                }
+                                4 => this.retire_ui(cx),
+                            5 => this.open_overlays(OverlayMode::Fullscreen, cx),
+                            6 => this.close_overlays(cx),
+                            _ => unreachable!(),
+                        }).map_err(|e| e.to_string())?;
+                        let started = std::time::Instant::now();
+                        loop {
+                            cx.background_executor().timer(std::time::Duration::from_millis(20)).await;
+                            let ready = owner.update(cx, |this, cx| {
+                                if this.switching_graphics || this.capturing || this.copying || this.saving { return false; }
+                                match phase {
+                                    0 => !this.graphics && this.control.is_none() && cx.windows().is_empty() && this.last_saved.is_some(),
+                                    1 | 3 => this.graphics && this.control.is_some(),
+                                    5 => this.graphics && this.preview_active && this.live_overlay_count(cx) > 0,
+                                    _ => !this.graphics && this.control.is_none() && cx.windows().is_empty(),
+                                }
+                            }).map_err(|e| e.to_string())?;
+                            if ready { break; }
+                            if started.elapsed().as_secs() > 10 {
+                                let status = owner.update(cx, |this, _| this.capture_status.clone()).unwrap_or_default();
+                                return Err(format!("resident phase {phase} timed out: {status}"));
+                            }
+                        }
+                        if phase == 0 { clipboard_sequence = unsafe { windows_sys::Win32::System::DataExchange::GetClipboardSequenceNumber() }; }
+                        else if unsafe { windows_sys::Win32::System::DataExchange::GetClipboardSequenceNumber() } != clipboard_sequence {
+                            return Err("UI open/close/cancel changed clipboard".into());
+                        }
+                    }
+                    Ok(())
+                }.await;
+                *report.lock().unwrap() = Some(checked);
+                cx.update(|cx| cx.quit());
+            }).detach();
+        });
+        result
+            .lock()
+            .unwrap()
+            .take()
+            .expect("resident test did not finish")
+            .unwrap();
+    }
 
     #[cfg(target_os = "windows")]
     #[test]

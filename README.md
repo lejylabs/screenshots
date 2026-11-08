@@ -20,7 +20,7 @@ cargo build -p screenshots
 cargo run -p screenshots
 ```
 
-The first run is the Phase 0 spike: overlay PopUps plus XCap still capture.
+On Windows the app starts in the system tray without a control window or GPU renderer. Right-click the camera icon (possibly under hidden icons) and choose **Show control window**. Use `cargo run -p screenshots -- --show` to open it immediately. Closing the control window returns to the tray and detaches the renderer; **Quit** in the tray or Ctrl+Q exits. Other platforms retain the windowed Phase 0 spike.
 
 See [Phase 0 evidence and remaining checks](docs/phase-0.md).
 
@@ -32,17 +32,17 @@ See [Phase 0 evidence and remaining checks](docs/phase-0.md).
 - Escape or Close overlays dismisses overlay windows.
 - On Windows, Ctrl+Shift+S captures the primary display even when another app has focus. Registration failures (for example, a shortcut already in use) appear in the control window. The capture is saved and copied automatically.
 - On Windows, Ctrl+Shift+R starts region selection even when another app has focus. Ctrl+Shift+F remains a local shortcut in the control window. Each global shortcut registers independently: a conflict with one does not disable the other. The status line reports unavailable keys.
-- On Windows, right-click the blue camera icon in the system tray (possibly under hidden icons): Bereich auswählen, Capture primary, Show control window, or Quit. Region selection uses the same frozen-image workflow as the button. Capture primary uses the same save-and-copy path as the buttons and hotkey. Closing the control window still exits the spike; it does not minimize to the tray.
+- On Windows, right-click the blue camera icon in the system tray (possibly under hidden icons): Bereich auswählen, Capture primary, Show control window, or Quit. Region selection uses the same frozen-image workflow as the button. Capture primary uses the same save-and-copy path as the buttons and hotkey. Closing the control window returns to the resident tray state.
 
-The clipboard button and its result now appear near the top, above the diagnostic lists and thumbnail. Closing the main window or pressing Ctrl+Q closes all GPUI windows through the same cleanup path. Native WM_CLOSE is intercepted so Windows does not destroy the main window ahead of GPUI cleanup. Interactive shutdown still needs verification.
+The clipboard button and its result appear near the top, above the diagnostic lists and thumbnail. On Windows, closing the control window releases its windows and renderer; Ctrl+Q quits through the output-safe cleanup path. Native WM_CLOSE is intercepted so Windows does not destroy the window ahead of GPUI cleanup.
 
 Clipboard copying runs on a background worker; pixel round-trip verification runs only in the explicit test. The clipboard owner stays alive while the app runs. Windows paste was confirmed in the interactive session; other platforms still need a paste check.
 
 On Windows, all capture paths request native hiding with `ShowWindowAsync(SW_HIDE)`. Visibility changes are queued to avoid re-entering borrowed GPUI state. The capture worker checks that the control window and cached overlays actually become hidden (up to two seconds per window), then calls `DwmFlush` before XCap. This replaces the 300ms minimize-animation delay. Failures stop the capture and restore the control window. Normal captures restore it after success; selection overlays keep it hidden until dismissed. GPUI's app-level `hide()` is a no-op on Windows, so it is not used. The explicit compositor synchronization test passes in the agent environment; interactive visibility and image cleanliness still need verification. Other platforms retain the unvalidated minimize-and-delay prototype until their native integration is tested.
 
-Region selection crops the frozen PNG, not a new live capture. Window-local coordinates are scaled to that snapshot's pixel dimensions, with floor/ceil bounds and clipping at the image edges. Dragging in either direction works; a click with no area keeps the overlay open. Selection is limited to one monitor. Dragging across monitors is not supported; if a release is missed outside the originating window, returning without the left button held cancels that drag. Interactive selection, physical DPI calibration, and edge alignment remain to be checked on real hardware.
+Region selection crops the frozen in-memory image, not a new live capture. Window-local coordinates are scaled to that snapshot's pixel dimensions, with floor/ceil bounds and clipping at the image edges. Dragging in either direction works; a click with no area keeps the overlay open. Selection is limited to one monitor. Dragging across monitors is not supported; if a release is missed outside the originating window, returning without the left button held cancels that drag. Interactive selection, physical DPI calibration, and edge alignment remain to be checked on real hardware.
 
-On Windows, dismissing an overlay hides its native window and clears the drag/snapshot state. The next invocation reuses the window for the same display and overlay mode. This avoids repeatedly destroying GPUI windows after each selection; native destruction still occurs when quitting. A capture stops if an existing overlay could not be hidden. The diagnostic `overlay geometry after presentation` logs bounds and viewport after two frames; the interactive single-display run confirmed (0,0), 2560×1440. The explicit GPUI test covers repeated cancellation, reuse, restoration and normal shutdown. Physical Escape input and other display setups remain to be checked.
+On Windows, dismissing an overlay hides its native window and clears the drag/snapshot state. While the control window remains open, the next invocation reuses the window for the same display and overlay mode. With no control window open, dismissal removes the windows after native hiding/compositor synchronization and detaches graphics. This avoids repeatedly destroying GPUI windows after each selection; native destruction still occurs when quitting. A capture stops if an existing overlay could not be hidden. The diagnostic `overlay geometry after presentation` logs bounds and viewport after two frames; the interactive single-display run confirmed (0,0), 2560×1440. The explicit GPUI test covers repeated cancellation, reuse, restoration and normal shutdown. Physical Escape input and other display setups remain to be checked.
 
 Hardware spikes can be run explicitly:
 
@@ -92,3 +92,13 @@ powershell -NoProfile -File scripts/measure-idle.ps1 -Seconds 30 -Mode normal
 Headless explicitly skips attaching the GPU/window system and creates no tray/hotkeys/capture shell; empty attaches GPUI and creates an empty control-sized window but no app services. These are diagnostics, not fully functional alternative application modes. Each probe exits on a bounded one-shot diagnostic deadline. Windowed modes get one second to render before hiding; all modes then warm for five seconds before sampling. Reports are `target/performance/idle-<mode>.json`, with thread/handle counts and the binary hash. Run modes sequentially; differing first-frame/hide timing and driver warmup can affect results, so do not attribute all differences to one allocation source.
 
 Normal output thumbnails are now at most 400x240 BGRA. Replacing thumbnails and dismissing overlays explicitly removes their image atlas entries. This does not prove the renderer/driver releases atlas backing pages; GPU memory must still be measured. Successful save releases the retained source RGBA buffer; recopy explicitly reloads the saved file on a worker with decode/RGBA limits. A failed save retains pixels so the unsaved image remains available. This on-demand recopy is separate from the capture -> selection -> clipboard pipeline, which remains in memory.
+
+Windows resident lifecycle verification:
+
+```powershell
+cargo test -p app-ui resident_capture_reopen_and_graphics_detach -- --ignored --nocapture --test-threads=1
+powershell -NoProfile -File scripts/measure-idle.ps1 -Seconds 300 -Mode resident
+powershell -NoProfile -File scripts/measure-idle.ps1 -Seconds 30 -Mode resident-after-ui
+```
+
+The explicit GUI test captures the real desktop, replaces clipboard contents, reopens/closes the control window (including native WM_CLOSE), and cancels region selection. Run with no other app instance and leave the clipboard untouched. `resident` measures the actual tray/hotkey controller; `resident-after-ui` opens and closes its control window before sampling. Both use an explicit diagnostic exit deadline, absent from ordinary launches. See [resident measurements](docs/performance-resident.md).

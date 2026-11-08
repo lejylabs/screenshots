@@ -1,0 +1,40 @@
+﻿[
+    {
+        "capturedAtUtc":  "2026-11-08T16:59:04.2334519Z",
+        "scenario":  "release resource probe: resident",
+        "warmupSeconds":  5,
+        "visibleSettleSeconds":  0,
+        "durationSeconds":  300.57197179999997,
+        "cpuSeconds":  0,
+        "cpuPercentOneLogicalCore":  0,
+        "privateBytesMax":  6938624,
+        "workingSetBytesMax":  18272256,
+        "threadsMax":  6,
+        "handlesMax":  213,
+        "executableSha256":  "4D71B19DE9719D3DA25CF4F4453A7C9EE39EDEEBF8CDD7E58EFE36B0D27F5AEE",
+        "cpuModel":  "AMD Ryzen 7 9800X3D 8-Core Processor           ",
+        "osVersion":  "Microsoft Windows NT 10.0.26300.0",
+        "sourceCommit":  "98c3222b7caba44e11e07031488a5390dc87a6c8",
+        "sourceDirty":  true,
+        "privateBytesFinal":  6873088
+    },
+    {
+        "capturedAtUtc":  "2026-11-08T17:00:15.0369481Z",
+        "scenario":  "release resource probe: resident-after-ui",
+        "warmupSeconds":  5,
+        "visibleSettleSeconds":  1,
+        "durationSeconds":  30.0685097,
+        "cpuSeconds":  0,
+        "cpuPercentOneLogicalCore":  0,
+        "privateBytesMax":  44765184,
+        "workingSetBytesMax":  31621120,
+        "threadsMax":  8,
+        "handlesMax":  295,
+        "executableSha256":  "E6943C506366313EF6412192E5CF54933AB171666C0EC3694EA3680E85CB9CE0",
+        "cpuModel":  "AMD Ryzen 7 9800X3D 8-Core Processor           ",
+        "osVersion":  "Microsoft Windows NT 10.0.26300.0",
+        "sourceCommit":  "98c3222b7caba44e11e07031488a5390dc87a6c8",
+        "sourceDirty":  true,
+        "privateBytesFinal":  8531968
+    }
+]

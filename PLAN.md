@@ -273,7 +273,7 @@ Clipboard ownership can be a live consumer even with every window hidden, partic
 
 #### Prototype debt that must not ship
 
-The initial polling loops and file-based frame handoffs have been replaced with native events and shared in-memory pixels. Canceled previews no longer save PNGs, and clipboard read-back runs only in tests. Missing native capture image byte/admission limits, lazy resident window/renderer separation and unmeasured release memory/latency budgets remain production debt. Passing the functional spike is not a performance result. See [Phase 0 evidence](docs/phase-0.md).
+The initial polling loops and file-based frame handoffs have been replaced with native events and shared in-memory pixels. Canceled previews no longer save PNGs, and clipboard read-back runs only in tests. Windows now keeps controller/tray/hotkeys alive independently of windows, attaches graphics on demand and detaches after closing its UI. Missing native capture image byte/admission limits, other-platform resident integration and unmeasured reference-hardware memory/latency budgets remain production debt. See [Windows resident evidence](docs/performance-resident.md). Passing the functional spike is not a performance result. See [Phase 0 evidence](docs/phase-0.md).
 
 ### Process lifecycle
 
