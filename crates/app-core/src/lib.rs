@@ -27,6 +27,7 @@ pub use blur::blur_preview_bgra;
 mod selection;
 pub use pixelation::PixelationGrid;
 mod settings;
+mod upload;
 pub use history::{
     HistoryEntry, HistoryFilter, ImportReport, capture_history_page, capture_history_page_filtered,
     history_database_path, import_capture_files, record_saved_capture, relink_history_entry,
@@ -39,6 +40,7 @@ pub use selection::{
     render_text_snapshot,
 };
 pub use settings::CaptureSettings;
+pub use upload::{UploadCancellation, UploadDestination, upload_png};
 
 pub use clipboard::{ImageClipboard, load_png_thumbnail, load_saved_png};
 

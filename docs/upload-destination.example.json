@@ -1,0 +1,6 @@
+{
+  "url": "https://example.invalid/upload",
+  "field": "file",
+  "json_pointer": "/url",
+  "allow_http": false
+}

@@ -31,7 +31,7 @@ chrono = { version = "0.4.45", features = ["serde"] }
 directories = "6.0.0"
 global-hotkey = "0.9.0"
 image = "0.25.10"
-reqwest = { version = "0.13.5", features = ["json", "multipart"] }
+reqwest = { version = "0.13.5", features = ["json", "multipart", "stream"] }
 rfd = "0.18.0"
 rusqlite = { version = "0.40.2", features = ["bundled", "chrono", "uuid", "hooks"] } # 0.40.x until rusqlite_migration publishes a 0.41-compatible release.
 rusqlite_migration = "2.6.0"
@@ -39,7 +39,8 @@ serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
 thiserror = "2.0.21"
 tiny-skia = "0.12.0"
-tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros", "sync", "time"] }
+tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros", "sync", "time", "fs", "io-util"] }
+tokio-util = { version = "0.7", features = ["io"] }
 toml = "1.2.1"
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter", "fmt"] }

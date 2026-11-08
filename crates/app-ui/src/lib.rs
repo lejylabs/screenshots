@@ -111,6 +111,11 @@ pub struct SpikeShell {
     history_preview_cancel: Option<Arc<std::sync::atomic::AtomicBool>>,
     history_preview_status: String,
     history_export_cancel: Option<Arc<std::sync::atomic::AtomicBool>>,
+    upload_destination: Option<app_core::UploadDestination>,
+    upload_config_loading: bool,
+    upload_cancel: Option<app_core::UploadCancellation>,
+    upload_status: String,
+    upload_url: Option<String>,
     history_status: String,
     list_status: String,
     capture_status: String,
@@ -448,6 +453,11 @@ impl SpikeShell {
             history_preview_cancel: None,
             history_preview_status: String::new(),
             history_export_cancel: None,
+            upload_destination: None,
+            upload_config_loading: false,
+            upload_cancel: None,
+            upload_status: "Uploads disabled · Load a destination to enable manual uploads".into(),
+            upload_url: None,
             history_status: String::new(),
             list_status: String::new(),
             capture_status: "Ready".into(),
@@ -1253,6 +1263,8 @@ impl SpikeShell {
             && !self.switching_graphics
             && !self.settings_saving
             && !self.history_mutating
+            && !self.upload_config_loading
+            && self.upload_cancel.is_none()
             && !self.editor_closing
         {
             cx.defer(close_application);
@@ -2103,6 +2115,142 @@ impl SpikeShell {
         cx.notify();
     }
 
+    fn load_upload_destination(&mut self, cx: &mut Context<Self>) {
+        if self.quitting || self.upload_config_loading || self.upload_cancel.is_some() {
+            return;
+        }
+        self.upload_config_loading = true;
+        self.upload_destination = None;
+        self.upload_url = None;
+        self.upload_status = "Choose an upload destination configuration (JSON)".into();
+        let dialog = cx.prompt_for_paths(gpui::PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: false,
+            prompt: Some("Load HTTP upload destination (JSON, no credentials)".into()),
+        });
+        cx.spawn(async move |this, cx| {
+            let selected = dialog.await;
+            let path = this
+                .update(cx, |this, cx| {
+                    if this.quitting {
+                        this.upload_config_loading = false;
+                        this.finish_quit_if_idle(cx);
+                        return None;
+                    }
+                    match selected {
+                        Ok(Ok(Some(mut paths))) if paths.len() == 1 => Some(paths.remove(0)),
+                        other => {
+                            this.upload_config_loading = false;
+                            this.upload_status = match other {
+                                Ok(Ok(None)) => {
+                                    "Uploads disabled · Destination selection canceled".into()
+                                }
+                                error => format!(
+                                    "Uploads disabled · Destination selection failed: {error:?}"
+                                ),
+                            };
+                            this.finish_quit_if_idle(cx);
+                            cx.notify();
+                            None
+                        }
+                    }
+                })
+                .ok()
+                .flatten();
+            let Some(path) = path else {
+                return;
+            };
+            let result = cx
+                .background_spawn(async move {
+                    app_core::UploadDestination::load(&path).map_err(|error| format!("{error:#}"))
+                })
+                .await;
+            this.update(cx, |this, cx| {
+                this.upload_config_loading = false;
+                if !this.quitting {
+                    match result {
+                        Ok(destination) => {
+                            this.upload_status = format!(
+                                "Destination: {} · Session only · Manual upload",
+                                destination.origin()
+                            );
+                            this.upload_destination = Some(destination);
+                        }
+                        Err(error) => this.upload_status = format!("Uploads disabled: {error}"),
+                    }
+                }
+                this.finish_quit_if_idle(cx);
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+        cx.notify();
+    }
+
+    fn start_upload(&mut self, cx: &mut Context<Self>) {
+        if self.quitting
+            || self.upload_cancel.is_some()
+            || self.upload_config_loading
+            || self.saving
+            || self.capturing
+            || self.copying
+            || self.capture_delay.is_some()
+        {
+            return;
+        }
+        let (Some(destination), Some(path)) =
+            (self.upload_destination.clone(), self.last_saved.clone())
+        else {
+            return;
+        };
+        let cancel = app_core::UploadCancellation::default();
+        self.upload_cancel = Some(cancel.clone());
+        self.upload_url = None;
+        let filename = path
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .into_owned();
+        self.upload_status = format!("Uploading {filename} to {}…", destination.origin());
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_spawn(async move {
+                    app_core::upload_png(&destination, &path, cancel)
+                        .map_err(|error| format!("{error:#}"))
+                })
+                .await;
+            this.update(cx, |this, cx| {
+                this.upload_cancel = None;
+                if !this.quitting {
+                    match result {
+                        Ok(url) => {
+                            this.upload_status =
+                                format!("Uploaded {filename} · Link ready · Clipboard unchanged");
+                            this.upload_url = Some(url);
+                        }
+                        Err(error) => this.upload_status = format!("No upload link: {error}"),
+                    }
+                }
+                this.finish_quit_if_idle(cx);
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+        cx.notify();
+    }
+
+    fn cancel_upload(&mut self, cx: &mut Context<Self>) {
+        if let Some(cancel) = &self.upload_cancel {
+            cancel.cancel();
+            self.upload_status =
+                "Canceling upload… The server may already have received the file.".into();
+            cx.notify();
+        }
+    }
+
     fn save_capture_as(&mut self, cx: &mut Context<Self>) {
         if self.capture_delay.is_some() {
             return;
@@ -2798,6 +2946,78 @@ impl Render for SpikeShell {
                     cx.listener(|this, _, _, cx| this.cancel_history_export(cx)),
                 ))
             })
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_2()
+                    .child("Upload saved PNG")
+                    .child(div().text_sm().child(self.upload_status.clone()))
+                    .child(
+                        div()
+                            .flex()
+                            .flex_wrap()
+                            .gap_2()
+                            .child(capture_button(
+                                "load-upload-destination",
+                                "Load destination…",
+                                self.upload_config_loading || self.upload_cancel.is_some(),
+                                cx.listener(|this, _, _, cx| this.load_upload_destination(cx)),
+                            ))
+                            .child(capture_button(
+                                "upload-saved-png",
+                                "Upload saved PNG",
+                                busy || self.upload_config_loading
+                                    || self.upload_cancel.is_some()
+                                    || self.upload_destination.is_none()
+                                    || self.last_saved.is_none(),
+                                cx.listener(|this, _, _, cx| this.start_upload(cx)),
+                            ))
+                            .child(capture_button(
+                                "cancel-upload",
+                                "Cancel upload",
+                                self.upload_cancel.is_none(),
+                                cx.listener(|this, _, _, cx| this.cancel_upload(cx)),
+                            ))
+                            .child(capture_button(
+                                "forget-upload-destination",
+                                "Forget destination",
+                                self.upload_config_loading
+                                    || self.upload_cancel.is_some()
+                                    || self.upload_destination.is_none(),
+                                cx.listener(|this, _, _, cx| {
+                                    if !this.upload_config_loading && this.upload_cancel.is_none() {
+                                        this.upload_destination = None;
+                                        this.upload_url = None;
+                                        this.upload_status =
+                                            "Uploads disabled · Destination forgotten".into();
+                                        cx.notify();
+                                    }
+                                }),
+                            ))
+                            .child(capture_button(
+                                "copy-upload-link",
+                                "Copy link",
+                                self.upload_url.is_none(),
+                                cx.listener(|this, _, _, cx| {
+                                    if let Some(url) = &this.upload_url {
+                                        cx.write_to_clipboard(gpui::ClipboardItem::new_string(
+                                            url.clone(),
+                                        ));
+                                        this.upload_status = "Upload link copied".into();
+                                        this.clipboard_status =
+                                            "Upload link copied to clipboard".into();
+                                        cx.notify();
+                                    }
+                                }),
+                            )),
+                    )
+                    .children(
+                        self.upload_url
+                            .clone()
+                            .map(|url| div().text_sm().child(url)),
+                    ),
+            )
             .child(
                 div()
                     .flex()
@@ -3580,6 +3800,7 @@ fn close_application(cx: &mut App) {
             this.cancel_capture_delay(cx);
             this.clear_history_preview(cx);
             this.cancel_history_export(cx);
+            this.cancel_upload(cx);
             this.close_editor(cx);
             this.quitting = true;
             let busy = this.capturing
@@ -3588,6 +3809,8 @@ fn close_application(cx: &mut App) {
                 || this.switching_graphics
                 || this.settings_saving
                 || this.history_mutating
+                || this.upload_config_loading
+                || this.upload_cancel.is_some()
                 || this.editor_closing;
             if busy {
                 this.capture_status = "Quitting: waiting for active work…".into();
@@ -3607,12 +3830,15 @@ fn close_application(cx: &mut App) {
                     this.cancel_capture_delay(cx);
                     this.clear_history_preview(cx);
                     this.cancel_history_export(cx);
+                    this.cancel_upload(cx);
                     this.quitting = true;
                     let busy = this.capturing
                         || this.copying
                         || this.saving
                         || this.settings_saving
                         || this.history_mutating
+                        || this.upload_config_loading
+                        || this.upload_cancel.is_some()
                         || this.editor_closing;
                     if busy {
                         this.capture_status = "Quitting: waiting for active work to finish…".into();
@@ -4206,6 +4432,164 @@ mod tests {
             app_core::capture_history_page(&root.join("history.sqlite3"), None).unwrap();
         assert_eq!(remaining.len(), 1);
         assert_eq!(remaining[0].path, imported);
+        assert_eq!(
+            unsafe { windows_sys::Win32::System::DataExchange::GetClipboardSequenceNumber() },
+            clipboard
+        );
+        assert_eq!(errors.load(std::sync::atomic::Ordering::Relaxed), 0);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    #[ignore = "native headless upload UI with a synthetic PNG and loopback server; no clipboard writes"]
+    fn manual_upload_keeps_clipboard_and_capture_unchanged() {
+        use std::io::{Read, Write};
+        let errors = track_gui_errors();
+        let event_errors = errors.clone();
+        let root = std::env::temp_dir().join(format!(
+            "screenshots-upload-ui-{}-{}",
+            std::process::id(),
+            probe_timestamp()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let path = root.join("saved.png");
+        image::RgbaImage::new(3, 2).save(&path).unwrap();
+        let original = std::fs::read(&path).unwrap();
+        let source = path.clone();
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let config = root.join("destination.json");
+        std::fs::write(&config, format!(r#"{{"url":"http://{}/upload","field":"file","json_pointer":"/url","allow_http":true}}"#, listener.local_addr().unwrap())).unwrap();
+        let destination = app_core::UploadDestination::load(&config).unwrap();
+        let server = std::thread::spawn(move || {
+            let started = std::time::Instant::now();
+            let mut stream = loop {
+                match listener.accept() {
+                    Ok((stream, _)) => break stream,
+                    Err(error)
+                        if error.kind() == std::io::ErrorKind::WouldBlock
+                            && started.elapsed().as_secs() < 5 =>
+                    {
+                        std::thread::sleep(std::time::Duration::from_millis(1))
+                    }
+                    error => panic!("Synthetic upload accept failed: {error:?}"),
+                }
+            };
+            stream
+                .set_read_timeout(Some(std::time::Duration::from_secs(3)))
+                .unwrap();
+            stream
+                .set_write_timeout(Some(std::time::Duration::from_secs(3)))
+                .unwrap();
+            let mut headers = Vec::new();
+            let mut byte = [0];
+            while !headers.ends_with(b"\r\n\r\n") {
+                assert!(headers.len() < 8192);
+                stream.read_exact(&mut byte).unwrap();
+                headers.push(byte[0]);
+            }
+            let headers = String::from_utf8(headers).unwrap();
+            assert!(headers.starts_with("POST /upload HTTP/1.1"));
+            let length: usize = headers
+                .lines()
+                .find_map(|line| {
+                    let (name, value) = line.split_once(':')?;
+                    name.eq_ignore_ascii_case("content-length")
+                        .then(|| value.trim().parse().unwrap())
+                })
+                .unwrap();
+            assert!(length < 8192);
+            let mut body = vec![0; length];
+            stream.read_exact(&mut body).unwrap();
+            let response = r#"{"url":"https://example.invalid/share/native"}"#;
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{response}",
+                response.len()
+            )
+            .unwrap();
+        });
+        let clipboard =
+            unsafe { windows_sys::Win32::System::DataExchange::GetClipboardSequenceNumber() };
+        let result = Arc::new(Mutex::new(None));
+        let report = result.clone();
+        gpui::Application::with_platform(gpui_platform::current_platform(false))
+            .with_windowing(gpui::WindowingRequest::Headless)
+            .run(move |cx| {
+                cx.set_quit_mode(gpui::QuitMode::Explicit);
+                let controller = cx.new(|cx| SpikeShell::new_controller(None, cx));
+                cx.spawn(async move |cx| {
+                    let checked: Result<(), String> = async {
+                        let started = std::time::Instant::now();
+                        while controller.update(cx, |this, _| this.refreshing) {
+                            if started.elapsed().as_secs() > 8 {
+                                return Err("Upload fixture startup timed out".into());
+                            }
+                            cx.background_executor()
+                                .timer(std::time::Duration::from_millis(20))
+                                .await;
+                        }
+                        event_errors.store(0, std::sync::atomic::Ordering::Relaxed);
+                        controller.update(cx, |this, cx| {
+                            this.start_upload(cx);
+                            if this.upload_cancel.is_some() {
+                                return Err(
+                                    "Upload started without a destination/source".to_owned()
+                                );
+                            }
+                            this.upload_destination = Some(destination);
+                            this.start_upload(cx);
+                            if this.upload_cancel.is_some() {
+                                return Err("Upload started without a saved PNG".to_owned());
+                            }
+                            this.last_saved = Some(source.clone());
+                            this.start_upload(cx);
+                            this.start_upload(cx);
+                            Ok(())
+                        })?;
+                        let started = std::time::Instant::now();
+                        while controller.update(cx, |this, _| this.upload_cancel.is_some()) {
+                            if started.elapsed().as_secs() > 8 {
+                                controller.update(cx, |this, cx| this.cancel_upload(cx));
+                                return Err("Upload UI timed out".into());
+                            }
+                            cx.background_executor()
+                                .timer(std::time::Duration::from_millis(20))
+                                .await;
+                        }
+                        controller.update(cx, |this, cx| {
+                            if this.upload_url.as_deref()
+                                != Some("https://example.invalid/share/native")
+                                || !this.upload_status.starts_with("Uploaded saved.png")
+                                || this.last_saved.as_ref() != Some(&source)
+                                || this.last_capture.is_some()
+                                || !cx.windows().is_empty()
+                                || this.graphics
+                            {
+                                return Err(format!(
+                                    "Upload UI did not preserve state or publish its link: {}",
+                                    this.upload_status
+                                ));
+                            }
+                            Ok(())
+                        })
+                    }
+                    .await;
+                    *report.lock().unwrap() = Some(checked);
+                    cx.update(|cx| cx.quit());
+                })
+                .detach();
+            });
+        server.join().unwrap();
+        result
+            .lock()
+            .unwrap()
+            .take()
+            .expect("Upload UI did not finish")
+            .unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), original);
+        assert!(!root.join("history.sqlite3").exists());
         assert_eq!(
             unsafe { windows_sys::Win32::System::DataExchange::GetClipboardSequenceNumber() },
             clipboard

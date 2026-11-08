@@ -22,6 +22,7 @@ shared.workspace = true
 thiserror.workspace = true
 tiny-skia.workspace = true
 tokio.workspace = true
+tokio-util.workspace = true
 tracing.workspace = true
 uuid.workspace = true
 xcap.workspace = true
