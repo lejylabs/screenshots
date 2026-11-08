@@ -38,6 +38,7 @@ pub struct DisplayInfo {
 #[derive(Debug, Clone)]
 pub struct WindowInfo {
     pub id: String,
+    pub pid: u32,
     pub title: String,
     pub app_name: String,
     pub x: i32,
@@ -57,6 +58,7 @@ pub enum PixelFormat {
 #[derive(Debug, Clone)]
 pub struct CapturedImage {
     pub display_id: String,
+    pub window_id: Option<String>,
     pub width: u32,
     pub height: u32,
     pub png_path: PathBuf,
@@ -70,6 +72,8 @@ pub enum CaptureError {
     Unsupported(&'static str),
     #[error("display not found: {0}")]
     DisplayNotFound(String),
+    #[error("window not found: {0}")]
+    WindowNotFound(String),
     #[error("empty or black frame")]
     EmptyFrame,
     #[error("{0}")]
@@ -85,6 +89,7 @@ pub trait CaptureBackend: Send {
     fn list_displays(&self) -> Result<Vec<DisplayInfo>, CaptureError>;
     fn list_windows(&self) -> Result<Vec<WindowInfo>, CaptureError>;
     fn capture_display(&self, display_id: &str) -> Result<CapturedImage, CaptureError>;
+    fn capture_window(&self, window_id: &str) -> Result<CapturedImage, CaptureError>;
     fn capture_region(
         &self,
         display_id: &str,
@@ -138,6 +143,7 @@ impl XcapBackend {
 
         Ok(CapturedImage {
             display_id: display_id.to_string(),
+            window_id: None,
             width: image.width(),
             height: image.height(),
             png_path,
@@ -202,6 +208,40 @@ impl CaptureBackend for XcapBackend {
             .map_err(backend_error)?;
         self.persist(display_id, image, started.elapsed().as_millis(), "region")
     }
+
+    fn capture_window(&self, window_id: &str) -> Result<CapturedImage, CaptureError> {
+        if !self.capabilities().capture_window {
+            return Err(CaptureError::Unsupported("window capture"));
+        }
+        let numeric_id = window_id
+            .parse::<u32>()
+            .map_err(|_| CaptureError::WindowNotFound(window_id.to_string()))?;
+        let window = Window::all()
+            .map_err(backend_error)?
+            .into_iter()
+            .find(|window| window.id().is_ok_and(|id| id == numeric_id))
+            .ok_or_else(|| CaptureError::WindowNotFound(window_id.to_string()))?;
+        if window.pid().map_err(backend_error)? == std::process::id() {
+            return Err(CaptureError::Unsupported(
+                "capturing this application's own window",
+            ));
+        }
+        if window.is_minimized().map_err(backend_error)? {
+            return Err(CaptureError::Unsupported("capturing a minimized window"));
+        }
+        let display_id = monitor_id(&window.current_monitor().map_err(backend_error)?)?;
+        let started = Instant::now();
+        let image = window.capture_image().map_err(backend_error)?;
+        let id = window.id().map_err(backend_error)?.to_string();
+        let mut shot = self.persist(
+            &display_id,
+            image,
+            started.elapsed().as_millis(),
+            &format!("window-{id}"),
+        )?;
+        shot.window_id = Some(id);
+        Ok(shot)
+    }
 }
 
 fn backend_error(error: impl std::fmt::Display) -> CaptureError {
@@ -232,6 +272,7 @@ fn display_info(monitor: &Monitor) -> Result<DisplayInfo, CaptureError> {
 fn window_info(window: &Window) -> Result<WindowInfo, CaptureError> {
     Ok(WindowInfo {
         id: window.id().map_err(backend_error)?.to_string(),
+        pid: window.pid().unwrap_or(0),
         title: window.title().unwrap_or_default(),
         app_name: window.app_name().unwrap_or_default(),
         x: window.x().unwrap_or(0),
@@ -258,6 +299,33 @@ pub fn capture_output_dir() -> PathBuf {
 mod tests {
     use super::*;
     use image::Rgba;
+
+    #[test]
+    fn invalid_window_id_does_not_require_a_desktop() {
+        let backend = XcapBackend::new(std::env::temp_dir());
+        let result = backend.capture_window("invalid-window");
+        if backend.capabilities().capture_window {
+            assert!(matches!(result, Err(CaptureError::WindowNotFound(_))));
+        } else {
+            assert!(matches!(result, Err(CaptureError::Unsupported(_))));
+        }
+    }
+
+    #[test]
+    #[ignore = "requires SCREENSHOTS_TEST_WINDOW_ID and an interactive desktop"]
+    fn captures_selected_window_to_png() {
+        let id = std::env::var("SCREENSHOTS_TEST_WINDOW_ID")
+            .expect("set SCREENSHOTS_TEST_WINDOW_ID to a listed window ID");
+        let backend = XcapBackend::new(std::env::temp_dir().join("screenshots-window-spike"));
+        let shot = backend.capture_window(&id).expect("capture window");
+        assert_eq!(shot.window_id.as_deref(), Some(id.as_str()));
+        let decoded = image::open(&shot.png_path).expect("decode captured PNG");
+        assert_eq!(
+            (decoded.width(), decoded.height()),
+            (shot.width, shot.height)
+        );
+        assert!(shot.width > 0 && shot.height > 0);
+    }
 
     #[test]
     fn rejects_empty_and_black_frames() {

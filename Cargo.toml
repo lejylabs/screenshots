@@ -22,8 +22,8 @@ shared = { path = "crates/shared" }
 # Pinned GPUI snapshot of Zed v1.27.0. This is upstream GPUI on crates.io,
 # not a tray/hotkey/overlay fork. Do not enable the `screen-capture` feature;
 # capture backends are evaluated separately.
-gpui = { package = "gpui-unofficial", version = "1.27.0" }
-gpui_platform = { package = "gpui-platform-gpui-unofficial", version = "1.27.0" }
+gpui = { package = "gpui-unofficial", version = "=1.27.0" }
+gpui_platform = { package = "gpui-platform-gpui-unofficial", version = "=1.27.0" }
 
 anyhow = "1.0.104"
 arboard = "3.7.0"
@@ -47,7 +47,7 @@ tray-icon = "0.26.1"
 uuid = { version = "1.29.1", features = ["v4", "v7", "serde"] }
 
 # Phase 0 still-image spike. Not a committed product backend yet.
-xcap = "0.9.8"
+xcap = "=0.9.8"
 
 # Left out on purpose:
 # - FFmpeg: recording, after the MVP, license check first

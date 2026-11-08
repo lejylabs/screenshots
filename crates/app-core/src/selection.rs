@@ -122,6 +122,7 @@ mod tests {
             image::RgbaImage::from_fn(4, 3, |x, y| image::Rgba([x as u8, y as u8, 20, 255]));
         image.save(&path)?;
         let source = CapturedImage {
+            window_id: None,
             display_id: "test".into(),
             width: 4,
             height: 3,

@@ -92,7 +92,8 @@ impl SpikeShell {
         match app_core::SpikeTray::new() {
             Ok(tray) => {
                 shell.tray = Some(tray);
-                shell.tray_status = "Tray: Capture / Show control window / Quit".into();
+                shell.tray_status =
+                    "Tray: Bereich auswählen / Capture / Show control window / Quit".into();
                 tracing::info!("tray icon created");
                 let control = window.window_handle();
                 cx.spawn(async move |this, cx| {
@@ -104,6 +105,7 @@ impl SpikeShell {
                                 tracing::info!(?command, "tray command");
                                 match command {
                                     app_core::TrayCommand::Capture => this.capture_primary(cx),
+                                    app_core::TrayCommand::Region => this.open_overlays(OverlayMode::Fullscreen, cx),
                                     app_core::TrayCommand::Show => {
                                         if this.capturing || this.preview_active { continue; }
                                         if let Err(error) = control.update(cx, |_, window, cx| {
@@ -129,9 +131,9 @@ impl SpikeShell {
         {
             match app_core::CaptureHotkey::register() {
                 Ok(hotkey) => {
+                    shell.hotkey_status = hotkey.status().to_string();
+                    tracing::info!(status = %shell.hotkey_status, "global hotkey registration complete");
                     shell.hotkey = Some(hotkey);
-                    shell.hotkey_status = "Global capture: Ctrl+Shift+S".into();
-                    tracing::info!("global capture hotkey registered: Ctrl+Shift+S");
                     cx.spawn(async move |this, cx| {
                         loop {
                             cx.background_executor()
@@ -139,13 +141,21 @@ impl SpikeShell {
                                 .await;
                             if this
                                 .update(cx, |this, cx| {
-                                    if this
+                                    let commands = this
                                         .hotkey
                                         .as_ref()
-                                        .is_some_and(|hotkey| hotkey.take_pressed())
-                                    {
-                                        tracing::info!("global capture hotkey pressed");
-                                        this.capture_primary(cx);
+                                        .map(|hotkey| hotkey.take_commands())
+                                        .unwrap_or_default();
+                                    for command in commands {
+                                        tracing::info!(?command, "global capture hotkey pressed");
+                                        match command {
+                                            app_core::CaptureCommand::Primary => {
+                                                this.capture_primary(cx)
+                                            }
+                                            app_core::CaptureCommand::Region => {
+                                                this.open_overlays(OverlayMode::Fullscreen, cx)
+                                            }
+                                        }
                                     }
                                 })
                                 .is_err()
@@ -158,7 +168,7 @@ impl SpikeShell {
                 }
                 Err(error) => {
                     tracing::warn!(%error, "global capture hotkey registration failed");
-                    shell.hotkey_status = format!("Ctrl+Shift+S unavailable: {error}");
+                    shell.hotkey_status = format!("Global hotkeys unavailable: {error}");
                 }
             }
         }
@@ -215,7 +225,7 @@ impl SpikeShell {
             match handle.update(cx, |overlay, window, cx| {
                 #[cfg(target_os = "windows")]
                 if let Some(native) = &overlay.native {
-                    if let Err(error) = native.set_visible(false) {
+                    if let Err(error) = native.request_visible(false) {
                         tracing::error!(%error, "could not hide overlay");
                         return;
                     }
@@ -320,7 +330,7 @@ impl SpikeShell {
                     overlay.drag_start = None;
                     overlay.active = true;
                     if let Some(native) = &overlay.native {
-                        if let Err(error) = native.set_visible(true) {
+                        if let Err(error) = native.request_visible(true) {
                             overlay.active = false;
                             tracing::error!(%error, "could not show overlay");
                         }
@@ -564,15 +574,23 @@ impl SpikeShell {
 
         let backend = self.backend.clone();
         let control = self.control;
+        #[cfg(target_os = "windows")]
+        let mut hidden_windows: Vec<_> = self
+            .overlays
+            .iter()
+            .filter_map(|handle| handle.read(cx).ok().and_then(|overlay| overlay.native))
+            .collect();
         cx.spawn(async move |this, cx| {
             // Defer until the button/action has released its borrow of the control window.
             let hidden = control
                 .update(cx, |_, window, _| {
                     #[cfg(target_os = "windows")]
                     {
-                        native_window(window)?
-                            .set_visible(false)
-                            .map_err(|error| error.to_string())
+                        let native = native_window(window)?;
+                        native
+                            .request_visible(false)
+                            .map_err(|error| error.to_string())?;
+                        Ok(native)
                     }
                     #[cfg(not(target_os = "windows"))]
                     {
@@ -582,16 +600,21 @@ impl SpikeShell {
                 })
                 .map_err(|error| error.to_string())
                 .and_then(|result| result);
-            if let Err(error) = hidden {
-                this.update(cx, |this, cx| {
-                    this.capturing = false;
-                    this.capture_status = format!("could not hide control window: {error}");
-                    this.restore_control(cx);
-                    cx.notify();
-                })
-                .ok();
-                return;
-            }
+            let _hidden_control = match hidden {
+                Ok(control) => control,
+                Err(error) => {
+                    this.update(cx, |this, cx| {
+                        this.capturing = false;
+                        this.capture_status = format!("could not hide control window: {error}");
+                        this.restore_control(cx);
+                        cx.notify();
+                    })
+                    .ok();
+                    return;
+                }
+            };
+            #[cfg(target_os = "windows")]
+            hidden_windows.push(_hidden_control);
             // shortcut: other platforms still need a native visibility/compositor spike.
             #[cfg(not(target_os = "windows"))]
             cx.background_executor()
@@ -600,12 +623,20 @@ impl SpikeShell {
             let result = cx
                 .background_spawn(async move {
                     #[cfg(target_os = "windows")]
-                    app_core::wait_for_desktop_compositor()
-                        .map_err(|error| app_core::CaptureError::Backend(error.to_string()))?;
+                    {
+                        for window in hidden_windows {
+                            window.wait_until_hidden().map_err(|error| {
+                                app_core::CaptureError::Backend(error.to_string())
+                            })?;
+                        }
+                        app_core::wait_for_desktop_compositor()
+                            .map_err(|error| app_core::CaptureError::Backend(error.to_string()))?;
+                    }
                     let mut shots = Vec::new();
                     for job in jobs {
                         let shot = match &job {
                             CaptureJob::Display(id) => backend.capture_display(id)?,
+                            CaptureJob::Window(id) => backend.capture_window(id)?,
                             CaptureJob::Region {
                                 display_id,
                                 x,
@@ -616,6 +647,7 @@ impl SpikeShell {
                         };
                         tracing::info!(
                             display_id = %shot.display_id,
+                            window_id = ?shot.window_id,
                             width = shot.width,
                             height = shot.height,
                             elapsed_ms = shot.elapsed_ms,
@@ -671,6 +703,7 @@ impl SpikeShell {
 
 enum CaptureJob {
     Display(String),
+    Window(String),
     Region {
         display_id: String,
         x: i32,
@@ -701,11 +734,12 @@ impl Render for SpikeShell {
             self.last_capture.as_ref().map(|shot| shot.png_path.clone());
         let xcap_displays = self.xcap_displays.clone();
         let window_count = self.xcap_windows.len();
-        let window_preview: Vec<String> = self
+        let window_preview: Vec<(String, String)> = self
             .xcap_windows
             .iter()
-            .filter(|window| !window.is_minimized && !window.title.is_empty())
-            .take(6)
+            .filter(|window| {
+                !window.is_minimized && !window.title.is_empty() && window.pid != std::process::id()
+            })
             .map(|window| {
                 let title: String = window.title.chars().take(48).collect();
                 let title = if window.title.chars().count() > 48 {
@@ -713,9 +747,12 @@ impl Render for SpikeShell {
                 } else {
                     title
                 };
-                format!(
-                    "{title}  {}×{}  ({}, {})",
-                    window.width, window.height, window.x, window.y
+                (
+                    window.id.clone(),
+                    format!(
+                        "{title}  {}×{}  ({}, {})",
+                        window.width, window.height, window.x, window.y
+                    ),
                 )
             })
             .collect();
@@ -768,6 +805,24 @@ impl Render for SpikeShell {
                 cx.listener(|this, _, _, cx| this.copy_last_capture(cx)),
             ))
             .child(div().text_sm().child(self.clipboard_status.clone()))
+            .child(capture_button(
+                "refresh-windows",
+                "Fensterliste aktualisieren",
+                capturing,
+                cx.listener(|this, _, _, cx| { this.refresh_xcap_lists(); cx.notify(); }),
+            ))
+            .child(div().text_sm().child("Fenster aufnehmen — zum Aufnehmen anklicken"))
+            .child(
+                div().id("window-picker").flex_none().max_h(px(180.0)).overflow_y_scroll()
+                    .flex().flex_col().gap_1().text_sm()
+                    .children(window_preview.into_iter().enumerate().map(|(index, (id, label))| {
+                        div().id(("capture-window", index)).flex_none().px_3().py_2()
+                            .rounded_md().bg(rgb(0x27272a)).cursor_pointer()
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                if !capturing { this.start_capture(vec![CaptureJob::Window(id.clone())], cx); }
+                            })).child(label)
+                    })),
+            )
             .child(
                 div()
                     .text_sm()
@@ -862,15 +917,6 @@ impl Render for SpikeShell {
                     .text_sm()
                     .text_color(rgb(0xa3a3a3))
                     .child(format!("{window_count} XCap window(s)")),
-            )
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap_1()
-                    .text_xs()
-                    .text_color(rgb(0xa3a3a3))
-                    .children(window_preview.into_iter().map(|line| div().child(line))),
             )
             .child(
                 div()
@@ -1132,7 +1178,7 @@ fn native_window(window: &Window) -> Result<app_core::DesktopWindow, String> {
 fn show_control_window(window: &Window) -> Result<(), String> {
     #[cfg(target_os = "windows")]
     native_window(window)?
-        .set_visible(true)
+        .request_visible(true)
         .map_err(|error| error.to_string())?;
     window.activate_window();
     Ok(())
@@ -1191,13 +1237,8 @@ fn overlay_options(
 }
 
 fn close_application(cx: &mut App) {
-    // Let GPUI own native window destruction instead of DefWindowProc's WM_CLOSE path.
-    for handle in cx.windows() {
-        if let Err(error) = handle.update(cx, |_, window, _| window.remove_window()) {
-            tracing::warn!(%error, "failed to close application window");
-        }
-    }
-    cx.defer(|cx| cx.quit());
+    // GPUI shutdown clears its windows; avoid removing them while callbacks are still queued.
+    cx.quit();
 }
 
 pub fn run() {

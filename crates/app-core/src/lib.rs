@@ -10,7 +10,7 @@ pub use clipboard::ImageClipboard;
 #[cfg(target_os = "windows")]
 mod hotkey;
 #[cfg(target_os = "windows")]
-pub use hotkey::CaptureHotkey;
+pub use hotkey::{CaptureCommand, CaptureHotkey};
 
 #[cfg(target_os = "windows")]
 mod tray;

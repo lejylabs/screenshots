@@ -8,6 +8,7 @@ use tray_icon::{
 #[derive(Debug, PartialEq, Eq)]
 pub enum TrayCommand {
     Capture,
+    Region,
     Show,
     Quit,
 }
@@ -15,6 +16,7 @@ pub enum TrayCommand {
 pub struct SpikeTray {
     _icon: TrayIcon,
     capture: MenuItem,
+    region: MenuItem,
     show: MenuItem,
     quit: MenuItem,
 }
@@ -23,9 +25,10 @@ impl SpikeTray {
     pub fn new() -> Result<Self> {
         let menu = Menu::new();
         let capture = MenuItem::new("Capture primary (Ctrl+Shift+S)", true, None);
+        let region = MenuItem::new("Bereich auswählen (Ctrl+Shift+R)", true, None);
         let show = MenuItem::new("Show control window", true, None);
         let quit = MenuItem::new("Quit", true, None);
-        menu.append_items(&[&capture, &show, &quit])?;
+        menu.append_items(&[&region, &capture, &show, &quit])?;
         // A simple camera frame for the prototype; no external asset needed.
         let mut pixels = vec![0; 32 * 32 * 4];
         for y in 6..26 {
@@ -47,6 +50,7 @@ impl SpikeTray {
         Ok(Self {
             _icon: icon,
             capture,
+            region,
             show,
             quit,
         })
@@ -58,6 +62,8 @@ impl SpikeTray {
             .filter_map(|event| {
                 if event.id == *self.capture.id() {
                     Some(TrayCommand::Capture)
+                } else if event.id == *self.region.id() {
+                    Some(TrayCommand::Region)
                 } else if event.id == *self.show.id() {
                     Some(TrayCommand::Show)
                 } else if event.id == *self.quit.id() {
