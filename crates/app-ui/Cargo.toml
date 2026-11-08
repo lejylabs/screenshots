@@ -13,3 +13,6 @@ gpui.workspace = true
 gpui_platform.workspace = true
 shared.workspace = true
 tracing.workspace = true
+
+[target.'cfg(target_os = "windows")'.dependencies]
+raw-window-handle = "0.6.2"

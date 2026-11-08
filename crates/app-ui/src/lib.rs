@@ -7,9 +7,10 @@ use std::{
 
 use app_core::{CaptureBackend, CapturedImage, DisplayInfo, WindowInfo, XcapBackend};
 use gpui::{
-    App, Bounds, Context, DisplayId, FocusHandle, Focusable, IntoElement, KeyBinding, Pixels,
-    TitlebarOptions, Window, WindowBackgroundAppearance, WindowBounds, WindowHandle, WindowKind,
-    WindowOptions, actions, div, img, point, prelude::*, px, rgb, rgba, size,
+    AnyWindowHandle, App, Bounds, Context, DisplayId, FocusHandle, Focusable, IntoElement,
+    KeyBinding, Pixels, TitlebarOptions, Window, WindowBackgroundAppearance, WindowBounds,
+    WindowHandle, WindowKind, WindowOptions, actions, div, img, point, prelude::*, px, rgb, rgba,
+    size,
 };
 
 actions!(
@@ -25,13 +26,15 @@ actions!(
     ]
 );
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum OverlayMode {
     Probe,
     Fullscreen,
 }
 
 pub struct SpikeShell {
+    control: AnyWindowHandle,
+    preview_active: bool,
     focus_handle: FocusHandle,
     overlays: Vec<WindowHandle<Overlay>>,
     backend: XcapBackend,
@@ -64,6 +67,8 @@ impl SpikeShell {
         );
 
         let mut shell = Self {
+            control: window.window_handle(),
+            preview_active: false,
             focus_handle: cx.focus_handle(),
             overlays: Vec::new(),
             backend,
@@ -100,8 +105,11 @@ impl SpikeShell {
                                 match command {
                                     app_core::TrayCommand::Capture => this.capture_primary(cx),
                                     app_core::TrayCommand::Show => {
+                                        if this.capturing || this.preview_active { continue; }
                                         if let Err(error) = control.update(cx, |_, window, cx| {
-                                            window.activate_window();
+                                            if let Err(error) = show_control_window(window) {
+                                                tracing::error!(%error, "could not show control window");
+                                            }
                                             cx.activate(true);
                                         }) { tracing::warn!(%error, "could not show control window"); }
                                     }
@@ -197,23 +205,81 @@ impl SpikeShell {
     fn live_overlay_count(&self, cx: &App) -> usize {
         self.overlays
             .iter()
-            .filter(|handle| handle.read(cx).is_ok())
+            .filter(|handle| handle.read(cx).is_ok_and(|overlay| overlay.active))
             .count()
     }
 
     fn close_overlays(&mut self, cx: &mut Context<Self>) {
         tracing::info!(count = self.overlays.len(), "closing overlays");
-        for handle in self.overlays.drain(..) {
-            match handle.update(cx, |_, window, _| window.remove_window()) {
+        for handle in &self.overlays {
+            match handle.update(cx, |overlay, window, cx| {
+                #[cfg(target_os = "windows")]
+                if let Some(native) = &overlay.native {
+                    if let Err(error) = native.set_visible(false) {
+                        tracing::error!(%error, "could not hide overlay");
+                        return;
+                    }
+                    overlay.active = false;
+                    overlay.drag_start = None;
+                    overlay.snapshot = None;
+                    cx.notify();
+                    return;
+                }
+                window.remove_window();
+            }) {
                 Ok(()) => {}
                 Err(error) => tracing::warn!(?error, "overlay handle already gone"),
             }
+        }
+        self.overlays.retain(|handle| handle.read(cx).is_ok());
+        if self.preview_active && self.live_overlay_count(cx) == 0 {
+            self.preview_active = false;
+            self.restore_control(cx);
         }
         cx.notify();
     }
 
     fn open_overlays(&mut self, mode: OverlayMode, cx: &mut Context<Self>) {
+        if self.capturing || self.copying {
+            return;
+        }
+        if matches!(mode, OverlayMode::Fullscreen) {
+            let jobs = cx
+                .displays()
+                .iter()
+                .map(|display| CaptureJob::Display(u64::from(display.id()).to_string()))
+                .collect();
+            self.start_capture_with_preview(jobs, true, cx);
+            return;
+        }
+        self.show_overlays(mode, &[], cx);
+    }
+
+    fn restore_control(&self, cx: &mut Context<Self>) {
+        let control = self.control;
+        cx.defer(move |cx| {
+            let result = control
+                .update(cx, |_, window, _| show_control_window(window))
+                .map_err(|error| error.to_string())
+                .and_then(|result| result);
+            if let Err(error) = result {
+                tracing::warn!(%error, "could not restore control window");
+            }
+        });
+    }
+
+    fn show_overlays(
+        &mut self,
+        mode: OverlayMode,
+        shots: &[CapturedImage],
+        cx: &mut Context<Self>,
+    ) {
         self.close_overlays(cx);
+        if self.live_overlay_count(cx) > 0 {
+            self.capture_status = "Could not hide the previous overlay".into();
+            cx.notify();
+            return;
+        }
 
         let screens: Vec<(DisplayId, Bounds<Pixels>)> = cx
             .displays()
@@ -222,6 +288,56 @@ impl SpikeShell {
             .collect();
 
         for (display_id, display_bounds) in screens {
+            let snapshot = shots
+                .iter()
+                .find(|shot| shot.display_id == u64::from(display_id).to_string())
+                .cloned();
+            if matches!(mode, OverlayMode::Fullscreen) && snapshot.is_none() {
+                self.capture_status =
+                    format!("No captured image for display {}", u64::from(display_id));
+                tracing::error!(
+                    display_id = u64::from(display_id),
+                    "missing overlay snapshot"
+                );
+                continue;
+            }
+            #[cfg(target_os = "windows")]
+            if let Some(handle) = self
+                .overlays
+                .iter()
+                .find(|handle| {
+                    handle.read(cx).is_ok_and(|overlay| {
+                        overlay.display_id == display_id
+                            && overlay.mode == mode
+                            && overlay.native.is_some()
+                    })
+                })
+                .copied()
+            {
+                let result = handle.update(cx, |overlay, window, cx| {
+                    overlay.snapshot = snapshot.clone();
+                    overlay.bounds = display_bounds;
+                    overlay.drag_start = None;
+                    overlay.active = true;
+                    if let Some(native) = &overlay.native {
+                        if let Err(error) = native.set_visible(true) {
+                            overlay.active = false;
+                            tracing::error!(%error, "could not show overlay");
+                        }
+                    }
+                    window.focus(&overlay.focus_handle, cx);
+                    if matches!(mode, OverlayMode::Fullscreen) {
+                        window.activate_window();
+                    }
+                    log_overlay_geometry(window, display_bounds);
+                    cx.notify();
+                });
+                if let Err(error) = result {
+                    tracing::error!(%error, "could not reuse overlay");
+                }
+                continue;
+            }
+            let owner = cx.entity().downgrade();
             tracing::info!(
                 display_id = u64::from(display_id),
                 mode = ?mode,
@@ -253,12 +369,32 @@ impl SpikeShell {
                         );
                         false
                     });
-                    cx.new(|cx| Overlay::new(display_id, display_bounds, mode, cx))
+                    let overlay = cx.new(|cx| {
+                        Overlay::new(
+                            display_id,
+                            display_bounds,
+                            mode,
+                            snapshot,
+                            owner,
+                            window,
+                            cx,
+                        )
+                    });
+                    let focus = overlay.read(cx).focus_handle.clone();
+                    window.focus(&focus, cx);
+                    log_overlay_geometry(window, display_bounds);
+                    overlay
                 },
             ) {
                 Ok(handle) => self.overlays.push(handle),
                 Err(error) => tracing::error!(?error, "failed to open overlay window"),
             }
+        }
+
+        self.preview_active =
+            matches!(mode, OverlayMode::Fullscreen) && self.live_overlay_count(cx) > 0;
+        if matches!(mode, OverlayMode::Fullscreen) && !self.preview_active {
+            self.restore_control(cx);
         }
 
         cx.notify();
@@ -363,20 +499,110 @@ impl SpikeShell {
         .detach();
     }
 
-    fn start_capture(&mut self, jobs: Vec<CaptureJob>, cx: &mut Context<Self>) {
+    fn save_selection(
+        &mut self,
+        source: CapturedImage,
+        region: app_core::PixelRegion,
+        cx: &mut Context<Self>,
+    ) {
         if self.capturing || self.copying {
             return;
         }
         self.close_overlays(cx);
         self.capturing = true;
+        self.capture_status = "Saving selection…".into();
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            let result = cx.background_spawn(async move { app_core::crop_snapshot(&source, region) }).await;
+            this.update(cx, |this, cx| {
+                this.capturing = false;
+                match result {
+                    Ok(shot) => {
+                        tracing::info!(width = shot.width, height = shot.height, path = %shot.png_path.display(), "saved selection");
+                        this.capture_status = format!("Selection {}×{}  {}", shot.width, shot.height, shot.png_path.display());
+                        this.last_capture = Some(shot);
+                        this.copy_last_capture(cx);
+                    }
+                    Err(error) => {
+                        tracing::error!(%error, "selection failed");
+                        this.capture_status = format!("Selection failed: {error:#}");
+                    }
+                }
+                cx.notify();
+            }).ok();
+        }).detach();
+    }
+
+    fn start_capture(&mut self, jobs: Vec<CaptureJob>, cx: &mut Context<Self>) {
+        self.start_capture_with_preview(jobs, false, cx);
+    }
+
+    fn start_capture_with_preview(
+        &mut self,
+        jobs: Vec<CaptureJob>,
+        preview: bool,
+        cx: &mut Context<Self>,
+    ) {
+        if self.capturing || self.copying {
+            return;
+        }
+        if jobs.is_empty() {
+            return;
+        }
+        // A new capture replaces the preview; keep the control window hidden.
+        self.preview_active = false;
+        self.close_overlays(cx);
+        if self.live_overlay_count(cx) > 0 {
+            self.preview_active = true;
+            self.capture_status = "Capture stopped: could not hide the previous overlay".into();
+            cx.notify();
+            return;
+        }
+        self.capturing = true;
         self.capture_status = format!("capturing {} job(s)…", jobs.len());
         cx.notify();
 
         let backend = self.backend.clone();
+        let control = self.control;
         cx.spawn(async move |this, cx| {
+            // Defer until the button/action has released its borrow of the control window.
+            let hidden = control
+                .update(cx, |_, window, _| {
+                    #[cfg(target_os = "windows")]
+                    {
+                        native_window(window)?
+                            .set_visible(false)
+                            .map_err(|error| error.to_string())
+                    }
+                    #[cfg(not(target_os = "windows"))]
+                    {
+                        window.minimize_window();
+                        Ok::<(), String>(())
+                    }
+                })
+                .map_err(|error| error.to_string())
+                .and_then(|result| result);
+            if let Err(error) = hidden {
+                this.update(cx, |this, cx| {
+                    this.capturing = false;
+                    this.capture_status = format!("could not hide control window: {error}");
+                    this.restore_control(cx);
+                    cx.notify();
+                })
+                .ok();
+                return;
+            }
+            // shortcut: other platforms still need a native visibility/compositor spike.
+            #[cfg(not(target_os = "windows"))]
+            cx.background_executor()
+                .timer(std::time::Duration::from_millis(300))
+                .await;
             let result = cx
                 .background_spawn(async move {
-                    let mut last = None;
+                    #[cfg(target_os = "windows")]
+                    app_core::wait_for_desktop_compositor()
+                        .map_err(|error| app_core::CaptureError::Backend(error.to_string()))?;
+                    let mut shots = Vec::new();
                     for job in jobs {
                         let shot = match &job {
                             CaptureJob::Display(id) => backend.capture_display(id)?,
@@ -396,16 +622,25 @@ impl SpikeShell {
                             path = %shot.png_path.display(),
                             "captured png"
                         );
-                        last = Some(shot);
+                        shots.push(shot);
                     }
-                    Ok::<Option<CapturedImage>, app_core::CaptureError>(last)
+                    Ok::<Vec<CapturedImage>, app_core::CaptureError>(shots)
                 })
                 .await;
 
             this.update(cx, |this, cx| {
                 this.capturing = false;
+                if !preview || result.is_err() {
+                    this.restore_control(cx);
+                }
                 match result {
-                    Ok(Some(shot)) => {
+                    Ok(shots) => {
+                        let Some(shot) = shots.last().cloned() else {
+                            this.capture_status = "no capture produced".into();
+                            this.restore_control(cx);
+                            cx.notify();
+                            return;
+                        };
                         this.capture_status = format!(
                             "{}×{}  {} ms  {}",
                             shot.width,
@@ -414,9 +649,12 @@ impl SpikeShell {
                             shot.png_path.display()
                         );
                         this.last_capture = Some(shot);
-                        this.copy_last_capture(cx);
+                        if preview {
+                            this.show_overlays(OverlayMode::Fullscreen, &shots, cx);
+                        } else {
+                            this.copy_last_capture(cx);
+                        }
                     }
-                    Ok(None) => this.capture_status = "no capture produced".into(),
                     Err(error) => {
                         tracing::error!(%error, "capture failed");
                         this.capture_status = format!("capture failed: {error}");
@@ -515,6 +753,12 @@ impl Render for SpikeShell {
             }))
             .on_action(|_: &Quit, _, cx| cx.defer(close_application))
             .child("Phase 0 — overlay + XCap spike")
+            .child(capture_button(
+                "select-region",
+                "Bereich auswählen (Strg+Umschalt+F)",
+                capturing,
+                cx.listener(|this, _, _, cx| this.open_overlays(OverlayMode::Fullscreen, cx)),
+            ))
             .child(div().text_sm().child(self.hotkey_status.clone()))
             .child(div().text_sm().child(self.tray_status.clone()))
             .child(capture_button(
@@ -528,7 +772,7 @@ impl Render for SpikeShell {
                 div()
                     .text_sm()
                     .text_color(rgb(0xa3a3a3))
-                    .child("Probe: red PopUp top-left. Fullscreen: blue tint. Capture writes PNG to target/captures. Escape closes overlays."),
+                    .child("Fullscreen: freeze each desktop without the control window. Escape returns. Capture saves PNG and copies it."),
             )
             .child(
                 div()
@@ -570,19 +814,6 @@ impl Render for SpikeShell {
                                 this.open_overlays(OverlayMode::Probe, cx);
                             }))
                             .child("Open small overlay"),
-                    )
-                    .child(
-                        div()
-                            .id("open-fullscreen")
-                            .px_3()
-                            .py_2()
-                            .rounded_md()
-                            .bg(rgb(0x2563eb))
-                            .cursor_pointer()
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.open_overlays(OverlayMode::Fullscreen, cx);
-                            }))
-                            .child("Open fullscreen overlay"),
                     )
                     .child(
                         div()
@@ -714,10 +945,17 @@ fn capture_button(
 }
 
 struct Overlay {
+    active: bool,
+    #[cfg(target_os = "windows")]
+    native: Option<app_core::DesktopWindow>,
     display_id: DisplayId,
     bounds: Bounds<Pixels>,
     mode: OverlayMode,
     focus_handle: FocusHandle,
+    snapshot: Option<CapturedImage>,
+    drag_start: Option<gpui::Point<Pixels>>,
+    drag_end: gpui::Point<Pixels>,
+    owner: gpui::WeakEntity<SpikeShell>,
 }
 
 impl Overlay {
@@ -725,14 +963,51 @@ impl Overlay {
         display_id: DisplayId,
         bounds: Bounds<Pixels>,
         mode: OverlayMode,
+        snapshot: Option<CapturedImage>,
+        owner: gpui::WeakEntity<SpikeShell>,
+        window: &Window,
         cx: &mut Context<Self>,
     ) -> Self {
         Self {
+            active: true,
+            #[cfg(target_os = "windows")]
+            native: native_window(window)
+                .map_err(|error| tracing::error!(%error, "could not obtain overlay HWND"))
+                .ok(),
             display_id,
             bounds,
             mode,
             focus_handle: cx.focus_handle(),
+            snapshot,
+            drag_start: None,
+            drag_end: point(px(0.0), px(0.0)),
+            owner,
         }
+    }
+
+    fn finish_drag(&mut self, end: gpui::Point<Pixels>, window: &Window, cx: &mut Context<Self>) {
+        let Some(start) = self.drag_start.take() else {
+            return;
+        };
+        cx.notify();
+        let Some(snapshot) = self.snapshot.clone() else {
+            return;
+        };
+        let viewport = window.viewport_size();
+        let Some(region) = app_core::PixelRegion::from_drag(
+            [start.x.into(), start.y.into()],
+            [end.x.into(), end.y.into()],
+            [viewport.width.into(), viewport.height.into()],
+            [snapshot.width, snapshot.height],
+        ) else {
+            return;
+        };
+        let owner = self.owner.clone();
+        cx.defer(move |cx| {
+            owner
+                .update(cx, |this, cx| this.save_selection(snapshot, region, cx))
+                .ok();
+        });
     }
 }
 
@@ -763,6 +1038,7 @@ impl Render for Overlay {
 
         div()
             .id("overlay")
+            .relative()
             .track_focus(&self.focus_handle)
             .key_context("Overlay")
             .flex()
@@ -771,16 +1047,53 @@ impl Render for Overlay {
             .justify_start()
             .bg(fill)
             .text_color(rgb(0xffffff))
-            .on_action(cx.listener(|this, _: &CloseOverlay, window, cx| {
+            .on_mouse_down(gpui::MouseButton::Left, cx.listener(|this, event: &gpui::MouseDownEvent, _, cx| {
+                if this.snapshot.is_some() {
+                    this.drag_start = Some(event.position);
+                    this.drag_end = event.position;
+                    cx.notify();
+                }
+            }))
+            .on_mouse_move(cx.listener(|this, event: &gpui::MouseMoveEvent, _, cx| {
+                if this.drag_start.is_some() {
+                    if !event.dragging() {
+                        this.drag_start = None;
+                        cx.notify();
+                        return;
+                    }
+                    this.drag_end = event.position;
+                    cx.notify();
+                }
+            }))
+            .on_mouse_up(gpui::MouseButton::Left, cx.listener(|this, event: &gpui::MouseUpEvent, window, cx| {
+                this.finish_drag(event.position, window, cx);
+            }))
+            .on_mouse_up_out(gpui::MouseButton::Left, cx.listener(|this, event: &gpui::MouseUpEvent, window, cx| {
+                this.finish_drag(event.position, window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &CloseOverlay, _, cx| {
                 tracing::info!(
                     display_id = u64::from(this.display_id),
                     mode = ?this.mode,
                     "CloseOverlay on overlay"
                 );
-                window.defer(cx, |window, _| window.remove_window());
+                let owner = this.owner.clone();
+                cx.defer(move |cx| {
+                    owner.update(cx, |this, cx| this.close_overlays(cx)).ok();
+                });
+            }))
+            .children(self.snapshot.clone().map(|shot| {
+                img(shot.png_path).absolute().top_0().left_0().size_full()
+            }))
+            .children(self.drag_start.map(|start| {
+                let end = self.drag_end;
+                div().absolute().left(start.x.min(end.x)).top(start.y.min(end.y))
+                    .w((end.x - start.x).abs()).h((end.y - start.y).abs())
+                    .border_2().border_color(rgb(0x60a5fa)).bg(rgba(0x60a5fa30))
             }))
             .child(
                 div()
+                    .relative()
                     .flex()
                     .flex_col()
                     .gap_2()
@@ -798,11 +1111,47 @@ impl Render for Overlay {
                     )))
                     .child(
                         div().text_sm().text_color(rgb(0xa3a3a3)).child(
-                            "This window must stay open. Escape or Close overlays to dismiss.",
+                            "Drag to select. Release to save and copy. Escape cancels. Selection stays on one monitor.",
                         ),
                     ),
             )
     }
+}
+
+#[cfg(target_os = "windows")]
+fn native_window(window: &Window) -> Result<app_core::DesktopWindow, String> {
+    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+    match HasWindowHandle::window_handle(window).map(|handle| handle.as_raw()) {
+        Ok(RawWindowHandle::Win32(handle)) => {
+            Ok(app_core::DesktopWindow::from_handle(handle.hwnd.get()))
+        }
+        other => Err(format!("could not obtain Windows handle: {other:?}")),
+    }
+}
+
+fn show_control_window(window: &Window) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    native_window(window)?
+        .set_visible(true)
+        .map_err(|error| error.to_string())?;
+    window.activate_window();
+    Ok(())
+}
+
+fn log_overlay_geometry(window: &Window, expected: Bounds<Pixels>) {
+    window.on_next_frame(move |window, _| {
+        window.on_next_frame(move |window, _| {
+            let actual = window.bounds();
+            let viewport = window.viewport_size();
+            tracing::info!(
+                expected_x = %expected.origin.x, expected_y = %expected.origin.y,
+                actual_x = %actual.origin.x, actual_y = %actual.origin.y,
+                width = %viewport.width, height = %viewport.height,
+                scale = window.scale_factor(),
+                "overlay geometry after presentation"
+            );
+        });
+    });
 }
 
 fn overlay_options(
@@ -817,24 +1166,18 @@ fn overlay_options(
             origin: display.origin + point(px(48.0), px(48.0)),
             size: size(px(420.0), px(180.0)),
         },
-        OverlayMode::Fullscreen => {
-            let inset = px(16.0);
-            Bounds {
-                origin: display.origin + point(inset, inset),
-                size: size(
-                    (display.size.width - inset * 2.0).max(px(320.0)),
-                    (display.size.height - inset * 2.0).max(px(240.0)),
-                ),
-            }
-        }
+        OverlayMode::Fullscreen => display,
     };
 
     WindowOptions {
-        window_bounds: Some(WindowBounds::Windowed(bounds)),
+        window_bounds: Some(match mode {
+            OverlayMode::Probe => WindowBounds::Windowed(bounds),
+            OverlayMode::Fullscreen => WindowBounds::Fullscreen(bounds),
+        }),
         display_id: Some(display_id),
         titlebar: None,
         window_background: WindowBackgroundAppearance::Transparent,
-        focus: false,
+        focus: matches!(mode, OverlayMode::Fullscreen),
         show: true,
         kind: WindowKind::PopUp,
         is_movable: false,
@@ -897,4 +1240,30 @@ pub fn run() {
         .expect("failed to open spike window");
         cx.activate(true);
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fullscreen_overlay_keeps_entire_display_bounds() {
+        for bounds in [
+            Bounds {
+                origin: point(px(0.0), px(0.0)),
+                size: size(px(2560.0), px(1440.0)),
+            },
+            Bounds {
+                origin: point(px(-1536.0), px(-200.0)),
+                size: size(px(1536.0), px(864.0)),
+            },
+        ] {
+            let options = overlay_options(OverlayMode::Fullscreen, DisplayId::from(1), bounds);
+            assert!(
+                matches!(options.window_bounds, Some(WindowBounds::Fullscreen(actual)) if actual == bounds)
+            );
+            assert!(options.focus);
+            assert!(matches!(options.kind, WindowKind::PopUp));
+        }
+    }
 }

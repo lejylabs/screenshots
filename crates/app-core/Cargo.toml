@@ -29,3 +29,4 @@ xcap.workspace = true
 [target.'cfg(target_os = "windows")'.dependencies]
 global-hotkey.workspace = true
 tray-icon.workspace = true
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging", "Win32_Graphics_Dwm"] }
