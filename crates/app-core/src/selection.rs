@@ -50,6 +50,81 @@ impl PixelRegion {
     }
 }
 
+/// Raster-only opaque redaction; no original pixels are embedded in the exported PNG.
+pub fn redact_snapshot(source: &CapturedImage, regions: &[PixelRegion]) -> Result<CapturedImage> {
+    edit_snapshot(source, regions, None)
+}
+
+pub fn edit_snapshot(
+    source: &CapturedImage,
+    regions: &[PixelRegion],
+    crop: Option<PixelRegion>,
+) -> Result<CapturedImage> {
+    ensure!(
+        (!regions.is_empty() || crop.is_some()) && regions.len() <= 100,
+        "Choose a crop or add up to 100 redactions"
+    );
+    let (width, height) = source.pixels.dimensions();
+    crate::validate_image_size(width, height)?;
+    for region in regions.iter().chain(crop.iter()) {
+        ensure!(
+            region.width > 0
+                && region.height > 0
+                && region
+                    .x
+                    .checked_add(region.width)
+                    .is_some_and(|end| end <= width)
+                && region
+                    .y
+                    .checked_add(region.height)
+                    .is_some_and(|end| end <= height),
+            "Edit area is outside the image"
+        );
+    }
+    let started = Instant::now();
+    let area = crop.unwrap_or(PixelRegion {
+        x: 0,
+        y: 0,
+        width,
+        height,
+    });
+    let mut pixels = if crop.is_some() {
+        image::imageops::crop_imm(
+            source.pixels.as_ref(),
+            area.x,
+            area.y,
+            area.width,
+            area.height,
+        )
+        .to_image()
+    } else {
+        source.pixels.as_ref().clone()
+    };
+    for region in regions {
+        for y in region.y.max(area.y)..(region.y + region.height).min(area.y + area.height) {
+            for x in region.x.max(area.x)..(region.x + region.width).min(area.x + area.width) {
+                pixels.put_pixel(x - area.x, y - area.y, image::Rgba([0, 0, 0, 255]));
+            }
+        }
+    }
+    Ok(CapturedImage {
+        pixels: std::sync::Arc::new(pixels),
+        width: area.width,
+        height: area.height,
+        png_path: source.png_path.with_file_name(format!(
+            "{}-{}.png",
+            if regions.is_empty() {
+                "cropped"
+            } else {
+                "redacted"
+            },
+            uuid::Uuid::new_v4()
+        )),
+        elapsed_ms: started.elapsed().as_millis(),
+        ..source.clone()
+    })
+}
+
 pub fn crop_snapshot(source: &CapturedImage, region: PixelRegion) -> Result<CapturedImage> {
     let started = Instant::now();
     let image = &source.pixels;
@@ -93,6 +168,120 @@ pub fn crop_snapshot(source: &CapturedImage, region: PixelRegion) -> Result<Capt
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn editor_crop_clips_redactions_and_exports_only_selected_pixels() -> Result<()> {
+        let original =
+            image::RgbaImage::from_fn(5, 4, |x, y| image::Rgba([x as u8, y as u8, 91, 13]));
+        let source = CapturedImage {
+            display_id: "fixture".into(),
+            window_id: None,
+            width: 5,
+            height: 4,
+            pixels: std::sync::Arc::new(original.clone()),
+            png_path: "source.png".into(),
+            elapsed_ms: 0,
+            source_format: crate::PixelFormat::Rgba8UnormSrgb,
+        };
+        let crop = PixelRegion {
+            x: 2,
+            y: 1,
+            width: 2,
+            height: 2,
+        };
+        let edits = [
+            PixelRegion {
+                x: 1,
+                y: 0,
+                width: 2,
+                height: 2,
+            },
+            PixelRegion {
+                x: 0,
+                y: 3,
+                width: 1,
+                height: 1,
+            },
+        ];
+        let output = edit_snapshot(&source, &edits, Some(crop))?;
+        assert_eq!((output.width, output.height), (2, 2));
+        assert_eq!(*output.pixels.get_pixel(0, 0), image::Rgba([0, 0, 0, 255]));
+        assert_eq!(output.pixels.get_pixel(1, 0), original.get_pixel(3, 1));
+        assert_eq!(output.pixels.get_pixel(0, 1), original.get_pixel(2, 2));
+        assert_eq!(*source.pixels, original);
+        let plain = edit_snapshot(&source, &[], Some(crop))?;
+        assert_eq!(plain.pixels.get_pixel(0, 0), original.get_pixel(2, 1));
+        assert!(
+            edit_snapshot(
+                &source,
+                &[],
+                Some(PixelRegion {
+                    x: 4,
+                    width: 2,
+                    ..crop
+                })
+            )
+            .is_err()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn redaction_export_is_opaque_and_keeps_original_unchanged() -> Result<()> {
+        let root =
+            std::env::temp_dir().join(format!("screenshots-redaction-{}", uuid::Uuid::new_v4()));
+        let original = image::RgbaImage::from_pixel(4, 3, image::Rgba([91, 123, 200, 17]));
+        let source = CapturedImage {
+            display_id: "fixture".into(),
+            window_id: None,
+            width: 4,
+            height: 3,
+            pixels: std::sync::Arc::new(original.clone()),
+            png_path: root.join("original.png"),
+            elapsed_ms: 0,
+            source_format: crate::PixelFormat::Rgba8UnormSrgb,
+        };
+        source.save_png()?;
+        let original_file = std::fs::read(&source.png_path)?;
+        let redacted = redact_snapshot(
+            &source,
+            &[PixelRegion {
+                x: 1,
+                y: 1,
+                width: 2,
+                height: 2,
+            }],
+        )?;
+        redacted.save_png()?;
+        let exported = image::open(&redacted.png_path)?.into_rgba8();
+        for y in 0..3 {
+            for x in 0..4 {
+                let expected = if x >= 1 && x < 3 && y >= 1 {
+                    image::Rgba([0, 0, 0, 255])
+                } else {
+                    *original.get_pixel(x, y)
+                };
+                assert_eq!(*exported.get_pixel(x, y), expected);
+            }
+        }
+        assert_eq!(*source.pixels, original);
+        assert_eq!(std::fs::read(&source.png_path)?, original_file);
+        assert!(
+            redact_snapshot(
+                &source,
+                &[PixelRegion {
+                    x: u32::MAX,
+                    y: 0,
+                    width: 2,
+                    height: 1
+                }]
+            )
+            .is_err()
+        );
+        assert!(redact_snapshot(&source, &[]).is_err());
+        std::fs::remove_dir_all(root)?;
+        Ok(())
+    }
 
     #[test]
     fn drag_handles_dpi_reverse_direction_and_edges() {

@@ -1,5 +1,8 @@
 //! Phase 0 spike: GPUI overlay + XCap still capture on Windows.
 
+mod redaction_editor;
+use redaction_editor::RedactionEditor;
+
 use std::{
     collections::HashMap,
     path::PathBuf,
@@ -77,6 +80,8 @@ pub struct SpikeShell {
     preview_active: bool,
     focus_handle: FocusHandle,
     overlays: Vec<WindowHandle<Overlay>>,
+    editor: Option<WindowHandle<RedactionEditor>>,
+    editor_closing: bool,
     backend: XcapBackend,
     xcap_displays: Vec<DisplayInfo>,
     xcap_windows: Vec<WindowInfo>,
@@ -243,6 +248,11 @@ impl SpikeShell {
     }
 
     fn retire_ui(&mut self, cx: &mut Context<Self>) {
+        if self.editor.is_some() || self.editor_closing {
+            self.capture_status = "Finish or cancel editing before closing this window".into();
+            cx.notify();
+            return;
+        }
         self.cancel_capture_delay(cx);
         #[cfg(target_os = "windows")]
         if self.resident && self.tray.is_none() {
@@ -384,6 +394,8 @@ impl SpikeShell {
             preview_active: false,
             focus_handle: cx.focus_handle(),
             overlays: Vec::new(),
+            editor: None,
+            editor_closing: false,
             backend,
             xcap_displays: Vec::new(),
             xcap_windows: Vec::new(),
@@ -753,6 +765,9 @@ impl SpikeShell {
     }
 
     fn open_overlays(&mut self, mode: OverlayMode, cx: &mut Context<Self>) {
+        if self.editor.is_some() || self.editor_closing {
+            return;
+        }
         if self.capture_delay.is_some() {
             return;
         }
@@ -780,6 +795,9 @@ impl SpikeShell {
     }
 
     fn start_delayed_region(&mut self, cx: &mut Context<Self>) {
+        if self.editor.is_some() || self.editor_closing {
+            return;
+        }
         if self.capture_delay.is_some()
             || self.capturing
             || self.copying
@@ -1076,6 +1094,7 @@ impl SpikeShell {
             && !self.switching_graphics
             && !self.settings_saving
             && !self.history_mutating
+            && !self.editor_closing
         {
             cx.defer(close_application);
         }
@@ -1083,6 +1102,257 @@ impl SpikeShell {
 
     fn copy_last_capture(&mut self, cx: &mut Context<Self>) {
         self.copy_and_save(Vec::new(), cx);
+    }
+
+    fn open_redaction_editor(&mut self, cx: &mut Context<Self>) {
+        self.open_redaction_source(self.last_capture.clone(), self.last_saved.clone(), cx);
+    }
+
+    fn open_history_editor(&mut self, path: PathBuf, cx: &mut Context<Self>) {
+        self.open_redaction_source(None, Some(path), cx);
+    }
+
+    fn open_redaction_source(
+        &mut self,
+        source: Option<CapturedImage>,
+        path: Option<PathBuf>,
+        cx: &mut Context<Self>,
+    ) {
+        if self.editor.is_some()
+            || self.editor_closing
+            || self.capturing
+            || self.copying
+            || self.saving
+            || self.quitting
+            || self.capture_delay.is_some()
+            || self.settings_saving
+            || self.history_mutating
+        {
+            return;
+        }
+        if source.is_none() && path.is_none() {
+            return;
+        }
+        let Some(directory) = self.output_directory.clone() else {
+            return;
+        };
+        self.capturing = true;
+        self.capture_status = "Opening image editor…".into();
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_spawn(async move {
+                    let mut source = match source {
+                        Some(source) => source,
+                        None => {
+                            let pixels = app_core::load_saved_png(&path.unwrap())
+                                .map_err(|e| format!("{e:#}"))?;
+                            CapturedImage {
+                                width: pixels.width(),
+                                height: pixels.height(),
+                                pixels: Arc::new(pixels),
+                                display_id: "saved-image".into(),
+                                window_id: None,
+                                png_path: directory.join("source.png"),
+                                elapsed_ms: 0,
+                                source_format: app_core::PixelFormat::Rgba8UnormSrgb,
+                            }
+                        }
+                    };
+                    source.png_path = directory.join("source.png");
+                    let render = render_frame(&source);
+                    Ok::<_, String>((source, render))
+                })
+                .await;
+            this.update(cx, |this, cx| {
+                this.capturing = false;
+                if this.quitting {
+                    this.finish_quit_if_idle(cx);
+                    return;
+                }
+                match result {
+                    Ok((source, render)) => {
+                        let owner = cx.entity().downgrade();
+                        let close_owner = owner.clone();
+                        let editor_bounds = Bounds::centered(None, size(px(1000.0), px(760.0)), cx);
+                        match cx.open_window(
+                            WindowOptions {
+                                window_bounds: Some(WindowBounds::Windowed(editor_bounds)),
+                                window_min_size: Some(size(px(760.0), px(400.0))),
+                                titlebar: Some(TitlebarOptions {
+                                    title: Some("Edit a copy — screenshots".into()),
+                                    ..Default::default()
+                                }),
+                                ..Default::default()
+                            },
+                            |window, cx| {
+                                window.on_window_should_close(cx, move |_, cx| {
+                                    let owner = close_owner.clone();
+                                    cx.defer(move |cx| {
+                                        owner.update(cx, |this, cx| this.close_editor(cx)).ok();
+                                    });
+                                    false
+                                });
+                                cx.new(|cx| RedactionEditor::new(source, render, owner, window, cx))
+                            },
+                        ) {
+                            Ok(handle) => {
+                                this.editor = Some(handle);
+                                this.capture_status =
+                                    "Image editor open. Original remains unchanged.".into();
+                            }
+                            Err(error) => {
+                                this.capture_status = format!("Could not open editor: {error}")
+                            }
+                        }
+                    }
+                    Err(error) => {
+                        this.capture_status = format!("Could not load image: {error}");
+                        this.history_action_status = this.capture_status.clone();
+                    }
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+        cx.notify();
+    }
+
+    fn close_editor(&mut self, cx: &mut Context<Self>) {
+        let Some(handle) = self.editor.take() else {
+            return;
+        };
+        self.editor_closing = true;
+        self.capture_status = "Editor closed. Original remains unchanged.".into();
+        self.history_action_status = self.capture_status.clone();
+        let owner = cx.entity().downgrade();
+        cx.defer(move |cx| {
+            let hidden = handle
+                .update(cx, |_, window, _| {
+                    #[cfg(target_os = "windows")]
+                    {
+                        let native = native_window(window)?;
+                        native
+                            .request_visible(false)
+                            .map_err(|error| error.to_string())?;
+                        Ok(native)
+                    }
+                    #[cfg(not(target_os = "windows"))]
+                    {
+                        window.minimize_window();
+                        Ok::<_, String>(())
+                    }
+                })
+                .map_err(|error| error.to_string())
+                .and_then(|result| result);
+            cx.spawn(async move |cx| {
+                #[cfg(target_os = "windows")]
+                let settled = cx
+                    .background_spawn(async move {
+                        let native = hidden?;
+                        native
+                            .wait_until_hidden()
+                            .map_err(|error| error.to_string())?;
+                        app_core::wait_for_desktop_compositor()
+                            .map_err(|error| error.to_string())?;
+                        app_core::wait_for_desktop_compositor()
+                            .map_err(|error| error.to_string())?;
+                        Ok::<_, String>(native)
+                    })
+                    .await;
+                #[cfg(not(target_os = "windows"))]
+                let settled = hidden;
+                let native = match settled {
+                    Ok(native) => native,
+                    Err(error) => {
+                        owner
+                            .update(cx, |this, cx| {
+                                this.editor_closing = false;
+                                this.quitting = false;
+                                this.editor = Some(handle);
+                                this.capture_status = format!("Could not close editor: {error}");
+                                this.restore_control(cx);
+                                cx.notify();
+                            })
+                            .ok();
+                        return;
+                    }
+                };
+                handle
+                    .update(cx, |editor, window, _| {
+                        window.drop_image(editor.render_image.clone()).ok();
+                        window.remove_window();
+                    })
+                    .ok();
+                #[cfg(target_os = "windows")]
+                let destroyed = cx
+                    .background_spawn(async move { native.wait_until_destroyed() })
+                    .await;
+                #[cfg(not(target_os = "windows"))]
+                let destroyed = {
+                    let _ = native;
+                    Ok::<_, String>(())
+                };
+                owner
+                    .update(cx, |this, cx| {
+                        this.editor_closing = false;
+                        if let Err(error) = destroyed {
+                            this.capture_status = format!("Editor cleanup failed: {error}");
+                        }
+                        this.restore_control(cx);
+                        this.finish_quit_if_idle(cx);
+                        cx.notify();
+                    })
+                    .ok();
+            })
+            .detach();
+        });
+        cx.notify();
+    }
+    fn export_redaction(
+        &mut self,
+        source: CapturedImage,
+        regions: Vec<app_core::PixelRegion>,
+        crop: Option<app_core::PixelRegion>,
+        cx: &mut Context<Self>,
+    ) {
+        if self.capturing || self.copying || self.saving || self.quitting {
+            return;
+        }
+        self.close_editor(cx);
+        self.capturing = true;
+        self.capture_status = "Applying image edits…".into();
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_spawn(async move {
+                    app_core::edit_snapshot(&source, &regions, crop).map(|shot| {
+                        let thumbnail = render_thumbnail(&shot);
+                        (shot, thumbnail)
+                    })
+                })
+                .await;
+            this.update(cx, |this, cx| {
+                this.capturing = false;
+                if this.quitting {
+                    this.finish_quit_if_idle(cx);
+                    return;
+                }
+                match result {
+                    Ok((shot, thumbnail)) => {
+                        this.replace_last_render(thumbnail, cx);
+                        this.last_saved = None;
+                        this.last_capture = Some(shot.clone());
+                        this.capture_status = "Edited copy prepared. Original file is kept.".into();
+                        this.copy_and_save(vec![shot], cx);
+                    }
+                    Err(error) => this.capture_status = format!("Image editing failed: {error:#}"),
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+        cx.notify();
     }
 
     fn copy_history_capture(&mut self, path: PathBuf, cx: &mut Context<Self>) {
@@ -1503,6 +1773,9 @@ impl SpikeShell {
         preview: bool,
         cx: &mut Context<Self>,
     ) {
+        if self.editor.is_some() || self.editor_closing {
+            return;
+        }
         if self.capture_delay.is_some() {
             return;
         }
@@ -1704,6 +1977,8 @@ impl Focusable for SpikeShell {
 impl Render for SpikeShell {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let busy = self.capturing
+            || self.editor.is_some()
+            || self.editor_closing
             || self.capture_delay.is_some()
             || self.copying
             || self.saving
@@ -1836,6 +2111,12 @@ impl Render for SpikeShell {
                                 "Copy again",
                                 busy || (self.last_capture.is_none() && self.last_saved.is_none()),
                                 cx.listener(|this, _, _, cx| this.copy_last_capture(cx)),
+                            ))
+                            .child(capture_button(
+                                "redact-last-capture",
+                                "Edit a copy",
+                                busy || (self.last_capture.is_none() && self.last_saved.is_none()),
+                                cx.listener(|this, _, _, cx| this.open_redaction_editor(cx)),
                             ))
                             .child(capture_button(
                                 "save-capture-as",
@@ -1998,6 +2279,7 @@ impl Render for SpikeShell {
                                             let open_path = entry.path.clone();
                                             let reveal_path = entry.path.clone();
                                             let copy_path = entry.path.clone();
+                                            let edit_path = entry.path.clone();
                                             let entry_id = entry.id;
                                             div()
                                                 .id(("history-entry", index))
@@ -2038,6 +2320,17 @@ impl Render for SpikeShell {
                                                             move |_, _, cx| {
                                                                 cx.open_with_system(&open_path)
                                                             },
+                                                        ))
+                                                        .child(capture_button(
+                                                            "edit-history-file",
+                                                            "Edit a copy",
+                                                            busy,
+                                                            cx.listener(move |this, _, _, cx| {
+                                                                this.open_history_editor(
+                                                                    edit_path.clone(),
+                                                                    cx,
+                                                                )
+                                                            }),
                                                         ))
                                                         .child(capture_button(
                                                             "copy-history-file",
@@ -2466,13 +2759,15 @@ fn close_application(cx: &mut App) {
         let entity = cx.global::<ResidentController>().0.clone();
         let busy = entity.update(cx, |this, cx| {
             this.cancel_capture_delay(cx);
+            this.close_editor(cx);
             this.quitting = true;
             let busy = this.capturing
                 || this.copying
                 || this.saving
                 || this.switching_graphics
                 || this.settings_saving
-                || this.history_mutating;
+                || this.history_mutating
+                || this.editor_closing;
             if busy {
                 this.capture_status = "Quitting: waiting for active work…".into();
                 cx.notify();
@@ -2494,7 +2789,8 @@ fn close_application(cx: &mut App) {
                         || this.copying
                         || this.saving
                         || this.settings_saving
-                        || this.history_mutating;
+                        || this.history_mutating
+                        || this.editor_closing;
                     if busy {
                         this.capture_status = "Quitting: waiting for active work to finish…".into();
                         this.restore_control(cx);
@@ -2531,6 +2827,7 @@ pub fn run() {
         );
 
         gpui_platform::application().run(|cx: &mut App| {
+            redaction_editor::bind_keys(cx);
             cx.on_action(|_: &Quit, cx| cx.defer(close_application));
             cx.bind_keys([
                 KeyBinding::new("escape", CloseOverlay, None),
@@ -2589,6 +2886,7 @@ fn run_resident() {
         .with_windowing(gpui::WindowingRequest::Headless)
         .run(move |cx| {
             cx.set_quit_mode(gpui::QuitMode::Explicit);
+            redaction_editor::bind_keys(cx);
             let controller = cx.new(|cx| SpikeShell::new_controller(None, cx));
             cx.set_global(ResidentController(controller.clone()));
             if let Err(error) = listener.lock().unwrap().listen(app_core::request_reopen) {
@@ -2712,6 +3010,124 @@ mod tests {
             .try_init()
             .unwrap();
         errors
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    #[ignore = "opens an editor and replaces clipboard with a tiny redacted fixture"]
+    fn redaction_editor_opens_and_exports_copy() {
+        let errors = track_gui_errors();
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(format!(
+            "../../target/captures/redaction-test-{}",
+            probe_timestamp()
+        ));
+        let output = root.clone();
+        std::fs::create_dir_all(&root).unwrap();
+        let selected_path = root.join("selected.png");
+        image::RgbaImage::from_pixel(4, 3, image::Rgba([211, 109, 37, 255]))
+            .save(&selected_path)
+            .unwrap();
+        let selected_original = std::fs::read(&selected_path).unwrap();
+        let result = Arc::new(Mutex::new(None));
+        let report = result.clone();
+        gpui_platform::application()
+            .with_windowing(gpui::WindowingRequest::Headless)
+            .run(move |cx| {
+                cx.set_quit_mode(gpui::QuitMode::Explicit);
+                let controller = cx.new(|cx| SpikeShell::new_controller(None, cx));
+                cx.set_global(ResidentController(controller.clone()));
+                controller.update(cx, |this, cx| {
+                    this.output_directory = Some(output.clone());
+                    this.last_capture = Some(CapturedImage {
+                        display_id: "fixture".into(),
+                        window_id: None,
+                        width: 4,
+                        height: 3,
+                        pixels: Arc::new(image::RgbaImage::from_pixel(
+                            4,
+                            3,
+                            image::Rgba([17, 42, 91, 255]),
+                        )),
+                        png_path: output.join("source.png"),
+                        elapsed_ms: 0,
+                        source_format: app_core::PixelFormat::Rgba8UnormSrgb,
+                    });
+                    this.show_control(cx);
+                });
+                let owner = controller.downgrade();
+                cx.spawn(async move |cx| {
+                    let checked = async {
+                        for phase in 0..3 {
+                            let started = std::time::Instant::now();
+                            loop {
+                                cx.background_executor()
+                                    .timer(std::time::Duration::from_millis(20))
+                                    .await;
+                                let ready = owner
+                                    .update(cx, |this, _| match phase {
+                                        0 => this.control.is_some() && !this.switching_graphics,
+                                        1 => this.editor.is_some() && !this.capturing,
+                                        _ => {
+                                            !this.capturing
+                                                && !this.copying
+                                                && !this.saving
+                                                && this.last_saved.is_some()
+                                        }
+                                    })
+                                    .map_err(|e| e.to_string())?;
+                                if ready {
+                                    break;
+                                }
+                                if started.elapsed().as_secs() > 8 {
+                                    return Err(format!("editor phase {phase} timed out"));
+                                }
+                            }
+                            owner
+                                .update(cx, |this, cx| match phase {
+                                    0 => this.open_history_editor(
+                                        this.output_directory
+                                            .as_ref()
+                                            .unwrap()
+                                            .join("selected.png"),
+                                        cx,
+                                    ),
+                                    1 => this.export_redaction(
+                                        this.editor.unwrap().read(cx).unwrap().source.clone(),
+                                        vec![app_core::PixelRegion {
+                                            x: 0,
+                                            y: 0,
+                                            width: 2,
+                                            height: 2,
+                                        }],
+                                        None,
+                                        cx,
+                                    ),
+                                    _ => {}
+                                })
+                                .map_err(|e| e.to_string())?;
+                        }
+                        owner
+                            .update(cx, |this, _| this.last_saved.clone().unwrap())
+                            .map_err(|e| e.to_string())
+                    }
+                    .await;
+                    *report.lock().unwrap() = Some(checked);
+                    cx.update(close_application);
+                })
+                .detach();
+            });
+        let path = result
+            .lock()
+            .unwrap()
+            .take()
+            .expect("editor test did not finish")
+            .unwrap();
+        let image = image::open(path).unwrap().into_rgba8();
+        assert_eq!(*image.get_pixel(0, 0), image::Rgba([0, 0, 0, 255]));
+        assert_eq!(*image.get_pixel(3, 2), image::Rgba([211, 109, 37, 255]));
+        assert_eq!(std::fs::read(selected_path).unwrap(), selected_original);
+        assert_eq!(errors.load(std::sync::atomic::Ordering::Relaxed), 0);
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[cfg(target_os = "windows")]

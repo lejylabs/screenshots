@@ -17,10 +17,10 @@ pub use history::{
     HistoryEntry, ImportReport, capture_history_page, history_database_path, import_capture_files,
     record_saved_capture, remove_history_entry,
 };
-pub use selection::{PixelRegion, crop_snapshot};
+pub use selection::{PixelRegion, crop_snapshot, edit_snapshot, redact_snapshot};
 pub use settings::CaptureSettings;
 
-pub use clipboard::ImageClipboard;
+pub use clipboard::{ImageClipboard, load_saved_png};
 
 #[cfg(target_os = "windows")]
 mod hotkey;

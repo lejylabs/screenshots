@@ -981,6 +981,9 @@ Tasks:
 
 ### Phase 4 – Image Editor
 
+Initial implemented editing slice: last-capture opaque redaction in a separate basic editor, up to 100 rectangles and 100 bounded metadata-only undo/redo states including crop, Undo/Redo/Reset and scoped keyboard shortcuts, fit-to-window preview and worker-side flattened PNG/clipboard export. The editor can also open selected history entries, including imported PNGs, independently of the last capture. This explicit Edit a copy workflow keeps existing original files/history entries and says so in the editor. It does not claim original-file sanitization or deletion. Closing removes the editor image atlas entry and releases its document; production driver-memory/physical-input checks remain open. Editor crop now outlines the export area, shades excluded pixels and reports output dimensions; Full image restores the uncropped selection. Crop and redaction are rendered into one output buffer on the worker, without intermediate full-image snapshots. Arrows, shapes, text, blur/pixelate, zoom and final visual design are still pending.
+
+
 **Estimated duration: Weeks 6–7**
 
 Tasks:

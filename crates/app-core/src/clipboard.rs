@@ -4,6 +4,19 @@ use std::borrow::Cow;
 
 use anyhow::{Context, Result};
 
+pub fn load_saved_png(path: &std::path::Path) -> Result<image::RgbaImage> {
+    let mut reader = image::ImageReader::with_format(
+        std::io::BufReader::new(std::fs::File::open(path)?),
+        image::ImageFormat::Png,
+    );
+    let mut limits = image::Limits::default();
+    limits.max_alloc = Some(crate::MAX_CAPTURE_BYTES);
+    reader.limits(limits);
+    let decoded = reader.decode()?;
+    crate::validate_image_size(decoded.width(), decoded.height())?;
+    Ok(decoded.into_rgba8())
+}
+
 #[derive(Default)]
 pub struct ImageClipboard {
     clipboard: Option<arboard::Clipboard>,
@@ -12,13 +25,7 @@ pub struct ImageClipboard {
 impl ImageClipboard {
     /// Explicit recopy only; the live capture/selection pipeline stays in memory.
     pub fn copy_saved_png(&mut self, path: &std::path::Path) -> Result<(u32, u32)> {
-        let mut reader = image::ImageReader::open(path)?;
-        let mut limits = image::Limits::default();
-        limits.max_alloc = Some(crate::MAX_CAPTURE_BYTES);
-        reader.limits(limits);
-        let decoded = reader.decode()?;
-        crate::validate_image_size(decoded.width(), decoded.height())?;
-        self.copy_image(&decoded.into_rgba8())
+        self.copy_image(&load_saved_png(path)?)
     }
 
     pub fn copy_image(&mut self, image: &image::RgbaImage) -> Result<(u32, u32)> {
