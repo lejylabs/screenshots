@@ -1287,6 +1287,134 @@ pub fn run() {
 mod tests {
     use super::*;
 
+    #[cfg(target_os = "windows")]
+    #[test]
+    #[ignore = "opens real GPUI overlays and saves desktop captures; do not use the clipboard during this test"]
+    fn repeated_region_cancel_preserves_clipboard_and_reuses_windows() {
+        use windows_sys::Win32::System::DataExchange::GetClipboardSequenceNumber;
+        tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::ERROR)
+            .with_test_writer()
+            .try_init()
+            .expect("initialize regression-test logging");
+        let outcome = Arc::new(Mutex::new(None));
+        let reported = outcome.clone();
+        gpui_platform::application().run(move |cx| {
+            let opened = cx.open_window(WindowOptions::default(), |window, cx| {
+                cx.new(|cx| {
+                    let mut shell = SpikeShell::new(window, cx);
+                    shell.backend = XcapBackend::new(
+                        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                            .join("../../target/captures/region-cancel-test"),
+                    );
+                    shell
+                })
+            });
+            let control = match opened {
+                Ok(handle) => handle,
+                Err(error) => {
+                    *reported.lock().unwrap() = Some(Err(format!("open control window: {error}")));
+                    cx.quit();
+                    return;
+                }
+            };
+            let shell = control
+                .update(cx, |_, _, cx| cx.entity().downgrade())
+                .unwrap();
+            cx.spawn(async move |cx| {
+                let result = async {
+                    let clipboard_before = unsafe { GetClipboardSequenceNumber() };
+                    let mut first_handles = None;
+                    for _ in 0..2 {
+                        shell
+                            .update(cx, |this, cx| {
+                                this.open_overlays(OverlayMode::Fullscreen, cx)
+                            })
+                            .map_err(|error| error.to_string())?;
+                        let started = std::time::Instant::now();
+                        loop {
+                            cx.background_executor()
+                                .timer(std::time::Duration::from_millis(25))
+                                .await;
+                            let (capturing, active, status, handles) = shell
+                                .update(cx, |this, _| {
+                                    (
+                                        this.capturing,
+                                        this.preview_active,
+                                        this.capture_status.clone(),
+                                        this.overlays
+                                            .iter()
+                                            .map(|handle| handle.window_id())
+                                            .collect::<Vec<_>>(),
+                                    )
+                                })
+                                .map_err(|error| error.to_string())?;
+                            if !capturing {
+                                if !active {
+                                    return Err(format!("preview did not open: {status}"));
+                                }
+                                if let Some(first) = &first_handles {
+                                    if *first != handles {
+                                        return Err("overlay windows were recreated".into());
+                                    }
+                                } else {
+                                    first_handles = Some(handles);
+                                }
+                                break;
+                            }
+                            if started.elapsed() > std::time::Duration::from_secs(8) {
+                                return Err("capture timed out".into());
+                            }
+                        }
+                        // Same handler used by Escape; no physical mouse/keyboard input is injected.
+                        shell
+                            .update(cx, |this, cx| this.close_overlays(cx))
+                            .map_err(|error| error.to_string())?;
+                        let started = std::time::Instant::now();
+                        loop {
+                            cx.background_executor()
+                                .timer(std::time::Duration::from_millis(25))
+                                .await;
+                            let restored = control
+                                .update(cx, |this, window, cx| {
+                                    window.is_visible()
+                                        && !this.preview_active
+                                        && this.live_overlay_count(cx) == 0
+                                        && this.overlays.iter().all(|handle| {
+                                            handle.read(cx).is_ok_and(|overlay| {
+                                                overlay.snapshot.is_none()
+                                                    && overlay.drag_start.is_none()
+                                            })
+                                        })
+                                })
+                                .map_err(|error| error.to_string())?;
+                            if restored {
+                                break;
+                            }
+                            if started.elapsed() > std::time::Duration::from_secs(3) {
+                                return Err("cancel did not restore the control window".into());
+                            }
+                        }
+                        if unsafe { GetClipboardSequenceNumber() } != clipboard_before {
+                            return Err("cancel changed the clipboard sequence".into());
+                        }
+                    }
+                    Ok(())
+                }
+                .await;
+                *reported.lock().unwrap() = Some(result);
+                cx.update(close_application);
+            })
+            .detach();
+        });
+        outcome
+            .lock()
+            .unwrap()
+            .take()
+            .expect("regression test did not finish")
+            .unwrap();
+    }
+
     #[test]
     fn fullscreen_overlay_keeps_entire_display_bounds() {
         for bounds in [

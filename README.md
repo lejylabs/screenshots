@@ -36,13 +36,13 @@ See [Phase 0 evidence and remaining checks](docs/phase-0.md).
 
 The clipboard button and its result now appear near the top, above the diagnostic lists and thumbnail. Closing the main window or pressing Ctrl+Q closes all GPUI windows through the same cleanup path. Native WM_CLOSE is intercepted so Windows does not destroy the main window ahead of GPUI cleanup. Interactive shutdown still needs verification.
 
-Clipboard verification runs on a background worker. The clipboard owner stays alive while the app runs. Paste into another application still needs a manual check.
+Clipboard verification runs on a background worker. The clipboard owner stays alive while the app runs. Windows paste was confirmed in the interactive session; other platforms still need a paste check.
 
 On Windows, all capture paths request native hiding with `ShowWindowAsync(SW_HIDE)`. Visibility changes are queued to avoid re-entering borrowed GPUI state. The capture worker checks that the control window and cached overlays actually become hidden (up to two seconds per window), then calls `DwmFlush` before XCap. This replaces the 300ms minimize-animation delay. Failures stop the capture and restore the control window. Normal captures restore it after success; selection overlays keep it hidden until dismissed. GPUI's app-level `hide()` is a no-op on Windows, so it is not used. The explicit compositor synchronization test passes in the agent environment; interactive visibility and image cleanliness still need verification. Other platforms retain the unvalidated minimize-and-delay prototype until their native integration is tested.
 
 Region selection crops the frozen PNG, not a new live capture. Window-local coordinates are scaled to that snapshot's pixel dimensions, with floor/ceil bounds and clipping at the image edges. Dragging in either direction works; a click with no area keeps the overlay open. Selection is limited to one monitor. Dragging across monitors is not supported; if a release is missed outside the originating window, returning without the left button held cancels that drag. Interactive selection, physical DPI calibration, and edge alignment remain to be checked on real hardware.
 
-On Windows, dismissing an overlay now hides its native window and clears the drag/snapshot state. The next invocation reuses the window for the same display and overlay mode. This avoids repeatedly destroying GPUI windows after each selection; native destruction still occurs when quitting. A capture stops if an existing overlay could not be hidden. The diagnostic `overlay geometry after presentation` logs bounds and viewport after two frames, instead of assuming the initial creation bounds are the final fullscreen position. Repeated selection, Escape, and final shutdown still require interactive verification with this lifecycle change.
+On Windows, dismissing an overlay hides its native window and clears the drag/snapshot state. The next invocation reuses the window for the same display and overlay mode. This avoids repeatedly destroying GPUI windows after each selection; native destruction still occurs when quitting. A capture stops if an existing overlay could not be hidden. The diagnostic `overlay geometry after presentation` logs bounds and viewport after two frames; the interactive single-display run confirmed (0,0), 2560×1440. The explicit GPUI test covers repeated cancellation, reuse, restoration and normal shutdown. Physical Escape input and other display setups remain to be checked.
 
 Hardware spikes can be run explicitly:
 
@@ -52,7 +52,11 @@ cargo test -p app-core captures_primary_monitor_to_png -- --ignored --nocapture
 cargo test -p app-core registration_is_released -- --ignored --nocapture
 cargo test -p app-core tray_creation_and_cleanup -- --ignored --nocapture
 cargo test -p app-core synchronizes_desktop_compositor -- --ignored --nocapture
+cargo test -p app-core visibility_requests_do_not_reenter_and_worker_observes_hide -- --ignored --nocapture
+cargo test -p app-ui repeated_region_cancel_preserves_clipboard_and_reuses_windows -- --ignored --nocapture --test-threads=1
 ```
+
+The GPUI repeat/cancel test opens real overlays twice and stores desktop PNGs under `target/captures/region-cancel-test/`. Run it with no other instance of screenshots open and leave the clipboard alone while it runs. It checks overlay reuse, cancellation cleanup, control-window restoration, unchanged clipboard sequence, and returns through normal shutdown. Error logging is enabled for the test. The explicit Windows run passed without logged errors; it invokes the same cancellation handler as Escape but does not inject a physical keypress.
 
 Windows interactive capture, clipboard paste, global hotkey and tray are confirmed in the session. Phase 0 remains open: fullscreen frozen-image coverage (including taskbar), hiding the control window during capture, other operating systems, and multi-monitor/DPI checks. The 16px inset is removed: overlays request native fullscreen bounds for each display. Snapshot matching currently uses the equal GPUI/XCap display IDs observed on Windows; it has not been validated on other platforms. Quit actions request GPUI's normal shutdown after action dispatch; remaining shutdown diagnostics need another interactive check.
 
