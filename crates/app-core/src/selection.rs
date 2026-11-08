@@ -211,27 +211,130 @@ pub fn render_text_snapshot(
     texts: &[crate::TextAnnotation],
 ) -> Result<CapturedImage> {
     ensure!(
+        [frames.len(), arrows.len(), ellipses.len(), texts.len()]
+            .iter()
+            .all(|count| *count <= 100)
+            && frames.len() + arrows.len() + ellipses.len() + texts.len() <= 100,
+        "Add up to 100 annotations"
+    );
+    let annotations = frames
+        .iter()
+        .copied()
+        .map(crate::DrawAnnotation::Frame)
+        .chain(ellipses.iter().copied().map(crate::DrawAnnotation::Ellipse))
+        .chain(arrows.iter().copied().map(crate::DrawAnnotation::Arrow))
+        .chain(texts.iter().cloned().map(crate::DrawAnnotation::Text))
+        .collect::<Vec<_>>();
+    render_ordered_snapshot(
+        source,
+        regions,
+        crop,
+        &annotations,
+        pixelations,
+        grid,
+        blurs,
+    )
+}
+
+pub fn render_ordered_snapshot(
+    source: &CapturedImage,
+    regions: &[PixelRegion],
+    crop: Option<PixelRegion>,
+    annotations: &[crate::DrawAnnotation],
+    pixelations: &[PixelRegion],
+    grid: Option<&crate::PixelationGrid>,
+    blurs: &[PixelRegion],
+) -> Result<CapturedImage> {
+    ensure!(
+        [
+            annotations.len(),
+            regions.len(),
+            pixelations.len(),
+            blurs.len()
+        ]
+        .iter()
+        .all(|count| *count <= 100),
+        "Add up to 100 annotations"
+    );
+    let frames = annotations
+        .iter()
+        .filter_map(|item| {
+            if let crate::DrawAnnotation::Frame(frame) = item {
+                Some(*frame)
+            } else {
+                None
+            }
+        })
+        .collect::<Vec<_>>();
+    let pens = annotations
+        .iter()
+        .filter_map(|item| {
+            if let crate::DrawAnnotation::Pen(pen) = item {
+                Some(pen)
+            } else {
+                None
+            }
+        })
+        .collect::<Vec<_>>();
+    let highlights = annotations
+        .iter()
+        .filter_map(|item| {
+            if let crate::DrawAnnotation::Highlight(highlight) = item {
+                Some(*highlight)
+            } else {
+                None
+            }
+        })
+        .collect::<Vec<_>>();
+    let arrows = annotations
+        .iter()
+        .filter_map(|item| {
+            if let crate::DrawAnnotation::Arrow(arrow) = item {
+                Some(*arrow)
+            } else {
+                None
+            }
+        })
+        .collect::<Vec<_>>();
+    let ellipses = annotations
+        .iter()
+        .filter_map(|item| {
+            if let crate::DrawAnnotation::Ellipse(ellipse) = item {
+                Some(*ellipse)
+            } else {
+                None
+            }
+        })
+        .collect::<Vec<_>>();
+    let texts = annotations
+        .iter()
+        .filter_map(|item| {
+            if let crate::DrawAnnotation::Text(text) = item {
+                Some(text.clone())
+            } else {
+                None
+            }
+        })
+        .collect::<Vec<_>>();
+    ensure!(
         (!regions.is_empty()
-            || !frames.is_empty()
-            || !arrows.is_empty()
-            || !ellipses.is_empty()
+            || !annotations.is_empty()
             || !pixelations.is_empty()
             || !blurs.is_empty()
-            || !texts.is_empty()
             || crop.is_some())
-            && regions.len()
-                + frames.len()
-                + arrows.len()
-                + ellipses.len()
-                + pixelations.len()
-                + blurs.len()
-                + texts.len()
-                <= 100,
+            && regions.len() + annotations.len() + pixelations.len() + blurs.len() <= 100,
         "Choose a crop or add up to 100 annotations"
     );
     let (width, height) = source.pixels.dimensions();
     crate::validate_image_size(width, height)?;
-    for text in texts {
+    for pen in &pens {
+        pen.validate()?;
+    }
+    ensure!(
+        pens.iter().map(|pen| pen.points.len()).sum::<usize>() <= crate::MAX_DOCUMENT_PEN_POINTS,
+        "Pen point budget exceeded"
+    );
+    for text in &texts {
         text.validate()?;
     }
     ensure!(
@@ -250,7 +353,8 @@ pub fn render_text_snapshot(
     ensure!(
         frames
             .iter()
-            .chain(ellipses)
+            .chain(ellipses.iter())
+            .chain(highlights.iter())
             .all(|frame| frame.color <= 0xffffff),
         "Invalid frame color"
     );
@@ -259,9 +363,11 @@ pub fn render_text_snapshot(
         .chain(crop.iter())
         .chain(frames.iter().map(|frame| &frame.area))
         .chain(ellipses.iter().map(|frame| &frame.area))
+        .chain(highlights.iter().map(|highlight| &highlight.area))
         .chain(pixelations)
         .chain(blurs)
         .chain(texts.iter().map(|text| &text.area))
+        .chain(pens.iter().map(|pen| &pen.area))
     {
         ensure!(
             region.width > 0
@@ -303,25 +409,7 @@ pub fn render_text_snapshot(
         grid.ok_or_else(|| anyhow::anyhow!("Pixelation preview is not ready"))?
             .paint(&mut pixels, area, pixelations, [width, height])?;
     }
-    for frame in frames {
-        let color = image::Rgba([
-            (frame.color >> 16) as u8,
-            (frame.color >> 8) as u8,
-            frame.color as u8,
-            255,
-        ]);
-        for region in frame.segments() {
-            for y in region.y.max(area.y)..(region.y + region.height).min(area.y + area.height) {
-                for x in region.x.max(area.x)..(region.x + region.width).min(area.x + area.width) {
-                    pixels.put_pixel(x - area.x, y - area.y, color);
-                }
-            }
-        }
-    }
-    crate::arrows::paint_arrows(&mut pixels, area, arrows, ellipses)?;
-    for text in texts {
-        text.paint(&mut pixels, area);
-    }
+    crate::layers::paint_ordered(&mut pixels, area, annotations)?;
     // Redaction is always the final opaque layer, including where other annotations overlap it.
     for region in regions {
         for y in region.y.max(area.y)..(region.y + region.height).min(area.y + area.height) {
@@ -344,6 +432,8 @@ pub fn render_text_snapshot(
                 || !pixelations.is_empty()
                 || !blurs.is_empty()
                 || !texts.is_empty()
+                || !highlights.is_empty()
+                || !pens.is_empty()
             {
                 "annotated"
             } else {

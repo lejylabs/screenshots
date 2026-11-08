@@ -1402,13 +1402,10 @@ impl SpikeShell {
         source: CapturedImage,
         regions: Vec<app_core::PixelRegion>,
         crop: Option<app_core::PixelRegion>,
-        frames: Vec<app_core::FrameAnnotation>,
-        arrows: Vec<app_core::ArrowAnnotation>,
-        ellipses: Vec<app_core::FrameAnnotation>,
+        annotations: Vec<app_core::DrawAnnotation>,
         pixelations: Vec<app_core::PixelRegion>,
         pixelation: Option<Arc<app_core::PixelationGrid>>,
         blurs: Vec<app_core::PixelRegion>,
-        texts: Vec<app_core::TextAnnotation>,
         mode: OutputMode,
         cx: &mut Context<Self>,
     ) {
@@ -1421,17 +1418,14 @@ impl SpikeShell {
         cx.spawn(async move |this, cx| {
             let result = cx
                 .background_spawn(async move {
-                    app_core::render_text_snapshot(
+                    app_core::render_ordered_snapshot(
                         &source,
                         &regions,
                         crop,
-                        &frames,
-                        &arrows,
-                        &ellipses,
+                        &annotations,
                         &pixelations,
                         pixelation.as_deref(),
                         &blurs,
-                        &texts,
                     )
                     .map(|shot| {
                         let thumbnail = render_thumbnail(&shot);
@@ -3502,10 +3496,7 @@ mod tests {
                                         None,
                                         Vec::new(),
                                         Vec::new(),
-                                        Vec::new(),
-                                        Vec::new(),
                                         None,
-                                        Vec::new(),
                                         Vec::new(),
                                         OutputMode::SaveAndCopy,
                                         cx,

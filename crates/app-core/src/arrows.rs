@@ -69,8 +69,8 @@ impl ArrowAnnotation {
     }
 }
 
-pub(crate) fn paint_arrows(
-    pixels: &mut image::RgbaImage,
+pub(crate) fn paint_shapes(
+    layer: &mut tiny_skia::Pixmap,
     area: PixelRegion,
     arrows: &[ArrowAnnotation],
     ellipses: &[crate::FrameAnnotation],
@@ -78,9 +78,6 @@ pub(crate) fn paint_arrows(
     if arrows.is_empty() && ellipses.is_empty() {
         return Ok(());
     }
-    // One bounded output-sized premultiplied overlay, released before redaction/save.
-    let mut layer = tiny_skia::Pixmap::new(area.width, area.height)
-        .context("Could not allocate arrow raster layer")?;
     for ellipse in ellipses {
         let mut builder = tiny_skia::PathBuilder::new();
         for contour in ellipse.ellipse_contours() {
@@ -134,23 +131,6 @@ pub(crate) fn paint_arrows(
             tiny_skia::Transform::identity(),
             None,
         );
-    }
-    for (destination, overlay) in pixels.pixels_mut().zip(layer.data().chunks_exact(4)) {
-        let alpha = u32::from(overlay[3]);
-        if alpha == 0 {
-            continue;
-        }
-        let inverse = 255 - alpha;
-        let old_alpha = u32::from(destination[3]);
-        let out_alpha = alpha * 255 + old_alpha * inverse;
-        for channel in 0..3 {
-            destination[channel] = ((u32::from(overlay[channel]) * 65025
-                + u32::from(destination[channel]) * old_alpha * inverse
-                + out_alpha / 2)
-                / out_alpha)
-                .min(255) as u8;
-        }
-        destination[3] = ((out_alpha + 127) / 255) as u8;
     }
     Ok(())
 }

@@ -1,6 +1,10 @@
 //! Application core. This crate must not depend on GPUI.
 
 mod arrows;
+mod layers;
+mod pen;
+pub use layers::DrawAnnotation;
+pub use pen::{MAX_DOCUMENT_PEN_POINTS, MAX_PEN_POINTS, PenAnnotation};
 mod capture;
 pub use arrows::ArrowAnnotation;
 mod clipboard;
@@ -28,7 +32,8 @@ pub use history::{
 pub use selection::{
     FrameAnnotation, PixelRegion, crop_snapshot, edit_snapshot, redact_snapshot,
     render_annotated_snapshot, render_document_snapshot, render_edited_snapshot,
-    render_filtered_snapshot, render_pixelated_snapshot, render_text_snapshot,
+    render_filtered_snapshot, render_ordered_snapshot, render_pixelated_snapshot,
+    render_text_snapshot,
 };
 pub use settings::CaptureSettings;
 

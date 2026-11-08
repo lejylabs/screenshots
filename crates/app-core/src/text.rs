@@ -196,18 +196,28 @@ impl TextAnnotation {
                 if alpha == 0 {
                     continue;
                 }
-                let destination = output.get_pixel_mut(x - crop.x, y - crop.y);
-                let previous_alpha = u32::from(destination[3]);
-                let out_alpha = alpha * 255 + previous_alpha * (255 - alpha);
-                for (channel, shift) in [16, 8, 0].into_iter().enumerate() {
-                    let color = (self.color >> shift) & 255;
-                    destination[channel] = ((color * alpha * 255
-                        + u32::from(destination[channel]) * previous_alpha * (255 - alpha)
-                        + out_alpha / 2)
-                        / out_alpha) as u8;
-                }
-                destination[3] = ((out_alpha + 127) / 255) as u8;
+                blend_ink(
+                    output.get_pixel_mut(x - crop.x, y - crop.y),
+                    self.color,
+                    alpha,
+                );
             }
         }
     }
+}
+
+pub(crate) fn blend_ink(destination: &mut image::Rgba<u8>, color: u32, alpha: u32) {
+    if alpha == 0 {
+        return;
+    }
+    let previous_alpha = u32::from(destination[3]);
+    let out_alpha = alpha * 255 + previous_alpha * (255 - alpha);
+    for (channel, shift) in [16, 8, 0].into_iter().enumerate() {
+        let color = (color >> shift) & 255;
+        destination[channel] = ((color * alpha * 255
+            + u32::from(destination[channel]) * previous_alpha * (255 - alpha)
+            + out_alpha / 2)
+            / out_alpha) as u8;
+    }
+    destination[3] = ((out_alpha + 127) / 255) as u8;
 }

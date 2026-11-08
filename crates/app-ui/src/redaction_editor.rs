@@ -7,6 +7,39 @@ use gpui::{
 };
 use std::sync::Arc;
 
+fn pen_point(position: [f32; 2], scale: f32, image: [u32; 2]) -> [u32; 2] {
+    std::array::from_fn(|axis| {
+        (position[axis] / scale)
+            .floor()
+            .clamp(0.0, (image[axis] - 1) as f32) as u32
+    })
+}
+fn pen_path(
+    pen: &app_core::PenAnnotation,
+    origin: gpui::Point<gpui::Pixels>,
+    scale: f32,
+) -> Option<gpui::Path<gpui::Pixels>> {
+    let mut positions = pen.positions();
+    let first = positions.next()?;
+    let map = |point: [f32; 2]| {
+        gpui::point(
+            origin.x + px(point[0] * scale),
+            origin.y + px(point[1] * scale),
+        )
+    };
+    let mut builder =
+        gpui::PathBuilder::stroke(px(3.0 * scale)).with_style(gpui::PathStyle::Stroke(
+            gpui::StrokeOptions::default()
+                .with_line_width(3.0 * scale)
+                .with_miter_limit(1.0),
+        ));
+    builder.move_to(map(first));
+    for point in positions {
+        builder.line_to(map(point));
+    }
+    builder.build().ok()
+}
+
 #[derive(Clone, Copy)]
 pub(super) enum OutputMode {
     CopyOnly,
@@ -69,11 +102,14 @@ pub(super) fn bind_keys(cx: &mut App) {
 struct EditState {
     regions: Vec<PixelRegion>,
     frames: Vec<FrameAnnotation>,
+    highlights: Vec<FrameAnnotation>,
+    pens: Vec<app_core::PenAnnotation>,
     arrows: Vec<ArrowAnnotation>,
     ellipses: Vec<FrameAnnotation>,
     pixelations: Vec<PixelRegion>,
     blurs: Vec<PixelRegion>,
     texts: Vec<Caption>,
+    order: Vec<Selected>,
     crop: Option<PixelRegion>,
 }
 #[derive(Default)]
@@ -95,6 +131,8 @@ impl std::ops::DerefMut for RectEdits {
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Selected {
+    Pen(usize),
+    Highlight(usize),
     Text(usize),
     Blur(usize),
     Pixelation(usize),
@@ -110,8 +148,40 @@ enum ResizeHandle {
     ArrowEnd,
 }
 impl EditState {
+    fn pen_points(&self) -> usize {
+        self.pens.iter().map(|pen| pen.points.len()).sum()
+    }
+    fn layer_target(&self, selected: Selected, forward: bool) -> Option<(usize, usize)> {
+        let index = self.order.iter().position(|item| *item == selected)?;
+        let target = if forward {
+            index.checked_add(1)?
+        } else {
+            index.checked_sub(1)?
+        };
+        (target < self.order.len()).then_some((index, target))
+    }
+    fn ordered_annotations(&self) -> Vec<app_core::DrawAnnotation> {
+        self.order
+            .iter()
+            .map(|selected| match *selected {
+                Selected::Pen(i) => app_core::DrawAnnotation::Pen(self.pens[i].clone()),
+                Selected::Highlight(i) => app_core::DrawAnnotation::Highlight(self.highlights[i]),
+                Selected::Frame(i) => app_core::DrawAnnotation::Frame(self.frames[i]),
+                Selected::Arrow(i) => app_core::DrawAnnotation::Arrow(self.arrows[i]),
+                Selected::Ellipse(i) => app_core::DrawAnnotation::Ellipse(self.ellipses[i]),
+                Selected::Text(i) => {
+                    let mut stamp = self.texts[i].asset.stamp.clone();
+                    stamp.area = self.texts[i].area;
+                    app_core::DrawAnnotation::Text(stamp)
+                }
+                _ => unreachable!("source effects and redactions have fixed layers"),
+            })
+            .collect()
+    }
     fn color(&self, selected: Selected) -> Option<u32> {
         match selected {
+            Selected::Pen(i) => self.pens.get(i).map(|pen| pen.color),
+            Selected::Highlight(i) => self.highlights.get(i).map(|mark| mark.color),
             Selected::Frame(i) => self.frames.get(i).map(|mark| mark.color),
             Selected::Arrow(i) => self.arrows.get(i).map(|mark| mark.color),
             Selected::Ellipse(i) => self.ellipses.get(i).map(|mark| mark.color),
@@ -241,6 +311,8 @@ impl EditState {
             Selected::Blur(i) => self.blurs[i] = next,
             Selected::Text(i) => self.texts[i].area = next,
             Selected::Frame(i) => self.frames[i].area = next,
+            Selected::Highlight(i) => self.highlights[i].area = next,
+            Selected::Pen(i) => self.pens[i].area = next,
             Selected::Ellipse(i) => self.ellipses[i].area = next,
             Selected::Arrow(_) => unreachable!(),
         }
@@ -265,6 +337,8 @@ impl EditState {
             Selected::Blur(i) => self.blurs.get(i).copied(),
             Selected::Text(i) => self.texts.get(i).map(|text| text.area),
             Selected::Frame(i) => self.frames.get(i).map(|item| item.area),
+            Selected::Highlight(i) => self.highlights.get(i).map(|item| item.area),
+            Selected::Pen(i) => self.pens.get(i).map(|pen| pen.area),
             Selected::Ellipse(i) => self.ellipses.get(i).map(|item| item.area),
             Selected::Arrow(i) => self.arrows.get(i).map(|item| PixelRegion {
                 x: item.start[0].min(item.end[0]),
@@ -279,10 +353,7 @@ impl EditState {
         let candidates = (0..self.regions.len())
             .rev()
             .map(Selected::Redaction)
-            .chain((0..self.texts.len()).rev().map(Selected::Text))
-            .chain((0..self.arrows.len()).rev().map(Selected::Arrow))
-            .chain((0..self.ellipses.len()).rev().map(Selected::Ellipse))
-            .chain((0..self.frames.len()).rev().map(Selected::Frame))
+            .chain(self.order.iter().rev().copied())
             .chain((0..self.pixelations.len()).rev().map(Selected::Pixelation))
             .chain((0..self.blurs.len()).rev().map(Selected::Blur));
         candidates.into_iter().find(|selected| {
@@ -291,14 +362,22 @@ impl EditState {
             let y = point[1] - area.y as f32;
             let w = area.width as f32;
             let h = area.height as f32;
-            if x < -tolerance || y < -tolerance || x > w + tolerance || y > h + tolerance {
+            let margin = tolerance
+                + if matches!(selected, Selected::Pen(_)) {
+                    1.5
+                } else {
+                    0.0
+                };
+            if x < -margin || y < -margin || x > w + margin || y > h + margin {
                 return false;
             }
             match *selected {
+                Selected::Pen(i) => self.pens[i].distance(point) <= 1.5 + tolerance,
                 Selected::Redaction(_)
                 | Selected::Pixelation(_)
                 | Selected::Blur(_)
-                | Selected::Text(_) => x >= 0.0 && y >= 0.0 && x < w && y < h,
+                | Selected::Text(_)
+                | Selected::Highlight(_) => x >= 0.0 && y >= 0.0 && x < w && y < h,
                 Selected::Frame(_) => x.min(w - x).min(y.min(h - y)) <= 3.0 + tolerance,
                 Selected::Ellipse(_) => {
                     let rx = w / 2.0;
@@ -360,6 +439,8 @@ impl EditState {
                     Selected::Blur(i) => &mut self.blurs[i],
                     Selected::Text(i) => &mut self.texts[i].area,
                     Selected::Frame(i) => &mut self.frames[i].area,
+                    Selected::Highlight(i) => &mut self.highlights[i].area,
+                    Selected::Pen(i) => &mut self.pens[i].area,
                     Selected::Ellipse(i) => &mut self.ellipses[i].area,
                     _ => unreachable!(),
                 };
@@ -371,6 +452,52 @@ impl EditState {
     }
 }
 impl RectEdits {
+    fn add_pen(&mut self, pen: app_core::PenAnnotation) -> bool {
+        if self.regions.len()
+            + self.frames.len()
+            + self.highlights.len()
+            + self.pens.len()
+            + self.arrows.len()
+            + self.ellipses.len()
+            + self.pixelations.len()
+            + self.blurs.len()
+            + self.texts.len()
+            < 100
+            && self.pen_points() + pen.points.len() <= app_core::MAX_DOCUMENT_PEN_POINTS
+        {
+            self.checkpoint();
+            let index = self.pens.len();
+            self.order.push(Selected::Pen(index));
+            self.pens.push(pen);
+            true
+        } else {
+            false
+        }
+    }
+    fn add_highlight(&mut self, highlight: FrameAnnotation) {
+        if self.regions.len()
+            + self.frames.len()
+            + self.highlights.len()
+            + self.pens.len()
+            + self.arrows.len()
+            + self.ellipses.len()
+            + self.pixelations.len()
+            + self.blurs.len()
+            + self.texts.len()
+            < 100
+        {
+            self.checkpoint();
+            let index = self.highlights.len();
+            self.order.push(Selected::Highlight(index));
+            self.highlights.push(highlight);
+        }
+    }
+    fn shift_layer(&mut self, selected: Selected, forward: bool) {
+        if let Some((from, to)) = self.layer_target(selected, forward) {
+            self.checkpoint();
+            self.order.swap(from, to);
+        }
+    }
     fn set_text(&mut self, text: Caption, index: Option<usize>) {
         if let Some(index) = index {
             if index >= self.texts.len() {
@@ -380,6 +507,8 @@ impl RectEdits {
             self.texts[index] = text;
         } else if self.regions.len()
             + self.frames.len()
+            + self.highlights.len()
+            + self.pens.len()
             + self.arrows.len()
             + self.ellipses.len()
             + self.pixelations.len()
@@ -388,6 +517,8 @@ impl RectEdits {
             < 100
         {
             self.checkpoint();
+            let index = self.texts.len();
+            self.order.push(Selected::Text(index));
             self.texts.push(text);
         }
     }
@@ -401,6 +532,8 @@ impl RectEdits {
         self.checkpoint();
         match selected {
             Selected::Frame(i) => self.frames[i].color = color,
+            Selected::Highlight(i) => self.highlights[i].color = color,
+            Selected::Pen(i) => self.pens[i].color = color,
             Selected::Arrow(i) => self.arrows[i].color = color,
             Selected::Ellipse(i) => self.ellipses[i].color = color,
             Selected::Redaction(_)
@@ -440,6 +573,28 @@ impl RectEdits {
             return;
         }
         self.checkpoint();
+        self.order.retain(|item| *item != selected);
+        for item in &mut self.order {
+            *item = match (*item, selected) {
+                (Selected::Pen(i), Selected::Pen(removed)) if i > removed => Selected::Pen(i - 1),
+                (Selected::Highlight(i), Selected::Highlight(removed)) if i > removed => {
+                    Selected::Highlight(i - 1)
+                }
+                (Selected::Frame(i), Selected::Frame(removed)) if i > removed => {
+                    Selected::Frame(i - 1)
+                }
+                (Selected::Arrow(i), Selected::Arrow(removed)) if i > removed => {
+                    Selected::Arrow(i - 1)
+                }
+                (Selected::Ellipse(i), Selected::Ellipse(removed)) if i > removed => {
+                    Selected::Ellipse(i - 1)
+                }
+                (Selected::Text(i), Selected::Text(removed)) if i > removed => {
+                    Selected::Text(i - 1)
+                }
+                _ => *item,
+            };
+        }
         match selected {
             Selected::Redaction(i) => {
                 self.regions.remove(i);
@@ -456,6 +611,12 @@ impl RectEdits {
             Selected::Frame(i) => {
                 self.frames.remove(i);
             }
+            Selected::Highlight(i) => {
+                self.highlights.remove(i);
+            }
+            Selected::Pen(i) => {
+                self.pens.remove(i);
+            }
             Selected::Arrow(i) => {
                 self.arrows.remove(i);
             }
@@ -467,6 +628,8 @@ impl RectEdits {
     fn add(&mut self, region: PixelRegion) {
         if self.regions.len()
             + self.frames.len()
+            + self.highlights.len()
+            + self.pens.len()
             + self.arrows.len()
             + self.ellipses.len()
             + self.pixelations.len()
@@ -481,6 +644,8 @@ impl RectEdits {
     fn add_frame(&mut self, frame: FrameAnnotation) {
         if self.regions.len()
             + self.frames.len()
+            + self.highlights.len()
+            + self.pens.len()
             + self.arrows.len()
             + self.ellipses.len()
             + self.pixelations.len()
@@ -489,12 +654,16 @@ impl RectEdits {
             < 100
         {
             self.checkpoint();
+            let index = self.frames.len();
+            self.order.push(Selected::Frame(index));
             self.frames.push(frame);
         }
     }
     fn add_arrow(&mut self, arrow: ArrowAnnotation) {
         if self.regions.len()
             + self.frames.len()
+            + self.highlights.len()
+            + self.pens.len()
             + self.arrows.len()
             + self.ellipses.len()
             + self.pixelations.len()
@@ -503,12 +672,16 @@ impl RectEdits {
             < 100
         {
             self.checkpoint();
+            let index = self.arrows.len();
+            self.order.push(Selected::Arrow(index));
             self.arrows.push(arrow);
         }
     }
     fn add_ellipse(&mut self, ellipse: FrameAnnotation) {
         if self.regions.len()
             + self.frames.len()
+            + self.highlights.len()
+            + self.pens.len()
             + self.arrows.len()
             + self.ellipses.len()
             + self.pixelations.len()
@@ -517,12 +690,16 @@ impl RectEdits {
             < 100
         {
             self.checkpoint();
+            let index = self.ellipses.len();
+            self.order.push(Selected::Ellipse(index));
             self.ellipses.push(ellipse);
         }
     }
     fn add_pixelation(&mut self, area: PixelRegion) {
         if self.regions.len()
             + self.frames.len()
+            + self.highlights.len()
+            + self.pens.len()
             + self.arrows.len()
             + self.ellipses.len()
             + self.pixelations.len()
@@ -537,6 +714,8 @@ impl RectEdits {
     fn add_blur(&mut self, area: PixelRegion) {
         if self.regions.len()
             + self.frames.len()
+            + self.highlights.len()
+            + self.pens.len()
             + self.arrows.len()
             + self.ellipses.len()
             + self.pixelations.len()
@@ -569,11 +748,14 @@ impl RectEdits {
     fn reset(&mut self) {
         self.regions.clear();
         self.frames.clear();
+        self.highlights.clear();
+        self.pens.clear();
         self.arrows.clear();
         self.ellipses.clear();
         self.pixelations.clear();
         self.blurs.clear();
         self.texts.clear();
+        self.order.clear();
         self.crop = None;
         self.past.clear();
         self.undone.clear();
@@ -581,6 +763,8 @@ impl RectEdits {
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Tool {
+    Pen,
+    Highlight,
     Text,
     Blur,
     Pixelate,
@@ -603,6 +787,8 @@ impl Tool {
             "p" => Some(Self::Pixelate),
             "b" => Some(Self::Blur),
             "t" => Some(Self::Text),
+            "h" => Some(Self::Highlight),
+            "d" => Some(Self::Pen),
             _ => None,
         }
     }
@@ -650,6 +836,9 @@ pub(super) struct RedactionEditor {
     text_error: Option<String>,
     text_job: u64,
     text_cancel: Option<Arc<std::sync::atomic::AtomicBool>>,
+    pen_trace: Vec<[u32; 2]>,
+    pen_limit_hit: bool,
+    pen_capacity: usize,
 }
 #[derive(Clone)]
 struct Caption {
@@ -669,6 +858,89 @@ impl Drop for RedactionEditor {
 }
 
 impl RedactionEditor {
+    fn cancel_pen(&mut self, cx: &mut Context<Self>) {
+        self.drag = None;
+        self.pen_trace.clear();
+        self.pen_limit_hit = false;
+        cx.notify();
+    }
+    fn sample_pen(&mut self, point: [u32; 2], force: bool) -> bool {
+        if let Some(last) = self.pen_trace.last() {
+            let dx = u64::from(last[0].abs_diff(point[0]));
+            let dy = u64::from(last[1].abs_diff(point[1]));
+            if *last == point || (!force && dx * dx + dy * dy < 4) {
+                return false;
+            }
+        }
+        if self.pen_trace.len() >= self.pen_capacity {
+            let changed = !self.pen_limit_hit;
+            self.pen_limit_hit = true;
+            return changed;
+        }
+        self.pen_trace.push(point);
+        true
+    }
+    fn begin_pen(
+        &mut self,
+        position: [f32; 2],
+        scale: f32,
+        image: [u32; 2],
+        cx: &mut Context<Self>,
+    ) {
+        self.pen_trace.clear();
+        self.pen_limit_hit = false;
+        self.pen_capacity = app_core::MAX_PEN_POINTS
+            .min(app_core::MAX_DOCUMENT_PEN_POINTS.saturating_sub(self.edits.pen_points()));
+        if self.pen_capacity == 0
+            || self.edits.order.len()
+                + self.edits.regions.len()
+                + self.edits.blurs.len()
+                + self.edits.pixelations.len()
+                >= 100
+        {
+            self.pen_limit_hit = true;
+            cx.notify();
+            return;
+        }
+        self.drag = Some(position);
+        self.end = position;
+        self.sample_pen(pen_point(position, scale, image), true);
+        cx.notify();
+    }
+    fn finish_pen(
+        &mut self,
+        position: [f32; 2],
+        scale: f32,
+        image: [u32; 2],
+        cx: &mut Context<Self>,
+    ) {
+        if self.tool != Tool::Pen || self.drag.is_none() {
+            return;
+        }
+        self.sample_pen(pen_point(position, scale, image), true);
+        self.drag = None;
+        if let Some(pen) = app_core::PenAnnotation::from_trace(&self.pen_trace, self.frame_color) {
+            let index = self.edits.pens.len();
+            if self.edits.add_pen(pen) {
+                self.selected = Some(Selected::Pen(index));
+            }
+        }
+        self.pen_trace.clear();
+        cx.notify();
+    }
+    fn move_layer(&mut self, forward: bool, cx: &mut Context<Self>) {
+        if self.tool != Tool::Select
+            || self.drag.is_some()
+            || self.text_draft.is_some()
+            || self.text_loading
+        {
+            return;
+        }
+        if let Some(selected) = self.selected {
+            self.edits.shift_layer(selected, forward);
+            cx.notify();
+        }
+    }
     fn begin_text(
         &mut self,
         position: [u32; 2],
@@ -682,6 +954,8 @@ impl RedactionEditor {
         if editing.is_none()
             && self.edits.regions.len()
                 + self.edits.frames.len()
+                + self.edits.highlights.len()
+                + self.edits.pens.len()
                 + self.edits.arrows.len()
                 + self.edits.ellipses.len()
                 + self.edits.pixelations.len()
@@ -889,6 +1163,59 @@ impl RedactionEditor {
                 return Err("Text edit did not preserve undo".into());
             }
             self.edits.redo();
+            let area = PixelRegion {
+                x: 0,
+                y: 0,
+                width: self.source.width.min(64),
+                height: self.source.height.min(64),
+            };
+            self.edits.add_frame(FrameAnnotation {
+                area,
+                color: 0x22c55e,
+            });
+            self.edits.add_ellipse(FrameAnnotation {
+                area,
+                color: 0xef4444,
+            });
+            self.edits.shift_layer(Selected::Text(0), true);
+            self.edits.shift_layer(Selected::Text(0), true);
+            if self.edits.order.last() != Some(&Selected::Text(0)) {
+                return Err("Text did not move above the vector layers".into());
+            }
+            self.edits.add_highlight(FrameAnnotation {
+                area,
+                color: 0xfacc15,
+            });
+            self.edits.shift_layer(Selected::Highlight(0), false);
+            if self.edits.order.last() != Some(&Selected::Text(0)) {
+                return Err("Highlight did not move below text".into());
+            }
+            self.tool = Tool::Pen;
+            let dimensions = [self.source.width, self.source.height];
+            self.begin_pen([16.0, 16.0], 1.0, dimensions, cx);
+            self.sample_pen([32, 40], false);
+            self.finish_pen([48.0, 16.0], 1.0, dimensions, cx);
+            if self
+                .edits
+                .pens
+                .first()
+                .is_none_or(|pen| pen.points.len() != 3)
+            {
+                return Err("Pen gesture was not committed once".into());
+            }
+            self.begin_pen([16.0, 16.0], 1.0, dimensions, cx);
+            for index in 0..1100 {
+                self.sample_pen([20 + (index % 32) * 2, 20 + (index / 32 % 32) * 2], false);
+            }
+            if self.pen_trace.len() != app_core::MAX_PEN_POINTS || !self.pen_limit_hit {
+                return Err("Pen sampling exceeded its limit or omitted the limit status".into());
+            }
+            self.cancel_pen(cx);
+            if self.edits.pens.len() != 1 {
+                return Err("Canceled pen gesture changed the document".into());
+            }
+            self.tool = Tool::Select;
+            cx.notify();
         }
         Ok(self.pixelation.is_some()
             && self.blur.is_some()
@@ -1045,6 +1372,8 @@ impl RedactionEditor {
             || self.text_loading
             || (self.edits.regions.is_empty()
                 && self.edits.frames.is_empty()
+                && self.edits.highlights.is_empty()
+                && self.edits.pens.is_empty()
                 && self.edits.arrows.is_empty()
                 && self.edits.ellipses.is_empty()
                 && self.edits.pixelations.is_empty()
@@ -1066,21 +1395,9 @@ impl RedactionEditor {
                 height: self.source.height,
             })
         });
-        let frames = self.edits.frames.clone();
-        let arrows = self.edits.arrows.clone();
-        let ellipses = self.edits.ellipses.clone();
+        let annotations = self.edits.ordered_annotations();
         let pixelations = self.edits.pixelations.clone();
         let blurs = self.edits.blurs.clone();
-        let texts = self
-            .edits
-            .texts
-            .iter()
-            .map(|text| {
-                let mut stamp = text.asset.stamp.clone();
-                stamp.area = text.area;
-                stamp
-            })
-            .collect();
         let pixelation = self.pixelation.as_ref().map(|(grid, _)| grid.clone());
         cx.defer(move |cx| {
             owner
@@ -1089,13 +1406,10 @@ impl RedactionEditor {
                         source,
                         regions,
                         crop,
-                        frames,
-                        arrows,
-                        ellipses,
+                        annotations,
                         pixelations,
                         pixelation,
                         blurs,
-                        texts,
                         mode,
                         cx,
                     )
@@ -1160,6 +1474,9 @@ impl RedactionEditor {
             text_error: None,
             text_job: 0,
             text_cancel: None,
+            pen_trace: Vec::new(),
+            pen_limit_hit: false,
+            pen_capacity: app_core::MAX_PEN_POINTS,
         }
     }
 
@@ -1181,7 +1498,13 @@ impl Render for RedactionEditor {
         }
         let show_palette = matches!(
             self.tool,
-            Tool::Select | Tool::Frame | Tool::Arrow | Tool::Ellipse | Tool::Text
+            Tool::Select
+                | Tool::Frame
+                | Tool::Arrow
+                | Tool::Ellipse
+                | Tool::Text
+                | Tool::Highlight
+                | Tool::Pen
         );
         let palette_color = if self.tool == Tool::Select {
             self.selected.and_then(|mark| self.edits.color(mark))
@@ -1249,7 +1572,10 @@ impl Render for RedactionEditor {
             Vec::new()
         };
         let mut preview = displayed.regions;
+        let mut paint_order = displayed.order;
         let mut frame_preview = displayed.frames;
+        let mut highlight_preview = displayed.highlights;
+        let mut pen_preview = displayed.pens;
         let mut arrow_preview = displayed.arrows;
         let mut ellipse_preview = displayed.ellipses;
         let mut pixelation_preview = displayed.pixelations;
@@ -1261,6 +1587,13 @@ impl Render for RedactionEditor {
         if let Some(start) = self.drag {
             if self.tool == Tool::Select {
                 // Transforms are previewed in metadata above and committed on release.
+            } else if self.tool == Tool::Pen {
+                if let Some(pen) =
+                    app_core::PenAnnotation::from_trace(&self.pen_trace, self.frame_color)
+                {
+                    paint_order.push(Selected::Pen(pen_preview.len()));
+                    pen_preview.push(pen);
+                }
             } else if self.tool == Tool::Arrow {
                 if let Some(arrow) = ArrowAnnotation::from_drag(
                     start,
@@ -1269,6 +1602,7 @@ impl Render for RedactionEditor {
                     [dimensions.0, dimensions.1],
                     self.frame_color,
                 ) {
+                    paint_order.push(Selected::Arrow(arrow_preview.len()));
                     arrow_preview.push(arrow);
                 }
             } else if let Some(region) =
@@ -1285,12 +1619,20 @@ impl Render for RedactionEditor {
                         blur_preview.push(region);
                     }
                 } else if self.tool == Tool::Frame {
+                    paint_order.push(Selected::Frame(frame_preview.len()));
                     frame_preview.push(FrameAnnotation {
+                        area: region,
+                        color: self.frame_color,
+                    });
+                } else if self.tool == Tool::Highlight {
+                    paint_order.push(Selected::Highlight(highlight_preview.len()));
+                    highlight_preview.push(FrameAnnotation {
                         area: region,
                         color: self.frame_color,
                     });
                 } else {
                     if self.tool == Tool::Ellipse {
+                        paint_order.push(Selected::Ellipse(ellipse_preview.len()));
                         ellipse_preview.push(FrameAnnotation {
                             area: region,
                             color: self.frame_color,
@@ -1316,6 +1658,7 @@ impl Render for RedactionEditor {
                 if !modifiers.shift {
                     if let Some(tool) = Tool::shortcut(key) {
                         this.tool = tool;
+                        this.pen_trace.clear();this.pen_limit_hit=false;
                         if tool == Tool::Pixelate { this.prepare_pixelation(cx); }
                         if tool == Tool::Blur { this.prepare_blur(cx); }
                         this.drag = None;
@@ -1330,7 +1673,7 @@ impl Render for RedactionEditor {
                     }
                 }
             }))
-            .on_action(cx.listener(|this, _: &CloseOverlay, window, cx| {if this.text_draft.is_some(){this.cancel_text(window,cx);}else{this.cancel(cx);}}))
+            .on_action(cx.listener(|this, _: &CloseOverlay, window, cx| {if this.text_draft.is_some(){this.cancel_text(window,cx);}else if this.tool==Tool::Pen && this.drag.is_some(){this.cancel_pen(cx);}else{this.cancel(cx);}}))
             .on_action(cx.listener(|this, _: &DeleteAnnotation, _, cx| this.delete_selection(cx)))
             .on_action(cx.listener(|this, _: &UndoRedaction, _, cx| {
                 if this.text_draft.is_some() || this.text_loading {return;}
@@ -1349,6 +1692,8 @@ impl Render for RedactionEditor {
             .on_mouse_move(cx.listener(|this, event: &gpui::MouseMoveEvent, _, cx| {
                 if this.drag.is_some() && !event.dragging() {
                     this.drag = None;
+                    this.pen_trace.clear();
+                    this.pen_limit_hit=false;
                     cx.notify();
                 }
             }))
@@ -1357,10 +1702,16 @@ impl Render for RedactionEditor {
                     this.end = [f32::from(event.position.x)-origin[0],f32::from(event.position.y)-origin[1]];
                     cx.notify();
                 }
+                if this.tool==Tool::Pen && this.drag.is_some() && event.dragging(){
+                    let position=[f32::from(event.position.x)-origin[0],f32::from(event.position.y)-origin[1]];
+                    if this.sample_pen(pen_point(position,scale,[dimensions.0,dimensions.1]),false){cx.notify();}
+                }
             }))
             .on_mouse_up(gpui::MouseButton::Left, cx.listener(move |this, event: &gpui::MouseUpEvent, _, cx| {
+                this.finish_pen([f32::from(event.position.x)-origin[0],f32::from(event.position.y)-origin[1]],scale,[dimensions.0,dimensions.1],cx);
                 this.finish_selection_drag([f32::from(event.position.x)-origin[0],f32::from(event.position.y)-origin[1]],scale,[dimensions.0,dimensions.1],cx);
             }))
+            .on_mouse_up_out(gpui::MouseButton::Left,cx.listener(move|this,event:&gpui::MouseUpEvent,_,cx|this.finish_pen([f32::from(event.position.x)-origin[0],f32::from(event.position.y)-origin[1]],scale,[dimensions.0,dimensions.1],cx)))
             .child(gpui::deferred(
                 div()
                     .id("editor-toolbar")
@@ -1385,6 +1736,8 @@ impl Render for RedactionEditor {
                     .child(div().text_sm().child(format!(
                         "{} · {} / 100 annotations · Export: {} × {}",
                         match self.tool {
+                            Tool::Pen=>if self.pen_limit_hit {"Pen limit reached. Release or remove marks to continue."}else{"Draw freehand (3 px); release to finish"},
+                            Tool::Highlight=>"Drag a translucent highlight; underlying content remains readable",
                             Tool::Text => if self.text_loading {"Preparing text..."} else {"Click the image to place a label; Enter applies, Escape cancels text"},
                             Tool::Pixelate => if self.pixelation_loading || self.pending_effect==Some(Tool::Pixelate) { "Preparing pixelation preview..." } else if self.pixelation_error.is_some() { "Pixelation failed. Select Pixelate to retry." } else { "Drag to pixelate source pixels; use Redact for sensitive information" },
                             Tool::Blur => if self.blur_loading || self.pending_effect==Some(Tool::Blur) { "Preparing blur preview..." } else if self.blur_error.is_some() { "Blur failed. Select Blur to retry." } else { "Drag to blur source pixels; use Redact for sensitive information" },
@@ -1397,7 +1750,7 @@ impl Render for RedactionEditor {
                             Tool::Redact => "Drag to redact",
                         },
                         self.edits.regions.len()
-                            + self.edits.frames.len()
+                            + self.edits.frames.len() + self.edits.highlights.len() + self.edits.pens.len()
                             + self.edits.arrows.len()
                             + self.edits.ellipses.len() + self.edits.pixelations.len() + self.edits.blurs.len() + self.edits.texts.len(),
                         crop_preview.map_or(dimensions.0, |area| area.width),
@@ -1408,6 +1761,10 @@ impl Render for RedactionEditor {
                             .flex()
                             .flex_wrap()
                             .gap_2()
+                            .child(capture_button("tool-pen",if self.tool==Tool::Pen {"Pen (D) active"}else{"Pen (D)"},false,cx.listener(|this,_,_,cx|{this.tool=Tool::Pen;this.drag=None;this.pen_trace.clear();this.pen_limit_hit=false;cx.notify();})))
+                            .child(capture_button("tool-highlight",if self.tool==Tool::Highlight {"Highlight (H) active"}else{"Highlight (H)"},false,cx.listener(|this,_,_,cx|{this.tool=Tool::Highlight;this.drag=None;cx.notify();})))
+                            .child(capture_button("layer-forward","Bring forward",self.tool!=Tool::Select||self.drag.is_some()||self.text_draft.is_some()||self.text_loading||self.selected.and_then(|selected|self.edits.layer_target(selected,true)).is_none(),cx.listener(|this,_,_,cx|this.move_layer(true,cx))))
+                            .child(capture_button("layer-backward","Send backward",self.tool!=Tool::Select||self.drag.is_some()||self.text_draft.is_some()||self.text_loading||self.selected.and_then(|selected|self.edits.layer_target(selected,false)).is_none(),cx.listener(|this,_,_,cx|this.move_layer(false,cx))))
                             .child(capture_button("tool-text",if self.tool==Tool::Text {"Text (T) active"}else{"Text (T)"},false,cx.listener(|this,_,_,cx|{this.tool=Tool::Text;this.drag=None;cx.notify();})))
                             .child(capture_button("edit-text","Edit text",!matches!(self.selected,Some(Selected::Text(_)))||self.text_draft.is_some()||self.text_loading,cx.listener(|this,_,window,cx|{if let Some(Selected::Text(index))=this.selected {if let Some(text)=this.edits.texts.get(index){this.begin_text([text.area.x,text.area.y],Some(index),window,cx);}}})))
                             .child(capture_button(
@@ -1544,7 +1901,7 @@ impl Render for RedactionEditor {
                                 "redaction-reset",
                                 "Reset",
                                 self.text_draft.is_some() || self.text_loading || (self.edits.regions.is_empty()
-                                    && self.edits.frames.is_empty()
+                                    && self.edits.frames.is_empty() && self.edits.highlights.is_empty() && self.edits.pens.is_empty()
                                     && self.edits.arrows.is_empty()
                                     && self.edits.ellipses.is_empty() && self.edits.pixelations.is_empty() && self.edits.blurs.is_empty() && self.edits.texts.is_empty()
                                     && self.edits.crop.is_none()
@@ -1552,6 +1909,7 @@ impl Render for RedactionEditor {
                                     && self.edits.past.is_empty()),
                                 cx.listener(|this, _, window, cx| {
                                     this.edits.reset();
+                                    this.pen_trace.clear();this.pen_limit_hit=false;
                                     for asset in this.text_assets.drain(..){window.drop_image(asset.preview.clone()).ok();}
                                     this.selected = None;
                                     this.drag = None;
@@ -1570,7 +1928,7 @@ impl Render for RedactionEditor {
                                         id,
                                         label,
                                         (self.edits.regions.is_empty()
-                                            && self.edits.frames.is_empty()
+                                            && self.edits.frames.is_empty() && self.edits.highlights.is_empty() && self.edits.pens.is_empty()
                                             && self.edits.arrows.is_empty()
                                             && self.edits.ellipses.is_empty() && self.edits.pixelations.is_empty() && self.edits.blurs.is_empty() && self.edits.texts.is_empty()
                                             && self.edits.crop.is_none()
@@ -1730,6 +2088,7 @@ impl Render for RedactionEditor {
                                 gpui::MouseButton::Left,
                                 cx.listener(move |this, event: &gpui::MouseDownEvent, window, cx| {
                                     if this.text_draft.is_some() || this.text_loading {return;}
+                                    if this.tool==Tool::Pen {this.begin_pen([f32::from(event.position.x)-origin[0],f32::from(event.position.y)-origin[1]],scale,[dimensions.0,dimensions.1],cx);return;}
                                     if this.tool==Tool::Text {let position=[((f32::from(event.position.x)-origin[0])/scale).floor().max(0.0) as u32,((f32::from(event.position.y)-origin[1])/scale).floor().max(0.0) as u32];this.begin_text(position,None,window,cx);return;}
                                     if this.tool == Tool::Pixelate && this.pixelation.is_none() { return; }
                                     if this.tool == Tool::Blur && this.blur.is_none() { return; }
@@ -1749,7 +2108,7 @@ impl Render for RedactionEditor {
                                     }
                                     if this.tool == Tool::Crop
                                         || this.edits.regions.len()
-                                            + this.edits.frames.len()
+                                            + this.edits.frames.len() + this.edits.highlights.len() + this.edits.pens.len()
                                             + this.edits.arrows.len()
                                             + this.edits.ellipses.len() + this.edits.pixelations.len() + this.edits.blurs.len() + this.edits.texts.len()
                                             < 100
@@ -1766,7 +2125,7 @@ impl Render for RedactionEditor {
                             )
                             .on_mouse_move(cx.listener(
                                 move |this, event: &gpui::MouseMoveEvent, _, cx| {
-                                    if this.tool != Tool::Select && this.drag.is_some() {
+                                    if this.tool != Tool::Select && this.tool!=Tool::Pen && this.drag.is_some() {
                                         if event.dragging() {
                                             this.end = [
                                                 f32::from(event.position.x) - origin[0],
@@ -1782,7 +2141,7 @@ impl Render for RedactionEditor {
                             .on_mouse_up(
                                 gpui::MouseButton::Left,
                                 cx.listener(move |this, event: &gpui::MouseUpEvent, _, cx| {
-                                    if this.tool == Tool::Select { return; }
+                                    if this.tool == Tool::Select || this.tool==Tool::Pen { return; }
                                     if let Some(start) = this.drag.take() {
                                         let end = [
                                             f32::from(event.position.x) - origin[0],
@@ -1815,6 +2174,8 @@ impl Render for RedactionEditor {
                                                     area: region,
                                                     color: this.frame_color,
                                                 });
+                                            } else if this.tool==Tool::Highlight {
+                                                this.edits.add_highlight(FrameAnnotation{area:region,color:this.frame_color});
                                             } else {
                                                 if this.tool == Tool::Ellipse {
                                                     this.edits.add_ellipse(FrameAnnotation {
@@ -1852,71 +2213,21 @@ impl Render for RedactionEditor {
                                     }
                                 }).absolute().top_0().left_0().size_full()
                             )
-                            .children(
-                                frame_preview
-                                    .into_iter()
-                                    .flat_map(|frame| {
-                                        frame.segments().map(|segment| (segment, frame.color))
-                                    })
-                                    .map(move |(region, color)| {
-                                        div()
-                                            .absolute()
-                                            .left(px(region.x as f32 * scale))
-                                            .top(px(region.y as f32 * scale))
-                                            .w(px(region.width as f32 * scale))
-                                            .h(px(region.height as f32 * scale))
-                                            .bg(rgb(color))
-                                    }),
-                            )
-                            .child(
-                                gpui::canvas(
-                                    |_, _, _| (),
-                                    move |bounds, _, window, _| {
-                                        for ellipse in &ellipse_preview {
-                                            let mut builder = gpui::PathBuilder::fill();
-                                            for contour in ellipse.ellipse_contours() {
-                                                let map = |point: [f32; 2]| {
-                                                    gpui::point(
-                                                        bounds.origin.x + px(point[0] * scale),
-                                                        bounds.origin.y + px(point[1] * scale),
-                                                    )
-                                                };
-                                                builder.move_to(map(contour[0]));
-                                                for point in &contour[1..] {
-                                                    builder.line_to(map(*point));
-                                                }
-                                                builder.line_to(map(contour[0]));
-                                            }
-                                            if let Ok(path) = builder.build() {
-                                                window.paint_path(path, rgb(ellipse.color));
-                                            }
-                                        }
-                                        for arrow in &arrow_preview {
-                                            let vertices = arrow.vertices();
-                                            let map = |point: [f32; 2]| {
-                                                gpui::point(
-                                                    bounds.origin.x + px(point[0] * scale),
-                                                    bounds.origin.y + px(point[1] * scale),
-                                                )
-                                            };
-                                            let mut builder = gpui::PathBuilder::fill();
-                                            builder.move_to(map(vertices[0]));
-                                            for vertex in &vertices[1..] {
-                                                builder.line_to(map(*vertex));
-                                            }
-                                            builder.line_to(map(vertices[0]));
-                                            if let Ok(path) = builder.build() {
-                                                window.paint_path(path, rgb(arrow.color));
-                                            }
-                                        }
-                                    },
-                                )
-                                .absolute()
-                                .top_0()
-                                .left_0()
-                                .size_full(),
-                            )
-                            .children(text_preview.into_iter().map(move|text|div().absolute().left(px(text.area.x as f32*scale)).top(px(text.area.y as f32*scale)).w(px(text.area.width as f32*scale)).h(px(text.area.height as f32*scale)).child(img(text.asset.preview.clone()).size_full())))
+                            .child(gpui::canvas(|_,_,_| (),move|bounds,_,window,_| {
+                                let map=|point:[f32;2]|gpui::point(bounds.origin.x+px(point[0]*scale),bounds.origin.y+px(point[1]*scale));
+                                let rect=|area:PixelRegion|gpui::Bounds{origin:map([area.x as f32,area.y as f32]),size:gpui::size(px(area.width as f32*scale),px(area.height as f32*scale))};
+                                for item in &paint_order {
+                                    match *item {
+                                        Selected::Pen(i)=>{let pen=&pen_preview[i];if pen.points.len()==1{let p=pen.positions().next().unwrap();window.paint_quad(gpui::fill(gpui::Bounds{origin:map([p[0]-1.5,p[1]-1.5]),size:gpui::size(px(3.0*scale),px(3.0*scale))},rgb(pen.color)));}else if let Some(path)=pen_path(pen,bounds.origin,scale){window.paint_path(path,rgb(pen.color));}}
+                                        Selected::Highlight(i)=>{let highlight=highlight_preview[i];window.paint_quad(gpui::fill(rect(highlight.area),rgba((highlight.color<<8)|85)));}
+                                        Selected::Frame(i)=>{let frame=frame_preview[i];for area in frame.segments(){window.paint_quad(gpui::fill(rect(area),rgb(frame.color)));}}
+                                        Selected::Arrow(i)=>{let arrow=arrow_preview[i];let vertices=arrow.vertices();let mut path=gpui::PathBuilder::fill();path.move_to(map(vertices[0]));for point in &vertices[1..]{path.line_to(map(*point));}path.line_to(map(vertices[0]));if let Ok(path)=path.build(){window.paint_path(path,rgb(arrow.color));}}
+                                        Selected::Ellipse(i)=>{let ellipse=ellipse_preview[i];let mut path=gpui::PathBuilder::fill();for contour in ellipse.ellipse_contours(){path.move_to(map(contour[0]));for point in &contour[1..]{path.line_to(map(*point));}path.line_to(map(contour[0]));}if let Ok(path)=path.build(){window.paint_path(path,rgb(ellipse.color));}}
+                                        Selected::Text(i)=>{let text=&text_preview[i];let area=rect(text.area);window.paint_image(area,area,Default::default(),text.asset.preview.clone(),0,false).ok();}
+                                        _=>{}
+                                    }
+                                }
+                            }).absolute().top_0().left_0().size_full())
                             .children(preview.into_iter().map(move |region| {
                                 div()
                                     .absolute()
@@ -2004,6 +2315,192 @@ impl Render for RedactionEditor {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn pen_selection_transform_color_and_undo_share_bounded_points() {
+        let mut edits = RectEdits::default();
+        let pen =
+            app_core::PenAnnotation::from_trace(&[[10, 10], [30, 10], [30, 30]], 0xef4444).unwrap();
+        let points = pen.points.clone();
+        let area = pen.area;
+        assert!(edits.add_pen(pen));
+        let selected = Selected::Pen(0);
+        assert_eq!(edits.pick([20.0, 10.5], 0.5), Some(selected));
+        assert_eq!(edits.pick([15.0, 25.0], 0.5), None);
+        edits.set_color(selected, 0x22c55e);
+        assert_eq!(edits.color(selected), Some(0x22c55e));
+        edits.undo();
+        assert_eq!(edits.color(selected), Some(0xef4444));
+        edits.transform_selected(selected, None, [5.0, 5.0], [100, 100]);
+        edits.transform_selected(
+            selected,
+            Some(ResizeHandle::Corner([true, true])),
+            [5.0, 5.0],
+            [100, 100],
+        );
+        assert!(Arc::ptr_eq(&points, &edits.pens[0].points));
+        edits.undo();
+        edits.undo();
+        assert_eq!(edits.bounds(selected), Some(area));
+        edits.delete_selected(selected);
+        assert!(edits.pens.is_empty());
+        edits.undo();
+        assert!(Arc::ptr_eq(&points, &edits.pens[0].points));
+        assert_eq!(Tool::shortcut("d"), Some(Tool::Pen));
+        assert_eq!(pen_point([-20.0, 1000.0], 2.0, [100, 50]), [0, 49]);
+        let trace = (0..1024).map(|i| [i, 1]).collect::<Vec<_>>();
+        let large = app_core::PenAnnotation::from_trace(&trace, 0).unwrap();
+        edits.reset();
+        for _ in 0..8 {
+            assert!(edits.add_pen(large.clone()));
+        }
+        assert!(!edits.add_pen(large));
+        assert_eq!(edits.pen_points(), 8192);
+        edits.reset();
+        assert!(edits.pens.is_empty());
+    }
+    #[test]
+    #[ignore = "short optimized pen preview tessellation; no desktop or clipboard"]
+    fn pen_preview_geometry_cost() {
+        let trace = (0..1024)
+            .map(|i| [i * 2, 100 + (i % 2) * 3])
+            .collect::<Vec<_>>();
+        let pen = app_core::PenAnnotation::from_trace(&trace, 0).unwrap();
+        for count in [1, 8] {
+            let mut samples = Vec::new();
+            for _ in 0..50 {
+                let start = std::time::Instant::now();
+                for _ in 0..count {
+                    std::hint::black_box(
+                        pen_path(&pen, gpui::point(px(0.0), px(0.0)), 1.0).unwrap(),
+                    );
+                }
+                samples.push(start.elapsed());
+            }
+            samples.sort();
+            eprintln!(
+                "Pen preview: {} points, tessellation p95={:?}",
+                count * 1024,
+                samples[47]
+            );
+        }
+    }
+    #[test]
+    fn highlights_share_selection_color_resize_order_and_bounded_undo() {
+        let mut edits = RectEdits::default();
+        let area = PixelRegion {
+            x: 10,
+            y: 10,
+            width: 20,
+            height: 20,
+        };
+        edits.add_highlight(FrameAnnotation {
+            area,
+            color: 0xfacc15,
+        });
+        let selected = Selected::Highlight(0);
+        assert_eq!(edits.pick([20.0, 20.0], 1.0), Some(selected));
+        assert_eq!(Tool::shortcut("h"), Some(Tool::Highlight));
+        edits.set_color(selected, 0x22c55e);
+        assert_eq!(edits.color(selected), Some(0x22c55e));
+        edits.undo();
+        assert_eq!(edits.color(selected), Some(0xfacc15));
+        edits.transform_selected(
+            selected,
+            Some(ResizeHandle::Corner([true, true])),
+            [10.0, 10.0],
+            [100, 100],
+        );
+        assert_eq!(edits.bounds(selected).unwrap().width, 30);
+        edits.undo();
+        assert_eq!(edits.bounds(selected), Some(area));
+        edits.add_frame(FrameAnnotation {
+            area,
+            color: 0xef4444,
+        });
+        edits.shift_layer(selected, true);
+        assert_eq!(edits.order.last(), Some(&selected));
+        edits.delete_selected(selected);
+        assert!(edits.highlights.is_empty());
+        edits.undo();
+        assert_eq!(edits.order.last(), Some(&selected));
+        edits.add_highlight(FrameAnnotation {
+            area,
+            color: 0xfacc15,
+        });
+        edits.delete_selected(selected);
+        assert!(edits.order.contains(&Selected::Highlight(0)));
+        assert!(!edits.order.contains(&Selected::Highlight(1)));
+        assert_eq!(edits.ordered_annotations().len(), 2);
+        for _ in 0..100 {
+            edits.add_highlight(FrameAnnotation {
+                area,
+                color: 0xfacc15,
+            });
+        }
+        assert_eq!(edits.highlights.len(), 99);
+        edits.add_blur(area);
+        assert!(edits.blurs.is_empty());
+        edits.reset();
+        assert!(edits.highlights.is_empty());
+        assert!(edits.order.is_empty());
+    }
+    #[test]
+    fn annotation_order_tracks_creation_reorder_delete_and_undo() {
+        let mut edits = RectEdits::default();
+        let area = PixelRegion {
+            x: 10,
+            y: 10,
+            width: 40,
+            height: 40,
+        };
+        let shape = FrameAnnotation {
+            area,
+            color: 0xff0000,
+        };
+        edits.add_ellipse(shape);
+        edits.add_frame(shape);
+        edits.add_frame(shape);
+        assert_eq!(
+            edits.order,
+            vec![Selected::Ellipse(0), Selected::Frame(0), Selected::Frame(1)]
+        );
+        assert_eq!(edits.pick([10.0, 30.0], 1.0), Some(Selected::Frame(1)));
+        edits.shift_layer(Selected::Ellipse(0), true);
+        edits.shift_layer(Selected::Ellipse(0), true);
+        assert_eq!(edits.pick([10.0, 30.0], 1.0), Some(Selected::Ellipse(0)));
+        let before = edits.past.len();
+        edits.shift_layer(Selected::Ellipse(0), true);
+        assert_eq!(edits.past.len(), before);
+        edits.delete_selected(Selected::Frame(0));
+        assert_eq!(edits.order, vec![Selected::Frame(0), Selected::Ellipse(0)]);
+        assert_eq!(edits.ordered_annotations().len(), 2);
+        edits.undo();
+        assert_eq!(
+            edits.order,
+            vec![Selected::Frame(0), Selected::Frame(1), Selected::Ellipse(0)]
+        );
+        edits.undo();
+        assert_eq!(
+            edits.order,
+            vec![Selected::Frame(0), Selected::Ellipse(0), Selected::Frame(1)]
+        );
+        edits.redo();
+        assert_eq!(
+            edits.order,
+            vec![Selected::Frame(0), Selected::Frame(1), Selected::Ellipse(0)]
+        );
+        edits.add(area);
+        assert_eq!(edits.pick([10.0, 30.0], 1.0), Some(Selected::Redaction(0)));
+        assert!(edits.layer_target(Selected::Redaction(0), false).is_none());
+        edits.add_blur(area);
+        edits.add_pixelation(area);
+        assert!(edits.layer_target(Selected::Blur(0), true).is_none());
+        assert!(edits.layer_target(Selected::Pixelation(0), true).is_none());
+        edits.delete_selected(Selected::Redaction(0));
+        assert_eq!(edits.order.len(), 3);
+        edits.reset();
+        assert!(edits.order.is_empty());
+    }
     #[test]
     fn text_selection_transform_and_undo_share_the_prepared_mask() {
         let area = PixelRegion {
