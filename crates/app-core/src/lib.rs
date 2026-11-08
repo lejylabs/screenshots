@@ -8,6 +8,8 @@ pub use pen::{MAX_DOCUMENT_PEN_POINTS, MAX_PEN_POINTS, PenAnnotation};
 mod capture;
 pub use arrows::ArrowAnnotation;
 mod clipboard;
+mod export;
+pub use export::{ExportReport, export_saved_pngs};
 #[cfg(target_os = "windows")]
 mod desktop_events;
 #[cfg(target_os = "windows")]
@@ -38,7 +40,7 @@ pub use selection::{
 };
 pub use settings::CaptureSettings;
 
-pub use clipboard::{ImageClipboard, load_saved_png};
+pub use clipboard::{ImageClipboard, load_png_thumbnail, load_saved_png};
 
 #[cfg(target_os = "windows")]
 mod hotkey;

@@ -144,6 +144,8 @@ pub enum CaptureError {
     MemoryLimit,
     #[error("region is outside the display")]
     InvalidRegion,
+    #[error("Export canceled")]
+    Canceled,
     #[error("{0}")]
     Backend(String),
     #[error(transparent)]
@@ -506,6 +508,25 @@ mod tests {
         assert!(export_saved_png(&shot.png_path, &shot.png_path).is_err());
         assert_eq!(fs::read(&shot.png_path).unwrap(), original);
         let recovered = dir.join("recovered.png");
+        let canceled = std::cell::Cell::new(false);
+        let canceled_path = dir.join("canceled.png");
+        let result = write_output_checked(
+            &canceled_path,
+            |file| {
+                file.write_all(&original)?;
+                canceled.set(true);
+                Ok(())
+            },
+            || {
+                if canceled.get() {
+                    Err(CaptureError::Canceled)
+                } else {
+                    Ok(())
+                }
+            },
+        );
+        assert!(matches!(result, Err(CaptureError::Canceled)));
+        assert!(!canceled_path.exists());
         different.save_png_as(&recovered).unwrap();
         assert_eq!(
             image::open(&recovered).unwrap().into_rgba8(),
@@ -615,7 +636,32 @@ impl CapturedImage {
 
 /// Export an already saved capture without decoding, allocating another frame or encoding again.
 pub fn export_saved_png(source: &Path, destination: &Path) -> Result<(), CaptureError> {
+    export_saved_png_cancellable(source, destination, || false)
+}
+
+pub(crate) fn export_saved_png_cancellable(
+    source: &Path,
+    destination: &Path,
+    cancelled: impl Fn() -> bool,
+) -> Result<(), CaptureError> {
     use std::io::Read;
+    let started = Instant::now();
+    let check = || {
+        if cancelled() {
+            return Err(CaptureError::Canceled);
+        }
+        if started.elapsed() > std::time::Duration::from_secs(60) {
+            return Err(CaptureError::Backend(
+                "PNG export exceeded its 60 second deadline".into(),
+            ));
+        }
+        Ok(())
+    };
+    check()?;
+    if destination.try_exists()? {
+        return Err(std::io::Error::from(std::io::ErrorKind::AlreadyExists).into());
+    }
+    check()?;
     let mut source = fs::File::open(source)?;
     let mut signature = [0; 8];
     source.read_exact(&mut signature)?;
@@ -624,23 +670,46 @@ pub fn export_saved_png(source: &Path, destination: &Path) -> Result<(), Capture
             "The source file is not a PNG image".into(),
         ));
     }
-    write_output(destination, |file| {
-        file.write_all(&signature)?;
-        // Bounded streaming also handles a source modified by another process.
-        let limit = MAX_CAPTURE_BYTES + 16 * 1024 * 1024;
-        let copied = std::io::copy(&mut source.take(limit + 1), file)?;
-        if copied > limit {
-            return Err(CaptureError::Backend(
-                "The PNG source file exceeds the export limit".into(),
-            ));
-        }
-        Ok(())
-    })
+    write_output_checked(
+        destination,
+        |file| {
+            file.write_all(&signature)?;
+            // Bounded streaming also handles a source modified by another process.
+            let limit = MAX_CAPTURE_BYTES + 16 * 1024 * 1024;
+            let mut source = source.take(limit + 1);
+            let mut buffer = [0u8; 64 * 1024];
+            let mut copied = 0;
+            loop {
+                check()?;
+                let read = source.read(&mut buffer)?;
+                if read == 0 {
+                    break;
+                }
+                copied += read as u64;
+                if copied > limit {
+                    return Err(CaptureError::Backend(
+                        "The PNG source file exceeds the export limit".into(),
+                    ));
+                }
+                file.write_all(&buffer[..read])?;
+            }
+            Ok(())
+        },
+        check,
+    )
 }
 
 fn write_output(
     destination: &Path,
     write: impl FnOnce(&mut fs::File) -> Result<(), CaptureError>,
+) -> Result<(), CaptureError> {
+    write_output_checked(destination, write, || Ok(()))
+}
+
+fn write_output_checked(
+    destination: &Path,
+    write: impl FnOnce(&mut fs::File) -> Result<(), CaptureError>,
+    check: impl Fn() -> Result<(), CaptureError>,
 ) -> Result<(), CaptureError> {
     let parent = destination
         .parent()
@@ -656,6 +725,7 @@ fn write_output(
         write(&mut file)?;
         file.sync_all()?;
         drop(file);
+        check()?;
         publish_png(&temporary, destination)?;
         Ok(())
     })();

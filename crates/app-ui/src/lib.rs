@@ -107,6 +107,10 @@ pub struct SpikeShell {
     history_has_more: bool,
     history_entries: Vec<app_core::HistoryEntry>,
     history_selected: Vec<i64>,
+    history_preview: Option<(i64, Arc<gpui::RenderImage>)>,
+    history_preview_cancel: Option<Arc<std::sync::atomic::AtomicBool>>,
+    history_preview_status: String,
+    history_export_cancel: Option<Arc<std::sync::atomic::AtomicBool>>,
     history_status: String,
     list_status: String,
     capture_status: String,
@@ -267,11 +271,14 @@ impl SpikeShell {
             cx.defer(close_application);
             return;
         }
-        if !self.resident || self.switching_graphics || self.capturing {
+        if !self.resident
+            || self.switching_graphics
+            || (self.capturing && self.history_preview_cancel.is_none())
+        {
             return;
         }
         self.preview_active = false;
-        self.hide_history();
+        self.hide_history(cx);
         self.last_render = None;
         let mut windows: Vec<AnyWindowHandle> = self.overlays.drain(..).map(Into::into).collect();
         windows.extend(self.control.take());
@@ -437,6 +444,10 @@ impl SpikeShell {
             history_has_more: false,
             history_entries: Vec::new(),
             history_selected: Vec::new(),
+            history_preview: None,
+            history_preview_cancel: None,
+            history_preview_status: String::new(),
+            history_export_cancel: None,
             history_status: String::new(),
             list_status: String::new(),
             capture_status: "Ready".into(),
@@ -640,7 +651,8 @@ impl SpikeShell {
         cx.notify();
     }
 
-    fn hide_history(&mut self) {
+    fn hide_history(&mut self, cx: &mut Context<Self>) {
+        self.clear_history_preview(cx);
         self.history_visible = false;
         self.history_query.clear();
         self.history_search_input = None;
@@ -670,6 +682,7 @@ impl SpikeShell {
         self.restart_history(cx);
     }
     fn restart_history(&mut self, cx: &mut Context<Self>) {
+        self.clear_history_preview(cx);
         self.history_revision = self.history_revision.wrapping_add(1);
         if let Some(cancel) = &self.history_cancel {
             cancel.store(true, std::sync::atomic::Ordering::Relaxed);
@@ -696,6 +709,7 @@ impl SpikeShell {
         };
         self.history_selected.clear();
         self.history_revision = self.history_revision.wrapping_add(1);
+        self.clear_history_preview(cx);
         self.history_loading = true;
         self.history_refresh_pending = false;
         let filter = self.history_filter;
@@ -1558,6 +1572,106 @@ impl SpikeShell {
         cx.notify();
     }
 
+    fn clear_history_preview(&mut self, cx: &mut Context<Self>) {
+        if let Some(cancel) = &self.history_preview_cancel {
+            cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+        self.history_preview_status.clear();
+        if let Some((_, render)) = self.history_preview.take() {
+            if let Some(control) = self.control {
+                cx.defer(move |cx| {
+                    control
+                        .update(cx, |_, window, _| {
+                            window.drop_image(render).ok();
+                        })
+                        .ok();
+                });
+            }
+        }
+    }
+
+    fn preview_history_image(&mut self, id: i64, revision: u64, cx: &mut Context<Self>) {
+        if self.quitting || !self.history_visible || self.history_revision != revision {
+            return;
+        }
+        if self
+            .history_preview
+            .as_ref()
+            .is_some_and(|(current, _)| *current == id)
+        {
+            self.clear_history_preview(cx);
+            cx.notify();
+            return;
+        }
+        if self.capturing
+            || self.copying
+            || self.saving
+            || self.history_loading
+            || self.history_mutating
+            || self.history_preview_cancel.is_some()
+            || self.capture_delay.is_some()
+            || self.editor.is_some()
+            || self.editor_closing
+        {
+            return;
+        }
+        let Some(path) = self
+            .history_entries
+            .iter()
+            .find(|entry| entry.id == id)
+            .map(|entry| entry.path.clone())
+        else {
+            return;
+        };
+        self.clear_history_preview(cx);
+        let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        self.history_preview_cancel = Some(cancel.clone());
+        self.history_preview_status = "Loading preview…".into();
+        self.capturing = true;
+        cx.spawn(async move |this, cx| {
+            let flag = cancel.clone();
+            let result = cx
+                .background_spawn(async move {
+                    app_core::load_png_thumbnail(&path, || {
+                        flag.load(std::sync::atomic::Ordering::Relaxed)
+                    })
+                    .map(|mut pixels| {
+                        for pixel in pixels.pixels_mut() {
+                            pixel.0.swap(0, 2);
+                        }
+                        Arc::new(gpui::RenderImage::new(vec![image::Frame::new(pixels)]))
+                    })
+                    .map_err(|error| format!("{error:#}"))
+                })
+                .await;
+            this.update(cx, |this, cx| {
+                this.capturing = false;
+                this.history_preview_cancel = None;
+                if !this.quitting
+                    && this.history_visible
+                    && this.history_revision == revision
+                    && !cancel.load(std::sync::atomic::Ordering::Relaxed)
+                {
+                    match result {
+                        Ok(render) => {
+                            this.history_preview = Some((id, render));
+                            this.history_preview_status =
+                                "Preview only · Image and clipboard unchanged".into();
+                        }
+                        Err(error) => {
+                            this.history_preview_status = format!("Preview unavailable: {error}")
+                        }
+                    }
+                }
+                this.finish_quit_if_idle(cx);
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+        cx.notify();
+    }
+
     fn copy_history_capture(&mut self, path: PathBuf, cx: &mut Context<Self>) {
         if self.capturing
             || self.capture_delay.is_some()
@@ -1849,6 +1963,139 @@ impl SpikeShell {
                     };
                 }
                 this.finish_history_mutation(refresh, cx);
+            })
+            .ok();
+        })
+        .detach();
+        cx.notify();
+    }
+
+    fn finish_history_export(&mut self, status: String, revision: u64, cx: &mut Context<Self>) {
+        self.saving = false;
+        self.history_export_cancel = None;
+        self.save_status = status.clone();
+        if self.history_visible && self.history_revision == revision {
+            self.history_action_status = status;
+        }
+        self.finish_quit_if_idle(cx);
+        cx.notify();
+    }
+
+    fn cancel_history_export(&mut self, cx: &mut Context<Self>) {
+        if let Some(cancel) = &self.history_export_cancel {
+            cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+            self.save_status = "Stopping export… Completed copies are kept.".into();
+            cx.notify();
+        }
+    }
+
+    fn begin_history_export(
+        &mut self,
+        sources: Vec<PathBuf>,
+        directory: PathBuf,
+        revision: u64,
+        cx: &mut Context<Self>,
+    ) {
+        debug_assert!(self.saving && self.history_export_cancel.is_none());
+        let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        self.history_export_cancel = Some(cancel.clone());
+        self.save_status = format!("Exporting {} selected images…", sources.len());
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_spawn(async move {
+                    app_core::export_saved_pngs(&sources, &directory, || {
+                        cancel.load(std::sync::atomic::Ordering::Relaxed)
+                    })
+                })
+                .await;
+            this.update(cx, |this, cx| {
+                let status = match result {
+                    Ok(report) => {
+                        let mut status = format!(
+                            "Exported {} · Failed {} · Not exported {}. Originals kept.",
+                            report.exported,
+                            report.failures.len(),
+                            report.not_exported
+                        );
+                        for (path, error) in report.failures.iter().take(3) {
+                            status.push_str(&format!(
+                                "\n{}: {error}",
+                                path.file_name().unwrap_or_default().to_string_lossy()
+                            ));
+                        }
+                        if report.failures.len() > 3 {
+                            status.push_str("\nOnly the first three errors are shown.");
+                        }
+                        status
+                    }
+                    Err(error) => format!("Could not export selected images: {error:#}"),
+                };
+                this.finish_history_export(status, revision, cx);
+            })
+            .ok();
+        })
+        .detach();
+        cx.notify();
+    }
+
+    fn export_selected_history(&mut self, revision: u64, cx: &mut Context<Self>) {
+        if self.quitting
+            || !self.history_visible
+            || self.history_revision != revision
+            || self.history_loading
+            || self.history_mutating
+            || self.capturing
+            || self.copying
+            || self.saving
+            || self.settings_saving
+            || self.capture_delay.is_some()
+            || self.history_selected.is_empty()
+            || self.history_selected.len() > 20
+        {
+            return;
+        }
+        let sources: Vec<_> = self
+            .history_entries
+            .iter()
+            .filter(|entry| self.history_selected.contains(&entry.id))
+            .map(|entry| entry.path.clone())
+            .collect();
+        if sources.len() != self.history_selected.len() {
+            return;
+        }
+        self.saving = true;
+        let dialog = cx.prompt_for_paths(gpui::PathPromptOptions {
+            files: false,
+            directories: true,
+            multiple: false,
+            prompt: Some("Export selected PNGs to a folder (existing files are kept)".into()),
+        });
+        cx.spawn(async move |this, cx| {
+            let selection = dialog.await;
+            this.update(cx, |this, cx| {
+                if this.quitting || !this.history_visible || this.history_revision != revision {
+                    this.finish_history_export(
+                        "Export canceled before copying. No files exported.".into(),
+                        revision,
+                        cx,
+                    );
+                    return;
+                }
+                match selection {
+                    Ok(Ok(Some(mut paths))) if paths.len() == 1 => {
+                        this.begin_history_export(sources, paths.remove(0), revision, cx)
+                    }
+                    other => {
+                        let status = match other {
+                            Ok(Ok(None)) => "Export canceled. No files exported.".into(),
+                            Ok(Ok(Some(_))) => {
+                                "Choose one export folder. No files exported.".into()
+                            }
+                            error => format!("Export folder selection failed: {error:?}"),
+                        };
+                        this.finish_history_export(status, revision, cx);
+                    }
+                }
             })
             .ok();
         })
@@ -2541,6 +2788,16 @@ impl Render for SpikeShell {
                     .child(div().text_sm().child(self.clipboard_status.clone()))
                     .child(div().text_sm().child(self.save_status.clone())),
             )
+            .when(self.history_export_cancel.is_some(), |view| {
+                view.child(capture_button(
+                    "cancel-history-export",
+                    "Cancel export",
+                    self.history_export_cancel
+                        .as_ref()
+                        .is_some_and(|flag| flag.load(std::sync::atomic::Ordering::Relaxed)),
+                    cx.listener(|this, _, _, cx| this.cancel_history_export(cx)),
+                ))
+            })
             .child(
                 div()
                     .flex()
@@ -2641,7 +2898,7 @@ impl Render for SpikeShell {
                 false,
                 cx.listener(|this, _, _, cx| {
                     if this.history_visible {
-                        this.hide_history();
+                        this.hide_history(cx);
                     } else {
                         this.history_visible = true;
                         this.refresh_history(None, cx);
@@ -2718,9 +2975,11 @@ impl Render for SpikeShell {
                                 .child("Removing an entry keeps the image file."),
                         )
                         .child(div().text_sm().child(self.history_action_status.clone()))
+                        .child(div().text_sm().child(self.history_preview_status.clone()))
                         .child(
                             div()
                                 .flex()
+                                .flex_wrap()
                                 .gap_2()
                                 .child(capture_button(
                                     "select-history-page",
@@ -2745,6 +3004,15 @@ impl Render for SpikeShell {
                                             this.history_selected.clear();
                                             cx.notify();
                                         }
+                                    }),
+                                ))
+                                .child(capture_button(
+                                    "export-history-selection",
+                                    "Export selected…",
+                                    busy || self.history_loading
+                                        || self.history_selected.is_empty(),
+                                    cx.listener(move |this, _, _, cx| {
+                                        this.export_selected_history(revision, cx)
                                     }),
                                 ))
                                 .child(capture_button(
@@ -2779,6 +3047,11 @@ impl Render for SpikeShell {
                                             let copy_path = entry.path.clone();
                                             let edit_path = entry.path.clone();
                                             let entry_id = entry.id;
+                                            let preview = self
+                                                .history_preview
+                                                .as_ref()
+                                                .filter(|(id, _)| *id == entry_id)
+                                                .map(|(_, render)| render.clone());
                                             div()
                                                 .id(("history-entry", index))
                                                 .flex_none()
@@ -2788,6 +3061,9 @@ impl Render for SpikeShell {
                                                 .gap_1()
                                                 .rounded_md()
                                                 .bg(rgb(0x242b36))
+                                                .children(preview.clone().map(|render| {
+                                                    img(render).max_w(px(400.0)).max_h(px(240.0))
+                                                }))
                                                 .child(capture_button(
                                                     "select-history-entry",
                                                     if self.history_selected.contains(&entry_id) {
@@ -2824,7 +3100,23 @@ impl Render for SpikeShell {
                                                 .child(
                                                     div()
                                                         .flex()
+                                                        .flex_wrap()
                                                         .gap_2()
+                                                        .child(capture_button(
+                                                            "preview-history-file",
+                                                            if preview.is_some() {
+                                                                "Hide preview"
+                                                            } else {
+                                                                "Preview"
+                                                            },
+                                                            preview.is_none()
+                                                                && (busy || self.history_loading),
+                                                            cx.listener(move |this, _, _, cx| {
+                                                                this.preview_history_image(
+                                                                    entry_id, revision, cx,
+                                                                )
+                                                            }),
+                                                        ))
                                                         .child(capture_button(
                                                             "open-history-file",
                                                             "Open",
@@ -3286,6 +3578,8 @@ fn close_application(cx: &mut App) {
         let entity = cx.global::<ResidentController>().0.clone();
         let busy = entity.update(cx, |this, cx| {
             this.cancel_capture_delay(cx);
+            this.clear_history_preview(cx);
+            this.cancel_history_export(cx);
             this.close_editor(cx);
             this.quitting = true;
             let busy = this.capturing
@@ -3311,6 +3605,8 @@ fn close_application(cx: &mut App) {
             let waiting = control
                 .update(cx, |this, _, cx| {
                     this.cancel_capture_delay(cx);
+                    this.clear_history_preview(cx);
+                    this.cancel_history_export(cx);
                     this.quitting = true;
                     let busy = this.capturing
                         || this.copying
@@ -3627,10 +3923,14 @@ mod tests {
         std::fs::create_dir_all(&root).unwrap();
         let capture = root.join("capture.png");
         let imported = root.join("import.png");
-        image::RgbaImage::new(2, 3).save(&capture).unwrap();
+        image::RgbaImage::from_pixel(2, 3, image::Rgba([7, 20, 110, 255]))
+            .save(&capture)
+            .unwrap();
         image::RgbaImage::new(3, 2).save(&imported).unwrap();
         let capture_bytes = std::fs::read(&capture).unwrap();
         let import_bytes = std::fs::read(&imported).unwrap();
+        let export_directory = root.join("exported");
+        std::fs::create_dir_all(&export_directory).unwrap();
         let database = root.join("history.sqlite3");
         app_core::record_saved_capture(&database, &capture).unwrap();
         app_core::import_capture_files(&database, &[imported.clone()]).unwrap();
@@ -3683,7 +3983,7 @@ mod tests {
                                             .history_cancel
                                             .clone()
                                             .ok_or("Missing active history cancellation")?;
-                                        this.hide_history();
+                                        this.hide_history(cx);
                                         this.refresh_history(None, cx);
                                         if !cancel.load(std::sync::atomic::Ordering::Relaxed)
                                             || this.history_refresh_pending
@@ -3734,6 +4034,7 @@ mod tests {
                             loop {
                                 if controller.update(cx, |this, _| {
                                     !this.history_loading
+                                        && !this.capturing
                                         && !this.history_mutating
                                         && !this.history_refresh_pending
                                         && !this.refreshing
@@ -3757,6 +4058,9 @@ mod tests {
                                     if this.history_visible
                                         || !this.history_entries.is_empty()
                                         || !this.history_status.is_empty()
+                                        || this.history_preview.is_some()
+                                        || this.history_preview_cancel.is_some()
+                                        || !this.history_preview_status.is_empty()
                                     {
                                         return Err(
                                             "A hidden history request applied stale rows/status"
@@ -3820,11 +4124,63 @@ mod tests {
                                                 .into(),
                                         );
                                     }
+                                    this.preview_history_image(id, revision, cx);
+                                    if !this.capturing || this.history_preview_cancel.is_none() {
+                                        return Err("History preview did not start a bounded image job".into());
+                                    }
+                                    let active = this.history_preview_cancel.clone().unwrap();
+                                    this.preview_history_image(id, revision, cx);
+                                    if !Arc::ptr_eq(&active, this.history_preview_cancel.as_ref().unwrap()) {
+                                        return Err("Duplicate preview created another job".into());
+                                    }
                                 }
                                 Ok::<_, String>(())
                             })?;
+                            if phase == 2 {
+                                controller.update(cx, |this, cx| {
+                                    this.preview_history_image(this.history_entries[0].id, this.history_revision, cx);
+                                });
+                                let started = std::time::Instant::now();
+                                while controller.update(cx, |this, _| this.capturing) {
+                                    if started.elapsed().as_secs() > 8 {
+                                        return Err("History preview timed out".into());
+                                    }
+                                    cx.background_executor().timer(std::time::Duration::from_millis(20)).await;
+                                }
+                                controller.update(cx, |this, cx| {
+                                    let (id, render) = this.history_preview.as_ref().ok_or("History preview was not published")?;
+                                    let bytes = render.as_bytes(0).ok_or("History preview has no pixel data")?;
+                                    if bytes.len() != 2 * 3 * 4 || bytes[..4] != [110,20,7,255] {
+                                        return Err("Preview resized a small source or lost BGRA color order".into());
+                                    }
+                                    let id = *id;
+                                    let released = Arc::downgrade(render);
+                                    this.preview_history_image(id, this.history_revision, cx);
+                                    if this.history_preview.is_some() || released.upgrade().is_some()
+                                        || this.history_preview_cancel.is_some() || !this.history_preview_status.is_empty() {
+                                        return Err("Hide preview retained its image/job/status".into());
+                                    }
+                                    Ok::<_, String>(())
+                                })?;
+                                controller.update(cx, |this, cx| {
+                                    this.saving = true;
+                                    this.begin_history_export(vec![this.history_entries[0].path.clone()], export_directory.clone(), this.history_revision, cx);
+                                });
+                                let started = std::time::Instant::now();
+                                while controller.update(cx, |this, _| this.saving) {
+                                    if started.elapsed().as_secs() > 8 { return Err("Selected export timed out".into()); }
+                                    cx.background_executor().timer(std::time::Duration::from_millis(20)).await;
+                                }
+                                controller.update(cx, |this, _| {
+                                    if this.history_export_cancel.is_some() || !this.save_status.starts_with("Exported 1")
+                                        || this.last_saved.is_some() || this.last_capture.is_some() {
+                                        return Err("Selected export lost its result or changed the last capture".into());
+                                    }
+                                    Ok::<_, String>(())
+                                })?;
+                            }
                         }
-                        controller.update(cx, |this, _| this.hide_history());
+                        controller.update(cx, |this, cx| this.hide_history(cx));
                         Ok(())
                     }
                     .await;
@@ -3841,6 +4197,11 @@ mod tests {
             .unwrap();
         assert_eq!(std::fs::read(&capture).unwrap(), capture_bytes);
         assert_eq!(std::fs::read(&imported).unwrap(), import_bytes);
+        assert_eq!(
+            std::fs::read(root.join("exported/capture.png")).unwrap(),
+            capture_bytes
+        );
+        assert_eq!(std::fs::read_dir(root.join("exported")).unwrap().count(), 1);
         let remaining =
             app_core::capture_history_page(&root.join("history.sqlite3"), None).unwrap();
         assert_eq!(remaining.len(), 1);
