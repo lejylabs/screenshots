@@ -3,7 +3,7 @@
 mod arrows;
 mod layers;
 mod pen;
-pub use layers::DrawAnnotation;
+pub use layers::{DrawAnnotation, HighlightAnnotation};
 pub use pen::{MAX_DOCUMENT_PEN_POINTS, MAX_PEN_POINTS, PenAnnotation};
 mod capture;
 pub use arrows::ArrowAnnotation;

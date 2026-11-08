@@ -1,6 +1,6 @@
 use crate::caption::{CaptionFonts, CaptionInput, TextAsset};
 use crate::{CloseOverlay, SpikeShell, capture_button};
-use app_core::{ArrowAnnotation, CapturedImage, FrameAnnotation, PixelRegion};
+use app_core::{ArrowAnnotation, CapturedImage, FrameAnnotation, HighlightAnnotation, PixelRegion};
 use gpui::{
     App, Context, FocusHandle, IntoElement, KeyBinding, Render, Window, actions, div, img,
     prelude::*, px, rgb, rgba,
@@ -27,12 +27,13 @@ fn pen_path(
             origin.y + px(point[1] * scale),
         )
     };
-    let mut builder =
-        gpui::PathBuilder::stroke(px(3.0 * scale)).with_style(gpui::PathStyle::Stroke(
+    let mut builder = gpui::PathBuilder::stroke(px(f32::from(pen.width) * scale)).with_style(
+        gpui::PathStyle::Stroke(
             gpui::StrokeOptions::default()
-                .with_line_width(3.0 * scale)
+                .with_line_width(f32::from(pen.width) * scale)
                 .with_miter_limit(1.0),
-        ));
+        ),
+    );
     builder.move_to(map(first));
     for point in positions {
         builder.line_to(map(point));
@@ -102,7 +103,7 @@ pub(super) fn bind_keys(cx: &mut App) {
 struct EditState {
     regions: Vec<PixelRegion>,
     frames: Vec<FrameAnnotation>,
-    highlights: Vec<FrameAnnotation>,
+    highlights: Vec<HighlightAnnotation>,
     pens: Vec<app_core::PenAnnotation>,
     arrows: Vec<ArrowAnnotation>,
     ellipses: Vec<FrameAnnotation>,
@@ -111,6 +112,7 @@ struct EditState {
     texts: Vec<Caption>,
     order: Vec<Selected>,
     crop: Option<PixelRegion>,
+    last_number: u16,
 }
 #[derive(Default)]
 struct RectEdits {
@@ -148,6 +150,15 @@ enum ResizeHandle {
     ArrowEnd,
 }
 impl EditState {
+    fn stroke_width(&self, selected: Selected) -> Option<u8> {
+        match selected {
+            Selected::Pen(i) => self.pens.get(i).map(|mark| mark.width),
+            Selected::Frame(i) => self.frames.get(i).map(|mark| mark.width),
+            Selected::Ellipse(i) => self.ellipses.get(i).map(|mark| mark.width),
+            Selected::Arrow(i) => self.arrows.get(i).map(|mark| mark.width),
+            _ => None,
+        }
+    }
     fn pen_points(&self) -> usize {
         self.pens.iter().map(|pen| pen.points.len()).sum()
     }
@@ -363,46 +374,41 @@ impl EditState {
             let w = area.width as f32;
             let h = area.height as f32;
             let margin = tolerance
-                + if matches!(selected, Selected::Pen(_)) {
-                    1.5
-                } else {
-                    0.0
+                + match *selected {
+                    Selected::Pen(index) => f32::from(self.pens[index].width) / 2.0,
+                    Selected::Arrow(index) => f32::from(self.arrows[index].width) * 7.0 / 3.0,
+                    _ => 0.0,
                 };
             if x < -margin || y < -margin || x > w + margin || y > h + margin {
                 return false;
             }
             match *selected {
-                Selected::Pen(i) => self.pens[i].distance(point) <= 1.5 + tolerance,
+                Selected::Pen(i) => {
+                    self.pens[i].distance(point) <= f32::from(self.pens[i].width) / 2.0 + tolerance
+                }
                 Selected::Redaction(_)
                 | Selected::Pixelation(_)
                 | Selected::Blur(_)
                 | Selected::Text(_)
                 | Selected::Highlight(_) => x >= 0.0 && y >= 0.0 && x < w && y < h,
-                Selected::Frame(_) => x.min(w - x).min(y.min(h - y)) <= 3.0 + tolerance,
-                Selected::Ellipse(_) => {
+                Selected::Frame(i) => {
+                    x.min(w - x).min(y.min(h - y)) <= f32::from(self.frames[i].width) + tolerance
+                }
+                Selected::Ellipse(i) => {
+                    let width = f32::from(self.ellipses[i].width);
                     let rx = w / 2.0;
                     let ry = h / 2.0;
                     let outer = ((x - rx) / (rx + tolerance)).powi(2)
                         + ((y - ry) / (ry + tolerance)).powi(2);
-                    let inner = if rx > 3.0 + tolerance && ry > 3.0 + tolerance {
-                        ((x - rx) / (rx - 3.0 - tolerance)).powi(2)
-                            + ((y - ry) / (ry - 3.0 - tolerance)).powi(2)
+                    let inner = if rx > width + tolerance && ry > width + tolerance {
+                        ((x - rx) / (rx - width - tolerance)).powi(2)
+                            + ((y - ry) / (ry - width - tolerance)).powi(2)
                     } else {
                         2.0
                     };
                     outer <= 1.0 && inner >= 1.0
                 }
-                Selected::Arrow(i) => {
-                    let item = self.arrows[i];
-                    let a = item.start.map(|v| v as f32 + 0.5);
-                    let b = item.end.map(|v| v as f32 + 0.5);
-                    let d = [b[0] - a[0], b[1] - a[1]];
-                    let t = (((point[0] - a[0]) * d[0] + (point[1] - a[1]) * d[1])
-                        / (d[0] * d[0] + d[1] * d[1]).max(1.0))
-                    .clamp(0.0, 1.0);
-                    (point[0] - a[0] - t * d[0]).hypot(point[1] - a[1] - t * d[1])
-                        <= 7.0 + tolerance
-                }
+                Selected::Arrow(i) => self.arrows[i].hit_test(point, tolerance),
             }
         })
     }
@@ -474,7 +480,7 @@ impl RectEdits {
             false
         }
     }
-    fn add_highlight(&mut self, highlight: FrameAnnotation) {
+    fn add_highlight(&mut self, highlight: HighlightAnnotation) {
         if self.regions.len()
             + self.frames.len()
             + self.highlights.len()
@@ -496,6 +502,38 @@ impl RectEdits {
         if let Some((from, to)) = self.layer_target(selected, forward) {
             self.checkpoint();
             self.order.swap(from, to);
+        }
+    }
+    fn set_highlight_opacity(&mut self, selected: Selected, opacity: u8) {
+        let Selected::Highlight(index) = selected else {
+            return;
+        };
+        if opacity == 0
+            || self
+                .highlights
+                .get(index)
+                .is_none_or(|mark| mark.opacity == opacity)
+        {
+            return;
+        }
+        self.checkpoint();
+        self.highlights[index].opacity = opacity;
+    }
+    fn set_stroke_width(&mut self, selected: Selected, width: u8) {
+        if !(1..=12).contains(&width)
+            || self
+                .stroke_width(selected)
+                .is_none_or(|previous| previous == width)
+        {
+            return;
+        }
+        self.checkpoint();
+        match selected {
+            Selected::Pen(i) => self.pens[i].width = width,
+            Selected::Frame(i) => self.frames[i].width = width,
+            Selected::Ellipse(i) => self.ellipses[i].width = width,
+            Selected::Arrow(i) => self.arrows[i].width = width,
+            _ => unreachable!(),
         }
     }
     fn set_text(&mut self, text: Caption, index: Option<usize>) {
@@ -520,6 +558,24 @@ impl RectEdits {
             let index = self.texts.len();
             self.order.push(Selected::Text(index));
             self.texts.push(text);
+        }
+    }
+    fn add_number(&mut self, caption: Caption) -> bool {
+        let Some(number) = self.last_number.checked_add(1) else {
+            return false;
+        };
+        if self.order.len() + self.regions.len() + self.pixelations.len() + self.blurs.len() >= 100
+        {
+            return false;
+        }
+        self.set_text(caption, None);
+        self.last_number = number;
+        true
+    }
+    fn restart_numbers(&mut self) {
+        if self.last_number != 0 {
+            self.checkpoint();
+            self.last_number = 0;
         }
     }
     fn set_color(&mut self, selected: Selected, color: u32) {
@@ -757,12 +813,14 @@ impl RectEdits {
         self.texts.clear();
         self.order.clear();
         self.crop = None;
+        self.last_number = 0;
         self.past.clear();
         self.undone.clear();
     }
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Tool {
+    Number,
     Pen,
     Highlight,
     Text,
@@ -787,6 +845,7 @@ impl Tool {
             "p" => Some(Self::Pixelate),
             "b" => Some(Self::Blur),
             "t" => Some(Self::Text),
+            "n" => Some(Self::Number),
             "h" => Some(Self::Highlight),
             "d" => Some(Self::Pen),
             _ => None,
@@ -819,6 +878,8 @@ pub(super) struct RedactionEditor {
     selected: Option<Selected>,
     resize_handle: Option<ResizeHandle>,
     frame_color: u32,
+    highlight_opacity: u8,
+    stroke_width: u8,
     zoom: Option<f32>,
     pan: [f32; 2],
     pixelation: Option<(Arc<app_core::PixelationGrid>, Arc<gpui::RenderImage>)>,
@@ -919,7 +980,10 @@ impl RedactionEditor {
         }
         self.sample_pen(pen_point(position, scale, image), true);
         self.drag = None;
-        if let Some(pen) = app_core::PenAnnotation::from_trace(&self.pen_trace, self.frame_color) {
+        if let Some(mut pen) =
+            app_core::PenAnnotation::from_trace(&self.pen_trace, self.frame_color)
+        {
+            pen.width = self.stroke_width;
             let index = self.edits.pens.len();
             if self.edits.add_pen(pen) {
                 self.selected = Some(Selected::Pen(index));
@@ -1006,16 +1070,56 @@ impl RedactionEditor {
         let Some(draft) = &self.text_draft else {
             return;
         };
-        let Some(fonts) = cx.try_global::<CaptionFonts>().map(|fonts| fonts.0.clone()) else {
-            self.text_error = Some("Native text renderer is unavailable".into());
-            cx.notify();
-            return;
-        };
         let (text, position, editing) = (
             draft.input.read(cx).content.clone(),
             draft.position,
             draft.editing,
         );
+        self.prepare_text(text, position, editing, window, cx);
+    }
+    fn begin_number(&mut self, position: [u32; 2], window: &mut Window, cx: &mut Context<Self>) {
+        if self.text_draft.is_some() || self.text_loading {
+            return;
+        }
+        if self.pixelation_loading || self.blur_loading {
+            self.text_error =
+                Some("Wait for the current preview preparation, then click again.".into());
+            cx.notify();
+            return;
+        }
+        let Some(number) = self.edits.last_number.checked_add(1) else {
+            self.text_error = Some("Number limit reached. Choose Restart numbering.".into());
+            cx.notify();
+            return;
+        };
+        if self.edits.order.len()
+            + self.edits.regions.len()
+            + self.edits.pixelations.len()
+            + self.edits.blurs.len()
+            >= 100
+        {
+            self.text_error = Some("The document already has 100 marks".into());
+            cx.notify();
+            return;
+        }
+        self.tool = Tool::Number;
+        self.drag = None;
+        self.prepare_text(format!("{number}."), position, None, window, cx);
+    }
+    fn prepare_text(
+        &mut self,
+        text: String,
+        position: [u32; 2],
+        editing: Option<usize>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(fonts) = cx.try_global::<CaptionFonts>().map(|fonts| fonts.0.clone()) else {
+            self.text_error = Some("Native text renderer is unavailable".into());
+            cx.notify();
+            return;
+        };
+        let number = self.tool == Tool::Number && self.text_draft.is_none();
         let (font_size, color) = (self.text_size, self.frame_color);
         let cancelled = self.effects_cancel.clone();
         let text_cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -1023,10 +1127,12 @@ impl RedactionEditor {
         self.text_job = self.text_job.wrapping_add(1);
         let job = self.text_job;
         let owner = window.window_handle().downcast::<Self>().unwrap();
-        draft.input.update(cx, |input, cx| {
-            input.enabled = false;
-            cx.notify();
-        });
+        if let Some(draft) = &self.text_draft {
+            draft.input.update(cx, |input, cx| {
+                input.enabled = false;
+                cx.notify();
+            });
+        }
         self.text_loading = true;
         self.text_error = None;
         cx.notify();
@@ -1055,7 +1161,12 @@ impl RedactionEditor {
                             let area=PixelRegion{x:position[0].min(this.source.width-width),y:position[1].min(this.source.height-height),width,height};
                             let asset=Arc::new(asset);
                             let selected=editing.unwrap_or(this.edits.texts.len());
-                            this.edits.set_text(Caption{area,asset:asset.clone()},editing);
+                            if number {
+                                if !this.edits.add_number(Caption{area,asset:asset.clone()}) {
+                                    this.text_error=Some("The document cannot accept another number".into());
+                                    this.prepare_pending_effect(cx);cx.notify();return;
+                                }
+                            } else {this.edits.set_text(Caption{area,asset:asset.clone()},editing);}
                             this.text_assets.push(asset);this.text_draft=None;this.selected=Some(Selected::Text(selected));if this.tool==Tool::Text {this.tool=Tool::Select;}window.focus(&this.focus,cx);
                         }
                     }
@@ -1143,6 +1254,7 @@ impl RedactionEditor {
             self.commit_text(window, cx);
         }
         if !self.text_loading
+            && self.edits.pens.is_empty()
             && self
                 .edits
                 .texts
@@ -1170,10 +1282,12 @@ impl RedactionEditor {
                 height: self.source.height.min(64),
             };
             self.edits.add_frame(FrameAnnotation {
+                width: 3,
                 area,
                 color: 0x22c55e,
             });
             self.edits.add_ellipse(FrameAnnotation {
+                width: 3,
                 area,
                 color: 0xef4444,
             });
@@ -1182,15 +1296,47 @@ impl RedactionEditor {
             if self.edits.order.last() != Some(&Selected::Text(0)) {
                 return Err("Text did not move above the vector layers".into());
             }
-            self.edits.add_highlight(FrameAnnotation {
+            self.edits.add_highlight(HighlightAnnotation {
+                opacity: 85,
                 area,
                 color: 0xfacc15,
             });
             self.edits.shift_layer(Selected::Highlight(0), false);
+            self.edits
+                .set_highlight_opacity(Selected::Highlight(0), 128);
+            self.edits.undo();
+            if self.edits.highlights[0].opacity != 85 {
+                return Err("Highlight opacity undo failed".into());
+            }
+            self.edits.redo();
+            if self.edits.highlights[0].opacity != 128 {
+                return Err("Highlight opacity redo failed".into());
+            }
             if self.edits.order.last() != Some(&Selected::Text(0)) {
                 return Err("Highlight did not move below text".into());
             }
+            self.edits.add_arrow(ArrowAnnotation {
+                start: [0, 0],
+                end: [
+                    self.source.width.min(128) - 1,
+                    self.source.height.min(64) - 1,
+                ],
+                color: 0x22c55e,
+                width: 3,
+            });
+            for selected in [Selected::Frame(0), Selected::Ellipse(0), Selected::Arrow(0)] {
+                self.edits.set_stroke_width(selected, 12);
+                self.edits.undo();
+                if self.edits.stroke_width(selected) != Some(3) {
+                    return Err("Shape width undo failed".into());
+                }
+                self.edits.redo();
+                if self.edits.stroke_width(selected) != Some(12) {
+                    return Err("Shape width redo failed".into());
+                }
+            }
             self.tool = Tool::Pen;
+            self.stroke_width = 12;
             let dimensions = [self.source.width, self.source.height];
             self.begin_pen([16.0, 16.0], 1.0, dimensions, cx);
             self.sample_pen([32, 40], false);
@@ -1199,9 +1345,18 @@ impl RedactionEditor {
                 .edits
                 .pens
                 .first()
-                .is_none_or(|pen| pen.points.len() != 3)
+                .is_none_or(|pen| pen.points.len() != 3 || pen.width != 12)
             {
                 return Err("Pen gesture was not committed once".into());
+            }
+            self.edits.set_stroke_width(Selected::Pen(0), 6);
+            self.edits.undo();
+            if self.edits.pens[0].width != 12 {
+                return Err("Pen width undo failed".into());
+            }
+            self.edits.redo();
+            if self.edits.pens[0].width != 6 {
+                return Err("Pen width redo failed".into());
             }
             self.begin_pen([16.0, 16.0], 1.0, dimensions, cx);
             for index in 0..1100 {
@@ -1217,14 +1372,55 @@ impl RedactionEditor {
             self.tool = Tool::Select;
             cx.notify();
         }
-        Ok(self.pixelation.is_some()
+        let ready = self.pixelation.is_some()
             && self.blur.is_some()
             && self
                 .edits
                 .texts
                 .first()
                 .is_some_and(|text| text.asset.text == "😀")
-            && !self.text_loading)
+            && !self.text_loading;
+        if !ready {
+            return Ok(false);
+        }
+        match self.edits.last_number {
+            0 => {
+                self.begin_number([100, 100], window, cx);
+                Ok(false)
+            }
+            1 => {
+                if self
+                    .edits
+                    .texts
+                    .last()
+                    .is_none_or(|text| text.asset.text != "1.")
+                {
+                    return Err("First step number was not prepared".into());
+                }
+                self.edits.undo();
+                if self.edits.last_number != 0 || self.edits.texts.len() != 1 {
+                    return Err("Number undo did not restore the sequence".into());
+                }
+                self.edits.redo();
+                if self.edits.last_number != 1 || self.edits.texts.len() != 2 {
+                    return Err("Number redo did not restore the sequence".into());
+                }
+                self.begin_number([self.source.width, self.source.height], window, cx);
+                Ok(false)
+            }
+            2 => {
+                let label = self.edits.texts.last().unwrap();
+                if label.asset.text != "2."
+                    || label.area.x + label.area.width != self.source.width
+                    || label.area.y + label.area.height != self.source.height
+                    || !label.asset.stamp.mask.iter().any(|alpha| *alpha > 0)
+                {
+                    return Err("Number placement did not clamp at the image edge".into());
+                }
+                Ok(true)
+            }
+            _ => Err("Unexpected numbering state".into()),
+        }
     }
     pub(super) fn release_images(&self, window: &mut Window) {
         self.effects_cancel
@@ -1455,6 +1651,8 @@ impl RedactionEditor {
                 Tool::Redact
             },
             frame_color: 0xef4444,
+            highlight_opacity: 85,
+            stroke_width: 3,
             selected: None,
             resize_handle: None,
             zoom: None,
@@ -1503,6 +1701,7 @@ impl Render for RedactionEditor {
                 | Tool::Arrow
                 | Tool::Ellipse
                 | Tool::Text
+                | Tool::Number
                 | Tool::Highlight
                 | Tool::Pen
         );
@@ -1510,6 +1709,28 @@ impl Render for RedactionEditor {
             self.selected.and_then(|mark| self.edits.color(mark))
         } else {
             Some(self.frame_color)
+        };
+        let draws_stroke = matches!(
+            self.tool,
+            Tool::Pen | Tool::Frame | Tool::Ellipse | Tool::Arrow
+        );
+        let palette_stroke_width = if draws_stroke {
+            Some(self.stroke_width)
+        } else {
+            self.selected
+                .and_then(|selected| self.edits.stroke_width(selected))
+        };
+        let show_stroke_width =
+            draws_stroke || (self.tool == Tool::Select && palette_stroke_width.is_some());
+        let show_opacity =
+            matches!(self.tool, Tool::Highlight | Tool::Select) && !show_stroke_width;
+        let palette_opacity = if self.tool == Tool::Highlight {
+            Some(self.highlight_opacity)
+        } else {
+            self.selected.and_then(|selected| match selected {
+                Selected::Highlight(index) => self.edits.highlights.get(index).map(|h| h.opacity),
+                _ => None,
+            })
         };
         let toolbar_height = if show_palette { 220.0 } else { 172.0 }
             + if layout[0] < 900.0 {
@@ -1519,7 +1740,13 @@ impl Render for RedactionEditor {
             } else {
                 0.0
             }
-            + if self.tool == Tool::Text { 44.0 } else { 0.0 }
+            + if self.tool == Tool::Number {
+                88.0
+            } else if self.tool == Tool::Text {
+                44.0
+            } else {
+                0.0
+            }
             + if self.text_draft.is_some() { 80.0 } else { 0.0 }
             + if self.text_error.is_some() { 24.0 } else { 0.0 };
         let inset = if self.direct_capture { 0.0 } else { 16.0 };
@@ -1588,20 +1815,22 @@ impl Render for RedactionEditor {
             if self.tool == Tool::Select {
                 // Transforms are previewed in metadata above and committed on release.
             } else if self.tool == Tool::Pen {
-                if let Some(pen) =
+                if let Some(mut pen) =
                     app_core::PenAnnotation::from_trace(&self.pen_trace, self.frame_color)
                 {
+                    pen.width = self.stroke_width;
                     paint_order.push(Selected::Pen(pen_preview.len()));
                     pen_preview.push(pen);
                 }
             } else if self.tool == Tool::Arrow {
-                if let Some(arrow) = ArrowAnnotation::from_drag(
+                if let Some(mut arrow) = ArrowAnnotation::from_drag(
                     start,
                     self.end,
                     size,
                     [dimensions.0, dimensions.1],
                     self.frame_color,
                 ) {
+                    arrow.width = self.stroke_width;
                     paint_order.push(Selected::Arrow(arrow_preview.len()));
                     arrow_preview.push(arrow);
                 }
@@ -1621,12 +1850,14 @@ impl Render for RedactionEditor {
                 } else if self.tool == Tool::Frame {
                     paint_order.push(Selected::Frame(frame_preview.len()));
                     frame_preview.push(FrameAnnotation {
+                        width: self.stroke_width,
                         area: region,
                         color: self.frame_color,
                     });
                 } else if self.tool == Tool::Highlight {
                     paint_order.push(Selected::Highlight(highlight_preview.len()));
-                    highlight_preview.push(FrameAnnotation {
+                    highlight_preview.push(HighlightAnnotation {
+                        opacity: self.highlight_opacity,
                         area: region,
                         color: self.frame_color,
                     });
@@ -1634,6 +1865,7 @@ impl Render for RedactionEditor {
                     if self.tool == Tool::Ellipse {
                         paint_order.push(Selected::Ellipse(ellipse_preview.len()));
                         ellipse_preview.push(FrameAnnotation {
+                            width: self.stroke_width,
                             area: region,
                             color: self.frame_color,
                         });
@@ -1736,8 +1968,9 @@ impl Render for RedactionEditor {
                     .child(div().text_sm().child(format!(
                         "{} · {} / 100 annotations · Export: {} × {}",
                         match self.tool {
-                            Tool::Pen=>if self.pen_limit_hit {"Pen limit reached. Release or remove marks to continue."}else{"Draw freehand (3 px); release to finish"},
-                            Tool::Highlight=>"Drag a translucent highlight; underlying content remains readable",
+                            Tool::Number=>if self.text_loading {"Preparing number..."}else{"Click to place the next step number; Select to move or edit it"},
+                            Tool::Pen=>if self.pen_limit_hit {"Pen limit reached. Release or remove marks to continue."}else{"Draw freehand at the chosen width; release to finish"},
+                            Tool::Highlight=>"Drag a highlight at the chosen opacity",
                             Tool::Text => if self.text_loading {"Preparing text..."} else {"Click the image to place a label; Enter applies, Escape cancels text"},
                             Tool::Pixelate => if self.pixelation_loading || self.pending_effect==Some(Tool::Pixelate) { "Preparing pixelation preview..." } else if self.pixelation_error.is_some() { "Pixelation failed. Select Pixelate to retry." } else { "Drag to pixelate source pixels; use Redact for sensitive information" },
                             Tool::Blur => if self.blur_loading || self.pending_effect==Some(Tool::Blur) { "Preparing blur preview..." } else if self.blur_error.is_some() { "Blur failed. Select Blur to retry." } else { "Drag to blur source pixels; use Redact for sensitive information" },
@@ -1766,6 +1999,7 @@ impl Render for RedactionEditor {
                             .child(capture_button("layer-forward","Bring forward",self.tool!=Tool::Select||self.drag.is_some()||self.text_draft.is_some()||self.text_loading||self.selected.and_then(|selected|self.edits.layer_target(selected,true)).is_none(),cx.listener(|this,_,_,cx|this.move_layer(true,cx))))
                             .child(capture_button("layer-backward","Send backward",self.tool!=Tool::Select||self.drag.is_some()||self.text_draft.is_some()||self.text_loading||self.selected.and_then(|selected|self.edits.layer_target(selected,false)).is_none(),cx.listener(|this,_,_,cx|this.move_layer(false,cx))))
                             .child(capture_button("tool-text",if self.tool==Tool::Text {"Text (T) active"}else{"Text (T)"},false,cx.listener(|this,_,_,cx|{this.tool=Tool::Text;this.drag=None;cx.notify();})))
+                            .child(capture_button("tool-number",if self.tool==Tool::Number {"Number (N) active"}else{"Number (N)"},false,cx.listener(|this,_,_,cx|{this.tool=Tool::Number;this.drag=None;cx.notify();})))
                             .child(capture_button("edit-text","Edit text",!matches!(self.selected,Some(Selected::Text(_)))||self.text_draft.is_some()||self.text_loading,cx.listener(|this,_,window,cx|{if let Some(Selected::Text(index))=this.selected {if let Some(text)=this.edits.texts.get(index){this.begin_text([text.area.x,text.area.y],Some(index),window,cx);}}})))
                             .child(capture_button(
                                 "tool-blur", if self.tool == Tool::Blur { "Blur (B) active" } else { "Blur (B)" },false,
@@ -2016,12 +2250,13 @@ impl Render for RedactionEditor {
                     .when(self.text_draft.is_some(),|view|view.child(div().flex().gap_2()
                         .child(capture_button("apply-text","Apply text",self.text_loading||self.pixelation_loading||self.blur_loading,cx.listener(|this,_,window,cx|this.commit_text(window,cx))))
                         .child(capture_button("cancel-text","Cancel text",false,cx.listener(|this,_,window,cx|this.cancel_text(window,cx))))))
-                    .when(self.tool==Tool::Text,|view|view.child(div().flex().gap_2().children([16,24,36].into_iter().map(|size|capture_button(match size{16=>"text-size-16",24=>"text-size-24",_=>"text-size-36"},match size{16=>"16 px",24=>"24 px",_=>"36 px"},self.text_loading||self.text_size==size,cx.listener(move|this,_,_,cx|{this.text_size=size;cx.notify();}))))))
+                    .when(self.tool==Tool::Number,|view|view.child(div().flex().gap_2().child(format!("Next: {}",self.edits.last_number.checked_add(1).map(|n|n.to_string()).unwrap_or_else(||"limit reached".into()))).child(capture_button("restart-numbers","Restart numbering",self.edits.last_number==0||self.text_loading||self.text_draft.is_some(),cx.listener(|this,_,_,cx|{this.edits.restart_numbers();this.text_error=None;cx.notify();})))))
+                    .when(matches!(self.tool,Tool::Text|Tool::Number),|view|view.child(div().flex().gap_2().children([16,24,36].into_iter().map(|size|capture_button(match size{16=>"text-size-16",24=>"text-size-24",_=>"text-size-36"},match size{16=>"16 px",24=>"24 px",_=>"36 px"},self.text_loading||self.text_size==size,cx.listener(move|this,_,_,cx|{this.text_size=size;cx.notify();}))))))
                     .when(
                         show_palette,
                         |toolbar| {
                             toolbar.child(
-                                div().flex().gap_2().children(
+                                div().flex().flex_wrap().gap_2().children(
                                     [
                                         ("frame-red", "Red", "Red ✓", 0xef4444),
                                         ("frame-yellow", "Yellow", "Yellow ✓", 0xfacc15),
@@ -2051,7 +2286,48 @@ impl Render for RedactionEditor {
                                             )
                                         },
                                     ),
-                                ),
+                                ).when(show_opacity, |row| row
+                                    .child(div().child("Opacity"))
+                                    .children([
+                                        ("highlight-25", "25%", "25% ✓", 64),
+                                        ("highlight-33", "33%", "33% ✓", 85),
+                                        ("highlight-50", "50%", "50% ✓", 128),
+                                        ("highlight-75", "75%", "75% ✓", 191),
+                                        ("highlight-100", "100%", "100% ✓", 255),
+                                    ].into_iter().map(|(id,label,active,opacity)| capture_button(
+                                        id,
+                                        if palette_opacity == Some(opacity) { active } else { label },
+                                        palette_opacity.is_none() || self.text_loading || self.text_draft.is_some() || self.drag.is_some(),
+                                        cx.listener(move |this,_,_,cx| {
+                                            this.highlight_opacity = opacity;
+                                            if this.tool == Tool::Select {
+                                                if let Some(selected) = this.selected {
+                                                    this.edits.set_highlight_opacity(selected, opacity);
+                                                }
+                                            }
+                                            cx.notify();
+                                        }),
+                                    )))).when(show_stroke_width, |row| row
+                                    .child(div().child("Width"))
+                                    .children([
+                                        ("stroke-width-1", "1 px", "1 px ✓", 1),
+                                        ("stroke-width-3", "3 px", "3 px ✓", 3),
+                                        ("stroke-width-6", "6 px", "6 px ✓", 6),
+                                        ("stroke-width-12", "12 px", "12 px ✓", 12),
+                                    ].into_iter().map(|(id,label,active,width)| capture_button(
+                                        id,
+                                        if palette_stroke_width == Some(width) { active } else { label },
+                                        palette_stroke_width.is_none() || self.text_loading || self.text_draft.is_some() || self.drag.is_some(),
+                                        cx.listener(move |this,_,_,cx| {
+                                            this.stroke_width = width;
+                                            if this.tool == Tool::Select {
+                                                if let Some(selected) = this.selected {
+                                                    this.edits.set_stroke_width(selected, width);
+                                                }
+                                            }
+                                            cx.notify();
+                                        }),
+                                    )))),
                             )
                         },
                     ),
@@ -2089,6 +2365,7 @@ impl Render for RedactionEditor {
                                 cx.listener(move |this, event: &gpui::MouseDownEvent, window, cx| {
                                     if this.text_draft.is_some() || this.text_loading {return;}
                                     if this.tool==Tool::Pen {this.begin_pen([f32::from(event.position.x)-origin[0],f32::from(event.position.y)-origin[1]],scale,[dimensions.0,dimensions.1],cx);return;}
+                                    if this.tool==Tool::Number {let position=[((f32::from(event.position.x)-origin[0])/scale).floor().max(0.0) as u32,((f32::from(event.position.y)-origin[1])/scale).floor().max(0.0) as u32];this.begin_number(position,window,cx);return;}
                                     if this.tool==Tool::Text {let position=[((f32::from(event.position.x)-origin[0])/scale).floor().max(0.0) as u32,((f32::from(event.position.y)-origin[1])/scale).floor().max(0.0) as u32];this.begin_text(position,None,window,cx);return;}
                                     if this.tool == Tool::Pixelate && this.pixelation.is_none() { return; }
                                     if this.tool == Tool::Blur && this.blur.is_none() { return; }
@@ -2148,13 +2425,14 @@ impl Render for RedactionEditor {
                                             f32::from(event.position.y) - origin[1],
                                         ];
                                         if this.tool == Tool::Arrow {
-                                            if let Some(arrow) = ArrowAnnotation::from_drag(
+                                            if let Some(mut arrow) = ArrowAnnotation::from_drag(
                                                 start,
                                                 end,
                                                 size,
                                                 [dimensions.0, dimensions.1],
                                                 this.frame_color,
                                             ) {
+                                                arrow.width = this.stroke_width;
                                                 this.edits.add_arrow(arrow);
                                             }
                                         } else if let Some(region) = PixelRegion::from_drag(
@@ -2171,14 +2449,16 @@ impl Render for RedactionEditor {
                                                 if this.blur.is_some() { this.edits.add_blur(region); }
                                             } else if this.tool == Tool::Frame {
                                                 this.edits.add_frame(FrameAnnotation {
+    width: this.stroke_width,
                                                     area: region,
                                                     color: this.frame_color,
                                                 });
                                             } else if this.tool==Tool::Highlight {
-                                                this.edits.add_highlight(FrameAnnotation{area:region,color:this.frame_color});
+                                                this.edits.add_highlight(HighlightAnnotation{area:region,color:this.frame_color,opacity:this.highlight_opacity});
                                             } else {
                                                 if this.tool == Tool::Ellipse {
                                                     this.edits.add_ellipse(FrameAnnotation {
+    width: this.stroke_width,
                                                         area: region,
                                                         color: this.frame_color,
                                                     });
@@ -2218,8 +2498,8 @@ impl Render for RedactionEditor {
                                 let rect=|area:PixelRegion|gpui::Bounds{origin:map([area.x as f32,area.y as f32]),size:gpui::size(px(area.width as f32*scale),px(area.height as f32*scale))};
                                 for item in &paint_order {
                                     match *item {
-                                        Selected::Pen(i)=>{let pen=&pen_preview[i];if pen.points.len()==1{let p=pen.positions().next().unwrap();window.paint_quad(gpui::fill(gpui::Bounds{origin:map([p[0]-1.5,p[1]-1.5]),size:gpui::size(px(3.0*scale),px(3.0*scale))},rgb(pen.color)));}else if let Some(path)=pen_path(pen,bounds.origin,scale){window.paint_path(path,rgb(pen.color));}}
-                                        Selected::Highlight(i)=>{let highlight=highlight_preview[i];window.paint_quad(gpui::fill(rect(highlight.area),rgba((highlight.color<<8)|85)));}
+                                        Selected::Pen(i)=>{let pen=&pen_preview[i];if pen.points.len()==1{let p=pen.positions().next().unwrap();let width=f32::from(pen.width);window.paint_quad(gpui::fill(gpui::Bounds{origin:map([p[0]-width/2.0,p[1]-width/2.0]),size:gpui::size(px(width*scale),px(width*scale))},rgb(pen.color)));}else if let Some(path)=pen_path(pen,bounds.origin,scale){window.paint_path(path,rgb(pen.color));}}
+                                        Selected::Highlight(i)=>{let highlight=highlight_preview[i];window.paint_quad(gpui::fill(rect(highlight.area),rgba((highlight.color<<8)|u32::from(highlight.opacity))));}
                                         Selected::Frame(i)=>{let frame=frame_preview[i];for area in frame.segments(){window.paint_quad(gpui::fill(rect(area),rgb(frame.color)));}}
                                         Selected::Arrow(i)=>{let arrow=arrow_preview[i];let vertices=arrow.vertices();let mut path=gpui::PathBuilder::fill();path.move_to(map(vertices[0]));for point in &vertices[1..]{path.line_to(map(*point));}path.line_to(map(vertices[0]));if let Ok(path)=path.build(){window.paint_path(path,rgb(arrow.color));}}
                                         Selected::Ellipse(i)=>{let ellipse=ellipse_preview[i];let mut path=gpui::PathBuilder::fill();for contour in ellipse.ellipse_contours(){path.move_to(map(contour[0]));for point in &contour[1..]{path.line_to(map(*point));}path.line_to(map(contour[0]));}if let Ok(path)=path.build(){window.paint_path(path,rgb(ellipse.color));}}
@@ -2316,6 +2596,224 @@ impl Render for RedactionEditor {
 mod tests {
     use super::*;
     #[test]
+    fn shape_width_selection_and_undo_keep_geometry_color_and_order() {
+        let area = PixelRegion {
+            x: 10,
+            y: 10,
+            width: 80,
+            height: 80,
+        };
+        for (selected, point) in [
+            (Selected::Frame(0), [19.0, 50.0]),
+            (Selected::Ellipse(0), [20.0, 50.0]),
+            (Selected::Arrow(0), [150.0, 85.0]),
+        ] {
+            let mut edits = RectEdits::default();
+            let shape = FrameAnnotation {
+                area,
+                color: 0xef4444,
+                width: 3,
+            };
+            match selected {
+                Selected::Frame(_) => edits.add_frame(shape),
+                Selected::Ellipse(_) => edits.add_ellipse(shape),
+                Selected::Arrow(_) => edits.add_arrow(ArrowAnnotation {
+                    start: [10, 64],
+                    end: [220, 64],
+                    color: 0xef4444,
+                    width: 3,
+                }),
+                _ => unreachable!(),
+            }
+            let original_bounds = edits.bounds(selected);
+            assert_eq!(edits.pick(point, 0.0), None);
+            let history = edits.past.len();
+            for (target, width) in [
+                (selected, 3),
+                (selected, 0),
+                (selected, 13),
+                (Selected::Arrow(9), 6),
+                (Selected::Highlight(0), 6),
+            ] {
+                edits.set_stroke_width(target, width);
+            }
+            assert_eq!(edits.past.len(), history);
+            edits.set_stroke_width(selected, 12);
+            assert_eq!(edits.stroke_width(selected), Some(12));
+            assert_eq!(edits.pick(point, 0.0), Some(selected));
+            assert_eq!(edits.bounds(selected), original_bounds);
+            assert_eq!(edits.color(selected), Some(0xef4444));
+            assert_eq!(edits.order, [selected]);
+            edits.undo();
+            assert_eq!(edits.stroke_width(selected), Some(3));
+            edits.redo();
+            assert_eq!(edits.stroke_width(selected), Some(12));
+            edits.transform_selected(selected, None, [2.0, 3.0], [256, 128]);
+            assert_eq!(edits.stroke_width(selected), Some(12));
+            let handle = if matches!(selected, Selected::Arrow(_)) {
+                ResizeHandle::ArrowEnd
+            } else {
+                ResizeHandle::Corner([true, true])
+            };
+            edits.transform_selected(selected, Some(handle), [4.0, 5.0], [256, 128]);
+            assert_eq!(edits.stroke_width(selected), Some(12));
+            edits.set_color(selected, 0x22c55e);
+            assert_eq!(edits.stroke_width(selected), Some(12));
+            edits.delete_selected(selected);
+            edits.undo();
+            assert_eq!(edits.stroke_width(selected), Some(12));
+        }
+    }
+    #[test]
+    fn numbering_undo_restart_delete_and_admission_keep_sequence_and_shared_assets() {
+        let area = PixelRegion {
+            x: 1,
+            y: 1,
+            width: 1,
+            height: 1,
+        };
+        let caption = |text: &str| Caption {
+            area,
+            asset: Arc::new(TextAsset {
+                text: text.into(),
+                font_size: 24,
+                stamp: app_core::TextAnnotation {
+                    area,
+                    color: 0xef4444,
+                    width: 1,
+                    height: 1,
+                    mask: vec![255].into(),
+                },
+                preview: Arc::new(gpui::RenderImage::new(vec![image::Frame::new(
+                    image::RgbaImage::new(1, 1),
+                )])),
+            }),
+        };
+        let mut edits = RectEdits::default();
+        assert_eq!(Tool::shortcut("n"), Some(Tool::Number));
+        edits.restart_numbers();
+        assert!(edits.past.is_empty());
+        assert!(edits.add_number(caption("1.")));
+        assert!(edits.add_number(caption("2.")));
+        let asset = edits.texts[1].asset.clone();
+        edits.undo();
+        assert_eq!(edits.last_number, 1);
+        assert_eq!(edits.texts.len(), 1);
+        edits.redo();
+        assert_eq!(edits.last_number, 2);
+        assert!(Arc::ptr_eq(&edits.texts[1].asset, &asset));
+        edits.delete_selected(Selected::Text(1));
+        assert_eq!(edits.last_number, 2);
+        edits.undo();
+        edits.set_text(caption("Edited number"), Some(1));
+        assert_eq!(edits.last_number, 2);
+        edits.restart_numbers();
+        assert_eq!(edits.last_number, 0);
+        assert_eq!(edits.texts.len(), 2);
+        edits.undo();
+        assert_eq!(edits.last_number, 2);
+        edits.redo();
+        assert!(edits.add_number(caption("1.")));
+        assert_eq!(edits.last_number, 1);
+        assert_eq!(edits.order.last(), Some(&Selected::Text(2)));
+        edits.add_blur(area);
+        while edits.order.len() + edits.blurs.len() < 100 {
+            assert!(edits.add_number(caption("number")));
+        }
+        let number = edits.last_number;
+        let past = edits.past.len();
+        assert!(!edits.add_number(caption("full")));
+        assert_eq!(edits.last_number, number);
+        assert_eq!(edits.past.len(), past);
+        edits.reset();
+        assert_eq!(edits.last_number, 0);
+        edits.last_number = u16::MAX;
+        assert!(!edits.add_number(caption("overflow")));
+        assert!(edits.texts.is_empty());
+        edits.restart_numbers();
+        assert!(edits.add_number(caption("1.")));
+    }
+    #[test]
+    fn stroke_width_selection_and_undo_share_points_and_reject_invalid_changes() {
+        let mut edits = RectEdits::default();
+        let pen = app_core::PenAnnotation::from_trace(&[[10, 20], [40, 20]], 0xef4444).unwrap();
+        let area = pen.area;
+        let points = pen.points.clone();
+        edits.add_pen(pen);
+        let selected = Selected::Pen(0);
+        let past = edits.past.len();
+        for (target, width) in [
+            (selected, 3),
+            (selected, 0),
+            (selected, 13),
+            (Selected::Pen(9), 6),
+            (Selected::Highlight(0), 6),
+        ] {
+            edits.set_stroke_width(target, width);
+        }
+        assert_eq!(edits.past.len(), past);
+        assert_eq!(edits.pick([20.5, 25.5], 0.0), None);
+        edits.set_stroke_width(selected, 12);
+        assert_eq!(edits.pick([20.5, 25.5], 0.0), Some(selected));
+        assert_eq!(edits.pick([20.5, 27.5], 0.0), None);
+        assert_eq!(edits.pens[0].area, area);
+        assert_eq!(edits.pens[0].color, 0xef4444);
+        assert_eq!(edits.order, [selected]);
+        assert!(Arc::ptr_eq(&edits.pens[0].points, &points));
+        edits.undo();
+        assert_eq!(edits.pens[0].width, 3);
+        edits.redo();
+        assert_eq!(edits.pens[0].width, 12);
+        assert!(Arc::ptr_eq(&edits.pens[0].points, &points));
+        let mut dot = app_core::PenAnnotation::from_trace(&[[50, 50]], 0).unwrap();
+        dot.width = 12;
+        edits.add_pen(dot);
+        assert_eq!(edits.pick([55.5, 55.5], 0.0), Some(Selected::Pen(1)));
+        assert_eq!(edits.pick([57.5, 55.5], 0.0), None);
+    }
+    #[test]
+    fn highlight_opacity_changes_only_metadata_and_supports_undo() {
+        let mut edits = RectEdits::default();
+        let mark = HighlightAnnotation {
+            area: PixelRegion {
+                x: 10,
+                y: 10,
+                width: 20,
+                height: 20,
+            },
+            color: 0xfacc15,
+            opacity: 85,
+        };
+        edits.add_highlight(mark);
+        let selected = Selected::Highlight(0);
+        let past = edits.past.len();
+        for (target, opacity) in [
+            (selected, 85),
+            (selected, 0),
+            (Selected::Highlight(9), 128),
+            (Selected::Frame(0), 128),
+        ] {
+            edits.set_highlight_opacity(target, opacity);
+        }
+        assert_eq!(edits.past.len(), past);
+        let order = edits.order.clone();
+        edits.set_highlight_opacity(selected, 128);
+        assert_eq!(
+            edits.highlights[0],
+            HighlightAnnotation {
+                opacity: 128,
+                ..mark
+            }
+        );
+        assert_eq!(edits.order, order);
+        edits.undo();
+        assert_eq!(edits.highlights[0], mark);
+        edits.redo();
+        assert_eq!(edits.highlights[0].opacity, 128);
+        edits.set_highlight_opacity(selected, 255);
+        assert_eq!(edits.highlights[0].opacity, 255);
+    }
+    #[test]
     fn pen_selection_transform_color_and_undo_share_bounded_points() {
         let mut edits = RectEdits::default();
         let pen =
@@ -2364,8 +2862,9 @@ mod tests {
         let trace = (0..1024)
             .map(|i| [i * 2, 100 + (i % 2) * 3])
             .collect::<Vec<_>>();
-        let pen = app_core::PenAnnotation::from_trace(&trace, 0).unwrap();
-        for count in [1, 8] {
+        let mut pen = app_core::PenAnnotation::from_trace(&trace, 0).unwrap();
+        for (count, width) in [(1, 3), (1, 12), (8, 3), (8, 12)] {
+            pen.width = width;
             let mut samples = Vec::new();
             for _ in 0..50 {
                 let start = std::time::Instant::now();
@@ -2378,7 +2877,7 @@ mod tests {
             }
             samples.sort();
             eprintln!(
-                "Pen preview: {} points, tessellation p95={:?}",
+                "Pen preview: {} points, width={width}, tessellation p95={:?}",
                 count * 1024,
                 samples[47]
             );
@@ -2393,7 +2892,8 @@ mod tests {
             width: 20,
             height: 20,
         };
-        edits.add_highlight(FrameAnnotation {
+        edits.add_highlight(HighlightAnnotation {
+            opacity: 85,
             area,
             color: 0xfacc15,
         });
@@ -2414,6 +2914,7 @@ mod tests {
         edits.undo();
         assert_eq!(edits.bounds(selected), Some(area));
         edits.add_frame(FrameAnnotation {
+            width: 3,
             area,
             color: 0xef4444,
         });
@@ -2423,7 +2924,8 @@ mod tests {
         assert!(edits.highlights.is_empty());
         edits.undo();
         assert_eq!(edits.order.last(), Some(&selected));
-        edits.add_highlight(FrameAnnotation {
+        edits.add_highlight(HighlightAnnotation {
+            opacity: 85,
             area,
             color: 0xfacc15,
         });
@@ -2432,7 +2934,8 @@ mod tests {
         assert!(!edits.order.contains(&Selected::Highlight(1)));
         assert_eq!(edits.ordered_annotations().len(), 2);
         for _ in 0..100 {
-            edits.add_highlight(FrameAnnotation {
+            edits.add_highlight(HighlightAnnotation {
+                opacity: 85,
                 area,
                 color: 0xfacc15,
             });
@@ -2454,6 +2957,7 @@ mod tests {
             height: 40,
         };
         let shape = FrameAnnotation {
+            width: 3,
             area,
             color: 0xff0000,
         };
@@ -2652,6 +3156,7 @@ mod tests {
             height: 40,
         };
         let mark = FrameAnnotation {
+            width: 3,
             area,
             color: 0xef4444,
         };
@@ -2659,6 +3164,7 @@ mod tests {
         edits.add_frame(mark);
         edits.add_ellipse(mark);
         edits.add_arrow(ArrowAnnotation {
+            width: 3,
             start: [10, 20],
             end: [39, 59],
             color: mark.color,
@@ -2757,6 +3263,7 @@ mod tests {
             height: 40,
         };
         let frame = FrameAnnotation {
+            width: 3,
             area: original,
             color: 0x22c55e,
         };
@@ -2849,6 +3356,7 @@ mod tests {
             Some(ResizeHandle::Corner([true, true]))
         );
         edits.add_arrow(ArrowAnnotation {
+            width: 3,
             start: [10, 20],
             end: [40, 60],
             color: 0xff0000,
@@ -2889,6 +3397,7 @@ mod tests {
             height: 40,
         };
         let shape = FrameAnnotation {
+            width: 3,
             area,
             color: 0xff0000,
         };
@@ -2897,6 +3406,7 @@ mod tests {
         edits.add_frame(shape);
         edits.add_ellipse(shape);
         edits.add_arrow(ArrowAnnotation {
+            width: 3,
             start: [10, 20],
             end: [39, 59],
             color: 0xff0000,
@@ -2945,18 +3455,21 @@ mod tests {
             height: 40,
         };
         edits.add_frame(FrameAnnotation {
+            width: 3,
             area,
             color: 0xff0000,
         });
         assert_eq!(edits.pick([30.0, 30.0], 1.0), None);
         assert_eq!(edits.pick([10.0, 30.0], 1.0), Some(Selected::Frame(0)));
         edits.add_ellipse(FrameAnnotation {
+            width: 3,
             area,
             color: 0xff0000,
         });
         assert_eq!(edits.pick([30.0, 30.0], 1.0), None);
         assert_eq!(edits.pick([30.0, 10.0], 1.0), Some(Selected::Ellipse(0)));
         edits.add_arrow(ArrowAnnotation {
+            width: 3,
             start: [10, 30],
             end: [49, 30],
             color: 0xff0000,
@@ -2970,10 +3483,11 @@ mod tests {
     #[test]
     #[ignore = "short optimized command timing; no desktop or clipboard"]
     fn keyboard_and_color_metadata_cost() {
-        for recolor in [false, true] {
+        for command in ["nudge", "recolor", "width"] {
             let mut edits = RectEdits::default();
             for _ in 0..100 {
                 edits.add_frame(FrameAnnotation {
+                    width: 3,
                     area: PixelRegion {
                         x: 10,
                         y: 10,
@@ -2987,8 +3501,10 @@ mod tests {
             let mut samples = Vec::with_capacity(2000);
             for index in 0..2000 {
                 let start = std::time::Instant::now();
-                if recolor {
+                if command == "recolor" {
                     edits.set_color(selected, if index % 2 == 0 { 0x22c55e } else { 0xef4444 });
+                } else if command == "width" {
+                    edits.set_stroke_width(selected, if index % 2 == 0 { 12 } else { 3 });
                 } else {
                     edits.transform_selected(
                         selected,
@@ -3003,7 +3519,7 @@ mod tests {
             assert_eq!(edits.past.len(), 100);
             samples.sort_unstable();
             eprintln!(
-                "100 marks/100 undo states: recolor={recolor}, metadata command p95={} ns",
+                "100 marks/100 undo states: command={command}, metadata command p95={} ns",
                 samples[1900]
             );
         }
@@ -3048,6 +3564,7 @@ mod tests {
     #[test]
     fn ellipses_share_undo_and_annotation_admission() {
         let ellipse = FrameAnnotation {
+            width: 3,
             area: PixelRegion {
                 x: 1,
                 y: 1,
@@ -3109,6 +3626,7 @@ mod tests {
     #[test]
     fn arrows_share_undo_and_combined_annotation_limit() {
         let arrow = ArrowAnnotation {
+            width: 3,
             start: [4, 5],
             end: [40, 5],
             color: 0x22c55e,
@@ -3142,6 +3660,7 @@ mod tests {
             height: 8,
         };
         let frame = FrameAnnotation {
+            width: 3,
             area: region,
             color: 0xfacc15,
         };

@@ -1,14 +1,38 @@
 use crate::{ArrowAnnotation, FrameAnnotation, PixelRegion, TextAnnotation};
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, ensure};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HighlightAnnotation {
+    pub area: PixelRegion,
+    pub color: u32,
+    pub opacity: u8,
+}
 
 #[derive(Clone)]
 pub enum DrawAnnotation {
     Pen(crate::PenAnnotation),
-    Highlight(FrameAnnotation),
+    Highlight(HighlightAnnotation),
     Frame(FrameAnnotation),
     Arrow(ArrowAnnotation),
     Ellipse(FrameAnnotation),
     Text(TextAnnotation),
+}
+
+fn raster_area(crop: PixelRegion, source_size: [u32; 2]) -> Result<PixelRegion> {
+    let raster = PixelRegion {
+        x: crop.x.saturating_sub(1),
+        y: crop.y.saturating_sub(1),
+        width: (crop.x + crop.width + 1).min(source_size[0]) - crop.x.saturating_sub(1),
+        height: (crop.y + crop.height + 1).min(source_size[1]) - crop.y.saturating_sub(1),
+    };
+    let extra_bytes = (u64::from(raster.width) * u64::from(raster.height)
+        - u64::from(crop.width) * u64::from(crop.height))
+        * 4;
+    ensure!(
+        extra_bytes <= 4 * 1024 * 1024,
+        "This crop is too long and narrow for bounded vector rendering. Choose a wider or shorter crop."
+    );
+    Ok(raster)
 }
 
 // Flush only the region a direct frame/text operation will touch, then reuse the vector layer.
@@ -16,11 +40,12 @@ fn flush(
     layer: &mut tiny_skia::Pixmap,
     pixels: &mut image::RgbaImage,
     crop: PixelRegion,
+    raster: PixelRegion,
     area: PixelRegion,
 ) {
     for y in area.y.max(crop.y)..(area.y + area.height).min(crop.y + crop.height) {
         for x in area.x.max(crop.x)..(area.x + area.width).min(crop.x + crop.width) {
-            let index = (((y - crop.y) * crop.width + x - crop.x) * 4) as usize;
+            let index = (((y - raster.y) * raster.width + x - raster.x) * 4) as usize;
             let overlay = &mut layer.data_mut()[index..index + 4];
             let alpha = u32::from(overlay[3]);
             if alpha == 0 {
@@ -47,21 +72,33 @@ pub(crate) fn paint_ordered(
     pixels: &mut image::RgbaImage,
     crop: PixelRegion,
     annotations: &[DrawAnnotation],
+    source_size: [u32; 2],
 ) -> Result<()> {
+    // Keep crop pixels away from rasterizer clipping edges without a second vector buffer.
+    let raster = if annotations.iter().any(|item| {
+        matches!(
+            item,
+            DrawAnnotation::Arrow(_) | DrawAnnotation::Ellipse(_) | DrawAnnotation::Pen(_)
+        )
+    }) {
+        raster_area(crop, source_size)?
+    } else {
+        crop
+    };
     let mut layer: Option<tiny_skia::Pixmap> = None;
     for annotation in annotations {
         match annotation {
             DrawAnnotation::Highlight(highlight) => {
                 let area = highlight.area;
                 if let Some(layer) = &mut layer {
-                    flush(layer, pixels, crop, area);
+                    flush(layer, pixels, crop, raster, area);
                 }
                 for y in area.y.max(crop.y)..(area.y + area.height).min(crop.y + crop.height) {
                     for x in area.x.max(crop.x)..(area.x + area.width).min(crop.x + crop.width) {
                         crate::text::blend_ink(
                             pixels.get_pixel_mut(x - crop.x, y - crop.y),
                             highlight.color,
-                            85,
+                            u32::from(highlight.opacity),
                         );
                     }
                 }
@@ -69,19 +106,22 @@ pub(crate) fn paint_ordered(
             DrawAnnotation::Arrow(_) | DrawAnnotation::Ellipse(_) | DrawAnnotation::Pen(_) => {
                 if layer.is_none() {
                     layer = Some(
-                        tiny_skia::Pixmap::new(crop.width, crop.height)
+                        tiny_skia::Pixmap::new(raster.width, raster.height)
                             .context("Could not allocate vector raster layer")?,
                     );
                 }
                 let layer = layer.as_mut().unwrap();
                 match annotation {
-                    DrawAnnotation::Pen(pen) => pen.paint(layer, crop)?,
-                    DrawAnnotation::Arrow(arrow) => {
-                        crate::arrows::paint_shapes(layer, crop, std::slice::from_ref(arrow), &[])?
-                    }
+                    DrawAnnotation::Pen(pen) => pen.paint(layer, raster)?,
+                    DrawAnnotation::Arrow(arrow) => crate::arrows::paint_shapes(
+                        layer,
+                        raster,
+                        std::slice::from_ref(arrow),
+                        &[],
+                    )?,
                     DrawAnnotation::Ellipse(ellipse) => crate::arrows::paint_shapes(
                         layer,
-                        crop,
+                        raster,
                         &[],
                         std::slice::from_ref(ellipse),
                     )?,
@@ -97,7 +137,7 @@ pub(crate) fn paint_ordered(
                 ]);
                 for area in frame.segments() {
                     if let Some(layer) = &mut layer {
-                        flush(layer, pixels, crop, area);
+                        flush(layer, pixels, crop, raster, area);
                     }
                     for y in area.y.max(crop.y)..(area.y + area.height).min(crop.y + crop.height) {
                         for x in area.x.max(crop.x)..(area.x + area.width).min(crop.x + crop.width)
@@ -109,14 +149,14 @@ pub(crate) fn paint_ordered(
             }
             DrawAnnotation::Text(text) => {
                 if let Some(layer) = &mut layer {
-                    flush(layer, pixels, crop, text.area);
+                    flush(layer, pixels, crop, raster, text.area);
                 }
                 text.paint(pixels, crop);
             }
         }
     }
     if let Some(layer) = &mut layer {
-        flush(layer, pixels, crop, crop);
+        flush(layer, pixels, crop, raster, crop);
     }
     Ok(())
 }
@@ -124,6 +164,253 @@ pub(crate) fn paint_ordered(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn vector_crop_padding_stays_inside_source_and_bounds_skinny_image_cost() -> Result<()> {
+        let full = PixelRegion {
+            x: 0,
+            y: 0,
+            width: 3840,
+            height: 2160,
+        };
+        assert_eq!(raster_area(full, [3840, 2160])?, full);
+        let inset = PixelRegion {
+            x: 1,
+            y: 1,
+            width: 3838,
+            height: 2158,
+        };
+        assert_eq!(raster_area(inset, [3840, 2160])?, full);
+        let corner = PixelRegion {
+            x: 3839,
+            y: 2159,
+            width: 1,
+            height: 1,
+        };
+        assert_eq!(
+            raster_area(corner, [3840, 2160])?,
+            PixelRegion {
+                x: 3838,
+                y: 2158,
+                width: 2,
+                height: 2
+            }
+        );
+        crate::validate_image_size(3, 22_000_000)?;
+        let skinny = PixelRegion {
+            x: 1,
+            y: 0,
+            width: 1,
+            height: 22_000_000,
+        };
+        assert!(raster_area(skinny, [3, 22_000_000]).is_err());
+        let full_skinny = PixelRegion {
+            x: 0,
+            y: 0,
+            width: 1,
+            height: 67_000_000,
+        };
+        assert_eq!(raster_area(full_skinny, [1, 67_000_000])?, full_skinny);
+        Ok(())
+    }
+    #[test]
+    fn shape_widths_preserve_crop_alpha_and_redaction_and_reject_invalid_values() -> Result<()> {
+        let source = source(256, 128);
+        let area = PixelRegion {
+            x: 16,
+            y: 16,
+            width: 192,
+            height: 96,
+        };
+        let crop = PixelRegion {
+            x: 24,
+            y: 24,
+            width: 176,
+            height: 80,
+        };
+        for width in [1, 3, 6, 12] {
+            let shape = FrameAnnotation {
+                area,
+                color: 0xef4444,
+                width,
+            };
+            assert_eq!(shape.segments()[0].height, u32::from(width));
+            let tiny = FrameAnnotation {
+                area: PixelRegion {
+                    x: 0,
+                    y: 0,
+                    width: 1,
+                    height: 1,
+                },
+                ..shape
+            };
+            assert!(
+                tiny.segments()
+                    .iter()
+                    .all(|segment| segment.width == 1 && segment.height == 1)
+            );
+            if width >= 6 {
+                let small = FrameAnnotation {
+                    area: PixelRegion {
+                        x: 0,
+                        y: 0,
+                        width: 16,
+                        height: 8,
+                    },
+                    ..shape
+                };
+                assert_eq!(small.ellipse_contours().len(), 1);
+            }
+            let arrow = ArrowAnnotation {
+                start: [16, 64],
+                end: [224, 64],
+                color: 0xef4444,
+                width,
+            };
+            assert!((arrow.vertices()[0][1] - 64.5 - f32::from(width) / 2.0).abs() < 0.01);
+            for (kind, draw) in [
+                DrawAnnotation::Frame(shape),
+                DrawAnnotation::Ellipse(shape),
+                DrawAnnotation::Arrow(arrow),
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                let full = crate::render_ordered_snapshot(
+                    &source,
+                    &[],
+                    None,
+                    std::slice::from_ref(&draw),
+                    &[],
+                    None,
+                    &[],
+                )?;
+                for crop in [
+                    crop,
+                    PixelRegion {
+                        x: 58,
+                        y: 24,
+                        width: 1,
+                        height: 1,
+                    },
+                    PixelRegion {
+                        x: 0,
+                        y: 0,
+                        width: 1,
+                        height: 128,
+                    },
+                    PixelRegion {
+                        x: 255,
+                        y: 0,
+                        width: 1,
+                        height: 128,
+                    },
+                ] {
+                    let clipped = crate::render_ordered_snapshot(
+                        &source,
+                        &[],
+                        Some(crop),
+                        std::slice::from_ref(&draw),
+                        &[],
+                        None,
+                        &[],
+                    )?;
+                    for (x, y, pixel) in clipped.pixels.enumerate_pixels() {
+                        assert_eq!(
+                            pixel,
+                            full.pixels.get_pixel(x + crop.x, y + crop.y),
+                            "width={width}, kind={kind}, at={x},{y}"
+                        );
+                    }
+                }
+                assert_eq!(full.pixels.get_pixel(0, 0), source.pixels.get_pixel(0, 0));
+                assert!(
+                    full.pixels
+                        .pixels()
+                        .any(|pixel| pixel.0 == [239, 68, 68, 255])
+                );
+                let redacted = crate::render_ordered_snapshot(
+                    &source,
+                    &[area],
+                    None,
+                    &[draw],
+                    &[],
+                    None,
+                    &[],
+                )?;
+                assert_eq!(redacted.pixels.get_pixel(16, 64).0, [0, 0, 0, 255]);
+            }
+        }
+        for width in [0, 13, 255] {
+            let shape = FrameAnnotation {
+                area,
+                color: 0,
+                width,
+            };
+            let arrow = ArrowAnnotation {
+                start: [16, 64],
+                end: [224, 64],
+                color: 0,
+                width,
+            };
+            for draw in [
+                DrawAnnotation::Frame(shape),
+                DrawAnnotation::Ellipse(shape),
+                DrawAnnotation::Arrow(arrow),
+            ] {
+                assert!(
+                    crate::render_ordered_snapshot(&source, &[], None, &[draw], &[], None, &[])
+                        .is_err()
+                );
+            }
+        }
+        Ok(())
+    }
+    #[test]
+    fn highlight_opacity_matches_straight_alpha_and_rejects_invisible_marks() -> Result<()> {
+        let mut source = source(8, 8);
+        let area = PixelRegion {
+            x: 1,
+            y: 1,
+            width: 4,
+            height: 4,
+        };
+        for background in [[255, 255, 255, 255], [19, 37, 61, 0], [19, 37, 61, 128]] {
+            source.pixels =
+                std::sync::Arc::new(image::RgbaImage::from_pixel(8, 8, image::Rgba(background)));
+            for opacity in [64, 85, 128, 191, 255] {
+                let highlight = DrawAnnotation::Highlight(HighlightAnnotation {
+                    area,
+                    color: 0xfacc15,
+                    opacity,
+                });
+                let output = crate::render_ordered_snapshot(
+                    &source,
+                    &[],
+                    Some(area),
+                    &[highlight],
+                    &[],
+                    None,
+                    &[],
+                )?;
+                let mut expected = image::Rgba(background);
+                crate::text::blend_ink(&mut expected, 0xfacc15, u32::from(opacity));
+                assert!(output.pixels.pixels().all(|pixel| *pixel == expected));
+                if opacity == 255 {
+                    assert_eq!(expected.0, [250, 204, 21, 255]);
+                }
+            }
+        }
+        let invisible = DrawAnnotation::Highlight(HighlightAnnotation {
+            area,
+            color: 0xfacc15,
+            opacity: 0,
+        });
+        assert!(
+            crate::render_ordered_snapshot(&source, &[], None, &[invisible], &[], None, &[])
+                .is_err()
+        );
+        Ok(())
+    }
     #[test]
     fn highlights_blend_clip_follow_order_and_stay_below_redaction() -> Result<()> {
         let mut source = source(48, 32);
@@ -138,7 +425,8 @@ mod tests {
             width: 24,
             height: 16,
         };
-        let highlight = DrawAnnotation::Highlight(FrameAnnotation {
+        let highlight = DrawAnnotation::Highlight(HighlightAnnotation {
+            opacity: 85,
             area,
             color: 0xfacc15,
         });
@@ -149,6 +437,7 @@ mod tests {
         assert_eq!(output.pixels.get_pixel(12, 12).0, [253, 238, 177, 255]);
         assert_eq!(output.pixels.get_pixel(0, 0).0, [255, 255, 255, 255]);
         let frame = DrawAnnotation::Frame(FrameAnnotation {
+            width: 3,
             area,
             color: 0xef4444,
         });
@@ -184,12 +473,14 @@ mod tests {
             &[],
         )?;
         assert_eq!(redacted.pixels.get_pixel(12, 12).0, [0, 0, 0, 255]);
-        let invalid = DrawAnnotation::Highlight(FrameAnnotation {
+        let invalid = DrawAnnotation::Highlight(HighlightAnnotation {
+            opacity: 85,
             area,
             color: 0x1000000,
         });
         assert!(render(&[invalid], None).is_err());
-        let invalid = DrawAnnotation::Highlight(FrameAnnotation {
+        let invalid = DrawAnnotation::Highlight(HighlightAnnotation {
+            opacity: 85,
             area: PixelRegion {
                 x: 47,
                 y: 0,
@@ -220,6 +511,7 @@ mod tests {
         );
         assert_eq!(tinted.pixels.get_pixel(12, 12).0, [250, 204, 21, 85]);
         let ellipse = DrawAnnotation::Ellipse(FrameAnnotation {
+            width: 3,
             area,
             color: 0x22c55e,
         });
@@ -263,10 +555,12 @@ mod tests {
             height: 16,
         };
         let frame = DrawAnnotation::Frame(FrameAnnotation {
+            width: 3,
             area,
             color: 0x22c55e,
         });
         let arrow = DrawAnnotation::Arrow(ArrowAnnotation {
+            width: 3,
             start: [2, 16],
             end: [44, 16],
             color: 0xef4444,
@@ -324,6 +618,7 @@ mod tests {
     fn partial_flush_preserves_vectors_outside_later_text() -> Result<()> {
         let source = source(48, 40);
         let ellipse = DrawAnnotation::Ellipse(FrameAnnotation {
+            width: 3,
             area: PixelRegion {
                 x: 4,
                 y: 4,
@@ -380,16 +675,21 @@ mod tests {
             width: 3840,
             height: 2160,
         };
-        for (name, annotations) in [
-            ("copy", Vec::new()),
-            (
-                "highlight",
-                vec![DrawAnnotation::Highlight(FrameAnnotation {
+        for (name, opacity) in [
+            ("copy", 0),
+            ("highlight-33", 85),
+            ("highlight-50", 128),
+            ("highlight-100", 255),
+        ] {
+            let annotations = if opacity == 0 {
+                Vec::new()
+            } else {
+                vec![DrawAnnotation::Highlight(HighlightAnnotation {
+                    opacity,
                     area,
                     color: 0xfacc15,
-                })],
-            ),
-        ] {
+                })]
+            };
             let mut samples = Vec::new();
             for _ in 0..3 {
                 let start = std::time::Instant::now();
@@ -420,6 +720,7 @@ mod tests {
         let mut annotations = Vec::new();
         for index in 0..50 {
             annotations.push(DrawAnnotation::Ellipse(FrameAnnotation {
+                width: 3,
                 area: PixelRegion {
                     x: index * 8,
                     y: index * 8,
@@ -429,6 +730,7 @@ mod tests {
                 color: 0x22c55e,
             }));
             annotations.push(DrawAnnotation::Frame(FrameAnnotation {
+                width: 3,
                 area: PixelRegion {
                     x: index * 8,
                     y: index * 8,
@@ -448,7 +750,24 @@ mod tests {
             )
             .cloned()
             .collect::<Vec<_>>();
-        for (name, items) in [("grouped", &grouped), ("interleaved", &annotations)] {
+        let wide = annotations
+            .iter()
+            .cloned()
+            .map(|mut item| {
+                match &mut item {
+                    DrawAnnotation::Frame(shape) | DrawAnnotation::Ellipse(shape) => {
+                        shape.width = 12
+                    }
+                    _ => unreachable!(),
+                }
+                item
+            })
+            .collect::<Vec<_>>();
+        for (name, items) in [
+            ("grouped-3px", &grouped),
+            ("interleaved-3px", &annotations),
+            ("interleaved-12px", &wide),
+        ] {
             let mut samples = Vec::new();
             for _ in 0..3 {
                 let start = std::time::Instant::now();

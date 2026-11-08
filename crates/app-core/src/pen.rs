@@ -11,6 +11,7 @@ pub struct PenAnnotation {
     pub original_size: [u32; 2],
     pub points: Arc<[[u32; 2]]>,
     pub color: u32,
+    pub width: u8,
 }
 impl PenAnnotation {
     pub fn from_trace(trace: &[[u32; 2]], color: u32) -> Option<Self> {
@@ -53,9 +54,10 @@ impl PenAnnotation {
                 .collect::<Vec<_>>()
                 .into(),
             color,
+            width: 3,
         })
     }
-    /// Shared source-pixel centerline. Resizing changes geometry, with a fixed three-pixel ink width.
+    /// Shared source-pixel centerline. Resizing changes geometry and retains the chosen ink width.
     pub fn positions(&self) -> impl Iterator<Item = [f32; 2]> + '_ {
         self.points.iter().map(|point| {
             [
@@ -73,6 +75,11 @@ impl PenAnnotation {
         let Some(mut previous) = positions.next() else {
             return f32::INFINITY;
         };
+        if self.points.len() == 1 {
+            return (point[0] - previous[0])
+                .abs()
+                .max((point[1] - previous[1]).abs());
+        }
         let mut distance = (point[0] - previous[0]).hypot(point[1] - previous[1]);
         for next in positions {
             let delta = [next[0] - previous[0], next[1] - previous[1]];
@@ -95,6 +102,7 @@ impl PenAnnotation {
     pub(crate) fn validate(&self) -> Result<()> {
         ensure!(
             self.color <= 0xffffff
+                && (1..=12).contains(&self.width)
                 && !self.points.is_empty()
                 && self.points.len() <= MAX_PEN_POINTS
                 && !self.original_size.contains(&0)
@@ -118,12 +126,13 @@ impl PenAnnotation {
         paint.anti_alias = true;
         let mut positions = self.positions();
         let first = positions.next().unwrap();
+        let width = f32::from(self.width);
         if self.points.len() == 1 {
             let rect = tiny_skia::Rect::from_xywh(
-                first[0] - crop.x as f32 - 1.5,
-                first[1] - crop.y as f32 - 1.5,
-                3.0,
-                3.0,
+                first[0] - crop.x as f32 - width / 2.0,
+                first[1] - crop.y as f32 - width / 2.0,
+                width,
+                width,
             )
             .unwrap();
             layer.fill_rect(rect, &paint, tiny_skia::Transform::identity(), None);
@@ -137,7 +146,7 @@ impl PenAnnotation {
                 .finish()
                 .ok_or_else(|| anyhow::anyhow!("Invalid pen path"))?;
             let stroke = tiny_skia::Stroke {
-                width: 3.0,
+                width,
                 miter_limit: 1.0,
                 ..Default::default()
             };
@@ -156,6 +165,85 @@ impl PenAnnotation {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn widths_cover_lines_dots_and_crop_without_modifying_source() -> Result<()> {
+        let source = source(64, 48);
+        let crop = PixelRegion {
+            x: 12,
+            y: 12,
+            width: 24,
+            height: 8,
+        };
+        for width in [1, 3, 6, 12] {
+            for trace in [&[[8, 16], [48, 16]][..], &[[24, 16]][..], &[[0, 0]][..]] {
+                let mut pen = PenAnnotation::from_trace(trace, 0xef4444).unwrap();
+                pen.width = width;
+                let draw = crate::DrawAnnotation::Pen(pen);
+                let render = |crop| {
+                    crate::render_ordered_snapshot(
+                        &source,
+                        &[],
+                        crop,
+                        std::slice::from_ref(&draw),
+                        &[],
+                        None,
+                        &[],
+                    )
+                };
+                let full = render(None)?;
+                let clipped = render(Some(crop))?;
+                assert_eq!(
+                    clipped.pixels.as_ref(),
+                    &image::imageops::crop_imm(
+                        full.pixels.as_ref(),
+                        crop.x,
+                        crop.y,
+                        crop.width,
+                        crop.height
+                    )
+                    .to_image()
+                );
+                let [x, y] = trace[0];
+                let interior_x = if trace.len() > 1 { 32 } else { x };
+                assert_eq!(full.pixels.get_pixel(interior_x, y).0, [239, 68, 68, 255]);
+                if x != 0 {
+                    let center_x = if trace.len() == 1 { 24 } else { 32 };
+                    let covered = full
+                        .pixels
+                        .enumerate_pixels()
+                        .filter(|(x, _, pixel)| *x == center_x && pixel[3] > 17)
+                        .count();
+                    // Even widths cross half-pixel edges and cover one additional antialiased row.
+                    assert_eq!(covered, usize::from(width) + usize::from(width % 2 == 0));
+                    assert_eq!(
+                        full.pixels
+                            .get_pixel(center_x, 16 + u32::from(width) / 2 + 2),
+                        source
+                            .pixels
+                            .get_pixel(center_x, 16 + u32::from(width) / 2 + 2)
+                    );
+                }
+            }
+        }
+        let mut invalid = PenAnnotation::from_trace(&[[1, 1]], 0).unwrap();
+        for width in [0, 13, 255] {
+            invalid.width = width;
+            assert!(
+                crate::render_ordered_snapshot(
+                    &source,
+                    &[],
+                    None,
+                    &[crate::DrawAnnotation::Pen(invalid.clone())],
+                    &[],
+                    None,
+                    &[]
+                )
+                .is_err()
+            );
+        }
+        assert_eq!(source.pixels.get_pixel(24, 16).0, [19, 37, 61, 17]);
+        Ok(())
+    }
     fn source(width: u32, height: u32) -> crate::CapturedImage {
         crate::CapturedImage {
             display_id: "fixture".into(),
@@ -266,8 +354,9 @@ mod tests {
         let trace = (0..1024)
             .map(|i| [i * 2, 100 + (i % 2) * 3])
             .collect::<Vec<_>>();
-        let pen = PenAnnotation::from_trace(&trace, 0xef4444).unwrap();
-        for count in [1, 8] {
+        let mut pen = PenAnnotation::from_trace(&trace, 0xef4444).unwrap();
+        for (count, width) in [(1, 3), (1, 12), (8, 3), (8, 12)] {
+            pen.width = width;
             let draws = vec![crate::DrawAnnotation::Pen(pen.clone()); count];
             let mut samples = Vec::new();
             for _ in 0..3 {
@@ -279,7 +368,7 @@ mod tests {
             }
             samples.sort();
             eprintln!(
-                "4K pen: {} points, export median={:?}; shared point assets, one reused vector layer",
+                "4K pen: {} points, width={width}, export median={:?}; shared point assets, one reused vector layer",
                 count * 1024,
                 samples[1]
             );

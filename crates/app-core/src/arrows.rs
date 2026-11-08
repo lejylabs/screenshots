@@ -6,6 +6,7 @@ pub struct ArrowAnnotation {
     pub start: [u32; 2],
     pub end: [u32; 2],
     pub color: u32,
+    pub width: u8,
 }
 
 impl ArrowAnnotation {
@@ -37,6 +38,7 @@ impl ArrowAnnotation {
             start: map(start),
             end: map(end),
             color,
+            width: 3,
         };
         (arrow.start != arrow.end).then_some(arrow)
     }
@@ -50,9 +52,10 @@ impl ArrowAnnotation {
         let normal = [-unit[1], unit[0]];
         let tip = [self.end[0] as f32 + 0.5, self.end[1] as f32 + 0.5];
         let start = [self.start[0] as f32 + 0.5, self.start[1] as f32 + 0.5];
-        let head = 18.0f32.min(length * 0.4);
-        let half_head = 7.0f32.min(head * 0.5);
-        let half_shaft = 1.5f32.min(half_head * 0.5);
+        let width = f32::from(self.width);
+        let head = (6.0 * width).min(length * 0.4);
+        let half_head = (7.0 * width / 3.0).min(head * 0.5);
+        let half_shaft = (width / 2.0).min(half_head * 0.5);
         let base = [tip[0] - unit[0] * head, tip[1] - unit[1] * head];
         let offset = |point: [f32; 2], amount: f32| {
             [point[0] + normal[0] * amount, point[1] + normal[1] * amount]
@@ -66,6 +69,36 @@ impl ArrowAnnotation {
             offset(base, -half_shaft),
             offset(start, -half_shaft),
         ]
+    }
+    pub fn hit_test(self, point: [f32; 2], tolerance: f32) -> bool {
+        if point.iter().any(|v| !v.is_finite()) || !tolerance.is_finite() || tolerance < 0.0 {
+            return false;
+        }
+        let vertices = self.vertices();
+        let mut inside = false;
+        for index in 0..vertices.len() {
+            let a = vertices[index];
+            let b = vertices[(index + 1) % vertices.len()];
+            let delta = [b[0] - a[0], b[1] - a[1]];
+            let length = delta[0] * delta[0] + delta[1] * delta[1];
+            let t = if length > 0.0 {
+                (((point[0] - a[0]) * delta[0] + (point[1] - a[1]) * delta[1]) / length)
+                    .clamp(0.0, 1.0)
+            } else {
+                0.0
+            };
+            let distance_squared =
+                (point[0] - a[0] - t * delta[0]).powi(2) + (point[1] - a[1] - t * delta[1]).powi(2);
+            if distance_squared <= tolerance * tolerance {
+                return true;
+            }
+            if (a[1] > point[1]) != (b[1] > point[1])
+                && point[0] < a[0] + (point[1] - a[1]) * delta[0] / delta[1]
+            {
+                inside = !inside;
+            }
+        }
+        inside
     }
 }
 
@@ -139,6 +172,47 @@ pub(crate) fn paint_shapes(
 mod tests {
     use super::*;
     #[test]
+    fn arrow_hit_testing_follows_width_polygon_direction_and_tolerance() {
+        for width in [1, 3, 6, 12] {
+            for end in [
+                [220, 64],
+                [20, 64],
+                [128, 8],
+                [128, 120],
+                [200, 112],
+                [129, 64],
+            ] {
+                let arrow = ArrowAnnotation {
+                    start: [128, 64],
+                    end,
+                    color: 0,
+                    width,
+                };
+                let vertices = arrow.vertices();
+                assert!(vertices.iter().flatten().all(|v| v.is_finite()));
+                assert!(arrow.hit_test(vertices[3], 0.0));
+                let inner_head = [
+                    (vertices[2][0] + vertices[3][0] + vertices[4][0]) / 3.0,
+                    (vertices[2][1] + vertices[3][1] + vertices[4][1]) / 3.0,
+                ];
+                assert!(arrow.hit_test(inner_head, 0.0));
+                assert!(!arrow.hit_test([0.0, 0.0], 1.0));
+            }
+        }
+        let arrow = ArrowAnnotation {
+            start: [10, 64],
+            end: [220, 64],
+            color: 0,
+            width: 12,
+        };
+        assert!(arrow.hit_test([150.0, 85.0], 0.0));
+        assert!(!arrow.hit_test([50.0, 85.0], 1.0));
+        assert!(!arrow.hit_test([50.0, 72.0], 0.0));
+        assert!(arrow.hit_test([50.0, 72.0], 2.0));
+        assert!(!arrow.hit_test([f32::NAN, 0.0], 2.0));
+        assert!(!arrow.hit_test([50.0, 64.5], -1.0));
+    }
+    #[test]
     fn ellipse_outline_keeps_center_and_respects_crop_and_redaction() -> Result<()> {
         let original = image::RgbaImage::from_pixel(48, 40, image::Rgba([80, 120, 200, 17]));
         let source = crate::CapturedImage {
@@ -152,6 +226,7 @@ mod tests {
             source_format: crate::PixelFormat::Rgba8UnormSrgb,
         };
         let ellipse = crate::FrameAnnotation {
+            width: 3,
             area: PixelRegion {
                 x: 8,
                 y: 8,
@@ -230,6 +305,7 @@ mod tests {
             source_format: crate::PixelFormat::Rgba8UnormSrgb,
         };
         let arrow = ArrowAnnotation {
+            width: 3,
             start: [5, 16],
             end: [48, 16],
             color: 0xef4444,
@@ -268,6 +344,7 @@ mod tests {
                 None,
                 &[],
                 &[ArrowAnnotation {
+                    width: 3,
                     end: [100, 16],
                     ..arrow
                 }]

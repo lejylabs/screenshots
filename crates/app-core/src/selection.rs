@@ -15,6 +15,7 @@ pub struct PixelRegion {
 pub struct FrameAnnotation {
     pub area: PixelRegion,
     pub color: u32,
+    pub width: u8,
 }
 
 impl FrameAnnotation {
@@ -33,16 +34,17 @@ impl FrameAnnotation {
                 .collect::<Vec<_>>()
         };
         let mut contours = vec![contour(rx, ry, false)];
-        if rx > 3.0 && ry > 3.0 {
-            contours.push(contour(rx - 3.0, ry - 3.0, true));
+        let width = f32::from(self.width);
+        if rx > width && ry > width {
+            contours.push(contour(rx - width, ry - width, true));
         }
         contours
     }
-    /// Shared preview/export geometry: a three-source-pixel border inside the rectangle.
+    /// Shared preview/export geometry: an inset border in source pixels.
     pub fn segments(self) -> [PixelRegion; 4] {
         let area = self.area;
-        let horizontal = 3.min(area.height);
-        let vertical = 3.min(area.width);
+        let horizontal = u32::from(self.width).min(area.height);
+        let vertical = u32::from(self.width).min(area.width);
         [
             PixelRegion {
                 height: horizontal,
@@ -325,6 +327,12 @@ pub fn render_ordered_snapshot(
             && regions.len() + annotations.len() + pixelations.len() + blurs.len() <= 100,
         "Choose a crop or add up to 100 annotations"
     );
+    ensure!(
+        highlights
+            .iter()
+            .all(|h| h.color <= 0xffffff && h.opacity > 0),
+        "Invalid highlight color or opacity"
+    );
     let (width, height) = source.pixels.dimensions();
     crate::validate_image_size(width, height)?;
     for pen in &pens {
@@ -343,6 +351,7 @@ pub fn render_ordered_snapshot(
     );
     ensure!(
         arrows.iter().all(|arrow| arrow.color <= 0xffffff
+            && (1..=12).contains(&arrow.width)
             && arrow.start != arrow.end
             && arrow.start[0] < width
             && arrow.end[0] < width
@@ -354,9 +363,8 @@ pub fn render_ordered_snapshot(
         frames
             .iter()
             .chain(ellipses.iter())
-            .chain(highlights.iter())
-            .all(|frame| frame.color <= 0xffffff),
-        "Invalid frame color"
+            .all(|frame| frame.color <= 0xffffff && (1..=12).contains(&frame.width)),
+        "Invalid shape color or width"
     );
     for region in regions
         .iter()
@@ -409,7 +417,7 @@ pub fn render_ordered_snapshot(
         grid.ok_or_else(|| anyhow::anyhow!("Pixelation preview is not ready"))?
             .paint(&mut pixels, area, pixelations, [width, height])?;
     }
-    crate::layers::paint_ordered(&mut pixels, area, annotations)?;
+    crate::layers::paint_ordered(&mut pixels, area, annotations, [width, height])?;
     // Redaction is always the final opaque layer, including where other annotations overlap it.
     for region in regions {
         for y in region.y.max(area.y)..(region.y + region.height).min(area.y + area.height) {
@@ -503,6 +511,7 @@ mod tests {
             source_format: crate::PixelFormat::Rgba8UnormSrgb,
         };
         let frame = FrameAnnotation {
+            width: 3,
             area: PixelRegion {
                 x: 1,
                 y: 1,
@@ -553,6 +562,7 @@ mod tests {
                 &[],
                 None,
                 &[FrameAnnotation {
+                    width: 3,
                     color: 0xff000000,
                     ..frame
                 }]

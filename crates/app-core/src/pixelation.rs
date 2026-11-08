@@ -157,6 +157,7 @@ mod tests {
             height: 8,
         };
         let mark = crate::FrameAnnotation {
+            width: 3,
             area: effect,
             color: 0x22c55e,
         };
