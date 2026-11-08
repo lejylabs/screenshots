@@ -13,7 +13,9 @@ pub use desktop_events::{DesktopEvent, desktop_events, request_reopen};
 #[cfg(target_os = "windows")]
 pub use single_instance::SingleInstance;
 mod history;
+mod pixelation;
 mod selection;
+pub use pixelation::PixelationGrid;
 mod settings;
 pub use history::{
     HistoryEntry, ImportReport, capture_history_page, history_database_path, import_capture_files,
@@ -22,6 +24,7 @@ pub use history::{
 pub use selection::{
     FrameAnnotation, PixelRegion, crop_snapshot, edit_snapshot, redact_snapshot,
     render_annotated_snapshot, render_document_snapshot, render_edited_snapshot,
+    render_pixelated_snapshot,
 };
 pub use settings::CaptureSettings;
 
@@ -40,7 +43,7 @@ pub use tray::{SpikeTray, TrayCommand};
 #[cfg(target_os = "windows")]
 mod desktop_window;
 #[cfg(target_os = "windows")]
-pub use desktop_window::{DesktopWindow, wait_for_desktop_compositor};
+pub use desktop_window::{DesktopWindow, cursor_position, wait_for_desktop_compositor};
 
 pub use capture::{
     CaptureBackend, CaptureCapabilities, CaptureError, CaptureRequest, CapturedImage, DisplayInfo,

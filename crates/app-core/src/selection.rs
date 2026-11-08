@@ -147,13 +147,28 @@ pub fn render_document_snapshot(
     arrows: &[crate::ArrowAnnotation],
     ellipses: &[FrameAnnotation],
 ) -> Result<CapturedImage> {
+    render_pixelated_snapshot(source, regions, crop, frames, arrows, ellipses, &[], None)
+}
+
+pub fn render_pixelated_snapshot(
+    source: &CapturedImage,
+    regions: &[PixelRegion],
+    crop: Option<PixelRegion>,
+    frames: &[FrameAnnotation],
+    arrows: &[crate::ArrowAnnotation],
+    ellipses: &[FrameAnnotation],
+    pixelations: &[PixelRegion],
+    grid: Option<&crate::PixelationGrid>,
+) -> Result<CapturedImage> {
     ensure!(
         (!regions.is_empty()
             || !frames.is_empty()
             || !arrows.is_empty()
             || !ellipses.is_empty()
+            || !pixelations.is_empty()
             || crop.is_some())
-            && regions.len() + frames.len() + arrows.len() + ellipses.len() <= 100,
+            && regions.len() + frames.len() + arrows.len() + ellipses.len() + pixelations.len()
+                <= 100,
         "Choose a crop or add up to 100 annotations"
     );
     let (width, height) = source.pixels.dimensions();
@@ -179,6 +194,7 @@ pub fn render_document_snapshot(
         .chain(crop.iter())
         .chain(frames.iter().map(|frame| &frame.area))
         .chain(ellipses.iter().map(|frame| &frame.area))
+        .chain(pixelations)
     {
         ensure!(
             region.width > 0
@@ -213,6 +229,10 @@ pub fn render_document_snapshot(
     } else {
         source.pixels.as_ref().clone()
     };
+    if !pixelations.is_empty() {
+        grid.ok_or_else(|| anyhow::anyhow!("Pixelation preview is not ready"))?
+            .paint(&mut pixels, area, pixelations, [width, height])?;
+    }
     for frame in frames {
         let color = image::Rgba([
             (frame.color >> 16) as u8,
@@ -245,7 +265,11 @@ pub fn render_document_snapshot(
             "{}-{}.png",
             if !regions.is_empty() {
                 "redacted"
-            } else if !frames.is_empty() || !arrows.is_empty() || !ellipses.is_empty() {
+            } else if !frames.is_empty()
+                || !arrows.is_empty()
+                || !ellipses.is_empty()
+                || !pixelations.is_empty()
+            {
                 "annotated"
             } else {
                 "cropped"

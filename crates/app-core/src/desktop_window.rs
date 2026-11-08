@@ -7,6 +7,12 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
 #[derive(Clone, Copy)]
 pub struct DesktopWindow(isize);
 
+pub fn cursor_position() -> Option<[i32; 2]> {
+    let mut point = windows_sys::Win32::Foundation::POINT { x: 0, y: 0 };
+    (unsafe { windows_sys::Win32::UI::WindowsAndMessaging::GetCursorPos(&mut point) } != 0)
+        .then_some([point.x, point.y])
+}
+
 impl DesktopWindow {
     pub fn from_handle(handle: isize) -> Self {
         Self(handle)

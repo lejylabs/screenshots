@@ -28,7 +28,7 @@ impl SpikeTray {
         let menu = Menu::new();
         let capture = MenuItem::new("Capture primary (Ctrl+Shift+S)", true, None);
         let region = MenuItem::new("Select region (Ctrl+Shift+R)", true, None);
-        let edit_region = MenuItem::new("Select region to edit (Ctrl+Shift+E)", true, None);
+        let edit_region = MenuItem::new("Capture and annotate (Ctrl+Shift+E)", true, None);
         let show = MenuItem::new("Show control window", true, None);
         let quit = MenuItem::new("Quit", true, None);
         menu.append_items(&[&edit_region, &region, &capture, &show, &quit])?;
