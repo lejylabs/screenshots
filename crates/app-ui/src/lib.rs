@@ -1,6 +1,7 @@
 //! Phase 0 spike: GPUI overlay + XCap still capture on Windows.
 
 use std::{
+    collections::HashMap,
     path::PathBuf,
     sync::{Arc, Mutex},
 };
@@ -42,9 +43,13 @@ pub struct SpikeShell {
     xcap_windows: Vec<WindowInfo>,
     capture_status: String,
     last_capture: Option<CapturedImage>,
+    last_render: Option<Arc<gpui::RenderImage>>,
     capturing: bool,
     clipboard: Arc<Mutex<app_core::ImageClipboard>>,
     copying: bool,
+    saving: bool,
+    quitting: bool,
+    save_status: String,
     clipboard_status: String,
     #[cfg(target_os = "windows")]
     hotkey: Option<app_core::CaptureHotkey>,
@@ -76,9 +81,13 @@ impl SpikeShell {
             xcap_windows: Vec::new(),
             capture_status: "idle".into(),
             last_capture: None,
+            last_render: None,
             capturing: false,
             clipboard: Arc::new(Mutex::new(app_core::ImageClipboard::default())),
             copying: false,
+            saving: false,
+            quitting: false,
+            save_status: String::new(),
             clipboard_status: "Clipboard: capture an image first".into(),
             #[cfg(target_os = "windows")]
             hotkey: None,
@@ -209,6 +218,7 @@ impl SpikeShell {
                     overlay.active = false;
                     overlay.drag_start = None;
                     overlay.snapshot = None;
+                    overlay.render_image = None;
                     cx.notify();
                     return;
                 }
@@ -227,7 +237,7 @@ impl SpikeShell {
     }
 
     fn open_overlays(&mut self, mode: OverlayMode, cx: &mut Context<Self>) {
-        if self.capturing || self.copying {
+        if self.capturing || self.copying || self.saving || self.quitting {
             return;
         }
         if matches!(mode, OverlayMode::Fullscreen) {
@@ -239,7 +249,7 @@ impl SpikeShell {
             self.start_capture_with_preview(jobs, true, cx);
             return;
         }
-        self.show_overlays(mode, &[], cx);
+        self.show_overlays(mode, &[], &HashMap::new(), cx);
     }
 
     fn restore_control(&self, cx: &mut Context<Self>) {
@@ -259,6 +269,7 @@ impl SpikeShell {
         &mut self,
         mode: OverlayMode,
         shots: &[CapturedImage],
+        renders: &HashMap<PathBuf, Arc<gpui::RenderImage>>,
         cx: &mut Context<Self>,
     ) {
         self.close_overlays(cx);
@@ -302,6 +313,10 @@ impl SpikeShell {
                 .copied()
             {
                 let result = handle.update(cx, |overlay, window, cx| {
+                    overlay.render_image = snapshot
+                        .as_ref()
+                        .and_then(|shot| renders.get(&shot.png_path))
+                        .cloned();
                     overlay.snapshot = snapshot.clone();
                     overlay.bounds = display_bounds;
                     overlay.drag_start = None;
@@ -361,7 +376,11 @@ impl SpikeShell {
                             display_id,
                             display_bounds,
                             mode,
-                            snapshot,
+                            snapshot.clone(),
+                            snapshot
+                                .as_ref()
+                                .and_then(|shot| renders.get(&shot.png_path))
+                                .cloned(),
                             owner,
                             window,
                             cx,
@@ -444,18 +463,33 @@ impl SpikeShell {
         );
     }
 
+    fn finish_quit_if_idle(&self, cx: &mut Context<Self>) {
+        if self.quitting && !self.capturing && !self.copying && !self.saving {
+            cx.defer(close_application);
+        }
+    }
+
     fn copy_last_capture(&mut self, cx: &mut Context<Self>) {
-        if self.copying {
+        self.copy_and_save(Vec::new(), cx);
+    }
+
+    fn copy_and_save(&mut self, saves: Vec<CapturedImage>, cx: &mut Context<Self>) {
+        if self.copying || self.saving || self.quitting {
             return;
         }
         let Some(shot) = &self.last_capture else {
             return;
         };
+        let pixels = shot.pixels.clone();
         let path = shot.png_path.clone();
         tracing::info!(path = %path.display(), "copying capture to clipboard");
         let clipboard = self.clipboard.clone();
         self.copying = true;
-        self.clipboard_status = "Clipboard: copying and verifying…".into();
+        self.saving = !saves.is_empty();
+        if self.saving {
+            self.save_status = "Save: pending clipboard completion".into();
+        }
+        self.clipboard_status = "Clipboard: copying…".into();
         cx.notify();
         cx.spawn(async move |this, cx| {
             let result = cx
@@ -463,7 +497,7 @@ impl SpikeShell {
                     clipboard
                         .lock()
                         .map_err(|error| error.to_string())?
-                        .copy_png_and_verify(&path)
+                        .copy_image(&pixels)
                         .map_err(|error| format!("{error:#}"))
                 })
                 .await;
@@ -471,17 +505,57 @@ impl SpikeShell {
                 this.copying = false;
                 this.clipboard_status = match result {
                     Ok((width, height)) => {
-                        tracing::info!(width, height, "clipboard RGBA round trip passed");
-                        format!("Clipboard: {width}×{height} copied, RGBA round trip verified")
+                        tracing::info!(width, height, "clipboard image copied");
+                        format!("Clipboard: {width}×{height} copied")
                     }
                     Err(error) => {
-                        tracing::error!(%error, "clipboard round trip failed");
+                        tracing::error!(%error, "clipboard copy failed");
                         format!("Clipboard failed: {error}")
                     }
                 };
+                this.finish_quit_if_idle(cx);
                 cx.notify();
             })
             .ok();
+            if !saves.is_empty() {
+                let results = cx
+                    .background_spawn(async move {
+                        saves
+                            .into_iter()
+                            .map(|shot| {
+                                (
+                                    shot.png_path.clone(),
+                                    shot.save_png().map_err(|error| error.to_string()),
+                                )
+                            })
+                            .collect::<Vec<_>>()
+                    })
+                    .await;
+                this.update(cx, |this, cx| {
+                    this.saving = false;
+                    let errors: Vec<_> = results
+                        .iter()
+                        .filter_map(|(path, result)| {
+                            result
+                                .as_ref()
+                                .err()
+                                .map(|error| format!("{}: {error}", path.display()))
+                        })
+                        .collect();
+                    this.save_status = if errors.is_empty() {
+                        tracing::info!(count = results.len(), "capture outputs saved");
+                        format!("Save: {} PNG(s) saved", results.len())
+                    } else {
+                        this.quitting = false;
+                        this.restore_control(cx);
+                        tracing::error!(errors = %errors.join("; "), "capture output save failed");
+                        format!("Save failed: {}", errors.join("; "))
+                    };
+                    this.finish_quit_if_idle(cx);
+                    cx.notify();
+                })
+                .ok();
+            }
         })
         .detach();
     }
@@ -492,23 +566,25 @@ impl SpikeShell {
         region: app_core::PixelRegion,
         cx: &mut Context<Self>,
     ) {
-        if self.capturing || self.copying {
+        if self.capturing || self.copying || self.saving || self.quitting {
             return;
         }
         self.close_overlays(cx);
         self.capturing = true;
-        self.capture_status = "Saving selection…".into();
+        self.capture_status = "Preparing selection…".into();
         cx.notify();
         cx.spawn(async move |this, cx| {
-            let result = cx.background_spawn(async move { app_core::crop_snapshot(&source, region) }).await;
+            let result = cx.background_spawn(async move { app_core::crop_snapshot(&source, region).and_then(|shot| { let render = render_frame(&shot); Ok((shot, render)) }) }).await;
             this.update(cx, |this, cx| {
                 this.capturing = false;
+                if this.quitting { this.finish_quit_if_idle(cx); return; }
                 match result {
-                    Ok(shot) => {
-                        tracing::info!(width = shot.width, height = shot.height, path = %shot.png_path.display(), "saved selection");
+                    Ok((shot, render)) => {
+                        this.last_render = Some(render);
+                        tracing::info!(width = shot.width, height = shot.height, path = %shot.png_path.display(), "selection prepared");
                         this.capture_status = format!("Selection {}×{}  {}", shot.width, shot.height, shot.png_path.display());
-                        this.last_capture = Some(shot);
-                        this.copy_last_capture(cx);
+                        this.last_capture = Some(shot.clone());
+                        this.copy_and_save(vec![shot], cx);
                     }
                     Err(error) => {
                         tracing::error!(%error, "selection failed");
@@ -530,7 +606,7 @@ impl SpikeShell {
         preview: bool,
         cx: &mut Context<Self>,
     ) {
-        if self.capturing || self.copying {
+        if self.capturing || self.copying || self.saving || self.quitting {
             return;
         }
         if jobs.is_empty() {
@@ -582,6 +658,10 @@ impl SpikeShell {
                 Err(error) => {
                     this.update(cx, |this, cx| {
                         this.capturing = false;
+                        if this.quitting {
+                            this.finish_quit_if_idle(cx);
+                            return;
+                        }
                         this.capture_status = format!("could not hide control window: {error}");
                         this.restore_control(cx);
                         cx.notify();
@@ -610,6 +690,7 @@ impl SpikeShell {
                             .map_err(|error| app_core::CaptureError::Backend(error.to_string()))?;
                     }
                     let mut shots = Vec::new();
+                    let mut renders = HashMap::new();
                     for job in jobs {
                         let shot = match &job {
                             CaptureJob::Display(id) => backend.capture_display(id)?,
@@ -629,21 +710,27 @@ impl SpikeShell {
                             height = shot.height,
                             elapsed_ms = shot.elapsed_ms,
                             path = %shot.png_path.display(),
-                            "captured png"
+                            "captured frame"
                         );
+
+                        renders.insert(shot.png_path.clone(), render_frame(&shot));
                         shots.push(shot);
                     }
-                    Ok::<Vec<CapturedImage>, app_core::CaptureError>(shots)
+                    Ok::<_, app_core::CaptureError>((shots, renders))
                 })
                 .await;
 
             this.update(cx, |this, cx| {
                 this.capturing = false;
+                if this.quitting {
+                    this.finish_quit_if_idle(cx);
+                    return;
+                }
                 if !preview || result.is_err() {
                     this.restore_control(cx);
                 }
                 match result {
-                    Ok(shots) => {
+                    Ok((shots, renders)) => {
                         let Some(shot) = shots.last().cloned() else {
                             this.capture_status = "no capture produced".into();
                             this.restore_control(cx);
@@ -657,11 +744,12 @@ impl SpikeShell {
                             shot.elapsed_ms,
                             shot.png_path.display()
                         );
-                        this.last_capture = Some(shot);
                         if preview {
-                            this.show_overlays(OverlayMode::Fullscreen, &shots, cx);
+                            this.show_overlays(OverlayMode::Fullscreen, &shots, &renders, cx);
                         } else {
-                            this.copy_last_capture(cx);
+                            this.last_render = renders.get(&shot.png_path).cloned();
+                            this.last_capture = Some(shot);
+                            this.copy_and_save(shots, cx);
                         }
                     }
                     Err(error) => {
@@ -705,10 +793,9 @@ impl Render for SpikeShell {
             .collect();
         let live_count = self.live_overlay_count(cx);
         let handle_count = self.overlays.len();
-        let capturing = self.capturing || self.copying;
+        let capturing = self.capturing || self.copying || self.saving || self.quitting;
         let capture_status = self.capture_status.clone();
-        let last_path: Option<PathBuf> =
-            self.last_capture.as_ref().map(|shot| shot.png_path.clone());
+        let last_path = self.last_render.clone();
         let xcap_displays = self.xcap_displays.clone();
         let window_count = self.xcap_windows.len();
         let window_preview: Vec<(String, String)> = self
@@ -777,11 +864,12 @@ impl Render for SpikeShell {
             .child(div().text_sm().child(self.tray_status.clone()))
             .child(capture_button(
                 "copy-last-capture",
-                "Copy last capture + verify",
+                "Copy last capture",
                 self.copying || self.last_capture.is_none(),
                 cx.listener(|this, _, _, cx| this.copy_last_capture(cx)),
             ))
             .child(div().text_sm().child(self.clipboard_status.clone()))
+            .child(div().text_sm().child(self.save_status.clone()))
             .child(capture_button(
                 "refresh-windows",
                 "Fensterliste aktualisieren",
@@ -941,6 +1029,13 @@ impl Render for SpikeShell {
     }
 }
 
+fn render_frame(shot: &CapturedImage) -> Arc<gpui::RenderImage> {
+    let mut bgra = shot.pixels.as_ref().clone();
+    for pixel in bgra.pixels_mut() {
+        pixel.0.swap(0, 2);
+    }
+    Arc::new(gpui::RenderImage::new(vec![image::Frame::new(bgra)]))
+}
 fn capture_button(
     id: &'static str,
     label: &'static str,
@@ -976,6 +1071,7 @@ struct Overlay {
     mode: OverlayMode,
     focus_handle: FocusHandle,
     snapshot: Option<CapturedImage>,
+    render_image: Option<Arc<gpui::RenderImage>>,
     drag_start: Option<gpui::Point<Pixels>>,
     drag_end: gpui::Point<Pixels>,
     owner: gpui::WeakEntity<SpikeShell>,
@@ -987,6 +1083,7 @@ impl Overlay {
         bounds: Bounds<Pixels>,
         mode: OverlayMode,
         snapshot: Option<CapturedImage>,
+        render_image: Option<Arc<gpui::RenderImage>>,
         owner: gpui::WeakEntity<SpikeShell>,
         window: &Window,
         cx: &mut Context<Self>,
@@ -1002,6 +1099,7 @@ impl Overlay {
             mode,
             focus_handle: cx.focus_handle(),
             snapshot,
+            render_image,
             drag_start: None,
             drag_end: point(px(0.0), px(0.0)),
             owner,
@@ -1105,8 +1203,8 @@ impl Render for Overlay {
                     owner.update(cx, |this, cx| this.close_overlays(cx)).ok();
                 });
             }))
-            .children(self.snapshot.clone().map(|shot| {
-                img(shot.png_path).absolute().top_0().left_0().size_full()
+            .children(self.render_image.clone().map(|render| {
+                img(render).absolute().top_0().left_0().size_full()
             }))
             .children(self.drag_start.map(|start| {
                 let end = self.drag_end;
@@ -1214,7 +1312,25 @@ fn overlay_options(
 }
 
 fn close_application(cx: &mut App) {
-    // GPUI shutdown clears its windows; avoid removing them while callbacks are still queued.
+    for handle in cx.windows() {
+        if let Some(control) = handle.downcast::<SpikeShell>() {
+            let waiting = control
+                .update(cx, |this, _, cx| {
+                    this.quitting = true;
+                    let busy = this.capturing || this.copying || this.saving;
+                    if busy {
+                        this.capture_status = "Quitting: waiting for active work to finish…".into();
+                        this.restore_control(cx);
+                        cx.notify();
+                    }
+                    busy
+                })
+                .unwrap_or(false);
+            if waiting {
+                return;
+            }
+        }
+    }
     cx.quit();
 }
 
@@ -1266,9 +1382,83 @@ mod tests {
 
     #[cfg(target_os = "windows")]
     #[test]
+    #[ignore = "opens GPUI and replaces clipboard contents with a small test image"]
+    fn quit_waits_for_copy_and_png_save() {
+        let path = std::env::temp_dir().join(format!(
+            "screenshots-quit-{}.png",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let output = path.clone();
+        let waited = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let observed = waited.clone();
+        gpui_platform::application().run(move |cx| {
+            let control = cx
+                .open_window(WindowOptions::default(), |window, cx| {
+                    cx.new(|cx| SpikeShell::new(window, cx))
+                })
+                .unwrap();
+            control
+                .update(cx, |this, _, cx| {
+                    let shot = CapturedImage {
+                        display_id: "test".into(),
+                        window_id: None,
+                        width: 2,
+                        height: 2,
+                        png_path: output,
+                        pixels: Arc::new(image::RgbaImage::from_pixel(
+                            2,
+                            2,
+                            image::Rgba([12, 34, 56, 255]),
+                        )),
+                        elapsed_ms: 0,
+                        source_format: app_core::PixelFormat::Rgba8UnormSrgb,
+                    };
+                    this.last_capture = Some(shot.clone());
+                    this.copy_and_save(vec![shot], cx);
+                })
+                .unwrap();
+            close_application(cx);
+            observed.store(
+                control
+                    .read(cx)
+                    .is_ok_and(|shell| shell.quitting && shell.saving),
+                std::sync::atomic::Ordering::SeqCst,
+            );
+            cx.spawn(async move |cx| {
+                cx.background_executor()
+                    .timer(std::time::Duration::from_secs(10))
+                    .await;
+                cx.update(|cx| cx.quit());
+            })
+            .detach();
+        });
+        assert!(
+            waited.load(std::sync::atomic::Ordering::SeqCst),
+            "quit did not wait for output"
+        );
+        let decoded = image::open(&path)
+            .expect("PNG must be complete before quit")
+            .into_rgba8();
+        assert_eq!(decoded.get_pixel(0, 0).0, [12, 34, 56, 255]);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
     #[ignore = "opens real GPUI overlays and saves desktop captures; do not use the clipboard during this test"]
     fn repeated_region_cancel_preserves_clipboard_and_reuses_windows() {
         use windows_sys::Win32::System::DataExchange::GetClipboardSequenceNumber;
+        let capture_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../target/captures/region-cancel-test");
+        let file_count = || {
+            std::fs::read_dir(&capture_dir)
+                .map(|entries| entries.count())
+                .unwrap_or(0)
+        };
+        let files_before = file_count();
         tracing_subscriber::fmt()
             .with_max_level(tracing::Level::ERROR)
             .with_test_writer()
@@ -1390,6 +1580,11 @@ mod tests {
             .take()
             .expect("regression test did not finish")
             .unwrap();
+        assert_eq!(
+            file_count(),
+            files_before,
+            "cancel persisted desktop previews"
+        );
     }
 
     #[test]

@@ -52,7 +52,7 @@ impl PixelRegion {
 
 pub fn crop_snapshot(source: &CapturedImage, region: PixelRegion) -> Result<CapturedImage> {
     let started = Instant::now();
-    let image = image::open(&source.png_path)?;
+    let image = &source.pixels;
     ensure!(
         region.width > 0
             && region.height > 0
@@ -69,11 +69,19 @@ pub fn crop_snapshot(source: &CapturedImage, region: PixelRegion) -> Result<Capt
     let path = source
         .png_path
         .with_file_name(format!("selection-{}.png", uuid::Uuid::new_v4()));
-    image
-        .crop_imm(region.x, region.y, region.width, region.height)
-        .save(&path)?;
+    let pixels = std::sync::Arc::new(
+        image::imageops::crop_imm(
+            image.as_ref(),
+            region.x,
+            region.y,
+            region.width,
+            region.height,
+        )
+        .to_image(),
+    );
     Ok(CapturedImage {
         png_path: path,
+        pixels,
         width: region.width,
         height: region.height,
         elapsed_ms: started.elapsed().as_millis(),
@@ -127,6 +135,7 @@ mod tests {
             width: 4,
             height: 3,
             png_path: path.clone(),
+            pixels: std::sync::Arc::new(image.clone()),
             elapsed_ms: 0,
             source_format: crate::PixelFormat::Rgba8UnormSrgb,
         };
@@ -139,7 +148,12 @@ mod tests {
                 height: 2,
             },
         )?;
-        let cropped = image::open(&result.png_path)?.into_rgba8();
+        assert!(std::sync::Arc::ptr_eq(
+            &source.pixels,
+            &source.clone().pixels
+        ));
+        assert!(!result.png_path.exists());
+        let cropped = &result.pixels;
         assert_eq!(cropped.dimensions(), (2, 2));
         assert_eq!(cropped.get_pixel(0, 0), image.get_pixel(1, 1));
         assert_eq!(image::open(&path)?.into_rgba8(), image);
@@ -156,7 +170,7 @@ mod tests {
             .is_err()
         );
         std::fs::remove_file(path)?;
-        std::fs::remove_file(result.png_path)?;
+
         Ok(())
     }
 }

@@ -9,6 +9,7 @@ description = "GPUI views and windows. No capture or database implementation."
 
 [dependencies]
 app-core.workspace = true
+image.workspace = true
 gpui.workspace = true
 gpui_platform.workspace = true
 shared.workspace = true

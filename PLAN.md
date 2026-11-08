@@ -273,7 +273,7 @@ Clipboard ownership can be a live consumer even with every window hidden, partic
 
 #### Prototype debt that must not ship
 
-The initial spike's two 50 ms receiver-polling loops have been replaced with a bounded native-event bridge. Foreground window enumeration, file-based frame handoffs, full-desktop preview PNGs on cancellation, repeated PNG decoding, and clipboard read-back verification on every copy remain. Image queues/caches still lack production byte limits and measured memory baselines. Replace these remaining paths before production acceptance; passing the functional spike is not a performance result. See [Phase 0 evidence](docs/phase-0.md) for what was actually exercised.
+The initial polling loops and file-based frame handoffs have been replaced with native events and shared in-memory pixels. Canceled previews no longer save PNGs, and clipboard read-back runs only in tests. Foreground window enumeration, retained last-image/full-resolution render data, missing image byte/admission limits and unmeasured release memory/latency budgets remain production debt. Passing the functional spike is not a performance result. See [Phase 0 evidence](docs/phase-0.md).
 
 ### Process lifecycle
 
