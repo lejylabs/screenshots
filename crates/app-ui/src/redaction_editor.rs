@@ -1,3 +1,4 @@
+use crate::caption::{CaptionFonts, CaptionInput, TextAsset};
 use crate::{CloseOverlay, SpikeShell, capture_button};
 use app_core::{ArrowAnnotation, CapturedImage, FrameAnnotation, PixelRegion};
 use gpui::{
@@ -38,6 +39,7 @@ actions!(
 );
 
 pub(super) fn bind_keys(cx: &mut App) {
+    crate::caption::bind_keys(cx);
     cx.bind_keys([
         KeyBinding::new(
             if cfg!(target_os = "macos") {
@@ -70,6 +72,8 @@ struct EditState {
     arrows: Vec<ArrowAnnotation>,
     ellipses: Vec<FrameAnnotation>,
     pixelations: Vec<PixelRegion>,
+    blurs: Vec<PixelRegion>,
+    texts: Vec<Caption>,
     crop: Option<PixelRegion>,
 }
 #[derive(Default)]
@@ -91,6 +95,8 @@ impl std::ops::DerefMut for RectEdits {
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Selected {
+    Text(usize),
+    Blur(usize),
     Pixelation(usize),
     Redaction(usize),
     Frame(usize),
@@ -109,7 +115,10 @@ impl EditState {
             Selected::Frame(i) => self.frames.get(i).map(|mark| mark.color),
             Selected::Arrow(i) => self.arrows.get(i).map(|mark| mark.color),
             Selected::Ellipse(i) => self.ellipses.get(i).map(|mark| mark.color),
-            Selected::Redaction(_) | Selected::Pixelation(_) => None,
+            Selected::Redaction(_)
+            | Selected::Pixelation(_)
+            | Selected::Blur(_)
+            | Selected::Text(_) => None,
         }
     }
     fn handle_at(
@@ -229,6 +238,8 @@ impl EditState {
         match selected {
             Selected::Redaction(i) => self.regions[i] = next,
             Selected::Pixelation(i) => self.pixelations[i] = next,
+            Selected::Blur(i) => self.blurs[i] = next,
+            Selected::Text(i) => self.texts[i].area = next,
             Selected::Frame(i) => self.frames[i].area = next,
             Selected::Ellipse(i) => self.ellipses[i].area = next,
             Selected::Arrow(_) => unreachable!(),
@@ -251,6 +262,8 @@ impl EditState {
         match selected {
             Selected::Redaction(i) => self.regions.get(i).copied(),
             Selected::Pixelation(i) => self.pixelations.get(i).copied(),
+            Selected::Blur(i) => self.blurs.get(i).copied(),
+            Selected::Text(i) => self.texts.get(i).map(|text| text.area),
             Selected::Frame(i) => self.frames.get(i).map(|item| item.area),
             Selected::Ellipse(i) => self.ellipses.get(i).map(|item| item.area),
             Selected::Arrow(i) => self.arrows.get(i).map(|item| PixelRegion {
@@ -266,10 +279,12 @@ impl EditState {
         let candidates = (0..self.regions.len())
             .rev()
             .map(Selected::Redaction)
+            .chain((0..self.texts.len()).rev().map(Selected::Text))
             .chain((0..self.arrows.len()).rev().map(Selected::Arrow))
             .chain((0..self.ellipses.len()).rev().map(Selected::Ellipse))
             .chain((0..self.frames.len()).rev().map(Selected::Frame))
-            .chain((0..self.pixelations.len()).rev().map(Selected::Pixelation));
+            .chain((0..self.pixelations.len()).rev().map(Selected::Pixelation))
+            .chain((0..self.blurs.len()).rev().map(Selected::Blur));
         candidates.into_iter().find(|selected| {
             let area = self.bounds(*selected).unwrap();
             let x = point[0] - area.x as f32;
@@ -280,9 +295,10 @@ impl EditState {
                 return false;
             }
             match *selected {
-                Selected::Redaction(_) | Selected::Pixelation(_) => {
-                    x >= 0.0 && y >= 0.0 && x < w && y < h
-                }
+                Selected::Redaction(_)
+                | Selected::Pixelation(_)
+                | Selected::Blur(_)
+                | Selected::Text(_) => x >= 0.0 && y >= 0.0 && x < w && y < h,
                 Selected::Frame(_) => x.min(w - x).min(y.min(h - y)) <= 3.0 + tolerance,
                 Selected::Ellipse(_) => {
                     let rx = w / 2.0;
@@ -341,6 +357,8 @@ impl EditState {
                 let area = match selected {
                     Selected::Redaction(i) => &mut self.regions[i],
                     Selected::Pixelation(i) => &mut self.pixelations[i],
+                    Selected::Blur(i) => &mut self.blurs[i],
+                    Selected::Text(i) => &mut self.texts[i].area,
                     Selected::Frame(i) => &mut self.frames[i].area,
                     Selected::Ellipse(i) => &mut self.ellipses[i].area,
                     _ => unreachable!(),
@@ -353,6 +371,26 @@ impl EditState {
     }
 }
 impl RectEdits {
+    fn set_text(&mut self, text: Caption, index: Option<usize>) {
+        if let Some(index) = index {
+            if index >= self.texts.len() {
+                return;
+            }
+            self.checkpoint();
+            self.texts[index] = text;
+        } else if self.regions.len()
+            + self.frames.len()
+            + self.arrows.len()
+            + self.ellipses.len()
+            + self.pixelations.len()
+            + self.blurs.len()
+            + self.texts.len()
+            < 100
+        {
+            self.checkpoint();
+            self.texts.push(text);
+        }
+    }
     fn set_color(&mut self, selected: Selected, color: u32) {
         let Some(previous) = self.color(selected) else {
             return;
@@ -365,7 +403,10 @@ impl RectEdits {
             Selected::Frame(i) => self.frames[i].color = color,
             Selected::Arrow(i) => self.arrows[i].color = color,
             Selected::Ellipse(i) => self.ellipses[i].color = color,
-            Selected::Redaction(_) | Selected::Pixelation(_) => unreachable!(),
+            Selected::Redaction(_)
+            | Selected::Pixelation(_)
+            | Selected::Blur(_)
+            | Selected::Text(_) => unreachable!(),
         }
     }
     fn snapshot(&self) -> EditState {
@@ -406,6 +447,12 @@ impl RectEdits {
             Selected::Pixelation(i) => {
                 self.pixelations.remove(i);
             }
+            Selected::Blur(i) => {
+                self.blurs.remove(i);
+            }
+            Selected::Text(i) => {
+                self.texts.remove(i);
+            }
             Selected::Frame(i) => {
                 self.frames.remove(i);
             }
@@ -423,6 +470,8 @@ impl RectEdits {
             + self.arrows.len()
             + self.ellipses.len()
             + self.pixelations.len()
+            + self.blurs.len()
+            + self.texts.len()
             < 100
         {
             self.checkpoint();
@@ -435,6 +484,8 @@ impl RectEdits {
             + self.arrows.len()
             + self.ellipses.len()
             + self.pixelations.len()
+            + self.blurs.len()
+            + self.texts.len()
             < 100
         {
             self.checkpoint();
@@ -447,6 +498,8 @@ impl RectEdits {
             + self.arrows.len()
             + self.ellipses.len()
             + self.pixelations.len()
+            + self.blurs.len()
+            + self.texts.len()
             < 100
         {
             self.checkpoint();
@@ -459,6 +512,8 @@ impl RectEdits {
             + self.arrows.len()
             + self.ellipses.len()
             + self.pixelations.len()
+            + self.blurs.len()
+            + self.texts.len()
             < 100
         {
             self.checkpoint();
@@ -471,10 +526,26 @@ impl RectEdits {
             + self.arrows.len()
             + self.ellipses.len()
             + self.pixelations.len()
+            + self.blurs.len()
+            + self.texts.len()
             < 100
         {
             self.checkpoint();
             self.pixelations.push(area);
+        }
+    }
+    fn add_blur(&mut self, area: PixelRegion) {
+        if self.regions.len()
+            + self.frames.len()
+            + self.arrows.len()
+            + self.ellipses.len()
+            + self.pixelations.len()
+            + self.blurs.len()
+            + self.texts.len()
+            < 100
+        {
+            self.checkpoint();
+            self.blurs.push(area);
         }
     }
     fn set_crop(&mut self, crop: Option<PixelRegion>) {
@@ -501,6 +572,8 @@ impl RectEdits {
         self.arrows.clear();
         self.ellipses.clear();
         self.pixelations.clear();
+        self.blurs.clear();
+        self.texts.clear();
         self.crop = None;
         self.past.clear();
         self.undone.clear();
@@ -508,6 +581,8 @@ impl RectEdits {
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Tool {
+    Text,
+    Blur,
     Pixelate,
     Select,
     Redact,
@@ -526,6 +601,8 @@ impl Tool {
             "a" => Some(Self::Arrow),
             "e" => Some(Self::Ellipse),
             "p" => Some(Self::Pixelate),
+            "b" => Some(Self::Blur),
+            "t" => Some(Self::Text),
             _ => None,
         }
     }
@@ -559,24 +636,175 @@ pub(super) struct RedactionEditor {
     zoom: Option<f32>,
     pan: [f32; 2],
     pixelation: Option<(Arc<app_core::PixelationGrid>, Arc<gpui::RenderImage>)>,
-    pixelation_cancel: Arc<std::sync::atomic::AtomicBool>,
+    effects_cancel: Arc<std::sync::atomic::AtomicBool>,
     pixelation_loading: bool,
     pixelation_error: Option<String>,
+    blur: Option<Arc<gpui::RenderImage>>,
+    blur_loading: bool,
+    blur_error: Option<String>,
+    pending_effect: Option<Tool>,
+    text_draft: Option<TextDraft>,
+    text_assets: Vec<Arc<TextAsset>>,
+    text_size: u32,
+    text_loading: bool,
+    text_error: Option<String>,
+    text_job: u64,
+    text_cancel: Option<Arc<std::sync::atomic::AtomicBool>>,
+}
+#[derive(Clone)]
+struct Caption {
+    area: PixelRegion,
+    asset: Arc<TextAsset>,
+}
+struct TextDraft {
+    position: [u32; 2],
+    editing: Option<usize>,
+    input: gpui::Entity<CaptionInput>,
 }
 impl Drop for RedactionEditor {
     fn drop(&mut self) {
-        self.pixelation_cancel
+        self.effects_cancel
             .store(true, std::sync::atomic::Ordering::Relaxed);
     }
 }
 
 impl RedactionEditor {
+    fn begin_text(
+        &mut self,
+        position: [u32; 2],
+        editing: Option<usize>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.text_draft.is_some() || self.text_loading {
+            return;
+        }
+        if editing.is_none()
+            && self.edits.regions.len()
+                + self.edits.frames.len()
+                + self.edits.arrows.len()
+                + self.edits.ellipses.len()
+                + self.edits.pixelations.len()
+                + self.edits.blurs.len()
+                + self.edits.texts.len()
+                >= 100
+        {
+            self.text_error = Some("The document already has 100 marks".into());
+            cx.notify();
+            return;
+        }
+        let content = editing
+            .and_then(|index| self.edits.texts.get(index))
+            .map(|text| {
+                self.text_size = text.asset.font_size;
+                self.frame_color = text.asset.stamp.color;
+                text.asset.text.clone()
+            })
+            .unwrap_or_default();
+        let owner = window.window_handle().downcast::<Self>().unwrap();
+        let input = cx.new(|cx| CaptionInput::new(content, owner, cx));
+        let focus = input.read(cx).focus.clone();
+        window.focus(&focus, cx);
+        self.text_draft = Some(TextDraft {
+            position,
+            editing,
+            input,
+        });
+        self.drag = None;
+        self.text_error = None;
+        self.tool = Tool::Text;
+        cx.notify();
+    }
+    pub(super) fn cancel_text(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(cancelled) = &self.text_cancel {
+            cancelled.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+        self.text_job = self.text_job.wrapping_add(1);
+        self.text_draft = None;
+        self.text_error = None;
+        window.focus(&self.focus, cx);
+        cx.notify();
+    }
+    pub(super) fn commit_text(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.text_loading || self.pixelation_loading || self.blur_loading {
+            return;
+        }
+        let Some(draft) = &self.text_draft else {
+            return;
+        };
+        let Some(fonts) = cx.try_global::<CaptionFonts>().map(|fonts| fonts.0.clone()) else {
+            self.text_error = Some("Native text renderer is unavailable".into());
+            cx.notify();
+            return;
+        };
+        let (text, position, editing) = (
+            draft.input.read(cx).content.clone(),
+            draft.position,
+            draft.editing,
+        );
+        let (font_size, color) = (self.text_size, self.frame_color);
+        let cancelled = self.effects_cancel.clone();
+        let text_cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        self.text_cancel = Some(text_cancel.clone());
+        self.text_job = self.text_job.wrapping_add(1);
+        let job = self.text_job;
+        let owner = window.window_handle().downcast::<Self>().unwrap();
+        draft.input.update(cx, |input, cx| {
+            input.enabled = false;
+            cx.notify();
+        });
+        self.text_loading = true;
+        self.text_error = None;
+        cx.notify();
+        cx.spawn(async move|_,cx|{
+            let result=cx.background_spawn(async move{crate::caption::rasterize(fonts.as_ref(),text,font_size,color,||cancelled.load(std::sync::atomic::Ordering::Relaxed)||text_cancel.load(std::sync::atomic::Ordering::Relaxed))}).await;
+            owner.update(cx,|this,window,cx|{
+                this.text_loading=false;
+                this.text_cancel=None;
+                if this.effects_cancel.load(std::sync::atomic::Ordering::Relaxed){return;}
+                if this.text_job!=job {this.prepare_pending_effect(cx);cx.notify();return;}
+                if let Some(draft)=&this.text_draft {draft.input.update(cx,|input,cx|{input.enabled=true;cx.notify();});}
+                match result {
+                    Ok(asset)=>{
+                        this.text_assets.retain(|cached| {
+                            if Arc::strong_count(cached)==1 {window.drop_image(cached.preview.clone()).ok();false}else{true}
+                        });
+                        if this.text_assets.len()>=200 || this.text_assets.iter().map(|asset|asset.bytes()).sum::<usize>()+asset.bytes()>4*1024*1024 {
+                            this.text_error=Some("Text memory limit reached. Use shorter labels or Reset to clear this document.".into());
+                        } else if editing.is_some_and(|index|index>=this.edits.texts.len()) {
+                            this.text_error=Some("Selected label changed. Cancel and select it again.".into());
+                        } else if asset.stamp.width>this.source.width || asset.stamp.height>this.source.height {
+                            this.text_error=Some("Text does not fit this image. Choose a smaller size or shorter text.".into());
+                        } else {
+                            let natural=asset.stamp.area;
+                            let width=natural.width.min(this.source.width);let height=natural.height.min(this.source.height);
+                            let area=PixelRegion{x:position[0].min(this.source.width-width),y:position[1].min(this.source.height-height),width,height};
+                            let asset=Arc::new(asset);
+                            let selected=editing.unwrap_or(this.edits.texts.len());
+                            this.edits.set_text(Caption{area,asset:asset.clone()},editing);
+                            this.text_assets.push(asset);this.text_draft=None;this.selected=Some(Selected::Text(selected));if this.tool==Tool::Text {this.tool=Tool::Select;}window.focus(&this.focus,cx);
+                        }
+                    }
+                    Err(error)=>this.text_error=Some(error),
+                }
+                this.prepare_pending_effect(cx);cx.notify();
+            }).ok();
+        }).detach();
+    }
     #[cfg(test)]
-    pub(super) fn pixelation_probe(&mut self, cx: &mut Context<Self>) -> Result<bool, String> {
-        if let Some(error) = &self.pixelation_error {
+    pub(super) fn source_effects_probe(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Result<bool, String> {
+        if let Some(error) = self.pixelation_error.as_ref().or(self.blur_error.as_ref()) {
             return Err(error.clone());
         }
-        if self.pixelation.is_none() && !self.pixelation_loading {
+        if self.pixelation.is_none()
+            && !self.pixelation_loading
+            && self.blur.is_none()
+            && !self.blur_loading
+        {
             self.tool = Tool::Pixelate;
             self.edits.add_pixelation(PixelRegion {
                 x: 0,
@@ -585,25 +813,170 @@ impl RedactionEditor {
                 height: self.source.height.min(128),
             });
             self.prepare_pixelation(cx);
+            self.tool = Tool::Blur;
+            self.edits.add_blur(PixelRegion {
+                x: 0,
+                y: 0,
+                width: self.source.width.min(64),
+                height: self.source.height.min(64),
+            });
+            self.prepare_blur(cx);
+            if self.blur_loading || self.pending_effect != Some(Tool::Blur) {
+                return Err("Source effect preparations ran concurrently".into());
+            }
         }
-        Ok(self.pixelation.is_some())
+        if let Some(error) = &self.text_error {
+            return Err(error.clone());
+        }
+        if self.pixelation.is_some()
+            && self.blur.is_some()
+            && self.edits.texts.is_empty()
+            && !self.text_loading
+            && self.text_draft.is_none()
+        {
+            self.begin_text([10, 10], None, window, cx);
+            let input = self.text_draft.as_ref().unwrap().input.clone();
+            input.update(cx, |input, cx| {
+                gpui::EntityInputHandler::replace_text_in_range(
+                    input,
+                    None,
+                    "Hello Grüße العربية 中文 😀",
+                    window,
+                    cx,
+                )
+            });
+        }
+        if !self.text_loading
+            && self.text_draft.is_none()
+            && self
+                .edits
+                .texts
+                .first()
+                .is_some_and(|text| text.asset.text != "😀")
+        {
+            self.begin_text([10, 10], Some(0), window, cx);
+            let input = self.text_draft.as_ref().unwrap().input.clone();
+            input.update(cx, |input, cx| {
+                gpui::EntityInputHandler::replace_text_in_range(input, None, "😀", window, cx)
+            });
+        }
+        if !self.text_loading
+            && self
+                .text_draft
+                .as_ref()
+                .is_some_and(|draft| draft.input.read(cx).has_current_layout())
+        {
+            self.commit_text(window, cx);
+        }
+        if !self.text_loading
+            && self
+                .edits
+                .texts
+                .first()
+                .is_some_and(|text| text.asset.text == "😀")
+        {
+            if !self.edits.texts[0]
+                .asset
+                .stamp
+                .mask
+                .iter()
+                .any(|alpha| *alpha > 0)
+            {
+                return Err("Native monochrome emoji mask is empty".into());
+            }
+            self.edits.undo();
+            if self.edits.texts[0].asset.text != "Hello Grüße العربية 中文 😀" {
+                return Err("Text edit did not preserve undo".into());
+            }
+            self.edits.redo();
+        }
+        Ok(self.pixelation.is_some()
+            && self.blur.is_some()
+            && self
+                .edits
+                .texts
+                .first()
+                .is_some_and(|text| text.asset.text == "😀")
+            && !self.text_loading)
     }
     pub(super) fn release_images(&self, window: &mut Window) {
-        self.pixelation_cancel
+        self.effects_cancel
             .store(true, std::sync::atomic::Ordering::Relaxed);
         window.drop_image(self.render_image.clone()).ok();
         if let Some((_, image)) = &self.pixelation {
             window.drop_image(image.clone()).ok();
         }
+        if let Some(image) = &self.blur {
+            window.drop_image(image.clone()).ok();
+        }
+        for asset in &self.text_assets {
+            window.drop_image(asset.preview.clone()).ok();
+        }
+    }
+    fn prepare_pending_effect(&mut self, cx: &mut Context<Self>) {
+        if self
+            .effects_cancel
+            .load(std::sync::atomic::Ordering::Relaxed)
+        {
+            self.pending_effect = None;
+            return;
+        }
+        match self.pending_effect.take() {
+            Some(Tool::Blur) if self.tool == Tool::Blur => self.prepare_blur(cx),
+            Some(Tool::Pixelate) if self.tool == Tool::Pixelate => self.prepare_pixelation(cx),
+            _ => {}
+        }
+    }
+    fn prepare_blur(&mut self, cx: &mut Context<Self>) {
+        if self.blur.is_some() || self.blur_loading {
+            return;
+        }
+        if self.pixelation_loading || self.text_loading {
+            self.pending_effect = Some(Tool::Blur);
+            return;
+        }
+        self.blur_loading = true;
+        self.blur_error = None;
+        let source = self.source.pixels.clone();
+        let cancelled = self.effects_cancel.clone();
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_spawn(async move {
+                    app_core::blur_preview_bgra(&source, || {
+                        cancelled.load(std::sync::atomic::Ordering::Relaxed)
+                    })
+                    .map(|preview| {
+                        Arc::new(gpui::RenderImage::new(vec![image::Frame::new(preview)]))
+                    })
+                    .map_err(|error| error.to_string())
+                })
+                .await;
+            this.update(cx, |this, cx| {
+                this.blur_loading = false;
+                match result {
+                    Ok(preview) => this.blur = Some(preview),
+                    Err(error) => this.blur_error = Some(error),
+                }
+                this.prepare_pending_effect(cx);
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+        cx.notify();
     }
     fn prepare_pixelation(&mut self, cx: &mut Context<Self>) {
         if self.pixelation.is_some() || self.pixelation_loading {
             return;
         }
+        if self.blur_loading || self.text_loading {
+            self.pending_effect = Some(Tool::Pixelate);
+            return;
+        }
         self.pixelation_loading = true;
         self.pixelation_error = None;
         let source = self.source.pixels.clone();
-        let cancelled = self.pixelation_cancel.clone();
+        let cancelled = self.effects_cancel.clone();
         cx.spawn(async move |this, cx| {
             let result = cx
                 .background_spawn(async move {
@@ -623,6 +996,7 @@ impl RedactionEditor {
                     Ok(prepared) => this.pixelation = Some(prepared),
                     Err(error) => this.pixelation_error = Some(error),
                 }
+                this.prepare_pending_effect(cx);
                 cx.notify();
             })
             .ok();
@@ -654,6 +1028,9 @@ impl RedactionEditor {
         }
     }
     fn delete_selection(&mut self, cx: &mut Context<Self>) {
+        if self.text_draft.is_some() || self.text_loading {
+            return;
+        }
         if self.tool == Tool::Select {
             if let Some(selected) = self.selected.take() {
                 self.edits.delete_selected(selected);
@@ -664,11 +1041,15 @@ impl RedactionEditor {
     }
     fn export(&self, mode: OutputMode, cx: &mut Context<Self>) {
         if self.drag.is_some()
+            || self.text_draft.is_some()
+            || self.text_loading
             || (self.edits.regions.is_empty()
                 && self.edits.frames.is_empty()
                 && self.edits.arrows.is_empty()
                 && self.edits.ellipses.is_empty()
                 && self.edits.pixelations.is_empty()
+                && self.edits.blurs.is_empty()
+                && self.edits.texts.is_empty()
                 && self.edits.crop.is_none()
                 && !self.direct_capture)
         {
@@ -689,6 +1070,17 @@ impl RedactionEditor {
         let arrows = self.edits.arrows.clone();
         let ellipses = self.edits.ellipses.clone();
         let pixelations = self.edits.pixelations.clone();
+        let blurs = self.edits.blurs.clone();
+        let texts = self
+            .edits
+            .texts
+            .iter()
+            .map(|text| {
+                let mut stamp = text.asset.stamp.clone();
+                stamp.area = text.area;
+                stamp
+            })
+            .collect();
         let pixelation = self.pixelation.as_ref().map(|(grid, _)| grid.clone());
         cx.defer(move |cx| {
             owner
@@ -702,6 +1094,8 @@ impl RedactionEditor {
                         ellipses,
                         pixelations,
                         pixelation,
+                        blurs,
+                        texts,
                         mode,
                         cx,
                     )
@@ -752,9 +1146,20 @@ impl RedactionEditor {
             zoom: None,
             pan: [0.0; 2],
             pixelation: None,
-            pixelation_cancel: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            effects_cancel: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             pixelation_loading: false,
             pixelation_error: None,
+            blur: None,
+            blur_loading: false,
+            blur_error: None,
+            pending_effect: None,
+            text_draft: None,
+            text_assets: Vec::new(),
+            text_size: 24,
+            text_loading: false,
+            text_error: None,
+            text_job: 0,
+            text_cancel: None,
         }
     }
 
@@ -776,15 +1181,24 @@ impl Render for RedactionEditor {
         }
         let show_palette = matches!(
             self.tool,
-            Tool::Select | Tool::Frame | Tool::Arrow | Tool::Ellipse
+            Tool::Select | Tool::Frame | Tool::Arrow | Tool::Ellipse | Tool::Text
         );
         let palette_color = if self.tool == Tool::Select {
             self.selected.and_then(|mark| self.edits.color(mark))
         } else {
             Some(self.frame_color)
         };
-        let toolbar_height =
-            if show_palette { 220.0 } else { 172.0 } + if layout[0] < 1400.0 { 44.0 } else { 0.0 };
+        let toolbar_height = if show_palette { 220.0 } else { 172.0 }
+            + if layout[0] < 900.0 {
+                88.0
+            } else if layout[0] < 1400.0 {
+                44.0
+            } else {
+                0.0
+            }
+            + if self.tool == Tool::Text { 44.0 } else { 0.0 }
+            + if self.text_draft.is_some() { 80.0 } else { 0.0 }
+            + if self.text_error.is_some() { 24.0 } else { 0.0 };
         let inset = if self.direct_capture { 0.0 } else { 16.0 };
         let workspace_top = if self.direct_capture {
             0.0
@@ -840,6 +1254,9 @@ impl Render for RedactionEditor {
         let mut ellipse_preview = displayed.ellipses;
         let mut pixelation_preview = displayed.pixelations;
         let pixelation_render = self.pixelation.as_ref().map(|(_, render)| render.clone());
+        let mut blur_preview = displayed.blurs;
+        let text_preview = displayed.texts;
+        let blur_render = self.blur.clone();
         let mut crop_preview = self.edits.crop;
         if let Some(start) = self.drag {
             if self.tool == Tool::Select {
@@ -862,6 +1279,10 @@ impl Render for RedactionEditor {
                 } else if self.tool == Tool::Pixelate {
                     if self.pixelation.is_some() {
                         pixelation_preview.push(region);
+                    }
+                } else if self.tool == Tool::Blur {
+                    if self.blur.is_some() {
+                        blur_preview.push(region);
                     }
                 } else if self.tool == Tool::Frame {
                     frame_preview.push(FrameAnnotation {
@@ -888,6 +1309,7 @@ impl Render for RedactionEditor {
             .track_focus(&self.focus)
             .key_context("RedactionEditor")
             .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, _, cx| {
+                if this.text_draft.is_some() || this.text_loading {return;}
                 let modifiers = event.keystroke.modifiers;
                 if modifiers.control || modifiers.alt || modifiers.platform || modifiers.function || event.prefer_character_input { return; }
                 let key = event.keystroke.key.as_str();
@@ -895,6 +1317,7 @@ impl Render for RedactionEditor {
                     if let Some(tool) = Tool::shortcut(key) {
                         this.tool = tool;
                         if tool == Tool::Pixelate { this.prepare_pixelation(cx); }
+                        if tool == Tool::Blur { this.prepare_blur(cx); }
                         this.drag = None;
                         this.resize_handle = None;
                         cx.stop_propagation(); cx.notify(); return;
@@ -907,15 +1330,17 @@ impl Render for RedactionEditor {
                     }
                 }
             }))
-            .on_action(cx.listener(|this, _: &CloseOverlay, _, cx| this.cancel(cx)))
+            .on_action(cx.listener(|this, _: &CloseOverlay, window, cx| {if this.text_draft.is_some(){this.cancel_text(window,cx);}else{this.cancel(cx);}}))
             .on_action(cx.listener(|this, _: &DeleteAnnotation, _, cx| this.delete_selection(cx)))
             .on_action(cx.listener(|this, _: &UndoRedaction, _, cx| {
+                if this.text_draft.is_some() || this.text_loading {return;}
                 this.edits.undo();
                 this.selected = None;
                 this.drag = None;
                 cx.notify();
             }))
             .on_action(cx.listener(|this, _: &RedoRedaction, _, cx| {
+                if this.text_draft.is_some() || this.text_loading {return;}
                 this.edits.redo();
                 this.selected = None;
                 this.drag = None;
@@ -938,11 +1363,14 @@ impl Render for RedactionEditor {
             }))
             .child(gpui::deferred(
                 div()
+                    .id("editor-toolbar")
                     .absolute()
                     .when(!self.toolbar_bottom, |view| view.top_0())
                     .when(self.toolbar_bottom, |view| view.bottom_0())
                     .bg(rgb(0x111318))
                     .occlude()
+                    .max_h_full()
+                    .overflow_y_scroll()
                     .left_0()
                     .right_0()
                     .p_3()
@@ -957,7 +1385,9 @@ impl Render for RedactionEditor {
                     .child(div().text_sm().child(format!(
                         "{} · {} / 100 annotations · Export: {} × {}",
                         match self.tool {
-                            Tool::Pixelate => if self.pixelation_loading { "Preparing pixelation preview..." } else if self.pixelation_error.is_some() { "Pixelation failed. Select Pixelate to retry." } else { "Drag to pixelate source pixels; use Redact for sensitive information" },
+                            Tool::Text => if self.text_loading {"Preparing text..."} else {"Click the image to place a label; Enter applies, Escape cancels text"},
+                            Tool::Pixelate => if self.pixelation_loading || self.pending_effect==Some(Tool::Pixelate) { "Preparing pixelation preview..." } else if self.pixelation_error.is_some() { "Pixelation failed. Select Pixelate to retry." } else { "Drag to pixelate source pixels; use Redact for sensitive information" },
+                            Tool::Blur => if self.blur_loading || self.pending_effect==Some(Tool::Blur) { "Preparing blur preview..." } else if self.blur_error.is_some() { "Blur failed. Select Blur to retry." } else { "Drag to blur source pixels; use Redact for sensitive information" },
                             Tool::Select =>
                                 "Drag a mark to move; handles resize; arrow keys move 1px (Shift: 10px); Delete removes it",
                             Tool::Crop => "Drag to crop; shaded area is excluded",
@@ -969,7 +1399,7 @@ impl Render for RedactionEditor {
                         self.edits.regions.len()
                             + self.edits.frames.len()
                             + self.edits.arrows.len()
-                            + self.edits.ellipses.len() + self.edits.pixelations.len(),
+                            + self.edits.ellipses.len() + self.edits.pixelations.len() + self.edits.blurs.len() + self.edits.texts.len(),
                         crop_preview.map_or(dimensions.0, |area| area.width),
                         crop_preview.map_or(dimensions.1, |area| area.height)
                     )))
@@ -978,6 +1408,12 @@ impl Render for RedactionEditor {
                             .flex()
                             .flex_wrap()
                             .gap_2()
+                            .child(capture_button("tool-text",if self.tool==Tool::Text {"Text (T) active"}else{"Text (T)"},false,cx.listener(|this,_,_,cx|{this.tool=Tool::Text;this.drag=None;cx.notify();})))
+                            .child(capture_button("edit-text","Edit text",!matches!(self.selected,Some(Selected::Text(_)))||self.text_draft.is_some()||self.text_loading,cx.listener(|this,_,window,cx|{if let Some(Selected::Text(index))=this.selected {if let Some(text)=this.edits.texts.get(index){this.begin_text([text.area.x,text.area.y],Some(index),window,cx);}}})))
+                            .child(capture_button(
+                                "tool-blur", if self.tool == Tool::Blur { "Blur (B) active" } else { "Blur (B)" },false,
+                                cx.listener(|this,_,_,cx| { this.tool=Tool::Blur; this.drag=None; this.prepare_blur(cx); cx.notify(); }),
+                            ))
                             .child(capture_button(
                                 "tool-pixelate", if self.tool == Tool::Pixelate { "Pixelate (P) active" } else { "Pixelate (P)" }, false,
                                 cx.listener(|this,_,_,cx| { this.tool=Tool::Pixelate; this.drag=None; this.prepare_pixelation(cx); cx.notify(); }),
@@ -1085,7 +1521,7 @@ impl Render for RedactionEditor {
                             .child(capture_button(
                                 "redaction-undo",
                                 "Undo",
-                                self.edits.past.is_empty(),
+                                self.edits.past.is_empty() || self.text_draft.is_some() || self.text_loading,
                                 cx.listener(|this, _, _, cx| {
                                     this.edits.undo();
                                     this.selected = None;
@@ -1096,7 +1532,7 @@ impl Render for RedactionEditor {
                             .child(capture_button(
                                 "redaction-redo",
                                 "Redo",
-                                self.edits.undone.is_empty(),
+                                self.edits.undone.is_empty() || self.text_draft.is_some() || self.text_loading,
                                 cx.listener(|this, _, _, cx| {
                                     this.edits.redo();
                                     this.selected = None;
@@ -1107,15 +1543,16 @@ impl Render for RedactionEditor {
                             .child(capture_button(
                                 "redaction-reset",
                                 "Reset",
-                                self.edits.regions.is_empty()
+                                self.text_draft.is_some() || self.text_loading || (self.edits.regions.is_empty()
                                     && self.edits.frames.is_empty()
                                     && self.edits.arrows.is_empty()
-                                    && self.edits.ellipses.is_empty() && self.edits.pixelations.is_empty()
+                                    && self.edits.ellipses.is_empty() && self.edits.pixelations.is_empty() && self.edits.blurs.is_empty() && self.edits.texts.is_empty()
                                     && self.edits.crop.is_none()
                                     && self.edits.undone.is_empty()
-                                    && self.edits.past.is_empty(),
-                                cx.listener(|this, _, _, cx| {
+                                    && self.edits.past.is_empty()),
+                                cx.listener(|this, _, window, cx| {
                                     this.edits.reset();
+                                    for asset in this.text_assets.drain(..){window.drop_image(asset.preview.clone()).ok();}
                                     this.selected = None;
                                     this.drag = None;
                                     cx.notify();
@@ -1135,10 +1572,10 @@ impl Render for RedactionEditor {
                                         (self.edits.regions.is_empty()
                                             && self.edits.frames.is_empty()
                                             && self.edits.arrows.is_empty()
-                                            && self.edits.ellipses.is_empty() && self.edits.pixelations.is_empty()
+                                            && self.edits.ellipses.is_empty() && self.edits.pixelations.is_empty() && self.edits.blurs.is_empty() && self.edits.texts.is_empty()
                                             && self.edits.crop.is_none()
                                             && !self.direct_capture)
-                                            || self.drag.is_some(),
+                                            || self.drag.is_some() || self.text_draft.is_some() || self.text_loading,
                                         cx.listener(move |this, _, _, cx| this.export(mode, cx)),
                                     )
                                 }),
@@ -1216,6 +1653,12 @@ impl Render for RedactionEditor {
                             }),
                         ))
                     })
+                    .children(self.text_error.clone().map(|error|div().text_sm().child(error)))
+                    .children(self.text_draft.as_ref().map(|draft|draft.input.clone()))
+                    .when(self.text_draft.is_some(),|view|view.child(div().flex().gap_2()
+                        .child(capture_button("apply-text","Apply text",self.text_loading||self.pixelation_loading||self.blur_loading,cx.listener(|this,_,window,cx|this.commit_text(window,cx))))
+                        .child(capture_button("cancel-text","Cancel text",false,cx.listener(|this,_,window,cx|this.cancel_text(window,cx))))))
+                    .when(self.tool==Tool::Text,|view|view.child(div().flex().gap_2().children([16,24,36].into_iter().map(|size|capture_button(match size{16=>"text-size-16",24=>"text-size-24",_=>"text-size-36"},match size{16=>"16 px",24=>"24 px",_=>"36 px"},self.text_loading||self.text_size==size,cx.listener(move|this,_,_,cx|{this.text_size=size;cx.notify();}))))))
                     .when(
                         show_palette,
                         |toolbar| {
@@ -1236,7 +1679,7 @@ impl Render for RedactionEditor {
                                                 } else {
                                                     label
                                                 },
-                                                palette_color.is_none(),
+                                                palette_color.is_none() || self.text_loading,
                                                 cx.listener(move |this, _, _, cx| {
                                                     this.frame_color = color;
                                                     if this.tool == Tool::Select {
@@ -1285,8 +1728,11 @@ impl Render for RedactionEditor {
                             .overflow_hidden()
                             .on_mouse_down(
                                 gpui::MouseButton::Left,
-                                cx.listener(move |this, event: &gpui::MouseDownEvent, _, cx| {
+                                cx.listener(move |this, event: &gpui::MouseDownEvent, window, cx| {
+                                    if this.text_draft.is_some() || this.text_loading {return;}
+                                    if this.tool==Tool::Text {let position=[((f32::from(event.position.x)-origin[0])/scale).floor().max(0.0) as u32,((f32::from(event.position.y)-origin[1])/scale).floor().max(0.0) as u32];this.begin_text(position,None,window,cx);return;}
                                     if this.tool == Tool::Pixelate && this.pixelation.is_none() { return; }
+                                    if this.tool == Tool::Blur && this.blur.is_none() { return; }
                                     if this.tool == Tool::Select {
                                         let position = [
                                             f32::from(event.position.x) - origin[0],
@@ -1305,7 +1751,7 @@ impl Render for RedactionEditor {
                                         || this.edits.regions.len()
                                             + this.edits.frames.len()
                                             + this.edits.arrows.len()
-                                            + this.edits.ellipses.len() + this.edits.pixelations.len()
+                                            + this.edits.ellipses.len() + this.edits.pixelations.len() + this.edits.blurs.len() + this.edits.texts.len()
                                             < 100
                                     {
                                         let position = [
@@ -1362,6 +1808,8 @@ impl Render for RedactionEditor {
                                                 this.edits.set_crop(Some(region));
                                             } else if this.tool == Tool::Pixelate {
                                                 if this.pixelation.is_some() { this.edits.add_pixelation(region); }
+                                            } else if this.tool == Tool::Blur {
+                                                if this.blur.is_some() { this.edits.add_blur(region); }
                                             } else if this.tool == Tool::Frame {
                                                 this.edits.add_frame(FrameAnnotation {
                                                     area: region,
@@ -1391,14 +1839,16 @@ impl Render for RedactionEditor {
                             )
                             .child(
                                 gpui::canvas(|_,_,_| (),move |bounds,_,window,_| {
-                                    if let Some(render) = &pixelation_render {
-                                        for area in &pixelation_preview {
+                                    for (render,areas) in [(&blur_render,&blur_preview),(&pixelation_render,&pixelation_preview)] {
+                                      if let Some(render) = render {
+                                        for area in areas {
                                             let clip = gpui::Bounds { origin: bounds.origin + gpui::point(px(area.x as f32*scale),px(area.y as f32*scale)), size:gpui::size(px(area.width as f32*scale),px(area.height as f32*scale)) };
                                             window.paint_quad(gpui::fill(clip,rgb(0x111318)));
                                             window.with_content_mask(Some(gpui::ContentMask { bounds:clip }), |window| {
                                                 window.paint_image(bounds,bounds,Default::default(),render.clone(),0,false).ok();
                                             });
                                         }
+                                      }
                                     }
                                 }).absolute().top_0().left_0().size_full()
                             )
@@ -1466,6 +1916,7 @@ impl Render for RedactionEditor {
                                 .left_0()
                                 .size_full(),
                             )
+                            .children(text_preview.into_iter().map(move|text|div().absolute().left(px(text.area.x as f32*scale)).top(px(text.area.y as f32*scale)).w(px(text.area.width as f32*scale)).h(px(text.area.height as f32*scale)).child(img(text.asset.preview.clone()).size_full())))
                             .children(preview.into_iter().map(move |region| {
                                 div()
                                     .absolute()
@@ -1553,6 +2004,110 @@ impl Render for RedactionEditor {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn text_selection_transform_and_undo_share_the_prepared_mask() {
+        let area = PixelRegion {
+            x: 1,
+            y: 1,
+            width: 2,
+            height: 2,
+        };
+        let asset = Arc::new(TextAsset {
+            text: "label".into(),
+            font_size: 24,
+            stamp: app_core::TextAnnotation {
+                area,
+                color: 0xef4444,
+                width: 2,
+                height: 2,
+                mask: vec![0, 255, 128, 255].into(),
+            },
+            preview: Arc::new(gpui::RenderImage::new(vec![image::Frame::new(
+                image::RgbaImage::new(2, 2),
+            )])),
+        });
+        let mut edits = RectEdits::default();
+        edits.set_text(
+            Caption {
+                area,
+                asset: asset.clone(),
+            },
+            None,
+        );
+        let selected = Selected::Text(0);
+        assert_eq!(edits.pick([2.0, 2.0], 1.0), Some(selected));
+        assert_eq!(Tool::shortcut("t"), Some(Tool::Text));
+        edits.transform_selected(
+            selected,
+            Some(ResizeHandle::Corner([true, true])),
+            [3.0, 3.0],
+            [20, 20],
+        );
+        assert_eq!(edits.bounds(selected).unwrap().width, 5);
+        assert!(Arc::ptr_eq(
+            &edits.texts[0].asset.stamp.mask,
+            &asset.stamp.mask
+        ));
+        edits.undo();
+        assert_eq!(edits.bounds(selected), Some(area));
+        edits.transform_selected(selected, None, [5.0, 5.0], [20, 20]);
+        assert_eq!(edits.bounds(selected).unwrap().x, 6);
+        edits.delete_selected(selected);
+        assert!(edits.texts.is_empty());
+        edits.undo();
+        assert!(Arc::ptr_eq(&edits.texts[0].asset, &asset));
+        for _ in 0..100 {
+            edits.set_text(
+                Caption {
+                    area,
+                    asset: asset.clone(),
+                },
+                None,
+            );
+        }
+        assert_eq!(edits.texts.len(), 100);
+        edits.add_blur(area);
+        assert!(edits.blurs.is_empty());
+        edits.reset();
+        assert!(edits.texts.is_empty());
+    }
+    #[test]
+    fn blur_regions_share_selection_transform_delete_and_undo_limits() {
+        let mut edits = RectEdits::default();
+        let area = PixelRegion {
+            x: 10,
+            y: 10,
+            width: 20,
+            height: 20,
+        };
+        edits.add_blur(area);
+        let selected = Selected::Blur(0);
+        assert_eq!(edits.pick([15.0, 15.0], 1.0), Some(selected));
+        assert_eq!(Tool::shortcut("b"), Some(Tool::Blur));
+        edits.transform_selected(
+            selected,
+            Some(ResizeHandle::Corner([true, true])),
+            [10.0, 10.0],
+            [100, 100],
+        );
+        assert_eq!(edits.bounds(selected).unwrap().width, 30);
+        edits.undo();
+        assert_eq!(edits.bounds(selected), Some(area));
+        edits.transform_selected(selected, None, [5.0, 5.0], [100, 100]);
+        assert_eq!(edits.bounds(selected).unwrap().x, 15);
+        edits.delete_selected(selected);
+        assert!(edits.blurs.is_empty());
+        edits.undo();
+        assert_eq!(edits.blurs.len(), 1);
+        for _ in 0..100 {
+            edits.add_blur(area);
+        }
+        assert_eq!(edits.blurs.len(), 100);
+        edits.add_pixelation(area);
+        assert!(edits.pixelations.is_empty());
+        edits.reset();
+        assert!(edits.blurs.is_empty());
+    }
     #[test]
     fn pixelation_uses_shared_selection_resize_and_undo_limits() {
         let mut edits = RectEdits::default();

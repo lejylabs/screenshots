@@ -1,5 +1,6 @@
 //! Phase 0 spike: GPUI overlay + XCap still capture on Windows.
 
+mod caption;
 mod redaction_editor;
 use redaction_editor::{OutputMode, RedactionEditor};
 
@@ -1406,6 +1407,8 @@ impl SpikeShell {
         ellipses: Vec<app_core::FrameAnnotation>,
         pixelations: Vec<app_core::PixelRegion>,
         pixelation: Option<Arc<app_core::PixelationGrid>>,
+        blurs: Vec<app_core::PixelRegion>,
+        texts: Vec<app_core::TextAnnotation>,
         mode: OutputMode,
         cx: &mut Context<Self>,
     ) {
@@ -1418,7 +1421,7 @@ impl SpikeShell {
         cx.spawn(async move |this, cx| {
             let result = cx
                 .background_spawn(async move {
-                    app_core::render_pixelated_snapshot(
+                    app_core::render_text_snapshot(
                         &source,
                         &regions,
                         crop,
@@ -1427,6 +1430,8 @@ impl SpikeShell {
                         &ellipses,
                         &pixelations,
                         pixelation.as_deref(),
+                        &blurs,
+                        &texts,
                     )
                     .map(|shot| {
                         let thumbnail = render_thumbnail(&shot);
@@ -2996,7 +3001,10 @@ pub fn run() {
             "starting overlay + capture spike"
         );
 
-        gpui_platform::application().run(|cx: &mut App| {
+        let platform = gpui_platform::current_platform(false);
+        let fonts = caption::CaptionFonts(platform.text_system());
+        gpui::Application::with_platform(platform).run(move |cx: &mut App| {
+            cx.set_global(fonts);
             redaction_editor::bind_keys(cx);
             cx.on_action(|_: &Quit, cx| cx.defer(close_application));
             cx.bind_keys([
@@ -3052,9 +3060,12 @@ fn run_resident() {
                 .and_then(|value| value.parse::<u64>().ok())
         })
         .map(|seconds| seconds.clamp(10, 660));
-    gpui_platform::application()
+    let platform = gpui_platform::current_platform(false);
+    let fonts = caption::CaptionFonts(platform.text_system());
+    gpui::Application::with_platform(platform)
         .with_windowing(gpui::WindowingRequest::Headless)
         .run(move |cx| {
+            cx.set_global(fonts);
             cx.set_quit_mode(gpui::QuitMode::Explicit);
             redaction_editor::bind_keys(cx);
             let controller = cx.new(|cx| SpikeShell::new_controller(None, cx));
@@ -3264,9 +3275,15 @@ mod tests {
             unsafe { windows_sys::Win32::System::DataExchange::GetClipboardSequenceNumber() };
         let result = Arc::new(Mutex::new(None));
         let report = result.clone();
-        gpui_platform::application()
+        let (application, fonts) = {
+            let platform = gpui_platform::current_platform(false);
+            let fonts = caption::CaptionFonts(platform.text_system());
+            (gpui::Application::with_platform(platform), fonts)
+        };
+        application
             .with_windowing(gpui::WindowingRequest::Headless)
             .run(move |cx| {
+                cx.set_global(fonts);
                 cx.set_quit_mode(gpui::QuitMode::Explicit);
                 let controller = cx.new(|cx| SpikeShell::new_controller(None, cx));
                 cx.set_global(ResidentController(controller.clone()));
@@ -3317,13 +3334,15 @@ mod tests {
                         let deadline = std::time::Instant::now();
                         loop {
                             if editor
-                                .update(cx, |editor, _, cx| editor.pixelation_probe(cx))
+                                .update(cx, |editor, window, cx| {
+                                    editor.source_effects_probe(window, cx)
+                                })
                                 .map_err(|e| e.to_string())??
                             {
                                 break;
                             }
                             if deadline.elapsed().as_secs() > 8 {
-                                return Err("pixelation preview timed out".into());
+                                return Err("source effect preview timed out".into());
                             }
                             cx.background_executor()
                                 .timer(std::time::Duration::from_millis(20))
@@ -3486,6 +3505,8 @@ mod tests {
                                         Vec::new(),
                                         Vec::new(),
                                         None,
+                                        Vec::new(),
+                                        Vec::new(),
                                         OutputMode::SaveAndCopy,
                                         cx,
                                     ),

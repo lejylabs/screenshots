@@ -12,8 +12,12 @@ mod single_instance;
 pub use desktop_events::{DesktopEvent, desktop_events, request_reopen};
 #[cfg(target_os = "windows")]
 pub use single_instance::SingleInstance;
+mod blur;
+mod text;
+pub use text::TextAnnotation;
 mod history;
 mod pixelation;
+pub use blur::blur_preview_bgra;
 mod selection;
 pub use pixelation::PixelationGrid;
 mod settings;
@@ -24,7 +28,7 @@ pub use history::{
 pub use selection::{
     FrameAnnotation, PixelRegion, crop_snapshot, edit_snapshot, redact_snapshot,
     render_annotated_snapshot, render_document_snapshot, render_edited_snapshot,
-    render_pixelated_snapshot,
+    render_filtered_snapshot, render_pixelated_snapshot, render_text_snapshot,
 };
 pub use settings::CaptureSettings;
 

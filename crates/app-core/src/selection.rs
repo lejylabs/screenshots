@@ -160,19 +160,84 @@ pub fn render_pixelated_snapshot(
     pixelations: &[PixelRegion],
     grid: Option<&crate::PixelationGrid>,
 ) -> Result<CapturedImage> {
+    render_filtered_snapshot(
+        source,
+        regions,
+        crop,
+        frames,
+        arrows,
+        ellipses,
+        pixelations,
+        grid,
+        &[],
+    )
+}
+
+pub fn render_filtered_snapshot(
+    source: &CapturedImage,
+    regions: &[PixelRegion],
+    crop: Option<PixelRegion>,
+    frames: &[FrameAnnotation],
+    arrows: &[crate::ArrowAnnotation],
+    ellipses: &[FrameAnnotation],
+    pixelations: &[PixelRegion],
+    grid: Option<&crate::PixelationGrid>,
+    blurs: &[PixelRegion],
+) -> Result<CapturedImage> {
+    render_text_snapshot(
+        source,
+        regions,
+        crop,
+        frames,
+        arrows,
+        ellipses,
+        pixelations,
+        grid,
+        blurs,
+        &[],
+    )
+}
+
+pub fn render_text_snapshot(
+    source: &CapturedImage,
+    regions: &[PixelRegion],
+    crop: Option<PixelRegion>,
+    frames: &[FrameAnnotation],
+    arrows: &[crate::ArrowAnnotation],
+    ellipses: &[FrameAnnotation],
+    pixelations: &[PixelRegion],
+    grid: Option<&crate::PixelationGrid>,
+    blurs: &[PixelRegion],
+    texts: &[crate::TextAnnotation],
+) -> Result<CapturedImage> {
     ensure!(
         (!regions.is_empty()
             || !frames.is_empty()
             || !arrows.is_empty()
             || !ellipses.is_empty()
             || !pixelations.is_empty()
+            || !blurs.is_empty()
+            || !texts.is_empty()
             || crop.is_some())
-            && regions.len() + frames.len() + arrows.len() + ellipses.len() + pixelations.len()
+            && regions.len()
+                + frames.len()
+                + arrows.len()
+                + ellipses.len()
+                + pixelations.len()
+                + blurs.len()
+                + texts.len()
                 <= 100,
         "Choose a crop or add up to 100 annotations"
     );
     let (width, height) = source.pixels.dimensions();
     crate::validate_image_size(width, height)?;
+    for text in texts {
+        text.validate()?;
+    }
+    ensure!(
+        texts.iter().map(|text| text.mask.len()).sum::<usize>() <= 4 * 1024 * 1024,
+        "Text masks exceed the export limit"
+    );
     ensure!(
         arrows.iter().all(|arrow| arrow.color <= 0xffffff
             && arrow.start != arrow.end
@@ -195,6 +260,8 @@ pub fn render_pixelated_snapshot(
         .chain(frames.iter().map(|frame| &frame.area))
         .chain(ellipses.iter().map(|frame| &frame.area))
         .chain(pixelations)
+        .chain(blurs)
+        .chain(texts.iter().map(|text| &text.area))
     {
         ensure!(
             region.width > 0
@@ -229,6 +296,9 @@ pub fn render_pixelated_snapshot(
     } else {
         source.pixels.as_ref().clone()
     };
+    if !blurs.is_empty() {
+        crate::blur::paint_blur(&source.pixels, &mut pixels, area, blurs)?;
+    }
     if !pixelations.is_empty() {
         grid.ok_or_else(|| anyhow::anyhow!("Pixelation preview is not ready"))?
             .paint(&mut pixels, area, pixelations, [width, height])?;
@@ -249,6 +319,9 @@ pub fn render_pixelated_snapshot(
         }
     }
     crate::arrows::paint_arrows(&mut pixels, area, arrows, ellipses)?;
+    for text in texts {
+        text.paint(&mut pixels, area);
+    }
     // Redaction is always the final opaque layer, including where other annotations overlap it.
     for region in regions {
         for y in region.y.max(area.y)..(region.y + region.height).min(area.y + area.height) {
@@ -269,6 +342,8 @@ pub fn render_pixelated_snapshot(
                 || !arrows.is_empty()
                 || !ellipses.is_empty()
                 || !pixelations.is_empty()
+                || !blurs.is_empty()
+                || !texts.is_empty()
             {
                 "annotated"
             } else {
