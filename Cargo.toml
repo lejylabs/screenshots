@@ -1,0 +1,56 @@
+[workspace]
+resolver = "3"
+members = [
+    "apps/desktop",
+    "crates/app-core",
+    "crates/app-ui",
+    "crates/shared",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+repository = "https://github.com/lejylabs/screenshots"
+rust-version = "1.99"
+
+[workspace.dependencies]
+app-core = { path = "crates/app-core" }
+app-ui = { path = "crates/app-ui" }
+shared = { path = "crates/shared" }
+
+# Pinned GPUI snapshot of Zed v1.27.0. This is upstream GPUI on crates.io,
+# not a tray/hotkey/overlay fork. Do not enable the `screen-capture` feature;
+# capture backends are evaluated separately.
+gpui = { package = "gpui-unofficial", version = "1.27.0" }
+gpui_platform = { package = "gpui-platform-gpui-unofficial", version = "1.27.0" }
+
+anyhow = "1.0.104"
+arboard = "3.7.0"
+chrono = { version = "0.4.45", features = ["serde"] }
+directories = "6.0.0"
+global-hotkey = "0.9.0"
+image = "0.25.10"
+reqwest = { version = "0.13.5", features = ["json", "multipart"] }
+rfd = "0.18.0"
+rusqlite = { version = "0.40.2", features = ["bundled", "chrono", "uuid"] } # 0.40.x until rusqlite_migration publishes a 0.41-compatible release.
+rusqlite_migration = "2.6.0"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+thiserror = "2.0.21"
+tiny-skia = "0.12.0"
+tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros", "sync", "time"] }
+toml = "1.2.1"
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter", "fmt"] }
+tray-icon = "0.26.1"
+uuid = { version = "1.29.1", features = ["v4", "v7", "serde"] }
+
+# Left out on purpose:
+# - FFmpeg: recording, after the MVP, license check first
+# - Scap / XCap / ashpd: capture spike, not a committed backend yet
+# - notify-rust: Linux/macOS oriented; Windows notifications come later
+# - GPUI forks that bundle tray/hotkeys/overlays
+
+[profile.dev.package."*"]
+opt-level = 1

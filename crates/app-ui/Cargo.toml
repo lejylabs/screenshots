@@ -1,0 +1,15 @@
+[package]
+name = "app-ui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "GPUI views and windows. No capture or database implementation."
+
+[dependencies]
+app-core.workspace = true
+gpui.workspace = true
+gpui_platform.workspace = true
+shared.workspace = true
+tracing.workspace = true
