@@ -11,6 +11,63 @@ pub struct PixelRegion {
     pub height: u32,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FrameAnnotation {
+    pub area: PixelRegion,
+    pub color: u32,
+}
+
+impl FrameAnnotation {
+    pub fn ellipse_contours(self) -> Vec<Vec<[f32; 2]>> {
+        let rx = self.area.width as f32 / 2.0;
+        let ry = self.area.height as f32 / 2.0;
+        let center = [self.area.x as f32 + rx, self.area.y as f32 + ry];
+        let steps = ((rx.max(ry).sqrt() * 8.0).ceil() as usize).clamp(32, 256);
+        let contour = |x: f32, y: f32, reverse: bool| {
+            (0..steps)
+                .map(|index| {
+                    let index = if reverse { steps - 1 - index } else { index };
+                    let angle = index as f32 * std::f32::consts::TAU / steps as f32;
+                    [center[0] + angle.cos() * x, center[1] + angle.sin() * y]
+                })
+                .collect::<Vec<_>>()
+        };
+        let mut contours = vec![contour(rx, ry, false)];
+        if rx > 3.0 && ry > 3.0 {
+            contours.push(contour(rx - 3.0, ry - 3.0, true));
+        }
+        contours
+    }
+    /// Shared preview/export geometry: a three-source-pixel border inside the rectangle.
+    pub fn segments(self) -> [PixelRegion; 4] {
+        let area = self.area;
+        let horizontal = 3.min(area.height);
+        let vertical = 3.min(area.width);
+        [
+            PixelRegion {
+                height: horizontal,
+                ..area
+            },
+            PixelRegion {
+                y: area
+                    .y
+                    .saturating_add(area.height.saturating_sub(horizontal)),
+                height: horizontal,
+                ..area
+            },
+            PixelRegion {
+                width: vertical,
+                ..area
+            },
+            PixelRegion {
+                x: area.x.saturating_add(area.width.saturating_sub(vertical)),
+                width: vertical,
+                ..area
+            },
+        ]
+    }
+}
+
 impl PixelRegion {
     /// Map window-local logical coordinates to the frozen image's physical pixels.
     pub fn from_drag(
@@ -60,13 +117,69 @@ pub fn edit_snapshot(
     regions: &[PixelRegion],
     crop: Option<PixelRegion>,
 ) -> Result<CapturedImage> {
+    render_edited_snapshot(source, regions, crop, &[])
+}
+
+pub fn render_edited_snapshot(
+    source: &CapturedImage,
+    regions: &[PixelRegion],
+    crop: Option<PixelRegion>,
+    frames: &[FrameAnnotation],
+) -> Result<CapturedImage> {
+    render_annotated_snapshot(source, regions, crop, frames, &[])
+}
+
+pub fn render_annotated_snapshot(
+    source: &CapturedImage,
+    regions: &[PixelRegion],
+    crop: Option<PixelRegion>,
+    frames: &[FrameAnnotation],
+    arrows: &[crate::ArrowAnnotation],
+) -> Result<CapturedImage> {
+    render_document_snapshot(source, regions, crop, frames, arrows, &[])
+}
+
+pub fn render_document_snapshot(
+    source: &CapturedImage,
+    regions: &[PixelRegion],
+    crop: Option<PixelRegion>,
+    frames: &[FrameAnnotation],
+    arrows: &[crate::ArrowAnnotation],
+    ellipses: &[FrameAnnotation],
+) -> Result<CapturedImage> {
     ensure!(
-        (!regions.is_empty() || crop.is_some()) && regions.len() <= 100,
-        "Choose a crop or add up to 100 redactions"
+        (!regions.is_empty()
+            || !frames.is_empty()
+            || !arrows.is_empty()
+            || !ellipses.is_empty()
+            || crop.is_some())
+            && regions.len() + frames.len() + arrows.len() + ellipses.len() <= 100,
+        "Choose a crop or add up to 100 annotations"
     );
     let (width, height) = source.pixels.dimensions();
     crate::validate_image_size(width, height)?;
-    for region in regions.iter().chain(crop.iter()) {
+    ensure!(
+        arrows.iter().all(|arrow| arrow.color <= 0xffffff
+            && arrow.start != arrow.end
+            && arrow.start[0] < width
+            && arrow.end[0] < width
+            && arrow.start[1] < height
+            && arrow.end[1] < height),
+        "Invalid arrow annotation"
+    );
+    ensure!(
+        frames
+            .iter()
+            .chain(ellipses)
+            .all(|frame| frame.color <= 0xffffff),
+        "Invalid frame color"
+    );
+    for region in regions
+        .iter()
+        .chain(crop.iter())
+        .chain(frames.iter().map(|frame| &frame.area))
+        .chain(ellipses.iter().map(|frame| &frame.area))
+    {
         ensure!(
             region.width > 0
                 && region.height > 0
@@ -100,6 +213,23 @@ pub fn edit_snapshot(
     } else {
         source.pixels.as_ref().clone()
     };
+    for frame in frames {
+        let color = image::Rgba([
+            (frame.color >> 16) as u8,
+            (frame.color >> 8) as u8,
+            frame.color as u8,
+            255,
+        ]);
+        for region in frame.segments() {
+            for y in region.y.max(area.y)..(region.y + region.height).min(area.y + area.height) {
+                for x in region.x.max(area.x)..(region.x + region.width).min(area.x + area.width) {
+                    pixels.put_pixel(x - area.x, y - area.y, color);
+                }
+            }
+        }
+    }
+    crate::arrows::paint_arrows(&mut pixels, area, arrows, ellipses)?;
+    // Redaction is always the final opaque layer, including where other annotations overlap it.
     for region in regions {
         for y in region.y.max(area.y)..(region.y + region.height).min(area.y + area.height) {
             for x in region.x.max(area.x)..(region.x + region.width).min(area.x + area.width) {
@@ -113,10 +243,12 @@ pub fn edit_snapshot(
         height: area.height,
         png_path: source.png_path.with_file_name(format!(
             "{}-{}.png",
-            if regions.is_empty() {
-                "cropped"
-            } else {
+            if !regions.is_empty() {
                 "redacted"
+            } else if !frames.is_empty() || !arrows.is_empty() || !ellipses.is_empty() {
+                "annotated"
+            } else {
+                "cropped"
             },
             uuid::Uuid::new_v4()
         )),
@@ -168,6 +300,79 @@ pub fn crop_snapshot(source: &CapturedImage, region: PixelRegion) -> Result<Capt
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn frames_match_segments_clip_to_crop_and_stay_below_redaction() -> Result<()> {
+        let original = image::RgbaImage::from_pixel(12, 10, image::Rgba([31, 42, 53, 255]));
+        let source = CapturedImage {
+            display_id: "fixture".into(),
+            window_id: None,
+            width: 12,
+            height: 10,
+            pixels: std::sync::Arc::new(original.clone()),
+            png_path: "source.png".into(),
+            elapsed_ms: 0,
+            source_format: crate::PixelFormat::Rgba8UnormSrgb,
+        };
+        let frame = FrameAnnotation {
+            area: PixelRegion {
+                x: 1,
+                y: 1,
+                width: 10,
+                height: 8,
+            },
+            color: 0xef4444,
+        };
+        assert_eq!(frame.segments()[0].height, 3);
+        assert_eq!(frame.segments()[2].width, 3);
+        let redact = PixelRegion {
+            x: 1,
+            y: 1,
+            width: 2,
+            height: 2,
+        };
+        let crop = PixelRegion {
+            x: 2,
+            y: 2,
+            width: 9,
+            height: 7,
+        };
+        let result = render_edited_snapshot(&source, &[redact], Some(crop), &[frame])?;
+        for y in 0..crop.height {
+            for x in 0..crop.width {
+                let sx = x + crop.x;
+                let sy = y + crop.y;
+                let in_frame = frame.segments().iter().any(|area| {
+                    sx >= area.x
+                        && sx < area.x + area.width
+                        && sy >= area.y
+                        && sy < area.y + area.height
+                });
+                let expected = if sx < 3 && sy < 3 {
+                    image::Rgba([0, 0, 0, 255])
+                } else if in_frame {
+                    image::Rgba([239, 68, 68, 255])
+                } else {
+                    *original.get_pixel(sx, sy)
+                };
+                assert_eq!(*result.pixels.get_pixel(x, y), expected);
+            }
+        }
+        assert_eq!(*source.pixels, original);
+        assert!(
+            render_edited_snapshot(
+                &source,
+                &[],
+                None,
+                &[FrameAnnotation {
+                    color: 0xff000000,
+                    ..frame
+                }]
+            )
+            .is_err()
+        );
+        assert!(render_edited_snapshot(&source, &[], None, &vec![frame; 101]).is_err());
+        Ok(())
+    }
 
     #[test]
     fn editor_crop_clips_redactions_and_exports_only_selected_pixels() -> Result<()> {

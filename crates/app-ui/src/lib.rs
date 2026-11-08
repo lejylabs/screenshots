@@ -78,6 +78,7 @@ pub struct SpikeShell {
     graphics: bool,
     switching_graphics: bool,
     preview_active: bool,
+    edit_selection: bool,
     focus_handle: FocusHandle,
     overlays: Vec<WindowHandle<Overlay>>,
     editor: Option<WindowHandle<RedactionEditor>>,
@@ -392,6 +393,7 @@ impl SpikeShell {
             switching_graphics: false,
             control,
             preview_active: false,
+            edit_selection: false,
             focus_handle: cx.focus_handle(),
             overlays: Vec::new(),
             editor: None,
@@ -519,6 +521,9 @@ impl SpikeShell {
                                         }
                                         this.open_overlays(OverlayMode::Fullscreen, cx)
                                     }
+                                    Some(app_core::CaptureCommand::EditRegion) => {
+                                        this.select_region_to_edit(cx)
+                                    }
                                     None => {}
                                 }
                             }
@@ -529,6 +534,9 @@ impl SpikeShell {
                                     }
                                     Some(app_core::TrayCommand::Region) => {
                                         this.open_overlays(OverlayMode::Fullscreen, cx)
+                                    }
+                                    Some(app_core::TrayCommand::EditRegion) => {
+                                        this.select_region_to_edit(cx)
                                     }
                                     Some(app_core::TrayCommand::Show) => this.show_control(cx),
                                     Some(app_core::TrayCommand::Quit) => {
@@ -725,6 +733,7 @@ impl SpikeShell {
     }
 
     fn close_overlays(&mut self, cx: &mut Context<Self>) {
+        self.edit_selection = false;
         self.cancel_capture_delay(cx);
         let retire = self.resident && self.preview_active && self.control.is_none();
         tracing::info!(count = self.overlays.len(), "closing overlays");
@@ -792,6 +801,26 @@ impl SpikeShell {
             return;
         }
         self.show_overlays(mode, &[], &HashMap::new(), cx);
+    }
+
+    fn select_region_to_edit(&mut self, cx: &mut Context<Self>) {
+        if self.capturing
+            || self.copying
+            || self.saving
+            || self.quitting
+            || self.switching_graphics
+            || self.preview_active
+            || self.editor.is_some()
+            || self.editor_closing
+            || self.capture_delay.is_some()
+            || self.settings_loading
+            || self.settings_saving
+            || self.output_directory.is_none()
+        {
+            return;
+        }
+        self.edit_selection = true;
+        self.open_overlays(OverlayMode::Fullscreen, cx);
     }
 
     fn start_delayed_region(&mut self, cx: &mut Context<Self>) {
@@ -1086,7 +1115,7 @@ impl SpikeShell {
         }
     }
 
-    fn finish_quit_if_idle(&self, cx: &mut Context<Self>) {
+    fn finish_quit_if_idle(&mut self, cx: &mut Context<Self>) {
         if self.quitting
             && !self.capturing
             && !self.copying
@@ -1097,6 +1126,21 @@ impl SpikeShell {
             && !self.editor_closing
         {
             cx.defer(close_application);
+        } else if !self.quitting
+            && self.resident
+            && self.control.is_none()
+            && self.graphics
+            && self.editor.is_none()
+            && !self.editor_closing
+            && !self.preview_active
+            && !self.capturing
+            && !self.copying
+            && !self.saving
+            && !self.switching_graphics
+            && !self.settings_saving
+            && !self.history_mutating
+        {
+            self.retire_ui(cx);
         }
     }
 
@@ -1170,41 +1214,7 @@ impl SpikeShell {
                     return;
                 }
                 match result {
-                    Ok((source, render)) => {
-                        let owner = cx.entity().downgrade();
-                        let close_owner = owner.clone();
-                        let editor_bounds = Bounds::centered(None, size(px(1000.0), px(760.0)), cx);
-                        match cx.open_window(
-                            WindowOptions {
-                                window_bounds: Some(WindowBounds::Windowed(editor_bounds)),
-                                window_min_size: Some(size(px(760.0), px(400.0))),
-                                titlebar: Some(TitlebarOptions {
-                                    title: Some("Edit a copy — screenshots".into()),
-                                    ..Default::default()
-                                }),
-                                ..Default::default()
-                            },
-                            |window, cx| {
-                                window.on_window_should_close(cx, move |_, cx| {
-                                    let owner = close_owner.clone();
-                                    cx.defer(move |cx| {
-                                        owner.update(cx, |this, cx| this.close_editor(cx)).ok();
-                                    });
-                                    false
-                                });
-                                cx.new(|cx| RedactionEditor::new(source, render, owner, window, cx))
-                            },
-                        ) {
-                            Ok(handle) => {
-                                this.editor = Some(handle);
-                                this.capture_status =
-                                    "Image editor open. Original remains unchanged.".into();
-                            }
-                            Err(error) => {
-                                this.capture_status = format!("Could not open editor: {error}")
-                            }
-                        }
-                    }
+                    Ok((source, render)) => this.show_prepared_editor(source, render, false, cx),
                     Err(error) => {
                         this.capture_status = format!("Could not load image: {error}");
                         this.history_action_status = this.capture_status.clone();
@@ -1218,6 +1228,49 @@ impl SpikeShell {
         cx.notify();
     }
 
+    fn show_prepared_editor(
+        &mut self,
+        source: CapturedImage,
+        render: Arc<gpui::RenderImage>,
+        direct_capture: bool,
+        cx: &mut Context<Self>,
+    ) {
+        let owner = cx.entity().downgrade();
+        let close_owner = owner.clone();
+        let bounds = Bounds::centered(None, size(px(1000.0), px(760.0)), cx);
+        match cx.open_window(
+            WindowOptions {
+                window_bounds: Some(WindowBounds::Windowed(bounds)),
+                window_min_size: Some(size(px(760.0), px(400.0))),
+                titlebar: Some(TitlebarOptions {
+                    title: Some("Edit a copy — screenshots".into()),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+            |window, cx| {
+                window.on_window_should_close(cx, move |_, cx| {
+                    let owner = close_owner.clone();
+                    cx.defer(move |cx| {
+                        owner.update(cx, |this, cx| this.close_editor(cx)).ok();
+                    });
+                    false
+                });
+                cx.new(|cx| RedactionEditor::new(source, render, owner, direct_capture, window, cx))
+            },
+        ) {
+            Ok(handle) => {
+                self.editor = Some(handle);
+                self.capture_status = if direct_capture {
+                    "Editor open. Original capture is not saved."
+                } else {
+                    "Image editor open. Original remains unchanged."
+                }
+                .into();
+            }
+            Err(error) => self.capture_status = format!("Could not open editor: {error}"),
+        }
+    }
     fn close_editor(&mut self, cx: &mut Context<Self>) {
         let Some(handle) = self.editor.take() else {
             return;
@@ -1314,6 +1367,9 @@ impl SpikeShell {
         source: CapturedImage,
         regions: Vec<app_core::PixelRegion>,
         crop: Option<app_core::PixelRegion>,
+        frames: Vec<app_core::FrameAnnotation>,
+        arrows: Vec<app_core::ArrowAnnotation>,
+        ellipses: Vec<app_core::FrameAnnotation>,
         cx: &mut Context<Self>,
     ) {
         if self.capturing || self.copying || self.saving || self.quitting {
@@ -1325,7 +1381,10 @@ impl SpikeShell {
         cx.spawn(async move |this, cx| {
             let result = cx
                 .background_spawn(async move {
-                    app_core::edit_snapshot(&source, &regions, crop).map(|shot| {
+                    app_core::render_document_snapshot(
+                        &source, &regions, crop, &frames, &arrows, &ellipses,
+                    )
+                    .map(|shot| {
                         let thumbnail = render_thumbnail(&shot);
                         (shot, thumbnail)
                     })
@@ -1736,17 +1795,29 @@ impl SpikeShell {
         if self.capturing || self.copying || self.saving || self.quitting {
             return;
         }
+        let edit_selection = self.edit_selection;
+        // Keep graphics attached while the selected pixels move into the editor.
+        if edit_selection {
+            self.preview_active = false;
+        }
         self.close_overlays(cx);
         self.capturing = true;
         self.capture_status = "Preparing selection…".into();
         cx.notify();
         cx.spawn(async move |this, cx| {
-            let result = cx.background_spawn(async move { app_core::crop_snapshot(&source, region).map(|shot| { let render = render_thumbnail(&shot); (shot, render) }) }).await;
+            let result = cx.background_spawn(async move { app_core::crop_snapshot(&source, region).map(|shot| { let render = if edit_selection { render_frame(&shot) } else { render_thumbnail(&shot) }; (shot, render) }) }).await;
             this.update(cx, |this, cx| {
                 this.capturing = false;
                 if this.quitting { this.finish_quit_if_idle(cx); return; }
                 match result {
                     Ok((shot, render)) => {
+                        if edit_selection {
+                            this.show_prepared_editor(shot, render, true, cx);
+                            if this.editor.is_none() { this.show_control(cx); }
+                            this.finish_quit_if_idle(cx);
+                            cx.notify();
+                            return;
+                        }
                         this.replace_last_render(render, cx);
                         tracing::info!(width = shot.width, height = shot.height, path = %shot.png_path.display(), "selection prepared");
                         this.capture_status = format!("Selection {}×{}  {}", shot.width, shot.height, shot.png_path.display());
@@ -1756,6 +1827,7 @@ impl SpikeShell {
                     Err(error) => {
                         tracing::error!(%error, "selection failed");
                         this.capture_status = format!("Selection failed: {error:#}");
+                        if this.control.is_none() { this.show_control(cx); }
                     }
                 }
                 cx.notify();
@@ -1790,6 +1862,7 @@ impl SpikeShell {
             return;
         }
         // A new capture replaces the preview; keep the control window hidden.
+        let edit_selection = std::mem::take(&mut self.edit_selection) && preview;
         self.preview_active = false;
         self.close_overlays(cx);
         if self.live_overlay_count(cx) > 0 {
@@ -1943,6 +2016,15 @@ impl SpikeShell {
                         );
                         if preview {
                             this.show_overlays(OverlayMode::Fullscreen, &shots, &renders, cx);
+                            this.edit_selection = edit_selection && this.preview_active;
+                            for handle in &this.overlays {
+                                handle
+                                    .update(cx, |overlay, _, cx| {
+                                        overlay.edit_selection = edit_selection;
+                                        cx.notify();
+                                    })
+                                    .ok();
+                            }
                         } else {
                             if let Some(render) = renders.get(&shot.png_path).cloned() {
                                 this.replace_last_render(render, cx);
@@ -2052,6 +2134,12 @@ impl Render for SpikeShell {
                         cx.listener(|this, _, _, cx| {
                             this.open_overlays(OverlayMode::Fullscreen, cx)
                         }),
+                    ))
+                    .child(capture_button(
+                        "select-region-to-edit",
+                        "Select region to edit",
+                        unavailable,
+                        cx.listener(|this, _, _, cx| this.select_region_to_edit(cx)),
                     ))
                     .child(capture_button(
                         "delayed-region",
@@ -2492,6 +2580,7 @@ fn capture_button(
 }
 
 struct Overlay {
+    edit_selection: bool,
     active: bool,
     #[cfg(target_os = "windows")]
     native: Option<app_core::DesktopWindow>,
@@ -2519,6 +2608,7 @@ impl Overlay {
     ) -> Self {
         Self {
             active: true,
+            edit_selection: false,
             #[cfg(target_os = "windows")]
             native: native_window(window)
                 .map_err(|error| tracing::error!(%error, "could not obtain overlay HWND"))
@@ -2661,7 +2751,7 @@ impl Render for Overlay {
                     )))
                     .child(
                         div().text_sm().text_color(rgb(0xa3a3a3)).child(
-                            "Drag to select. Release to save and copy. Escape cancels. Selection stays on one monitor.",
+                            if self.edit_selection { "Drag to select. Release to edit without saving the original. Escape cancels." } else { "Drag to select. Release to save and copy. Escape cancels. Selection stays on one monitor." },
                         ),
                     ),
             )
@@ -3014,6 +3104,168 @@ mod tests {
 
     #[cfg(target_os = "windows")]
     #[test]
+    #[ignore = "opens a real editor from an in-memory selection; clipboard is not modified"]
+    fn direct_edit_selection_cancel_has_no_output_side_effects() {
+        let errors = track_gui_errors();
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(format!(
+            "../../target/captures/direct-edit-{}",
+            probe_timestamp()
+        ));
+        let directory = root.clone();
+        let clipboard =
+            unsafe { windows_sys::Win32::System::DataExchange::GetClipboardSequenceNumber() };
+        let result = Arc::new(Mutex::new(None));
+        let report = result.clone();
+        gpui_platform::application()
+            .with_windowing(gpui::WindowingRequest::Headless)
+            .run(move |cx| {
+                cx.set_quit_mode(gpui::QuitMode::Explicit);
+                let controller = cx.new(|cx| SpikeShell::new_controller(None, cx));
+                cx.set_global(ResidentController(controller.clone()));
+                controller.update(cx, |this, _| {
+                    this.history_database = Some(directory.join("history.sqlite3"));
+                    this.output_directory = Some(directory);
+                    this.backend = XcapBackend::new(this.output_directory.as_ref().unwrap());
+                });
+                let owner = controller.downgrade();
+                cx.spawn(async move |cx| {
+                    let checked = async {
+                        let deadline = std::time::Instant::now();
+                        loop {
+                            if owner
+                                .update(cx, |this, _| !this.refreshing)
+                                .map_err(|e| e.to_string())?
+                            {
+                                break;
+                            }
+                            if deadline.elapsed().as_secs() > 8 {
+                                return Err("control startup timed out".to_string());
+                            }
+                            cx.background_executor()
+                                .timer(std::time::Duration::from_millis(20))
+                                .await;
+                        }
+                        owner
+                            .update(cx, |this, cx| this.select_region_to_edit(cx))
+                            .map_err(|e| e.to_string())?;
+                        let deadline = std::time::Instant::now();
+                        loop {
+                            if owner
+                                .update(cx, |this, _| {
+                                    this.preview_active && this.edit_selection && !this.capturing
+                                })
+                                .map_err(|e| e.to_string())?
+                            {
+                                break;
+                            }
+                            if deadline.elapsed().as_secs() > 8 {
+                                return Err("headless edit selection timed out".to_string());
+                            }
+                            cx.background_executor()
+                                .timer(std::time::Duration::from_millis(20))
+                                .await;
+                        }
+                        owner
+                            .update(cx, |this, cx| {
+                                let source = this
+                                    .overlays
+                                    .first()
+                                    .unwrap()
+                                    .read(cx)
+                                    .unwrap()
+                                    .snapshot
+                                    .clone()
+                                    .unwrap();
+                                this.save_selection(
+                                    source,
+                                    app_core::PixelRegion {
+                                        x: 2,
+                                        y: 3,
+                                        width: 16,
+                                        height: 12,
+                                    },
+                                    cx,
+                                );
+                            })
+                            .map_err(|e| e.to_string())?;
+                        let deadline = std::time::Instant::now();
+                        loop {
+                            if owner
+                                .update(cx, |this, _| this.editor.is_some() && !this.capturing)
+                                .map_err(|e| e.to_string())?
+                            {
+                                break;
+                            }
+                            if deadline.elapsed().as_secs() > 8 {
+                                return Err("direct editor startup timed out".into());
+                            }
+                            cx.background_executor()
+                                .timer(std::time::Duration::from_millis(20))
+                                .await;
+                        }
+                        owner
+                            .update(cx, |this, cx| this.close_editor(cx))
+                            .map_err(|e| e.to_string())?;
+                        let deadline = std::time::Instant::now();
+                        loop {
+                            let ready = owner
+                                .update(cx, |this, cx| {
+                                    !this.editor_closing
+                                        && this.editor.is_none()
+                                        && !this.switching_graphics
+                                        && !this.graphics
+                                        && cx.windows().is_empty()
+                                })
+                                .map_err(|e| e.to_string())?;
+                            if ready {
+                                break;
+                            }
+                            if deadline.elapsed().as_secs() > 5 {
+                                return Err("editor cancel timed out".into());
+                            }
+                            cx.background_executor()
+                                .timer(std::time::Duration::from_millis(20))
+                                .await;
+                        }
+                        let unchanged = owner
+                            .update(cx, |this, _| {
+                                this.last_capture.is_none()
+                                    && this.last_saved.is_none()
+                                    && !this.saving
+                                    && !this.copying
+                                    && !this.edit_selection
+                            })
+                            .map_err(|e| e.to_string())?;
+                        if !unchanged {
+                            return Err("direct edit changed output state".into());
+                        }
+                        Ok(())
+                    }
+                    .await;
+                    *report.lock().unwrap() = Some(checked);
+                    cx.update(close_application);
+                })
+                .detach();
+            });
+        result
+            .lock()
+            .unwrap()
+            .take()
+            .expect("direct edit test did not finish")
+            .unwrap();
+        assert!(
+            !root.exists(),
+            "unmodified source or selection was written to disk"
+        );
+        assert_eq!(
+            unsafe { windows_sys::Win32::System::DataExchange::GetClipboardSequenceNumber() },
+            clipboard
+        );
+        assert_eq!(errors.load(std::sync::atomic::Ordering::Relaxed), 0);
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
     #[ignore = "opens an editor and replaces clipboard with a tiny redacted fixture"]
     fn redaction_editor_opens_and_exports_copy() {
         let errors = track_gui_errors();
@@ -3100,6 +3352,9 @@ mod tests {
                                             height: 2,
                                         }],
                                         None,
+                                        Vec::new(),
+                                        Vec::new(),
+                                        Vec::new(),
                                         cx,
                                     ),
                                     _ => {}

@@ -9,6 +9,7 @@ use tray_icon::{
 pub enum TrayCommand {
     Capture,
     Region,
+    EditRegion,
     Show,
     Quit,
 }
@@ -17,6 +18,7 @@ pub struct SpikeTray {
     _icon: TrayIcon,
     capture: MenuItem,
     region: MenuItem,
+    edit_region: MenuItem,
     show: MenuItem,
     quit: MenuItem,
 }
@@ -26,9 +28,10 @@ impl SpikeTray {
         let menu = Menu::new();
         let capture = MenuItem::new("Capture primary (Ctrl+Shift+S)", true, None);
         let region = MenuItem::new("Select region (Ctrl+Shift+R)", true, None);
+        let edit_region = MenuItem::new("Select region to edit (Ctrl+Shift+E)", true, None);
         let show = MenuItem::new("Show control window", true, None);
         let quit = MenuItem::new("Quit", true, None);
-        menu.append_items(&[&region, &capture, &show, &quit])?;
+        menu.append_items(&[&edit_region, &region, &capture, &show, &quit])?;
         // A simple camera frame for the prototype; no external asset needed.
         let mut pixels = vec![0; 32 * 32 * 4];
         for y in 6..26 {
@@ -51,6 +54,7 @@ impl SpikeTray {
             _icon: icon,
             capture,
             region,
+            edit_region,
             show,
             quit,
         })
@@ -64,6 +68,8 @@ impl SpikeTray {
                     Some(TrayCommand::Capture)
                 } else if event.id == *self.region.id() {
                     Some(TrayCommand::Region)
+                } else if event.id == *self.edit_region.id() {
+                    Some(TrayCommand::EditRegion)
                 } else if event.id == *self.show.id() {
                     Some(TrayCommand::Show)
                 } else if event.id == *self.quit.id() {
@@ -80,6 +86,8 @@ impl SpikeTray {
             Some(TrayCommand::Capture)
         } else if event.id == *self.region.id() {
             Some(TrayCommand::Region)
+        } else if event.id == *self.edit_region.id() {
+            Some(TrayCommand::EditRegion)
         } else if event.id == *self.show.id() {
             Some(TrayCommand::Show)
         } else if event.id == *self.quit.id() {

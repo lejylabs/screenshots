@@ -15,6 +15,7 @@ pub struct CaptureHotkey {
 pub enum CaptureCommand {
     Primary,
     Region,
+    EditRegion,
 }
 
 impl CaptureHotkey {
@@ -25,6 +26,11 @@ impl CaptureHotkey {
         for (code, command, label) in [
             (Code::KeyS, CaptureCommand::Primary, "Ctrl+Shift+S: primary"),
             (Code::KeyR, CaptureCommand::Region, "Ctrl+Shift+R: region"),
+            (
+                Code::KeyE,
+                CaptureCommand::EditRegion,
+                "Ctrl+Shift+E: edit region",
+            ),
         ] {
             let key = HotKey::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), code);
             match manager.register(key) {
@@ -91,9 +97,11 @@ mod tests {
     fn routes_only_matching_key_presses() {
         let primary = HotKey::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), Code::KeyS);
         let region = HotKey::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), Code::KeyR);
+        let edit = HotKey::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), Code::KeyE);
         let keys = [
             (primary, CaptureCommand::Primary),
             (region, CaptureCommand::Region),
+            (edit, CaptureCommand::EditRegion),
         ];
         for (key, command) in keys {
             assert_eq!(
