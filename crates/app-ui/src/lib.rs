@@ -95,6 +95,9 @@ pub struct SpikeShell {
     settings_status: String,
     history_database: Option<PathBuf>,
     history_visible: bool,
+    history_filter: app_core::HistoryFilter,
+    history_revision: u64,
+    history_cancel: Option<Arc<std::sync::atomic::AtomicBool>>,
     history_loading: bool,
     history_mutating: bool,
     history_action_status: String,
@@ -265,6 +268,7 @@ impl SpikeShell {
             return;
         }
         self.preview_active = false;
+        self.hide_history();
         self.last_render = None;
         let mut windows: Vec<AnyWindowHandle> = self.overlays.drain(..).map(Into::into).collect();
         windows.extend(self.control.take());
@@ -418,6 +422,9 @@ impl SpikeShell {
                 app_core::history_database_path().ok()
             },
             history_visible: false,
+            history_filter: app_core::HistoryFilter::All,
+            history_revision: 0,
+            history_cancel: None,
             history_loading: false,
             history_mutating: false,
             history_action_status: String::new(),
@@ -627,10 +634,36 @@ impl SpikeShell {
         cx.notify();
     }
 
-    fn refresh_history(&mut self, before: Option<i64>, cx: &mut Context<Self>) {
-        if self.quitting {
+    fn hide_history(&mut self) {
+        self.history_visible = false;
+        self.history_revision = self.history_revision.wrapping_add(1);
+        if let Some(cancel) = &self.history_cancel {
+            cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+        self.history_refresh_pending = false;
+        self.history_entries.clear();
+        self.history_has_more = false;
+        self.history_status.clear();
+    }
+    fn set_history_filter(&mut self, filter: app_core::HistoryFilter, cx: &mut Context<Self>) {
+        if self.history_filter == filter || self.history_mutating {
             return;
         }
+        self.history_filter = filter;
+        self.history_revision = self.history_revision.wrapping_add(1);
+        if let Some(cancel) = &self.history_cancel {
+            cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+        self.history_entries.clear();
+        self.history_has_more = false;
+        self.refresh_history(None, cx);
+        cx.notify();
+    }
+    fn refresh_history(&mut self, before: Option<i64>, cx: &mut Context<Self>) {
+        if self.quitting || !self.history_visible {
+            return;
+        }
+        self.history_status = "Loading history…".into();
         if self.history_loading || self.history_mutating {
             self.history_refresh_pending = true;
             return;
@@ -641,29 +674,58 @@ impl SpikeShell {
             return;
         };
         self.history_loading = true;
-        self.history_status = "Loading history…".into();
+        self.history_refresh_pending = false;
+        let filter = self.history_filter;
+        let revision = self.history_revision;
+        let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        self.history_cancel = Some(cancel.clone());
         cx.spawn(async move |this, cx| {
             let result = cx
-                .background_spawn(async move { app_core::capture_history_page(&database, before) })
+                .background_spawn(async move {
+                    app_core::capture_history_page_filtered(&database, before, filter, || {
+                        cancel.load(std::sync::atomic::Ordering::Relaxed)
+                    })
+                })
                 .await;
             this.update(cx, |this, cx| {
                 this.history_loading = false;
+                this.history_cancel = None;
                 if this.quitting {
                     return;
                 }
-                match result {
-                    Ok(mut entries) => {
-                        this.history_has_more = entries.len() > 20;
-                        entries.truncate(20);
-                        this.history_entries = entries;
-                        this.history_status = if this.history_entries.is_empty() {
-                            "No saved captures yet".into()
-                        } else {
-                            "Saved captures · newest first".into()
-                        };
-                    }
-                    Err(error) => {
-                        this.history_status = format!("History could not be loaded: {error:#}")
+                if this.history_visible && this.history_revision == revision {
+                    match result {
+                        Ok(mut entries) => {
+                            this.history_has_more = entries.len() > 20;
+                            entries.truncate(20);
+                            this.history_entries = entries;
+                            this.history_status = if this.history_entries.is_empty() {
+                                match filter {
+                                    app_core::HistoryFilter::All => "No saved captures yet",
+                                    app_core::HistoryFilter::Captures => {
+                                        "No app captures in history"
+                                    }
+                                    app_core::HistoryFilter::Imports => {
+                                        "No imported images in history"
+                                    }
+                                }
+                                .into()
+                            } else {
+                                match filter {
+                                    app_core::HistoryFilter::All => "Saved captures · newest first",
+                                    app_core::HistoryFilter::Captures => {
+                                        "App captures · newest first"
+                                    }
+                                    app_core::HistoryFilter::Imports => {
+                                        "Imported images · newest first"
+                                    }
+                                }
+                                .into()
+                            };
+                        }
+                        Err(error) => {
+                            this.history_status = format!("History could not be loaded: {error:#}")
+                        }
                     }
                 }
                 if std::mem::take(&mut this.history_refresh_pending) {
@@ -2404,8 +2466,10 @@ impl Render for SpikeShell {
                 },
                 false,
                 cx.listener(|this, _, _, cx| {
-                    this.history_visible = !this.history_visible;
                     if this.history_visible {
+                        this.hide_history();
+                    } else {
+                        this.history_visible = true;
                         this.refresh_history(None, cx);
                     }
                     cx.notify();
@@ -2418,6 +2482,47 @@ impl Render for SpikeShell {
                         .flex_col()
                         .gap_2()
                         .child(div().text_lg().child("Capture history"))
+                        .child(
+                            div().flex().gap_2().children(
+                                [
+                                    (
+                                        "history-filter-all",
+                                        "All",
+                                        "All active",
+                                        app_core::HistoryFilter::All,
+                                    ),
+                                    (
+                                        "history-filter-captures",
+                                        "Captures",
+                                        "Captures active",
+                                        app_core::HistoryFilter::Captures,
+                                    ),
+                                    (
+                                        "history-filter-imports",
+                                        "Imports",
+                                        "Imports active",
+                                        app_core::HistoryFilter::Imports,
+                                    ),
+                                ]
+                                .into_iter()
+                                .map(
+                                    |(id, label, active, filter)| {
+                                        capture_button(
+                                            id,
+                                            if self.history_filter == filter {
+                                                active
+                                            } else {
+                                                label
+                                            },
+                                            self.history_filter == filter || self.history_mutating,
+                                            cx.listener(move |this, _, _, cx| {
+                                                this.set_history_filter(filter, cx)
+                                            }),
+                                        )
+                                    },
+                                ),
+                            ),
+                        )
                         .child(capture_button(
                             "import-history-images",
                             "Add PNGs…",
@@ -3250,6 +3355,161 @@ mod tests {
         assert_ne!(
             unsafe { windows_sys::Win32::System::DataExchange::GetClipboardSequenceNumber() },
             before
+        );
+        assert_eq!(errors.load(std::sync::atomic::Ordering::Relaxed), 0);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    #[ignore = "runs the native headless executor with synthetic history; no windows or clipboard writes"]
+    fn history_filters_cancel_stale_requests_without_opening_windows() {
+        let errors = track_gui_errors();
+        let root = std::env::temp_dir().join(format!(
+            "screenshots-history-ui-{}-{}",
+            std::process::id(),
+            probe_timestamp()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let capture = root.join("capture.png");
+        let imported = root.join("import.png");
+        image::RgbaImage::new(2, 3).save(&capture).unwrap();
+        image::RgbaImage::new(3, 2).save(&imported).unwrap();
+        let capture_bytes = std::fs::read(&capture).unwrap();
+        let import_bytes = std::fs::read(&imported).unwrap();
+        let database = root.join("history.sqlite3");
+        app_core::record_saved_capture(&database, &capture).unwrap();
+        app_core::import_capture_files(&database, &[imported.clone()]).unwrap();
+        let clipboard =
+            unsafe { windows_sys::Win32::System::DataExchange::GetClipboardSequenceNumber() };
+        let result = Arc::new(Mutex::new(None));
+        let report = result.clone();
+        gpui::Application::with_platform(gpui_platform::current_platform(false))
+            .with_windowing(gpui::WindowingRequest::Headless)
+            .run(move |cx| {
+                cx.set_quit_mode(gpui::QuitMode::Explicit);
+                let controller = cx.new(|cx| SpikeShell::new_controller(None, cx));
+                controller.update(cx, |this, cx| {
+                    this.history_database = Some(database);
+                    this.history_visible = true;
+                    this.refresh_history(None, cx);
+                    this.set_history_filter(app_core::HistoryFilter::Captures, cx);
+                    this.set_history_filter(app_core::HistoryFilter::Imports, cx);
+                });
+                cx.spawn(async move |cx| {
+                    let checked: Result<(), String> = async {
+                        for phase in 0..3 {
+                            if phase > 0 {
+                                controller.update(cx, |this, cx| {
+                                    if phase == 1 {
+                                        this.set_history_filter(
+                                            app_core::HistoryFilter::Captures,
+                                            cx,
+                                        );
+                                        let cancel = this
+                                            .history_cancel
+                                            .clone()
+                                            .ok_or("Missing active history cancellation")?;
+                                        this.hide_history();
+                                        this.refresh_history(None, cx);
+                                        if !cancel.load(std::sync::atomic::Ordering::Relaxed)
+                                            || this.history_refresh_pending
+                                            || !this.history_entries.is_empty()
+                                        {
+                                            return Err(
+                                                "Hide history did not cancel/release its page"
+                                                    .to_string(),
+                                            );
+                                        }
+                                    } else {
+                                        this.history_visible = true;
+                                        this.refresh_history(None, cx);
+                                    }
+                                    Ok(())
+                                })?;
+                            }
+                            let deadline = std::time::Instant::now();
+                            loop {
+                                if controller.update(cx, |this, _| {
+                                    !this.history_loading
+                                        && !this.history_refresh_pending
+                                        && !this.refreshing
+                                }) {
+                                    break;
+                                }
+                                if deadline.elapsed().as_secs() > 8 {
+                                    return Err("History filter test timed out".into());
+                                }
+                                cx.background_executor()
+                                    .timer(std::time::Duration::from_millis(20))
+                                    .await;
+                            }
+                            controller.update(cx, |this, cx| {
+                                let expected = if phase == 0 {
+                                    "import.png"
+                                } else {
+                                    "capture.png"
+                                };
+                                if phase == 1 {
+                                    if this.history_visible
+                                        || !this.history_entries.is_empty()
+                                        || !this.history_status.is_empty()
+                                    {
+                                        return Err(
+                                            "A hidden history request applied stale rows/status"
+                                                .into(),
+                                        );
+                                    }
+                                } else if this.history_entries.len() != 1
+                                    || this.history_entries[0].path.file_name().unwrap() != expected
+                                {
+                                    return Err("History applied an obsolete filter result".into());
+                                }
+                                if this.history_cancel.is_some()
+                                    || this.graphics
+                                    || !cx.windows().is_empty()
+                                {
+                                    return Err(
+                                        "History retained work or opened a graphics window".into(),
+                                    );
+                                }
+                                if phase == 0 {
+                                    let revision = this.history_revision;
+                                    this.history_mutating = true;
+                                    this.set_history_filter(app_core::HistoryFilter::Captures, cx);
+                                    this.history_mutating = false;
+                                    if this.history_filter != app_core::HistoryFilter::Imports
+                                        || this.history_revision != revision
+                                    {
+                                        return Err(
+                                            "History changed filters during a metadata write"
+                                                .into(),
+                                        );
+                                    }
+                                }
+                                Ok::<_, String>(())
+                            })?;
+                        }
+                        controller.update(cx, |this, _| this.hide_history());
+                        Ok(())
+                    }
+                    .await;
+                    *report.lock().unwrap() = Some(checked);
+                    cx.update(|cx| cx.quit());
+                })
+                .detach();
+            });
+        result
+            .lock()
+            .unwrap()
+            .take()
+            .expect("History filter test did not finish")
+            .unwrap();
+        assert_eq!(std::fs::read(&capture).unwrap(), capture_bytes);
+        assert_eq!(std::fs::read(&imported).unwrap(), import_bytes);
+        assert_eq!(
+            unsafe { windows_sys::Win32::System::DataExchange::GetClipboardSequenceNumber() },
+            clipboard
         );
         assert_eq!(errors.load(std::sync::atomic::Ordering::Relaxed), 0);
         std::fs::remove_dir_all(root).unwrap();
