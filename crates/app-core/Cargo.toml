@@ -9,6 +9,7 @@ description = "Application core. No GPUI dependency."
 
 [dependencies]
 anyhow.workspace = true
+arboard.workspace = true
 chrono.workspace = true
 directories.workspace = true
 image.workspace = true
@@ -23,3 +24,8 @@ tiny-skia.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 uuid.workspace = true
+xcap.workspace = true
+
+[target.'cfg(target_os = "windows")'.dependencies]
+global-hotkey.workspace = true
+tray-icon.workspace = true

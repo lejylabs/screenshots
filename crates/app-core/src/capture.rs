@@ -1,0 +1,297 @@
+//! Phase 0 capture types and an XCap still-image backend.
+//!
+//! Capture stays synchronous and `Send`. Call it from a GPUI background
+//! worker, not from the foreground executor.
+
+use std::{
+    fs,
+    path::{Path, PathBuf},
+    time::Instant,
+};
+
+use image::RgbaImage;
+use thiserror::Error;
+use xcap::{Monitor, Window};
+
+#[derive(Debug, Clone, Copy)]
+pub struct CaptureCapabilities {
+    pub list_displays: bool,
+    pub list_windows: bool,
+    pub capture_display: bool,
+    pub capture_window: bool,
+    pub capture_region: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct DisplayInfo {
+    pub id: String,
+    pub name: String,
+    pub x: i32,
+    pub y: i32,
+    pub width: u32,
+    pub height: u32,
+    pub scale_factor: f32,
+    pub rotation: f32,
+    pub is_primary: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct WindowInfo {
+    pub id: String,
+    pub title: String,
+    pub app_name: String,
+    pub x: i32,
+    pub y: i32,
+    pub width: u32,
+    pub height: u32,
+    pub is_minimized: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PixelFormat {
+    /// XCap returns `image::RgbaImage` (8-bit RGBA). Color space is not
+    /// reported; treat as sRGB until a later spike measures otherwise.
+    Rgba8UnormSrgb,
+}
+
+#[derive(Debug, Clone)]
+pub struct CapturedImage {
+    pub display_id: String,
+    pub width: u32,
+    pub height: u32,
+    pub png_path: PathBuf,
+    pub elapsed_ms: u128,
+    pub source_format: PixelFormat,
+}
+
+#[derive(Debug, Error)]
+pub enum CaptureError {
+    #[error("unsupported: {0}")]
+    Unsupported(&'static str),
+    #[error("display not found: {0}")]
+    DisplayNotFound(String),
+    #[error("empty or black frame")]
+    EmptyFrame,
+    #[error("{0}")]
+    Backend(String),
+    #[error(transparent)]
+    Io(#[from] std::io::Error),
+    #[error(transparent)]
+    Image(#[from] image::ImageError),
+}
+
+pub trait CaptureBackend: Send {
+    fn capabilities(&self) -> CaptureCapabilities;
+    fn list_displays(&self) -> Result<Vec<DisplayInfo>, CaptureError>;
+    fn list_windows(&self) -> Result<Vec<WindowInfo>, CaptureError>;
+    fn capture_display(&self, display_id: &str) -> Result<CapturedImage, CaptureError>;
+    fn capture_region(
+        &self,
+        display_id: &str,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> Result<CapturedImage, CaptureError>;
+}
+
+#[derive(Clone)]
+pub struct XcapBackend {
+    output_dir: PathBuf,
+}
+
+impl XcapBackend {
+    pub fn new(output_dir: impl Into<PathBuf>) -> Self {
+        Self {
+            output_dir: output_dir.into(),
+        }
+    }
+
+    fn find_monitor(&self, display_id: &str) -> Result<Monitor, CaptureError> {
+        Monitor::all()
+            .map_err(backend_error)?
+            .into_iter()
+            .find(|monitor| monitor_id(monitor).is_ok_and(|id| id == display_id))
+            .ok_or_else(|| CaptureError::DisplayNotFound(display_id.to_string()))
+    }
+
+    fn persist(
+        &self,
+        display_id: &str,
+        image: RgbaImage,
+        elapsed_ms: u128,
+        label: &str,
+    ) -> Result<CapturedImage, CaptureError> {
+        if frame_is_unusable(&image) {
+            return Err(CaptureError::EmptyFrame);
+        }
+
+        fs::create_dir_all(&self.output_dir)?;
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|duration| duration.as_millis())
+            .unwrap_or(0);
+        let png_path = self
+            .output_dir
+            .join(format!("{label}-{display_id}-{stamp}.png"));
+        image.save(&png_path)?;
+
+        Ok(CapturedImage {
+            display_id: display_id.to_string(),
+            width: image.width(),
+            height: image.height(),
+            png_path,
+            elapsed_ms,
+            source_format: PixelFormat::Rgba8UnormSrgb,
+        })
+    }
+}
+
+impl CaptureBackend for XcapBackend {
+    fn capabilities(&self) -> CaptureCapabilities {
+        CaptureCapabilities {
+            list_displays: true,
+            list_windows: cfg!(not(target_os = "linux")),
+            capture_display: true,
+            capture_window: cfg!(not(target_os = "linux")),
+            capture_region: true,
+        }
+    }
+
+    fn list_displays(&self) -> Result<Vec<DisplayInfo>, CaptureError> {
+        Monitor::all()
+            .map_err(backend_error)?
+            .iter()
+            .map(display_info)
+            .collect()
+    }
+
+    fn list_windows(&self) -> Result<Vec<WindowInfo>, CaptureError> {
+        if !self.capabilities().list_windows {
+            return Err(CaptureError::Unsupported("window listing"));
+        }
+
+        Window::all()
+            .map_err(backend_error)?
+            .iter()
+            .map(window_info)
+            .collect()
+    }
+
+    fn capture_display(&self, display_id: &str) -> Result<CapturedImage, CaptureError> {
+        let monitor = self.find_monitor(display_id)?;
+        let started = Instant::now();
+        let image = monitor.capture_image().map_err(backend_error)?;
+        self.persist(display_id, image, started.elapsed().as_millis(), "display")
+    }
+
+    fn capture_region(
+        &self,
+        display_id: &str,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> Result<CapturedImage, CaptureError> {
+        let monitor = self.find_monitor(display_id)?;
+        let x = u32::try_from(x).unwrap_or(0);
+        let y = u32::try_from(y).unwrap_or(0);
+        let started = Instant::now();
+        let image = monitor
+            .capture_region(x, y, width, height)
+            .map_err(backend_error)?;
+        self.persist(display_id, image, started.elapsed().as_millis(), "region")
+    }
+}
+
+fn backend_error(error: impl std::fmt::Display) -> CaptureError {
+    CaptureError::Backend(error.to_string())
+}
+
+fn monitor_id(monitor: &Monitor) -> Result<String, CaptureError> {
+    Ok(monitor.id().map_err(backend_error)?.to_string())
+}
+
+fn display_info(monitor: &Monitor) -> Result<DisplayInfo, CaptureError> {
+    Ok(DisplayInfo {
+        id: monitor_id(monitor)?,
+        name: monitor
+            .friendly_name()
+            .or_else(|_| monitor.name())
+            .map_err(backend_error)?,
+        x: monitor.x().map_err(backend_error)?,
+        y: monitor.y().map_err(backend_error)?,
+        width: monitor.width().map_err(backend_error)?,
+        height: monitor.height().map_err(backend_error)?,
+        scale_factor: monitor.scale_factor().map_err(backend_error)?,
+        rotation: monitor.rotation().map_err(backend_error)?,
+        is_primary: monitor.is_primary().map_err(backend_error)?,
+    })
+}
+
+fn window_info(window: &Window) -> Result<WindowInfo, CaptureError> {
+    Ok(WindowInfo {
+        id: window.id().map_err(backend_error)?.to_string(),
+        title: window.title().unwrap_or_default(),
+        app_name: window.app_name().unwrap_or_default(),
+        x: window.x().unwrap_or(0),
+        y: window.y().unwrap_or(0),
+        width: window.width().unwrap_or(0),
+        height: window.height().unwrap_or(0),
+        is_minimized: window.is_minimized().unwrap_or(false),
+    })
+}
+
+fn frame_is_unusable(image: &RgbaImage) -> bool {
+    image.width() == 0
+        || image.height() == 0
+        || image
+            .pixels()
+            .all(|pixel| pixel.0[0] == 0 && pixel.0[1] == 0 && pixel.0[2] == 0)
+}
+
+pub fn capture_output_dir() -> PathBuf {
+    Path::new("target").join("captures")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use image::Rgba;
+
+    #[test]
+    fn rejects_empty_and_black_frames() {
+        let empty = RgbaImage::new(0, 0);
+        assert!(frame_is_unusable(&empty));
+
+        let black = RgbaImage::from_pixel(4, 4, Rgba([0, 0, 0, 255]));
+        assert!(frame_is_unusable(&black));
+
+        let mut pixel = RgbaImage::from_pixel(4, 4, Rgba([0, 0, 0, 255]));
+        pixel.put_pixel(1, 1, Rgba([10, 0, 0, 255]));
+        assert!(!frame_is_unusable(&pixel));
+    }
+
+    #[test]
+    #[ignore = "requires an interactive desktop and writes a real screenshot"]
+    fn captures_primary_monitor_to_png() {
+        let dir = std::env::temp_dir().join("screenshots-xcap-spike");
+        let backend = XcapBackend::new(&dir);
+        let displays = backend.list_displays().expect("list displays");
+        assert!(!displays.is_empty(), "XCap returned no monitors");
+        let primary = displays
+            .iter()
+            .find(|info| info.is_primary)
+            .unwrap_or(&displays[0]);
+        let shot = backend
+            .capture_display(&primary.id)
+            .expect("capture primary");
+        assert!(shot.width > 0 && shot.height > 0);
+        assert_eq!(shot.source_format, PixelFormat::Rgba8UnormSrgb);
+        let bytes = std::fs::read(&shot.png_path).expect("read png");
+        assert_eq!(
+            &bytes[..8],
+            &[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A]
+        );
+    }
+}

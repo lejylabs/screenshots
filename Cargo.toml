@@ -46,9 +46,12 @@ tracing-subscriber = { version = "0.3.23", features = ["env-filter", "fmt"] }
 tray-icon = "0.26.1"
 uuid = { version = "1.29.1", features = ["v4", "v7", "serde"] }
 
+# Phase 0 still-image spike. Not a committed product backend yet.
+xcap = "0.9.8"
+
 # Left out on purpose:
 # - FFmpeg: recording, after the MVP, license check first
-# - Scap / XCap / ashpd: capture spike, not a committed backend yet
+# - Scap / ashpd: remaining capture spikes (streams / Wayland portal)
 # - notify-rust: Linux/macOS oriented; Windows notifications come later
 # - GPUI forks that bundle tray/hotkeys/overlays
 
