@@ -28,7 +28,7 @@ See [Phase 0 evidence and remaining checks](docs/phase-0.md).
 - Fenster aufnehmen: click a listed window near the top of the control window to capture it directly, save it and copy it. Use Fensterliste aktualisieren after opening or closing windows. Minimized, untitled and own-process windows are excluded from the picker. A window that closes before capture produces an error and restores the control window.
 - Capture buttons, hotkey and tray write PNGs under `target/captures/`, show a thumbnail, and automatically copy the last image to the clipboard directly from shared RGBA pixels. This replaces the current clipboard contents.
 - Bereich auswählen (Strg+Umschalt+F), directly below the window heading: hides existing overlays and the control window, captures each display, then opens a fullscreen PopUp showing that display's frozen image. Drag with the left mouse button; release saves the selection as `target/captures/selection-<uuid>.png`, restores the control window, and copies the selection. Escape cancels without changing the clipboard. Canceled previews are never written to disk.
-- Copy last capture: copies the retained pixels directly without decoding the saved PNG. This replaces the current clipboard contents.
+- Copy last capture: uses live pixels if still retained, otherwise loads the successfully saved PNG on demand. This replaces the current clipboard contents.
 - Escape or Close overlays dismisses overlay windows.
 - On Windows, Ctrl+Shift+S captures the primary display even when another app has focus. Registration failures (for example, a shortcut already in use) appear in the control window. The capture is saved and copied automatically.
 - On Windows, Ctrl+Shift+R starts region selection even when another app has focus. Ctrl+Shift+F remains a local shortcut in the control window. Each global shortcut registers independently: a conflict with one does not disable the other. The status line reports unavailable keys.
@@ -64,8 +64,31 @@ Windows session check (2026-11-08): the clipboard round trip passed and the desk
 
 The tray smoke test constructs the icon successfully, but tray-icon prints `Error removing system tray icon` on drop in the agent test environment. This test does not establish successful Shell cleanup; verify menu actions and removal in the interactive Windows session.
 
-Capture, crop, overlay and clipboard now use in-memory pixels. Cloning a capture shares its immutable RGBA buffer; GPUI gets one worker-prepared BGRA render copy. Only finished normal/window/region captures call PNG export. Copy now completes before PNG encoding; clipboard and save outcomes are shown independently. The last full-resolution image remains retained for recopy/thumbnail; release-mode memory/latency budgets are not yet established.
+Capture, crop, overlay and clipboard now use in-memory pixels. Cloning a capture shares its immutable RGBA buffer; GPUI gets one worker-prepared BGRA render copy. Only finished normal/window/region captures call PNG export. Copy now completes before PNG encoding; clipboard and save outcomes are shown independently. Successful save releases the full-resolution source; explicit recopy loads the saved file on demand. Release-mode resource acceptance remains open.
 
 Quitting while copying/saving waits for the current output job; new captures are blocked. Save failure keeps the app open and visible with the error. Late capture results do not reopen overlays during quit. Explicit test: cargo test -p app-ui quit_waits_for_copy_and_png_save -- --ignored --nocapture --test-threads=1 (replaces clipboard contents with a small test image).
 
 PNG exports now use an exclusive .part file beside the destination, then publish only after encoding/flush succeeds. Existing destinations are never replaced. Windows uses native no-replace move; non-Windows exports currently require hard-link support. Normal failures clean up temporary files; crashes may leave .part files pending a future recovery pass.
+
+Display/window lists load in the background at startup and on manual refresh; repeated refresh requests coalesce while one is active. Captures no longer refresh diagnostic metadata automatically. Use Fensterliste aktualisieren for newly opened/closed windows; monitor-hotplug refresh is not yet automatic.
+
+Release idle measurement (Windows PowerShell 5.1):
+
+```powershell
+cargo build --release -p screenshots
+powershell -NoProfile -File scripts/measure-idle.ps1 -Seconds 30
+```
+
+Close other screenshots instances first and do not trigger captures or menu actions during sampling. The probe owns only the process it starts, hides its control window, waits five seconds, then samples CPU time/Private Bytes/working set once per second and closes the process normally. Results, binary hash and hardware/source context are written to `target/performance/idle-normal.json`; logs are beside it. CPU is expressed as a percentage of one logical core. Use `-Seconds 300` for the planned five-minute idle duration. A short run on the development PC is exploratory, not a reference-hardware acceptance pass; GPU resources, wakeups, energy and post-capture retention need separate measurement. The script never force-kills an unresponsive process.
+
+Resource attribution probes use the same executable without the normal app services:
+
+```powershell
+powershell -NoProfile -File scripts/measure-idle.ps1 -Seconds 30 -Mode headless
+powershell -NoProfile -File scripts/measure-idle.ps1 -Seconds 30 -Mode empty
+powershell -NoProfile -File scripts/measure-idle.ps1 -Seconds 30 -Mode normal
+```
+
+Headless explicitly skips attaching the GPU/window system and creates no tray/hotkeys/capture shell; empty attaches GPUI and creates an empty control-sized window but no app services. These are diagnostics, not fully functional alternative application modes. Each probe exits on a bounded one-shot diagnostic deadline. Windowed modes get one second to render before hiding; all modes then warm for five seconds before sampling. Reports are `target/performance/idle-<mode>.json`, with thread/handle counts and the binary hash. Run modes sequentially; differing first-frame/hide timing and driver warmup can affect results, so do not attribute all differences to one allocation source.
+
+Normal output thumbnails are now at most 400x240 BGRA. Replacing thumbnails and dismissing overlays explicitly removes their image atlas entries. This does not prove the renderer/driver releases atlas backing pages; GPU memory must still be measured. Successful save releases the retained source RGBA buffer; recopy explicitly reloads the saved file on a worker with decode/RGBA limits. A failed save retains pixels so the unsaved image remains available. This on-demand recopy is separate from the capture -> selection -> clipboard pipeline, which remains in memory.

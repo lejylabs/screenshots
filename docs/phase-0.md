@@ -2,6 +2,8 @@
 
 Phase 0 is open. The Windows prototype is usable; the cross-platform exit gate has not passed.
 
+The first optimized Windows idle measurement is recorded in [performance-baseline.md](performance-baseline.md). It is a 30-second exploratory run, above the intended private-memory and short-run CPU targets; performance acceptance remains open.
+
 Performance rework: native hotkey/menu callbacks now feed a bounded 32-event async channel instead of two 50ms polling loops. The receiver sleeps until an event arrives and does not need a Tokio runtime. Queue overflow ignores additional actions with a warning; callbacks never block waiting for capacity. Build, routing/bounded-queue tests and the explicit GPUI repeat/cancel test pass. Native hotkey/tray interaction and release-mode CPU/wakeup measurements remain to be checked; this is not a measured idle-budget pass. File-based frame transfers and clipboard read-back remain prototype debt.
 
 ## Evaluated versions
@@ -55,3 +57,7 @@ Output ordering: clipboard completes first, then each requested PNG is saved on 
 Quit now rejects new capture jobs, discards late capture/crop results, and waits for active copy/save output. A save error cancels quitting and restores the control window. The explicit GPUI quit_waits_for_copy_and_png_save regression passed: quit was requested while output was pending and the final PNG decoded correctly after the app exited. This is normal orderly shutdown, not crash/power-loss durability. Permanently hung native calls still need a bounded isolation/cancellation strategy.
 
 PNG publishing: encode losslessly with fast compression into an exclusive UUID temporary file in the destination folder, flush and sync file data, then publish without replacing an existing destination. Windows uses MoveFileExW without REPLACE_EXISTING and with WRITE_THROUGH; other platforms currently use same-filesystem hard-link publication and fail explicitly where unsupported. Normal failure removes the temporary file. Tests cover valid PNG publication, no overwrite and temporary-file cleanup. Power-loss guarantees, orphan .part recovery and additional filesystem types still need validation.
+
+Enumeration rework: startup and manual display/window refresh run on the background executor. A single in-flight refresh is admitted; late results are ignored while quitting. Enumeration failures have a separate UI status, and capture completion no longer re-enumerates windows. Native monitor-topology notifications and release-mode responsiveness measurements are still open.
+
+See [performance-attribution.md](performance-attribution.md) for the final isolated release measurements, bounded thumbnails, explicit image-atlas removal, and tested source-pixel release/recopy. The ordinary app remains above the idle goals in the exploratory run; a no-window diagnostic is not yet a functional resident mode.

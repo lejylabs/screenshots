@@ -1,0 +1,35 @@
+﻿[
+    {
+        "mode":  "headless",
+        "capturedAtUtc":  "2026-11-08T16:43:39.1638733Z",
+        "seconds":  30.057157,
+        "cpuPercentOneCore":  0,
+        "privateBytes":  6914048,
+        "workingSetBytes":  17031168,
+        "threads":  6,
+        "handles":  206,
+        "binarySha256":  "2D85942AF9A3888BAA1F98CFCE3D2C1EB371517D26C64ABF8EAF435168953127"
+    },
+    {
+        "mode":  "empty",
+        "capturedAtUtc":  "2026-11-08T16:44:25.6683381Z",
+        "seconds":  30.0624695,
+        "cpuPercentOneCore":  0.25987552353275567,
+        "privateBytes":  53665792,
+        "workingSetBytes":  43704320,
+        "threads":  27,
+        "handles":  869,
+        "binarySha256":  "2D85942AF9A3888BAA1F98CFCE3D2C1EB371517D26C64ABF8EAF435168953127"
+    },
+    {
+        "mode":  "normal",
+        "capturedAtUtc":  "2026-11-08T16:45:03.3952167Z",
+        "seconds":  30.066122099999998,
+        "cpuPercentOneCore":  0.36378153336908059,
+        "privateBytes":  59940864,
+        "workingSetBytes":  47464448,
+        "threads":  27,
+        "handles":  879,
+        "binarySha256":  "2D85942AF9A3888BAA1F98CFCE3D2C1EB371517D26C64ABF8EAF435168953127"
+    }
+]

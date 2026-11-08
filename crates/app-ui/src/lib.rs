@@ -41,8 +41,11 @@ pub struct SpikeShell {
     backend: XcapBackend,
     xcap_displays: Vec<DisplayInfo>,
     xcap_windows: Vec<WindowInfo>,
+    refreshing: bool,
+    list_status: String,
     capture_status: String,
     last_capture: Option<CapturedImage>,
+    last_saved: Option<PathBuf>,
     last_render: Option<Arc<gpui::RenderImage>>,
     capturing: bool,
     clipboard: Arc<Mutex<app_core::ImageClipboard>>,
@@ -79,8 +82,11 @@ impl SpikeShell {
             backend,
             xcap_displays: Vec::new(),
             xcap_windows: Vec::new(),
+            refreshing: false,
+            list_status: String::new(),
             capture_status: "idle".into(),
             last_capture: None,
+            last_saved: None,
             last_render: None,
             capturing: false,
             clipboard: Arc::new(Mutex::new(app_core::ImageClipboard::default())),
@@ -96,7 +102,7 @@ impl SpikeShell {
             tray: None,
             tray_status: "Tray: not tested on this platform".into(),
         };
-        shell.refresh_xcap_lists();
+        shell.refresh_xcap_lists(cx);
         #[cfg(target_os = "windows")]
         match app_core::SpikeTray::new() {
             Ok(tray) => {
@@ -161,43 +167,55 @@ impl SpikeShell {
         shell
     }
 
-    fn refresh_xcap_lists(&mut self) {
-        match self.backend.list_displays() {
-            Ok(displays) => {
-                for info in &displays {
-                    tracing::info!(
-                        id = %info.id,
-                        name = %info.name,
-                        x = info.x,
-                        y = info.y,
-                        width = info.width,
-                        height = info.height,
-                        scale = info.scale_factor,
-                        rotation = info.rotation,
-                        primary = info.is_primary,
-                        "xcap display"
-                    );
+    fn refresh_xcap_lists(&mut self, cx: &mut Context<Self>) {
+        if self.refreshing || self.quitting {
+            return;
+        }
+        self.refreshing = true;
+        self.list_status = "Displays/Fenster werden geladen…".into();
+        cx.notify();
+        let backend = self.backend.clone();
+        cx.spawn(async move |this, cx| {
+            let (displays, windows) = cx
+                .background_spawn(async move { (backend.list_displays(), backend.list_windows()) })
+                .await;
+            this.update(cx, |this, cx| {
+                this.refreshing = false;
+                if this.quitting {
+                    return;
                 }
-                self.xcap_displays = displays;
-            }
-            Err(error) => {
-                tracing::error!(%error, "xcap list_displays failed");
-                self.capture_status = format!("list displays failed: {error}");
-            }
-        }
-
-        match self.backend.list_windows() {
-            Ok(windows) => {
-                tracing::info!(count = windows.len(), "xcap windows");
-                self.xcap_windows = windows;
-            }
-            Err(error) => {
-                tracing::warn!(%error, "xcap list_windows failed");
-                self.xcap_windows = Vec::new();
-            }
-        }
+                let mut errors = Vec::new();
+                match displays {
+                    Ok(displays) => this.xcap_displays = displays,
+                    Err(error) => {
+                        tracing::warn!(%error, "display enumeration failed");
+                        errors.push(format!("Displays: {error}"));
+                        this.xcap_displays.clear();
+                    }
+                }
+                match windows {
+                    Ok(windows) => this.xcap_windows = windows,
+                    Err(error) => {
+                        tracing::warn!(%error, "window enumeration failed");
+                        errors.push(format!("Fenster: {error}"));
+                        this.xcap_windows.clear();
+                    }
+                }
+                this.list_status = if errors.is_empty() {
+                    format!(
+                        "{} Display(s), {} Fenster geladen",
+                        this.xcap_displays.len(),
+                        this.xcap_windows.len()
+                    )
+                } else {
+                    errors.join("; ")
+                };
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
     }
-
     fn live_overlay_count(&self, cx: &App) -> usize {
         self.overlays
             .iter()
@@ -218,7 +236,11 @@ impl SpikeShell {
                     overlay.active = false;
                     overlay.drag_start = None;
                     overlay.snapshot = None;
-                    overlay.render_image = None;
+                    if let Some(render) = overlay.render_image.take() {
+                        if let Err(error) = window.drop_image(render) {
+                            tracing::warn!(%error, "could not release overlay image atlas entry");
+                        }
+                    }
                     cx.notify();
                     return;
                 }
@@ -463,6 +485,21 @@ impl SpikeShell {
         );
     }
 
+    fn replace_last_render(&mut self, render: Arc<gpui::RenderImage>, cx: &mut Context<Self>) {
+        if let Some(previous) = self.last_render.replace(render) {
+            let control = self.control;
+            cx.defer(move |cx| {
+                control
+                    .update(cx, |_, window, _| {
+                        if let Err(error) = window.drop_image(previous) {
+                            tracing::warn!(%error, "could not release previous thumbnail");
+                        }
+                    })
+                    .ok();
+            });
+        }
+    }
+
     fn finish_quit_if_idle(&self, cx: &mut Context<Self>) {
         if self.quitting && !self.capturing && !self.copying && !self.saving {
             cx.defer(close_application);
@@ -477,11 +514,15 @@ impl SpikeShell {
         if self.copying || self.saving || self.quitting {
             return;
         }
-        let Some(shot) = &self.last_capture else {
+        let Some(path) = self
+            .last_capture
+            .as_ref()
+            .map(|shot| shot.png_path.clone())
+            .or_else(|| self.last_saved.clone())
+        else {
             return;
         };
-        let pixels = shot.pixels.clone();
-        let path = shot.png_path.clone();
+        let pixels = self.last_capture.as_ref().map(|shot| shot.pixels.clone());
         tracing::info!(path = %path.display(), "copying capture to clipboard");
         let clipboard = self.clipboard.clone();
         self.copying = true;
@@ -494,6 +535,24 @@ impl SpikeShell {
         cx.spawn(async move |this, cx| {
             let result = cx
                 .background_spawn(async move {
+                    let pixels = match pixels {
+                        Some(pixels) => pixels,
+                        None => {
+                            let mut reader = image::ImageReader::open(&path)
+                                .map_err(|error| error.to_string())?;
+                            let mut limits = image::Limits::default();
+                            limits.max_alloc = Some(256 * 1024 * 1024);
+                            reader.limits(limits);
+                            let decoded = reader.decode().map_err(|error| error.to_string())?;
+                            let bytes = u64::from(decoded.width())
+                                .checked_mul(u64::from(decoded.height()))
+                                .and_then(|pixels| pixels.checked_mul(4));
+                            if bytes.is_none_or(|bytes| bytes > 256 * 1024 * 1024) {
+                                return Err("saved image exceeds the 256 MiB RGBA limit".into());
+                            }
+                            Arc::new(decoded.into_rgba8())
+                        }
+                    };
                     clipboard
                         .lock()
                         .map_err(|error| error.to_string())?
@@ -543,6 +602,9 @@ impl SpikeShell {
                         })
                         .collect();
                     this.save_status = if errors.is_empty() {
+                        this.last_saved =
+                            this.last_capture.as_ref().map(|shot| shot.png_path.clone());
+                        this.last_capture = None;
                         tracing::info!(count = results.len(), "capture outputs saved");
                         format!("Save: {} PNG(s) saved", results.len())
                     } else {
@@ -574,13 +636,13 @@ impl SpikeShell {
         self.capture_status = "Preparing selection…".into();
         cx.notify();
         cx.spawn(async move |this, cx| {
-            let result = cx.background_spawn(async move { app_core::crop_snapshot(&source, region).and_then(|shot| { let render = render_frame(&shot); Ok((shot, render)) }) }).await;
+            let result = cx.background_spawn(async move { app_core::crop_snapshot(&source, region).map(|shot| { let render = render_thumbnail(&shot); (shot, render) }) }).await;
             this.update(cx, |this, cx| {
                 this.capturing = false;
                 if this.quitting { this.finish_quit_if_idle(cx); return; }
                 match result {
                     Ok((shot, render)) => {
-                        this.last_render = Some(render);
+                        this.replace_last_render(render, cx);
                         tracing::info!(width = shot.width, height = shot.height, path = %shot.png_path.display(), "selection prepared");
                         this.capture_status = format!("Selection {}×{}  {}", shot.width, shot.height, shot.png_path.display());
                         this.last_capture = Some(shot.clone());
@@ -713,7 +775,14 @@ impl SpikeShell {
                             "captured frame"
                         );
 
-                        renders.insert(shot.png_path.clone(), render_frame(&shot));
+                        renders.insert(
+                            shot.png_path.clone(),
+                            if preview {
+                                render_frame(&shot)
+                            } else {
+                                render_thumbnail(&shot)
+                            },
+                        );
                         shots.push(shot);
                     }
                     Ok::<_, app_core::CaptureError>((shots, renders))
@@ -747,7 +816,9 @@ impl SpikeShell {
                         if preview {
                             this.show_overlays(OverlayMode::Fullscreen, &shots, &renders, cx);
                         } else {
-                            this.last_render = renders.get(&shot.png_path).cloned();
+                            if let Some(render) = renders.get(&shot.png_path).cloned() {
+                                this.replace_last_render(render, cx);
+                            }
                             this.last_capture = Some(shot);
                             this.copy_and_save(shots, cx);
                         }
@@ -757,7 +828,7 @@ impl SpikeShell {
                         this.capture_status = format!("capture failed: {error}");
                     }
                 }
-                this.refresh_xcap_lists();
+
                 cx.notify();
             })
             .ok();
@@ -865,16 +936,17 @@ impl Render for SpikeShell {
             .child(capture_button(
                 "copy-last-capture",
                 "Copy last capture",
-                self.copying || self.last_capture.is_none(),
+                self.copying || (self.last_capture.is_none() && self.last_saved.is_none()),
                 cx.listener(|this, _, _, cx| this.copy_last_capture(cx)),
             ))
             .child(div().text_sm().child(self.clipboard_status.clone()))
             .child(div().text_sm().child(self.save_status.clone()))
+            .child(div().text_sm().child(self.list_status.clone()))
             .child(capture_button(
                 "refresh-windows",
                 "Fensterliste aktualisieren",
-                capturing,
-                cx.listener(|this, _, _, cx| { this.refresh_xcap_lists(); cx.notify(); }),
+                capturing || self.refreshing,
+                cx.listener(|this, _, _, cx| { this.refresh_xcap_lists(cx); }),
             ))
             .child(div().text_sm().child("Fenster aufnehmen — zum Aufnehmen anklicken"))
             .child(
@@ -1035,6 +1107,14 @@ fn render_frame(shot: &CapturedImage) -> Arc<gpui::RenderImage> {
         pixel.0.swap(0, 2);
     }
     Arc::new(gpui::RenderImage::new(vec![image::Frame::new(bgra)]))
+}
+
+fn render_thumbnail(shot: &CapturedImage) -> Arc<gpui::RenderImage> {
+    let mut pixels = image::imageops::thumbnail(shot.pixels.as_ref(), 400, 240);
+    for pixel in pixels.pixels_mut() {
+        pixel.0.swap(0, 2);
+    }
+    Arc::new(gpui::RenderImage::new(vec![image::Frame::new(pixels)]))
 }
 fn capture_button(
     id: &'static str,
@@ -1335,6 +1415,12 @@ fn close_application(cx: &mut App) {
 }
 
 pub fn run() {
+    if let Some(mode) =
+        std::env::args().find_map(|arg| arg.strip_prefix("--resource-probe=").map(str::to_owned))
+    {
+        run_resource_probe(&mode);
+        return;
+    }
     tracing::info!(
         version = app_core::version(),
         "starting overlay + capture spike"
@@ -1376,9 +1462,187 @@ pub fn run() {
     });
 }
 
+/// Explicit diagnostic mode, never enabled by an ordinary application launch.
+fn run_resource_probe(mode: &str) {
+    assert!(
+        matches!(mode, "headless" | "empty"),
+        "unknown resource probe mode"
+    );
+    let seconds = std::env::args()
+        .find_map(|arg| {
+            arg.strip_prefix("--probe-seconds=")
+                .and_then(|value| value.parse::<u64>().ok())
+        })
+        .unwrap_or(45)
+        .clamp(10, 660);
+    struct Empty;
+    impl Render for Empty {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div().size_full().bg(rgb(0x1a1a1a))
+        }
+    }
+    let application = gpui_platform::application();
+    let application = if mode == "headless" {
+        application.with_windowing(gpui::WindowingRequest::Headless)
+    } else {
+        application
+    };
+    let show_window = mode == "empty";
+    application.run(move |cx| {
+        if show_window {
+            cx.open_window(
+                WindowOptions {
+                    window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
+                        None,
+                        size(px(820.0), px(720.0)),
+                        cx,
+                    ))),
+                    titlebar: Some(TitlebarOptions {
+                        title: Some("screenshots resource probe".into()),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                },
+                |window, cx| {
+                    window.on_window_should_close(cx, |_, cx| {
+                        cx.defer(|cx| cx.quit());
+                        false
+                    });
+                    cx.new(|_| Empty)
+                },
+            )
+            .expect("open empty probe window");
+        }
+        cx.spawn(async move |cx| {
+            cx.background_executor()
+                .timer(std::time::Duration::from_secs(seconds))
+                .await;
+            cx.update(|cx| cx.quit());
+        })
+        .detach();
+    });
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    #[ignore = "opens GPUI, saves a test image and replaces clipboard contents"]
+    fn saved_pixels_are_released_and_explicit_recopy_works() {
+        let path = std::env::temp_dir().join(format!(
+            "screenshots-release-{}.png",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let output = path.clone();
+        let result = Arc::new(Mutex::new(None));
+        let report = result.clone();
+        gpui_platform::application().run(move |cx| {
+            let control = cx
+                .open_window(WindowOptions::default(), |window, cx| {
+                    cx.new(|cx| SpikeShell::new(window, cx))
+                })
+                .unwrap();
+            let pixels = Arc::new(image::RgbaImage::from_pixel(
+                2,
+                2,
+                image::Rgba([12, 34, 56, 255]),
+            ));
+            let weak_pixels = Arc::downgrade(&pixels);
+            let shell = control
+                .update(cx, |this, _, cx| {
+                    let shot = CapturedImage {
+                        display_id: "test".into(),
+                        window_id: None,
+                        width: 2,
+                        height: 2,
+                        pixels,
+                        png_path: output,
+                        elapsed_ms: 0,
+                        source_format: app_core::PixelFormat::Rgba8UnormSrgb,
+                    };
+                    this.last_capture = Some(shot.clone());
+                    this.copy_and_save(vec![shot], cx);
+                    cx.entity().downgrade()
+                })
+                .unwrap();
+            cx.spawn(async move |cx| {
+                let check = async {
+                    for stage in 0..2 {
+                        let started = std::time::Instant::now();
+                        loop {
+                            cx.background_executor()
+                                .timer(std::time::Duration::from_millis(10))
+                                .await;
+                            let idle = shell
+                                .update(cx, |this, _| !this.copying && !this.saving)
+                                .map_err(|error| error.to_string())?;
+                            if idle {
+                                break;
+                            }
+                            if started.elapsed().as_secs() > 8 {
+                                return Err("output timed out".to_string());
+                            }
+                        }
+                        let valid = shell
+                            .update(cx, |this, _| {
+                                this.last_capture.is_none()
+                                    && this.last_saved.is_some()
+                                    && this.clipboard_status.contains("copied")
+                            })
+                            .map_err(|error| error.to_string())?;
+                        if !valid || weak_pixels.upgrade().is_some() {
+                            return Err("source pixels retained or copy/save failed".into());
+                        }
+                        if stage == 0 {
+                            shell
+                                .update(cx, |this, cx| this.copy_last_capture(cx))
+                                .map_err(|error| error.to_string())?;
+                        }
+                    }
+                    Ok(())
+                }
+                .await;
+                *report.lock().unwrap() = Some(check);
+                cx.update(close_application);
+            })
+            .detach();
+        });
+        result
+            .lock()
+            .unwrap()
+            .take()
+            .expect("test did not complete")
+            .unwrap();
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn thumbnail_is_bounded_bgra_without_changing_source_pixels() {
+        let source = CapturedImage {
+            display_id: "test".into(),
+            window_id: None,
+            width: 800,
+            height: 480,
+            pixels: Arc::new(image::RgbaImage::from_pixel(
+                800,
+                480,
+                image::Rgba([12, 34, 56, 255]),
+            )),
+            png_path: PathBuf::from("unused.png"),
+            elapsed_ms: 0,
+            source_format: app_core::PixelFormat::Rgba8UnormSrgb,
+        };
+        let render = render_thumbnail(&source);
+        let bytes = render.as_bytes(0).unwrap();
+        assert_eq!(bytes.len(), 400 * 240 * 4);
+        assert_eq!(&bytes[..4], &[56, 34, 12, 255]);
+        assert_eq!(source.pixels.get_pixel(0, 0).0, [12, 34, 56, 255]);
+    }
 
     #[cfg(target_os = "windows")]
     #[test]

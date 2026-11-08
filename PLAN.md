@@ -273,7 +273,7 @@ Clipboard ownership can be a live consumer even with every window hidden, partic
 
 #### Prototype debt that must not ship
 
-The initial polling loops and file-based frame handoffs have been replaced with native events and shared in-memory pixels. Canceled previews no longer save PNGs, and clipboard read-back runs only in tests. Foreground window enumeration, retained last-image/full-resolution render data, missing image byte/admission limits and unmeasured release memory/latency budgets remain production debt. Passing the functional spike is not a performance result. See [Phase 0 evidence](docs/phase-0.md).
+The initial polling loops and file-based frame handoffs have been replaced with native events and shared in-memory pixels. Canceled previews no longer save PNGs, and clipboard read-back runs only in tests. Missing native capture image byte/admission limits, lazy resident window/renderer separation and unmeasured release memory/latency budgets remain production debt. Passing the functional spike is not a performance result. See [Phase 0 evidence](docs/phase-0.md).
 
 ### Process lifecycle
 
