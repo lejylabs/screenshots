@@ -116,6 +116,15 @@ fn migrations() -> Migrations<'static> {
     );",
         ),
         M::up("CREATE INDEX captures_source_id ON captures(source,id DESC);"),
+        M::up("CREATE VIRTUAL TABLE captures_search USING fts5(file_path,created_at,source,content='captures',content_rowid='id');
+            CREATE TRIGGER captures_search_insert AFTER INSERT ON captures BEGIN
+                INSERT INTO captures_search(rowid,file_path,created_at,source) VALUES(new.id,new.file_path,new.created_at,new.source); END;
+            CREATE TRIGGER captures_search_delete AFTER DELETE ON captures BEGIN
+                INSERT INTO captures_search(captures_search,rowid,file_path,created_at,source) VALUES('delete',old.id,old.file_path,old.created_at,old.source); END;
+            CREATE TRIGGER captures_search_update AFTER UPDATE ON captures BEGIN
+                INSERT INTO captures_search(captures_search,rowid,file_path,created_at,source) VALUES('delete',old.id,old.file_path,old.created_at,old.source);
+                INSERT INTO captures_search(rowid,file_path,created_at,source) VALUES(new.id,new.file_path,new.created_at,new.source); END;
+            INSERT INTO captures_search(captures_search) VALUES('rebuild');"),
     ])
 }
 
@@ -189,18 +198,366 @@ pub fn capture_history_page_filtered(
     Ok(entries)
 }
 
-/// Remove only metadata. Capture files are never modified by this operation.
-pub fn remove_history_entry(database: &Path, id: i64) -> Result<()> {
+const SEARCH_PAGE_SQL: &str = "SELECT c.id,c.file_path,c.width,c.height,c.created_at
+    FROM captures_search JOIN captures c ON c.id=captures_search.rowid
+    WHERE captures_search MATCH ?1 AND captures_search.rowid < ?2
+    AND (?3 IS NULL OR c.source=?3) ORDER BY captures_search.rowid DESC LIMIT 21";
+
+fn search_expression(query: &str) -> Result<String> {
+    ensure!(query.len() <= 512, "Search is limited to 512 UTF-8 bytes");
+    let words: Vec<_> = query
+        .split(|ch: char| !ch.is_alphanumeric())
+        .filter(|word| !word.is_empty())
+        .collect();
+    ensure!(words.len() <= 16, "Use at most 16 search words");
+    Ok(words
+        .into_iter()
+        .map(|word| format!("\"{word}\"*"))
+        .collect::<Vec<_>>()
+        .join(" AND "))
+}
+
+/// Literal word-prefix search; bounded pages, SQLite instruction-level cancellation and deadline.
+pub fn search_capture_history(
+    database: &Path,
+    before: Option<i64>,
+    filter: HistoryFilter,
+    query: &str,
+    cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
+) -> Result<Vec<HistoryEntry>> {
+    use std::sync::atomic::Ordering;
+    ensure!(!cancel.load(Ordering::Relaxed), "History request canceled");
+    let expression = search_expression(query)?;
+    if query.trim().is_empty() {
+        return capture_history_page_filtered(database, before, filter, || {
+            cancel.load(Ordering::Relaxed)
+        });
+    }
+    if expression.is_empty() {
+        return Ok(Vec::new());
+    }
+    let connection = open(database)?;
+    let flag = cancel.clone();
+    let started = std::time::Instant::now();
+    connection.progress_handler(
+        1000,
+        Some(move || {
+            flag.load(Ordering::Relaxed) || started.elapsed() > Duration::from_millis(250)
+        }),
+    )?;
+    ensure!(!cancel.load(Ordering::Relaxed), "History request canceled");
+    let source = match filter {
+        HistoryFilter::All => None,
+        HistoryFilter::Captures => Some("capture"),
+        HistoryFilter::Imports => Some("import"),
+    };
+    let mut query = connection.prepare(SEARCH_PAGE_SQL)?;
+    let rows = query.query_map(
+        params![expression, before.unwrap_or(i64::MAX), source],
+        |row| {
+            Ok(HistoryEntry {
+                id: row.get(0)?,
+                path: PathBuf::from(row.get::<_, String>(1)?),
+                width: row.get(2)?,
+                height: row.get(3)?,
+                created_at: row.get(4)?,
+            })
+        },
+    )?;
+    let mut entries = Vec::with_capacity(21);
+    for row in rows {
+        ensure!(!cancel.load(Ordering::Relaxed), "History request canceled");
+        entries.push(row?);
+    }
+    Ok(entries)
+}
+
+/// Reassign an existing entry without changing its source, creation time or image files.
+pub fn relink_history_entry(database: &Path, entry: &HistoryEntry, path: &Path) -> Result<()> {
+    ensure!(entry.id > 0, "Invalid history entry ID");
+    let info = image_info(path)?;
     let mut connection = open(database)?;
     let transaction = connection.transaction()?;
-    transaction.execute("DELETE FROM captures WHERE id=?1", [id])?;
+    let updated = transaction
+        .execute(
+            "UPDATE captures SET file_path=?1,width=?2,height=?3,file_size=?4,thumbnail_path=NULL
+         WHERE id=?5 AND file_path=?6 AND created_at=?7",
+            params![
+                path.to_str().context("Invalid image path")?,
+                info.0,
+                info.1,
+                info.2,
+                entry.id,
+                entry.path.to_str().context("Invalid original image path")?,
+                entry.created_at
+            ],
+        )
+        .context(
+            "Could not relink image; the selected path may already belong to another history entry",
+        )?;
+    ensure!(
+        updated == 1,
+        "History entry changed or was removed; refresh history and try again"
+    );
     transaction.commit()?;
     Ok(())
+}
+
+/// Remove only metadata. Capture files are never modified by this operation.
+pub fn remove_history_entry(database: &Path, id: i64) -> Result<()> {
+    remove_history_entries(database, &[id]).map(|_| ())
+}
+
+/// Atomically remove a displayed page's selected metadata; image files remain untouched.
+pub fn remove_history_entries(database: &Path, ids: &[i64]) -> Result<usize> {
+    ensure!(
+        !ids.is_empty() && ids.len() <= 20,
+        "Select 1 to 20 history entries"
+    );
+    ensure!(ids.iter().all(|id| *id > 0), "Invalid history entry ID");
+    let mut connection = open(database)?;
+    let transaction = connection.transaction()?;
+    let mut removed = 0;
+    {
+        let mut delete = transaction.prepare("DELETE FROM captures WHERE id=?1")?;
+        for id in ids {
+            removed += delete.execute([id])?;
+        }
+    }
+    transaction.commit()?;
+    Ok(removed)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn search(
+        database: &Path,
+        before: Option<i64>,
+        filter: HistoryFilter,
+        text: &str,
+    ) -> Result<Vec<HistoryEntry>> {
+        search_capture_history(
+            database,
+            before,
+            filter,
+            text,
+            std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        )
+    }
+    #[test]
+    fn indexed_search_upgrades_pages_and_tracks_relinks_and_removals() -> Result<()> {
+        let root = std::env::temp_dir().join(format!(
+            "screenshots-history-search-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let database = root.join("history.sqlite3");
+        assert!(search(&database, None, HistoryFilter::All, &"x".repeat(513)).is_err());
+        assert!(search(&database, None, HistoryFilter::All, &"word ".repeat(17)).is_err());
+        assert!(
+            search(&database, None, HistoryFilter::All, "*** ()")
+                .unwrap()
+                .is_empty()
+        );
+        let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+        assert!(
+            search_capture_history(&database, None, HistoryFilter::All, "capture", cancel).is_err()
+        );
+        assert!(!root.exists());
+        std::fs::create_dir_all(&root)?;
+        let mut legacy = Connection::open(&database)?;
+        migrations().to_version(&mut legacy, 2)?;
+        populate_metadata(&mut legacy, &root, 80)?;
+        drop(legacy);
+        let first = search(&database, None, HistoryFilter::All, "CAPT 2026-01")?;
+        assert_eq!(first.len(), 21);
+        assert_eq!(first[0].id, 79);
+        let older = search(
+            &database,
+            Some(first[19].id),
+            HistoryFilter::All,
+            "capt 2026-01",
+        )?;
+        assert_eq!(older.len(), 20);
+        let ids: Vec<_> = first[..20]
+            .iter()
+            .chain(&older)
+            .map(|entry| entry.id)
+            .collect();
+        assert!(ids.windows(2).all(|pair| pair[0] - pair[1] == 2));
+        assert!(search(&database, None, HistoryFilter::Imports, "capture")?.is_empty());
+        assert!(search(&database, None, HistoryFilter::All, "capture\" OR \"import")?.is_empty());
+        assert_eq!(
+            search(&database, None, HistoryFilter::Imports, "import")?.len(),
+            21
+        );
+        assert_eq!(search(&database, None, HistoryFilter::All, " ")?.len(), 21);
+        let plan = open(&database)?
+            .prepare(&format!("EXPLAIN QUERY PLAN {SEARCH_PAGE_SQL}"))?
+            .query_map(
+                params!["\"capture\"*", i64::MAX, Option::<&str>::None],
+                |row| row.get::<_, String>(3),
+            )?
+            .collect::<rusqlite::Result<Vec<_>>>()?
+            .join(" ");
+        assert!(plan.contains("VIRTUAL TABLE INDEX"), "{plan}");
+        assert!(!plan.contains("TEMP B-TREE"), "{plan}");
+        let png = root.join("Holiday-Grüße.png");
+        image::RgbaImage::new(2, 3).save(&png)?;
+        import_capture_files(&database, &[png.clone()])?;
+        let entry = search(&database, None, HistoryFilter::Imports, "HOLID grü")?
+            .pop()
+            .unwrap();
+        let renamed = root.join("Invoice.png");
+        std::fs::rename(&png, &renamed)?;
+        relink_history_entry(&database, &entry, &renamed)?;
+        assert!(search(&database, None, HistoryFilter::All, "holiday")?.is_empty());
+        assert_eq!(
+            search(&database, None, HistoryFilter::All, "invoice")?[0].id,
+            entry.id
+        );
+        remove_history_entries(&database, &[entry.id])?;
+        assert!(search(&database, None, HistoryFilter::All, "invoice")?.is_empty());
+        assert!(renamed.exists());
+        assert!(!root.join("missing").exists());
+        std::fs::remove_dir_all(root)?;
+        Ok(())
+    }
+
+    #[test]
+    fn relinking_preserves_identity_files_and_rejects_conflicts_or_stale_entries() -> Result<()> {
+        let root = std::env::temp_dir().join(format!(
+            "screenshots-history-relink-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&root)?;
+        let database = root.join("history.sqlite3");
+        let original = root.join("original.png");
+        let moved = root.join("moved.png");
+        let imported = root.join("import.png");
+        let replacement = root.join("replacement.png");
+        image::RgbaImage::new(2, 3).save(&original)?;
+        image::RgbaImage::new(4, 5).save(&imported)?;
+        image::RgbaImage::new(6, 7).save(&replacement)?;
+        record_saved_capture(&database, &original)?;
+        import_capture_files(&database, &[imported.clone()])?;
+        let initial = capture_history_page(&database, None)?;
+        let entry = initial
+            .iter()
+            .find(|entry| entry.path == original)
+            .unwrap()
+            .clone();
+        let import_entry = initial
+            .iter()
+            .find(|entry| entry.path == imported)
+            .unwrap()
+            .clone();
+        let original_bytes = std::fs::read(&original)?;
+        let import_bytes = std::fs::read(&imported)?;
+        let replacement_bytes = std::fs::read(&replacement)?;
+        std::fs::rename(&original, &moved)?;
+
+        // A duplicate target or rejected header must leave the missing reference recoverable.
+        let invalid = root.join("invalid.png");
+        std::fs::write(&invalid, b"not a PNG")?;
+        for path in [&imported, &invalid, &original, Path::new("relative.png")] {
+            assert!(relink_history_entry(&database, &entry, path).is_err());
+            assert_eq!(capture_history_page(&database, None)?[1].path, original);
+        }
+        let started = std::time::Instant::now();
+        relink_history_entry(&database, &entry, &moved)?;
+        println!(
+            "PNG header validation + durable relink: {:?}",
+            started.elapsed()
+        );
+        let linked = capture_history_page(&database, None)?[1].clone();
+        assert_eq!((linked.id, linked.width, linked.height), (entry.id, 2, 3));
+        assert_eq!(linked.created_at, entry.created_at);
+        assert_eq!(linked.path, moved);
+        assert!(relink_history_entry(&database, &entry, &replacement).is_err());
+
+        relink_history_entry(&database, &import_entry, &replacement)?;
+        let linked_import =
+            capture_history_page_filtered(&database, None, HistoryFilter::Imports, || false)?;
+        assert_eq!(linked_import.len(), 1);
+        assert_eq!(
+            (
+                linked_import[0].id,
+                linked_import[0].width,
+                linked_import[0].height
+            ),
+            (import_entry.id, 6, 7)
+        );
+        assert_eq!(linked_import[0].created_at, import_entry.created_at);
+        assert_eq!(linked_import[0].path, replacement);
+        assert_eq!(
+            capture_history_page_filtered(&database, None, HistoryFilter::Captures, || false)?
+                .len(),
+            1
+        );
+        remove_history_entry(&database, linked.id)?;
+        assert!(relink_history_entry(&database, &linked, &moved).is_err());
+        assert!(!original.exists());
+        assert_eq!(std::fs::read(&moved)?, original_bytes);
+        assert_eq!(std::fs::read(&imported)?, import_bytes);
+        assert_eq!(std::fs::read(&replacement)?, replacement_bytes);
+        assert_eq!(std::fs::read(&invalid)?, b"not a PNG");
+        std::fs::remove_dir_all(root)?;
+        Ok(())
+    }
+
+    #[test]
+    fn bulk_removal_is_bounded_atomic_and_keeps_files() -> Result<()> {
+        let root =
+            std::env::temp_dir().join(format!("screenshots-history-bulk-{}", uuid::Uuid::new_v4()));
+        let database = root.join("history.sqlite3");
+        for ids in [vec![], vec![1; 21], vec![0], vec![-1]] {
+            assert!(remove_history_entries(&database, &ids).is_err());
+        }
+        assert!(!root.exists());
+        let mut connection = open(&database)?;
+        populate_metadata(&mut connection, &root, 40)?;
+        let image = root.join("kept.png");
+        image::RgbaImage::new(2, 3).save(&image)?;
+        let bytes = std::fs::read(&image)?;
+        connection.execute(
+            "UPDATE captures SET file_path=?1 WHERE id=1",
+            [image.to_str().unwrap()],
+        )?;
+        connection.execute_batch("CREATE TRIGGER reject_delete BEFORE DELETE ON captures WHEN OLD.id=2 BEGIN SELECT RAISE(ABORT, 'injected failure'); END;")?;
+        assert!(remove_history_entries(&database, &[1, 2]).is_err());
+        assert_eq!(
+            search(&database, None, HistoryFilter::All, "kept")?[0].id,
+            1
+        );
+        assert_eq!(
+            connection.query_row("SELECT count(*) FROM captures", [], |row| row
+                .get::<_, i64>(0))?,
+            40
+        );
+        assert_eq!(capture_history_page(&database, Some(3))?.len(), 2);
+        connection.execute_batch("DROP TRIGGER reject_delete;")?;
+        assert_eq!(remove_history_entries(&database, &[1, 1, 2, 999])?, 2);
+        assert!(search(&database, None, HistoryFilter::All, "kept")?.is_empty());
+        assert_eq!(std::fs::read(&image)?, bytes);
+        let ids: Vec<_> = (3..=22).collect();
+        let started = std::time::Instant::now();
+        assert_eq!(remove_history_entries(&database, &ids)?, 20);
+        println!(
+            "20 metadata removals in one durable transaction: {:?}",
+            started.elapsed()
+        );
+        assert_eq!(
+            connection.query_row("SELECT count(*) FROM captures", [], |row| row
+                .get::<_, i64>(0))?,
+            18
+        );
+        remove_history_entry(&database, 1)?;
+        drop(connection);
+        std::fs::remove_dir_all(root)?;
+        Ok(())
+    }
+
     fn populate_metadata(connection: &mut Connection, root: &Path, count: i64) -> Result<()> {
         let transaction = connection.transaction()?;
         for index in 0..count {
@@ -256,7 +613,7 @@ mod tests {
         let connection = open(&database)?;
         assert_eq!(
             connection.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))?,
-            2
+            3
         );
         assert_eq!(
             connection.query_row("SELECT count(*) FROM captures", [], |row| row
@@ -345,6 +702,23 @@ mod tests {
             samples.sort_unstable();
             eprintln!(
                 "10k history {filter:?}: page p95={:?}; <=21 metadata rows, SQLite cache 512 KiB, no image decode",
+                samples[23]
+            );
+        }
+        for (text, filter, expected) in [
+            ("capt", HistoryFilter::All, 21),
+            ("import 2026-01", HistoryFilter::Imports, 21),
+            ("notfound", HistoryFilter::All, 0),
+        ] {
+            let mut samples = Vec::new();
+            for _ in 0..25 {
+                let start = std::time::Instant::now();
+                assert_eq!(search(&database, Some(9000), filter, text)?.len(), expected);
+                samples.push(start.elapsed());
+            }
+            samples.sort_unstable();
+            eprintln!(
+                "10k indexed search {text:?}/{filter:?}: page p95={:?}",
                 samples[23]
             );
         }

@@ -27,7 +27,8 @@ pub use pixelation::PixelationGrid;
 mod settings;
 pub use history::{
     HistoryEntry, HistoryFilter, ImportReport, capture_history_page, capture_history_page_filtered,
-    history_database_path, import_capture_files, record_saved_capture, remove_history_entry,
+    history_database_path, import_capture_files, record_saved_capture, relink_history_entry,
+    remove_history_entries, remove_history_entry, search_capture_history,
 };
 pub use selection::{
     FrameAnnotation, PixelRegion, crop_snapshot, edit_snapshot, redact_snapshot,

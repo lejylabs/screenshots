@@ -96,6 +96,8 @@ pub struct SpikeShell {
     history_database: Option<PathBuf>,
     history_visible: bool,
     history_filter: app_core::HistoryFilter,
+    history_query: String,
+    history_search_input: Option<gpui::Entity<caption::CaptionInput>>,
     history_revision: u64,
     history_cancel: Option<Arc<std::sync::atomic::AtomicBool>>,
     history_loading: bool,
@@ -104,6 +106,7 @@ pub struct SpikeShell {
     history_refresh_pending: bool,
     history_has_more: bool,
     history_entries: Vec<app_core::HistoryEntry>,
+    history_selected: Vec<i64>,
     history_status: String,
     list_status: String,
     capture_status: String,
@@ -423,6 +426,8 @@ impl SpikeShell {
             },
             history_visible: false,
             history_filter: app_core::HistoryFilter::All,
+            history_query: String::new(),
+            history_search_input: None,
             history_revision: 0,
             history_cancel: None,
             history_loading: false,
@@ -431,6 +436,7 @@ impl SpikeShell {
             history_refresh_pending: false,
             history_has_more: false,
             history_entries: Vec::new(),
+            history_selected: Vec::new(),
             history_status: String::new(),
             list_status: String::new(),
             capture_status: "Ready".into(),
@@ -636,25 +642,40 @@ impl SpikeShell {
 
     fn hide_history(&mut self) {
         self.history_visible = false;
+        self.history_query.clear();
+        self.history_search_input = None;
         self.history_revision = self.history_revision.wrapping_add(1);
         if let Some(cancel) = &self.history_cancel {
             cancel.store(true, std::sync::atomic::Ordering::Relaxed);
         }
         self.history_refresh_pending = false;
         self.history_entries.clear();
+        self.history_selected.clear();
         self.history_has_more = false;
         self.history_status.clear();
+        self.history_action_status.clear();
     }
     fn set_history_filter(&mut self, filter: app_core::HistoryFilter, cx: &mut Context<Self>) {
         if self.history_filter == filter || self.history_mutating {
             return;
         }
         self.history_filter = filter;
+        self.restart_history(cx);
+    }
+    fn set_history_query(&mut self, query: String, cx: &mut Context<Self>) {
+        if !self.history_visible || self.history_query == query || query.len() > 512 {
+            return;
+        }
+        self.history_query = query;
+        self.restart_history(cx);
+    }
+    fn restart_history(&mut self, cx: &mut Context<Self>) {
         self.history_revision = self.history_revision.wrapping_add(1);
         if let Some(cancel) = &self.history_cancel {
             cancel.store(true, std::sync::atomic::Ordering::Relaxed);
         }
         self.history_entries.clear();
+        self.history_selected.clear();
         self.history_has_more = false;
         self.refresh_history(None, cx);
         cx.notify();
@@ -673,18 +694,19 @@ impl SpikeShell {
             cx.notify();
             return;
         };
+        self.history_selected.clear();
+        self.history_revision = self.history_revision.wrapping_add(1);
         self.history_loading = true;
         self.history_refresh_pending = false;
         let filter = self.history_filter;
+        let query = self.history_query.clone();
         let revision = self.history_revision;
         let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
         self.history_cancel = Some(cancel.clone());
         cx.spawn(async move |this, cx| {
             let result = cx
                 .background_spawn(async move {
-                    app_core::capture_history_page_filtered(&database, before, filter, || {
-                        cancel.load(std::sync::atomic::Ordering::Relaxed)
-                    })
+                    app_core::search_capture_history(&database, before, filter, &query, cancel)
                 })
                 .await;
             this.update(cx, |this, cx| {
@@ -699,7 +721,14 @@ impl SpikeShell {
                             this.history_has_more = entries.len() > 20;
                             entries.truncate(20);
                             this.history_entries = entries;
-                            this.history_status = if this.history_entries.is_empty() {
+                            this.history_status = if !this.history_query.trim().is_empty() {
+                                if this.history_entries.is_empty() {
+                                    "No matching history entries"
+                                } else {
+                                    "Search results · newest first"
+                                }
+                                .into()
+                            } else if this.history_entries.is_empty() {
                                 match filter {
                                     app_core::HistoryFilter::All => "No saved captures yet",
                                     app_core::HistoryFilter::Captures => {
@@ -1569,14 +1598,71 @@ impl SpikeShell {
         cx.notify();
     }
 
+    fn toggle_history_selection(&mut self, id: i64, revision: u64, cx: &mut Context<Self>) {
+        if !self.history_visible
+            || self.history_loading
+            || self.history_mutating
+            || self.history_revision != revision
+            || !self.history_entries.iter().any(|entry| entry.id == id)
+        {
+            return;
+        }
+        if let Some(index) = self
+            .history_selected
+            .iter()
+            .position(|selected| *selected == id)
+        {
+            self.history_selected.remove(index);
+        } else if self.history_selected.len() < 20 {
+            self.history_selected.push(id);
+        }
+        cx.notify();
+    }
+
+    fn select_history_page(&mut self, revision: u64, cx: &mut Context<Self>) {
+        if self.history_visible
+            && !self.history_loading
+            && !self.history_mutating
+            && self.history_revision == revision
+        {
+            self.history_selected = self
+                .history_entries
+                .iter()
+                .take(20)
+                .map(|entry| entry.id)
+                .collect();
+            cx.notify();
+        }
+    }
+
+    fn finish_history_mutation(&mut self, refresh: bool, cx: &mut Context<Self>) {
+        self.history_mutating = false;
+        let pending = std::mem::take(&mut self.history_refresh_pending);
+        if refresh || pending {
+            self.refresh_history(None, cx);
+        }
+        self.finish_quit_if_idle(cx);
+        cx.notify();
+    }
+
     fn remove_history_capture(&mut self, id: i64, cx: &mut Context<Self>) {
+        self.remove_history_captures(vec![id], cx);
+    }
+
+    fn remove_history_captures(&mut self, ids: Vec<i64>, cx: &mut Context<Self>) {
         if self.quitting
+            || !self.history_visible
             || self.history_loading
             || self.history_mutating
             || self.capturing
             || self.copying
             || self.saving
             || self.capture_delay.is_some()
+            || ids.is_empty()
+            || ids.len() > 20
+            || ids
+                .iter()
+                .any(|id| !self.history_entries.iter().any(|entry| entry.id == *id))
         {
             return;
         }
@@ -1584,24 +1670,18 @@ impl SpikeShell {
             return;
         };
         self.history_mutating = true;
-        self.history_action_status = "Removing history entry…".into();
+        self.history_action_status = "Removing history entries…".into();
         cx.spawn(async move |this, cx| {
             let result = cx
-                .background_spawn(async move { app_core::remove_history_entry(&database, id) })
+                .background_spawn(async move { app_core::remove_history_entries(&database, &ids) })
                 .await;
             this.update(cx, |this, cx| {
-                this.history_mutating = false;
-                match result {
-                    Ok(()) => {
-                        this.history_action_status = "Entry removed. Image file kept.".into();
-                        this.refresh_history(None, cx);
-                    }
-                    Err(error) => {
-                        this.history_action_status = format!("Could not remove entry: {error:#}")
-                    }
-                }
-                this.finish_quit_if_idle(cx);
-                cx.notify();
+                let refresh = result.is_ok();
+                this.history_action_status = match result {
+                    Ok(removed) => format!("Removed {removed} history entries. Image files kept."),
+                    Err(error) => format!("Could not remove entries: {error:#}"),
+                };
+                this.finish_history_mutation(refresh, cx);
             })
             .ok();
         })
@@ -1636,10 +1716,8 @@ impl SpikeShell {
                 Ok(Ok(paths)) => paths,
                 error => {
                     this.update(cx, |this, cx| {
-                        this.history_mutating = false;
                         this.history_action_status = format!("Image selection failed: {error:?}");
-                        this.finish_quit_if_idle(cx);
-                        cx.notify();
+                        this.finish_history_mutation(false, cx);
                     })
                     .ok();
                     return;
@@ -1647,9 +1725,7 @@ impl SpikeShell {
             };
             let Some(paths) = selected else {
                 this.update(cx, |this, cx| {
-                    this.history_mutating = false;
-                    this.finish_quit_if_idle(cx);
-                    cx.notify();
+                    this.finish_history_mutation(false, cx);
                 })
                 .ok();
                 return;
@@ -1663,7 +1739,7 @@ impl SpikeShell {
                 .background_spawn(async move { app_core::import_capture_files(&database, &paths) })
                 .await;
             this.update(cx, |this, cx| {
-                this.history_mutating = false;
+                let refresh = result.is_ok();
                 match result {
                     Ok(report) => {
                         this.history_action_status = format!(
@@ -1682,12 +1758,97 @@ impl SpikeShell {
                             this.history_action_status
                                 .push_str("\nOnly the first three errors are shown.");
                         }
-                        this.refresh_history(None, cx);
                     }
                     Err(error) => this.history_action_status = format!("Import failed: {error:#}"),
                 }
-                this.finish_quit_if_idle(cx);
-                cx.notify();
+                this.finish_history_mutation(refresh, cx);
+            })
+            .ok();
+        })
+        .detach();
+        cx.notify();
+    }
+
+    fn relink_history_image(&mut self, id: i64, revision: u64, cx: &mut Context<Self>) {
+        if self.quitting
+            || !self.history_visible
+            || self.history_revision != revision
+            || self.history_loading
+            || self.history_mutating
+            || self.capturing
+            || self.copying
+            || self.saving
+            || self.settings_saving
+            || self.capture_delay.is_some()
+        {
+            return;
+        }
+        let Some(entry) = self
+            .history_entries
+            .iter()
+            .find(|entry| entry.id == id)
+            .cloned()
+        else {
+            return;
+        };
+        let Some(database) = self.history_database.clone() else {
+            return;
+        };
+        self.history_mutating = true;
+        self.history_action_status =
+            "Choose the PNG for this history entry. Image files stay unchanged.".into();
+        let dialog = cx.prompt_for_paths(gpui::PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: false,
+            prompt: Some("Relink history entry to a PNG image".into()),
+        });
+        cx.spawn(async move |this, cx| {
+            let selection = dialog.await;
+            let path = this
+                .update(cx, |this, cx| {
+                    if this.quitting || !this.history_visible || this.history_revision != revision {
+                        this.finish_history_mutation(false, cx);
+                        return None;
+                    }
+                    match selection {
+                        Ok(Ok(Some(paths))) if paths.len() == 1 => {
+                            this.history_action_status = "Relinking image…".into();
+                            cx.notify();
+                            paths.into_iter().next()
+                        }
+                        other => {
+                            this.history_action_status = match other {
+                                Ok(Ok(None)) => "Relink canceled. History unchanged.".into(),
+                                Ok(Ok(Some(_))) => {
+                                    "Select exactly one PNG. History unchanged.".into()
+                                }
+                                error => format!("Image selection failed: {error:?}"),
+                            };
+                            this.finish_history_mutation(false, cx);
+                            None
+                        }
+                    }
+                })
+                .ok()
+                .flatten();
+            let Some(path) = path else {
+                return;
+            };
+            let result = cx
+                .background_spawn(async move {
+                    app_core::relink_history_entry(&database, &entry, &path)
+                })
+                .await;
+            this.update(cx, |this, cx| {
+                let refresh = result.is_ok();
+                if this.history_visible && this.history_revision == revision {
+                    this.history_action_status = match result {
+                        Ok(()) => "Image relinked. Image files unchanged.".into(),
+                        Err(error) => format!("Could not relink image: {error:#}"),
+                    };
+                }
+                this.finish_history_mutation(refresh, cx);
             })
             .ok();
         })
@@ -2199,6 +2360,19 @@ impl Focusable for SpikeShell {
 
 impl Render for SpikeShell {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if self.history_visible && self.history_search_input.is_none() {
+            let owner = cx.entity().downgrade();
+            self.history_search_input = Some(cx.new(|cx| caption::CaptionInput::search(owner, cx)));
+        }
+        if let Some(input) = &self.history_search_input {
+            input.update(cx, |input, cx| {
+                let enabled = !self.history_mutating;
+                if input.enabled != enabled {
+                    input.enabled = enabled;
+                    cx.notify();
+                }
+            });
+        }
         let busy = self.capturing
             || self.editor.is_some()
             || self.editor_closing
@@ -2476,12 +2650,19 @@ impl Render for SpikeShell {
                 }),
             ))
             .when(self.history_visible, |view| {
+                let revision = self.history_revision;
                 view.child(
                     div()
                         .flex()
                         .flex_col()
                         .gap_2()
                         .child(div().text_lg().child("Capture history"))
+                        .child(
+                            div()
+                                .text_sm()
+                                .child("Search path, date or source · word prefixes · Esc clears"),
+                        )
+                        .children(self.history_search_input.clone())
                         .child(
                             div().flex().gap_2().children(
                                 [
@@ -2539,6 +2720,51 @@ impl Render for SpikeShell {
                         .child(div().text_sm().child(self.history_action_status.clone()))
                         .child(
                             div()
+                                .flex()
+                                .gap_2()
+                                .child(capture_button(
+                                    "select-history-page",
+                                    "Select all",
+                                    self.history_loading
+                                        || self.history_mutating
+                                        || self.history_entries.is_empty(),
+                                    cx.listener(move |this, _, _, cx| {
+                                        this.select_history_page(revision, cx)
+                                    }),
+                                ))
+                                .child(capture_button(
+                                    "clear-history-selection",
+                                    "Clear selection",
+                                    self.history_mutating || self.history_selected.is_empty(),
+                                    cx.listener(move |this, _, _, cx| {
+                                        if this.history_visible
+                                            && !this.history_mutating
+                                            && !this.history_loading
+                                            && this.history_revision == revision
+                                        {
+                                            this.history_selected.clear();
+                                            cx.notify();
+                                        }
+                                    }),
+                                ))
+                                .child(capture_button(
+                                    "remove-history-selection",
+                                    "Remove selected",
+                                    busy || self.history_loading
+                                        || self.history_selected.is_empty(),
+                                    cx.listener(move |this, _, _, cx| {
+                                        if this.history_revision == revision {
+                                            this.remove_history_captures(
+                                                this.history_selected.clone(),
+                                                cx,
+                                            );
+                                        }
+                                    }),
+                                ))
+                                .child(format!("{} selected", self.history_selected.len())),
+                        )
+                        .child(
+                            div()
                                 .id("capture-history-list")
                                 .max_h(px(320.0))
                                 .overflow_y_scroll()
@@ -2562,6 +2788,20 @@ impl Render for SpikeShell {
                                                 .gap_1()
                                                 .rounded_md()
                                                 .bg(rgb(0x242b36))
+                                                .child(capture_button(
+                                                    "select-history-entry",
+                                                    if self.history_selected.contains(&entry_id) {
+                                                        "Selected"
+                                                    } else {
+                                                        "Select"
+                                                    },
+                                                    self.history_loading || self.history_mutating,
+                                                    cx.listener(move |this, _, _, cx| {
+                                                        this.toggle_history_selection(
+                                                            entry_id, revision, cx,
+                                                        )
+                                                    }),
+                                                ))
                                                 .child(
                                                     entry
                                                         .path
@@ -2616,13 +2856,26 @@ impl Render for SpikeShell {
                                                             }),
                                                         ))
                                                         .child(capture_button(
+                                                            "relink-history-file",
+                                                            "Relink PNG…",
+                                                            busy || self.history_loading,
+                                                            cx.listener(move |this, _, _, cx| {
+                                                                this.relink_history_image(
+                                                                    entry_id, revision, cx,
+                                                                );
+                                                            }),
+                                                        ))
+                                                        .child(capture_button(
                                                             "remove-history-entry",
                                                             "Remove entry",
                                                             busy || self.history_loading,
                                                             cx.listener(move |this, _, _, cx| {
-                                                                this.remove_history_capture(
-                                                                    entry_id, cx,
-                                                                )
+                                                                if this.history_revision == revision
+                                                                {
+                                                                    this.remove_history_capture(
+                                                                        entry_id, cx,
+                                                                    );
+                                                                }
                                                             }),
                                                         ))
                                                         .child(capture_button(
@@ -3365,6 +3618,7 @@ mod tests {
     #[ignore = "runs the native headless executor with synthetic history; no windows or clipboard writes"]
     fn history_filters_cancel_stale_requests_without_opening_windows() {
         let errors = track_gui_errors();
+        let history_errors = errors.clone();
         let root = std::env::temp_dir().join(format!(
             "screenshots-history-ui-{}-{}",
             std::process::id(),
@@ -3391,14 +3645,33 @@ mod tests {
                 let controller = cx.new(|cx| SpikeShell::new_controller(None, cx));
                 controller.update(cx, |this, cx| {
                     this.history_database = Some(database);
-                    this.history_visible = true;
-                    this.refresh_history(None, cx);
-                    this.set_history_filter(app_core::HistoryFilter::Captures, cx);
-                    this.set_history_filter(app_core::HistoryFilter::Imports, cx);
+                    cx.notify();
                 });
                 cx.spawn(async move |cx| {
                     let checked: Result<(), String> = async {
-                        for phase in 0..3 {
+                        // Native startup enumeration can log access errors for unrelated protected windows.
+                        let startup = std::time::Instant::now();
+                        while controller.update(cx, |this, _| this.refreshing) {
+                            if startup.elapsed().as_secs() > 8 {
+                                return Err("Startup enumeration timed out".into());
+                            }
+                            cx.background_executor().timer(std::time::Duration::from_millis(20)).await;
+                        }
+                        history_errors.store(0, std::sync::atomic::Ordering::Relaxed);
+                        controller.update(cx, |this, cx| {
+                            this.history_visible = true;
+                            this.refresh_history(None, cx);
+                            this.set_history_filter(app_core::HistoryFilter::Captures, cx);
+                            this.set_history_filter(app_core::HistoryFilter::Imports, cx);
+                            this.set_history_query("capture".into(), cx);
+                            this.set_history_query("import".into(), cx);
+                            let owner = cx.entity().downgrade();
+                            let input = cx.new(|cx| caption::CaptionInput::search(owner, cx));
+                            input.update(cx, |input, _| input.verify_search_limits())?;
+                            this.history_search_input = Some(input);
+                            Ok::<_, String>(())
+                        })?;
+                        for phase in 0..5 {
                             if phase > 0 {
                                 controller.update(cx, |this, cx| {
                                     if phase == 1 {
@@ -3415,15 +3688,44 @@ mod tests {
                                         if !cancel.load(std::sync::atomic::Ordering::Relaxed)
                                             || this.history_refresh_pending
                                             || !this.history_entries.is_empty()
+                                            || !this.history_query.is_empty()
+                                            || this.history_search_input.is_some()
                                         {
                                             return Err(
                                                 "Hide history did not cancel/release its page"
                                                     .to_string(),
                                             );
                                         }
-                                    } else {
+                                    } else if phase == 2 {
                                         this.history_visible = true;
                                         this.refresh_history(None, cx);
+                                    } else if phase == 3 {
+                                        let revision = this.history_revision;
+                                        this.select_history_page(revision, cx);
+                                        if this.history_selected.len() != 1 {
+                                            return Err(
+                                                "Select all did not select the displayed page"
+                                                    .into(),
+                                            );
+                                        }
+                                        this.remove_history_captures(
+                                            this.history_selected.clone(),
+                                            cx,
+                                        );
+                                        this.refresh_history(None, cx);
+                                        if !this.history_mutating || !this.history_refresh_pending {
+                                            return Err(
+                                                "Bulk removal did not coalesce a pending refresh"
+                                                    .into(),
+                                            );
+                                        }
+                                    } else {
+                                        this.history_mutating = true;
+                                        this.refresh_history(None, cx);
+                                        this.finish_history_mutation(false, cx);
+                                        if this.history_mutating || this.history_refresh_pending || !this.history_loading {
+                                            return Err("Canceled/failed metadata write stranded its pending refresh".into());
+                                        }
                                     }
                                     Ok(())
                                 })?;
@@ -3432,6 +3734,7 @@ mod tests {
                             loop {
                                 if controller.update(cx, |this, _| {
                                     !this.history_loading
+                                        && !this.history_mutating
                                         && !this.history_refresh_pending
                                         && !this.refreshing
                                 }) {
@@ -3460,6 +3763,16 @@ mod tests {
                                                 .into(),
                                         );
                                     }
+                                } else if phase >= 3 {
+                                    if !this.history_entries.is_empty()
+                                        || !this.history_selected.is_empty()
+                                        || !this.history_action_status.contains("Removed 1")
+                                    {
+                                        return Err(
+                                            "Bulk removal did not refresh/clear the selected page"
+                                                .into(),
+                                        );
+                                    }
                                 } else if this.history_entries.len() != 1
                                     || this.history_entries[0].path.file_name().unwrap() != expected
                                 {
@@ -3475,7 +3788,28 @@ mod tests {
                                 }
                                 if phase == 0 {
                                     let revision = this.history_revision;
+                                    let id = this.history_entries[0].id;
+                                    this.toggle_history_selection(id, revision.wrapping_sub(1), cx);
+                                    if !this.history_selected.is_empty() {
+                                        return Err(
+                                            "Stale selection changed the current page".into()
+                                        );
+                                    }
+                                    this.toggle_history_selection(id, revision, cx);
+                                    if this.history_selected != vec![id] {
+                                        return Err("Row selection failed".into());
+                                    }
+                                    this.toggle_history_selection(id, revision, cx);
+                                    if !this.history_selected.is_empty() {
+                                        return Err("Row deselection failed".into());
+                                    }
+                                    this.relink_history_image(id, revision.wrapping_sub(1), cx);
+                                    this.relink_history_image(i64::MAX, revision, cx);
+                                    if this.history_mutating {
+                                        return Err("A stale/missing entry opened the relink picker".into());
+                                    }
                                     this.history_mutating = true;
+                                    this.relink_history_image(id, revision, cx);
                                     this.set_history_filter(app_core::HistoryFilter::Captures, cx);
                                     this.history_mutating = false;
                                     if this.history_filter != app_core::HistoryFilter::Imports
@@ -3507,6 +3841,10 @@ mod tests {
             .unwrap();
         assert_eq!(std::fs::read(&capture).unwrap(), capture_bytes);
         assert_eq!(std::fs::read(&imported).unwrap(), import_bytes);
+        let remaining =
+            app_core::capture_history_page(&root.join("history.sqlite3"), None).unwrap();
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].path, imported);
         assert_eq!(
             unsafe { windows_sys::Win32::System::DataExchange::GetClipboardSequenceNumber() },
             clipboard
