@@ -5,9 +5,18 @@ mod clipboard;
 #[cfg(target_os = "windows")]
 mod desktop_events;
 #[cfg(target_os = "windows")]
-pub use desktop_events::{DesktopEvent, desktop_events};
+mod single_instance;
+#[cfg(target_os = "windows")]
+pub use desktop_events::{DesktopEvent, desktop_events, request_reopen};
+#[cfg(target_os = "windows")]
+pub use single_instance::SingleInstance;
+mod history;
 mod selection;
 mod settings;
+pub use history::{
+    HistoryEntry, ImportReport, capture_history_page, history_database_path, import_capture_files,
+    record_saved_capture, remove_history_entry,
+};
 pub use selection::{PixelRegion, crop_snapshot};
 pub use settings::CaptureSettings;
 

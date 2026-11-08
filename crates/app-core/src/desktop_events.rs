@@ -3,8 +3,13 @@ use std::sync::{Mutex, Once, OnceLock};
 use tokio::sync::mpsc;
 
 pub enum DesktopEvent {
+    Reopen,
     Hotkey(global_hotkey::GlobalHotKeyEvent),
     Menu(tray_icon::menu::MenuEvent),
+}
+
+pub fn request_reopen() {
+    deliver(DesktopEvent::Reopen);
 }
 
 static SENDER: OnceLock<Mutex<Option<mpsc::Sender<DesktopEvent>>>> = OnceLock::new();

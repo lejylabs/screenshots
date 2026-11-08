@@ -277,6 +277,9 @@ The initial polling loops and file-based frame handoffs have been replaced with 
 
 ### Process lifecycle
 
+Windows implementation: normal startup uses SID/session-scoped named kernel objects with Windows default token security. A second launch sends only a bounded/coalesced Show signal, then exits before GPUI/tray/hotkey initialization. The listener starts after event delivery is installed and waits natively without polling. Ownership survives until GPUI shutdown completes. Resource cost: one parked native waiter with a 256 KiB requested stack and a small fixed handle set; updated idle measurements are not claimed here. The kernel-object handoff/restart test and a real two-process release smoke check passed: the secondary exited and native window enumeration confirmed a visible control window in the original process. The smoke processes exited on their diagnostic deadlines with no stderr errors. Cross-platform IPC, foreground-activation policy and shutdown/session/elevation races remain verification work.
+
+
 A capture tool should run as a single instance. A second launch forwards its request to the running instance and exits. Two instances would register the same hotkeys and write the same history.
 
 The running instance owns the tray icon, the hotkeys, and the database worker. Closing the main window hides the window. Quitting is explicit.
@@ -292,6 +295,9 @@ The capture engine is one of the most important and technically challenging part
 It should be designed around a common API with platform-specific implementations.
 
 ### Required capture functionality
+
+Implemented convenience workflow: a three-second delayed region selection with a cancel button/Escape in the control window. Closing the UI or quitting discards the countdown task; it adds no resident polling. The existing capture/selection/copy/save pipeline is reused after the delay.
+
 
 - Fullscreen capture.
 - Display capture.
@@ -994,6 +1000,9 @@ Tasks:
 **Deliverable:** A functional screenshot editor.
 
 ### Phase 5 – History and Sharing
+
+Implemented initial slice: new successful PNG saves and Save As exports enter a migrated local SQLite/WAL metadata store. Capture history loads lazily in bounded pages (20 visible rows plus one lookahead), with Open/Show file, bounded on-demand Copy, and metadata-only Remove entry. Listing performs no image decoding or eager startup query. Removing an entry keeps its image file; image deletion and retention are separate pending workflows. Metadata writes follow completed file publication and report failures independently. Search, thumbnails, missing-file reconciliation, deletion/retention, crash recovery and the full phase gate remain open. Source classification currently uses capture for app outputs and import for manually added PNGs. Manual PNG import is limited to 100 explicit selections, validates bounded image metadata, skips duplicate exact paths, reports file failures and commits references without modifying original files.
+
 
 **Estimated duration: Weeks 8–9**
 

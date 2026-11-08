@@ -86,12 +86,22 @@ pub struct SpikeShell {
     settings_saving: bool,
     output_directory: Option<PathBuf>,
     settings_status: String,
+    history_database: Option<PathBuf>,
+    history_visible: bool,
+    history_loading: bool,
+    history_mutating: bool,
+    history_action_status: String,
+    history_refresh_pending: bool,
+    history_has_more: bool,
+    history_entries: Vec<app_core::HistoryEntry>,
+    history_status: String,
     list_status: String,
     capture_status: String,
     last_capture: Option<CapturedImage>,
     last_saved: Option<PathBuf>,
     last_render: Option<Arc<gpui::RenderImage>>,
     capturing: bool,
+    capture_delay: Option<gpui::Task<()>>,
     clipboard: Arc<Mutex<app_core::ImageClipboard>>,
     copying: bool,
     saving: bool,
@@ -217,7 +227,10 @@ impl SpikeShell {
                 .update(cx, |this, cx| {
                     this.switching_graphics = false;
                     match result {
-                        Ok(handle) => this.control = Some(handle.into()),
+                        Ok(handle) => {
+                            this.control = Some(handle.into());
+                            this.restore_control(cx);
+                        }
                         Err(error) => {
                             tracing::error!(%error, "could not open control window");
                             this.retire_ui(cx);
@@ -230,6 +243,7 @@ impl SpikeShell {
     }
 
     fn retire_ui(&mut self, cx: &mut Context<Self>) {
+        self.cancel_capture_delay(cx);
         #[cfg(target_os = "windows")]
         if self.resident && self.tray.is_none() {
             cx.defer(close_application);
@@ -383,12 +397,26 @@ impl SpikeShell {
                 None
             },
             settings_status: String::new(),
+            history_database: if cfg!(test) {
+                None
+            } else {
+                app_core::history_database_path().ok()
+            },
+            history_visible: false,
+            history_loading: false,
+            history_mutating: false,
+            history_action_status: String::new(),
+            history_refresh_pending: false,
+            history_has_more: false,
+            history_entries: Vec::new(),
+            history_status: String::new(),
             list_status: String::new(),
             capture_status: "Ready".into(),
             last_capture: None,
             last_saved: None,
             last_render: None,
             capturing: false,
+            capture_delay: None,
             clipboard: Arc::new(Mutex::new(app_core::ImageClipboard::default())),
             copying: false,
             saving: false,
@@ -462,6 +490,7 @@ impl SpikeShell {
                 while let Some(event) = events.recv().await {
                     if this
                         .update(cx, |this, cx| match event {
+                            app_core::DesktopEvent::Reopen => this.show_control(cx),
                             app_core::DesktopEvent::Hotkey(event) => {
                                 match this
                                     .hotkey
@@ -509,6 +538,9 @@ impl SpikeShell {
     }
 
     fn choose_output_directory(&mut self, cx: &mut Context<Self>) {
+        if self.capture_delay.is_some() {
+            return;
+        }
         if self.capturing
             || self.copying
             || self.saving
@@ -574,6 +606,56 @@ impl SpikeShell {
         cx.notify();
     }
 
+    fn refresh_history(&mut self, before: Option<i64>, cx: &mut Context<Self>) {
+        if self.quitting {
+            return;
+        }
+        if self.history_loading || self.history_mutating {
+            self.history_refresh_pending = true;
+            return;
+        }
+        let Some(database) = self.history_database.clone() else {
+            self.history_status = "History storage is unavailable".into();
+            cx.notify();
+            return;
+        };
+        self.history_loading = true;
+        self.history_status = "Loading history…".into();
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_spawn(async move { app_core::capture_history_page(&database, before) })
+                .await;
+            this.update(cx, |this, cx| {
+                this.history_loading = false;
+                if this.quitting {
+                    return;
+                }
+                match result {
+                    Ok(mut entries) => {
+                        this.history_has_more = entries.len() > 20;
+                        entries.truncate(20);
+                        this.history_entries = entries;
+                        this.history_status = if this.history_entries.is_empty() {
+                            "No saved captures yet".into()
+                        } else {
+                            "Saved captures · newest first".into()
+                        };
+                    }
+                    Err(error) => {
+                        this.history_status = format!("History could not be loaded: {error:#}")
+                    }
+                }
+                if std::mem::take(&mut this.history_refresh_pending) {
+                    this.refresh_history(None, cx);
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+        cx.notify();
+    }
+
     fn refresh_xcap_lists(&mut self, cx: &mut Context<Self>) {
         if self.refreshing || self.quitting {
             return;
@@ -631,6 +713,7 @@ impl SpikeShell {
     }
 
     fn close_overlays(&mut self, cx: &mut Context<Self>) {
+        self.cancel_capture_delay(cx);
         let retire = self.resident && self.preview_active && self.control.is_none();
         tracing::info!(count = self.overlays.len(), "closing overlays");
         for handle in &self.overlays {
@@ -670,6 +753,9 @@ impl SpikeShell {
     }
 
     fn open_overlays(&mut self, mode: OverlayMode, cx: &mut Context<Self>) {
+        if self.capture_delay.is_some() {
+            return;
+        }
         if self.settings_loading || self.settings_saving || self.output_directory.is_none() {
             return;
         }
@@ -691,6 +777,59 @@ impl SpikeShell {
             return;
         }
         self.show_overlays(mode, &[], &HashMap::new(), cx);
+    }
+
+    fn start_delayed_region(&mut self, cx: &mut Context<Self>) {
+        if self.capture_delay.is_some()
+            || self.capturing
+            || self.copying
+            || self.saving
+            || self.quitting
+            || self.switching_graphics
+            || self.preview_active
+            || self.settings_loading
+            || self.settings_saving
+            || self.output_directory.is_none()
+        {
+            return;
+        }
+        self.capture_status = "Region capture in 3 seconds… Press Escape to cancel.".into();
+        self.capture_delay = Some(cx.spawn(async move |this, cx| {
+            for remaining in (0..3).rev() {
+                cx.background_executor()
+                    .timer(std::time::Duration::from_secs(1))
+                    .await;
+                if this
+                    .update(cx, |this, cx| {
+                        if this.quitting {
+                            this.capture_delay.take();
+                            return;
+                        }
+                        if remaining == 0 {
+                            this.capture_delay.take();
+                            this.open_overlays(OverlayMode::Fullscreen, cx);
+                        } else {
+                            this.capture_status = format!(
+                                "Region capture in {remaining} {}… Press Escape to cancel.",
+                                if remaining == 1 { "second" } else { "seconds" }
+                            );
+                        }
+                        cx.notify();
+                    })
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        }));
+        cx.notify();
+    }
+
+    fn cancel_capture_delay(&mut self, cx: &mut Context<Self>) {
+        if self.capture_delay.take().is_some() {
+            self.capture_status = "Delayed capture canceled".into();
+            cx.notify();
+        }
     }
 
     fn restore_control(&self, cx: &mut Context<Self>) {
@@ -936,6 +1075,7 @@ impl SpikeShell {
             && !self.saving
             && !self.switching_graphics
             && !self.settings_saving
+            && !self.history_mutating
         {
             cx.defer(close_application);
         }
@@ -945,7 +1085,176 @@ impl SpikeShell {
         self.copy_and_save(Vec::new(), cx);
     }
 
+    fn copy_history_capture(&mut self, path: PathBuf, cx: &mut Context<Self>) {
+        if self.capturing
+            || self.capture_delay.is_some()
+            || self.copying
+            || self.saving
+            || self.quitting
+            || self.history_mutating
+        {
+            return;
+        }
+        self.copying = true;
+        self.history_action_status = "Copying image…".into();
+        let clipboard = self.clipboard.clone();
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_spawn(async move {
+                    clipboard
+                        .lock()
+                        .map_err(|error| error.to_string())?
+                        .copy_saved_png(&path)
+                        .map_err(|error| format!("{error:#}"))
+                })
+                .await;
+            this.update(cx, |this, cx| {
+                this.copying = false;
+                let status = match result {
+                    Ok((width, height)) => format!("Copied {width} × {height} to clipboard"),
+                    Err(error) => format!("Could not copy image: {error}"),
+                };
+                this.clipboard_status = status.clone();
+                this.history_action_status = status;
+                this.finish_quit_if_idle(cx);
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+        cx.notify();
+    }
+
+    fn remove_history_capture(&mut self, id: i64, cx: &mut Context<Self>) {
+        if self.quitting
+            || self.history_loading
+            || self.history_mutating
+            || self.capturing
+            || self.copying
+            || self.saving
+            || self.capture_delay.is_some()
+        {
+            return;
+        }
+        let Some(database) = self.history_database.clone() else {
+            return;
+        };
+        self.history_mutating = true;
+        self.history_action_status = "Removing history entry…".into();
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_spawn(async move { app_core::remove_history_entry(&database, id) })
+                .await;
+            this.update(cx, |this, cx| {
+                this.history_mutating = false;
+                match result {
+                    Ok(()) => {
+                        this.history_action_status = "Entry removed. Image file kept.".into();
+                        this.refresh_history(None, cx);
+                    }
+                    Err(error) => {
+                        this.history_action_status = format!("Could not remove entry: {error:#}")
+                    }
+                }
+                this.finish_quit_if_idle(cx);
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+        cx.notify();
+    }
+
+    fn import_history_images(&mut self, cx: &mut Context<Self>) {
+        if self.quitting
+            || self.history_loading
+            || self.history_mutating
+            || self.capturing
+            || self.copying
+            || self.saving
+            || self.capture_delay.is_some()
+            || self.settings_saving
+        {
+            return;
+        }
+        let Some(database) = self.history_database.clone() else {
+            return;
+        };
+        self.history_mutating = true;
+        let dialog = cx.prompt_for_paths(gpui::PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: true,
+            prompt: Some("Add PNG images to history (up to 100)".into()),
+        });
+        cx.spawn(async move |this, cx| {
+            let selected = match dialog.await {
+                Ok(Ok(paths)) => paths,
+                error => {
+                    this.update(cx, |this, cx| {
+                        this.history_mutating = false;
+                        this.history_action_status = format!("Image selection failed: {error:?}");
+                        this.finish_quit_if_idle(cx);
+                        cx.notify();
+                    })
+                    .ok();
+                    return;
+                }
+            };
+            let Some(paths) = selected else {
+                this.update(cx, |this, cx| {
+                    this.history_mutating = false;
+                    this.finish_quit_if_idle(cx);
+                    cx.notify();
+                })
+                .ok();
+                return;
+            };
+            this.update(cx, |this, cx| {
+                this.history_action_status = "Adding images…".into();
+                cx.notify();
+            })
+            .ok();
+            let result = cx
+                .background_spawn(async move { app_core::import_capture_files(&database, &paths) })
+                .await;
+            this.update(cx, |this, cx| {
+                this.history_mutating = false;
+                match result {
+                    Ok(report) => {
+                        this.history_action_status = format!(
+                            "Added {} · Already listed {} · Skipped {}",
+                            report.added,
+                            report.existing,
+                            report.failures.len()
+                        );
+                        for (path, error) in report.failures.iter().take(3) {
+                            this.history_action_status.push_str(&format!(
+                                "\n{}: {error}",
+                                path.file_name().unwrap_or_default().to_string_lossy()
+                            ));
+                        }
+                        if report.failures.len() > 3 {
+                            this.history_action_status
+                                .push_str("\nOnly the first three errors are shown.");
+                        }
+                        this.refresh_history(None, cx);
+                    }
+                    Err(error) => this.history_action_status = format!("Import failed: {error:#}"),
+                }
+                this.finish_quit_if_idle(cx);
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+        cx.notify();
+    }
+
     fn save_capture_as(&mut self, cx: &mut Context<Self>) {
+        if self.capture_delay.is_some() {
+            return;
+        }
         if self.capturing || self.copying || self.saving || self.settings_saving || self.quitting {
             return;
         }
@@ -964,6 +1273,7 @@ impl SpikeShell {
                 .to_path_buf()
         });
         let dialog = cx.prompt_for_new_path(&directory, Some("Screenshot.png"));
+        let history_database = self.history_database.clone();
         self.saving = true;
         cx.spawn(async move |this, cx| {
             let chosen = match dialog.await {
@@ -985,7 +1295,10 @@ impl SpikeShell {
             if !path.extension().is_some_and(|extension| extension.eq_ignore_ascii_case("png")) { path.set_extension("png"); }
             let result = cx.background_spawn(async move {
                 let result = if let Some(shot) = shot { shot.save_png_as(&path) } else { app_core::export_saved_png(&source, &path) };
-                result.map(|_| path).map_err(|error| match error {
+                result.map(|_| {
+                    let history_error = history_database.as_ref().and_then(|database| app_core::record_saved_capture(database, &path).err()).map(|error| format!("{error:#}"));
+                    (path, history_error)
+                }).map_err(|error| match error {
                     app_core::CaptureError::Io(error) if error.kind() == std::io::ErrorKind::AlreadyExists =>
                         "The file already exists. Choose a new name; existing files are never overwritten.".to_owned(),
                     error => error.to_string(),
@@ -994,10 +1307,14 @@ impl SpikeShell {
             this.update(cx, |this, cx| {
                 this.saving = false;
                 match result {
-                    Ok(path) => {
+                    Ok((path, history_error)) => {
                         this.save_status = format!("PNG saved: {}", path.display());
                         this.last_saved = Some(path);
                         this.last_capture = None;
+                        if let Some(error) = history_error {
+                            this.history_status = format!("PNG saved, but history was not updated: {error}");
+                            this.save_status.push_str(" · History update failed");
+                        } else if this.history_visible { this.refresh_history(None, cx); }
                     }
                     Err(error) => {
                         this.quitting = false;
@@ -1014,7 +1331,7 @@ impl SpikeShell {
     }
 
     fn copy_and_save(&mut self, saves: Vec<CapturedImage>, cx: &mut Context<Self>) {
-        if self.copying || self.saving || self.quitting {
+        if self.capture_delay.is_some() || self.copying || self.saving || self.quitting {
             return;
         }
         let Some(path) = self
@@ -1038,25 +1355,12 @@ impl SpikeShell {
         cx.spawn(async move |this, cx| {
             let result = cx
                 .background_spawn(async move {
-                    let pixels = match pixels {
-                        Some(pixels) => pixels,
-                        None => {
-                            let mut reader = image::ImageReader::open(&path)
-                                .map_err(|error| error.to_string())?;
-                            let mut limits = image::Limits::default();
-                            limits.max_alloc = Some(app_core::MAX_CAPTURE_BYTES);
-                            reader.limits(limits);
-                            let decoded = reader.decode().map_err(|error| error.to_string())?;
-                            app_core::validate_image_size(decoded.width(), decoded.height())
-                                .map_err(|error| error.to_string())?;
-                            Arc::new(decoded.into_rgba8())
-                        }
-                    };
-                    clipboard
-                        .lock()
-                        .map_err(|error| error.to_string())?
-                        .copy_image(&pixels)
-                        .map_err(|error| format!("{error:#}"))
+                    let mut clipboard = clipboard.lock().map_err(|error| error.to_string())?;
+                    match pixels {
+                        Some(pixels) => clipboard.copy_image(&pixels),
+                        None => clipboard.copy_saved_png(&path),
+                    }
+                    .map_err(|error| format!("{error:#}"))
                 })
                 .await;
             this.update(cx, |this, cx| {
@@ -1079,15 +1383,28 @@ impl SpikeShell {
             })
             .ok();
             if !saves.is_empty() {
+                let history_database = this
+                    .update(cx, |this, _| this.history_database.clone())
+                    .ok()
+                    .flatten();
                 let results = cx
                     .background_spawn(async move {
                         saves
                             .into_iter()
                             .map(|shot| {
-                                (
-                                    shot.png_path.clone(),
-                                    shot.save_png().map_err(|error| error.to_string()),
-                                )
+                                let saved = shot.save_png().map_err(|error| error.to_string());
+                                let history_error = if saved.is_ok() {
+                                    history_database
+                                        .as_ref()
+                                        .and_then(|database| {
+                                            app_core::record_saved_capture(database, &shot.png_path)
+                                                .err()
+                                        })
+                                        .map(|error| format!("{error:#}"))
+                                } else {
+                                    None
+                                };
+                                (shot.png_path.clone(), saved, history_error)
                             })
                             .collect::<Vec<_>>()
                     })
@@ -1096,7 +1413,7 @@ impl SpikeShell {
                     this.saving = false;
                     let errors: Vec<_> = results
                         .iter()
-                        .filter_map(|(path, result)| {
+                        .filter_map(|(path, result, _)| {
                             result
                                 .as_ref()
                                 .err()
@@ -1118,6 +1435,19 @@ impl SpikeShell {
                         tracing::error!(errors = %errors.join("; "), "capture output save failed");
                         format!("Save failed: {}", errors.join("; "))
                     };
+                    let history_errors: Vec<_> = results
+                        .iter()
+                        .filter_map(|(_, _, error)| error.as_deref())
+                        .collect();
+                    if !history_errors.is_empty() {
+                        this.save_status.push_str(" · History update failed");
+                        this.history_status = format!(
+                            "PNG saved, but history was not updated: {}",
+                            history_errors.join("; ")
+                        );
+                    } else if this.history_visible {
+                        this.refresh_history(None, cx);
+                    }
                     this.finish_quit_if_idle(cx);
                     cx.notify();
                 })
@@ -1173,6 +1503,9 @@ impl SpikeShell {
         preview: bool,
         cx: &mut Context<Self>,
     ) {
+        if self.capture_delay.is_some() {
+            return;
+        }
         if self.settings_loading || self.settings_saving || self.output_directory.is_none() {
             return;
         }
@@ -1371,12 +1704,14 @@ impl Focusable for SpikeShell {
 impl Render for SpikeShell {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let busy = self.capturing
+            || self.capture_delay.is_some()
             || self.copying
             || self.saving
             || self.quitting
             || self.settings_loading
             || self.settings_saving
-            || self.switching_graphics;
+            || self.switching_graphics
+            || self.history_mutating;
         let unavailable = busy || self.output_directory.is_none();
         let displays = self.xcap_displays.clone();
         let windows: Vec<_> = self
@@ -1444,6 +1779,12 @@ impl Render for SpikeShell {
                         }),
                     ))
                     .child(capture_button(
+                        "delayed-region",
+                        "Region in 3 seconds",
+                        unavailable,
+                        cx.listener(|this, _, _, cx| this.start_delayed_region(cx)),
+                    ))
+                    .child(capture_button(
                         "capture-primary",
                         "Primary display",
                         unavailable,
@@ -1463,6 +1804,14 @@ impl Render for SpikeShell {
                     .child(self.hotkey_status.clone()),
             )
             .child(div().text_sm().child(self.capture_status.clone()))
+            .when(self.capture_delay.is_some(), |view| {
+                view.child(capture_button(
+                    "cancel-delayed-capture",
+                    "Cancel countdown",
+                    false,
+                    cx.listener(|this, _, _, cx| this.cancel_capture_delay(cx)),
+                ))
+            })
             .child(
                 div()
                     .flex()
@@ -1595,6 +1944,157 @@ impl Render for SpikeShell {
                                 .text_sm()
                                 .text_color(rgb(0x94a3b8))
                                 .child(self.list_status.clone()),
+                        ),
+                )
+            })
+            .child(capture_button(
+                "toggle-history",
+                if self.history_visible {
+                    "Hide history"
+                } else {
+                    "Capture history"
+                },
+                false,
+                cx.listener(|this, _, _, cx| {
+                    this.history_visible = !this.history_visible;
+                    if this.history_visible {
+                        this.refresh_history(None, cx);
+                    }
+                    cx.notify();
+                }),
+            ))
+            .when(self.history_visible, |view| {
+                view.child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap_2()
+                        .child(div().text_lg().child("Capture history"))
+                        .child(capture_button(
+                            "import-history-images",
+                            "Add PNGs…",
+                            busy || self.history_loading,
+                            cx.listener(|this, _, _, cx| this.import_history_images(cx)),
+                        ))
+                        .child(div().text_sm().child(self.history_status.clone()))
+                        .child(
+                            div()
+                                .text_sm()
+                                .text_color(rgb(0x94a3b8))
+                                .child("Removing an entry keeps the image file."),
+                        )
+                        .child(div().text_sm().child(self.history_action_status.clone()))
+                        .child(
+                            div()
+                                .id("capture-history-list")
+                                .max_h(px(320.0))
+                                .overflow_y_scroll()
+                                .flex()
+                                .flex_col()
+                                .gap_2()
+                                .children(
+                                    self.history_entries.clone().into_iter().enumerate().map(
+                                        |(index, entry)| {
+                                            let open_path = entry.path.clone();
+                                            let reveal_path = entry.path.clone();
+                                            let copy_path = entry.path.clone();
+                                            let entry_id = entry.id;
+                                            div()
+                                                .id(("history-entry", index))
+                                                .flex_none()
+                                                .flex()
+                                                .flex_col()
+                                                .p_3()
+                                                .gap_1()
+                                                .rounded_md()
+                                                .bg(rgb(0x242b36))
+                                                .child(
+                                                    entry
+                                                        .path
+                                                        .file_name()
+                                                        .unwrap_or_default()
+                                                        .to_string_lossy()
+                                                        .into_owned(),
+                                                )
+                                                .child(
+                                                    div()
+                                                        .text_sm()
+                                                        .text_color(rgb(0x94a3b8))
+                                                        .child(format!(
+                                                            "{} × {} · {}",
+                                                            entry.width,
+                                                            entry.height,
+                                                            entry.created_at
+                                                        )),
+                                                )
+                                                .child(
+                                                    div()
+                                                        .flex()
+                                                        .gap_2()
+                                                        .child(capture_button(
+                                                            "open-history-file",
+                                                            "Open",
+                                                            false,
+                                                            move |_, _, cx| {
+                                                                cx.open_with_system(&open_path)
+                                                            },
+                                                        ))
+                                                        .child(capture_button(
+                                                            "copy-history-file",
+                                                            "Copy",
+                                                            busy,
+                                                            cx.listener(move |this, _, _, cx| {
+                                                                this.copy_history_capture(
+                                                                    copy_path.clone(),
+                                                                    cx,
+                                                                )
+                                                            }),
+                                                        ))
+                                                        .child(capture_button(
+                                                            "remove-history-entry",
+                                                            "Remove entry",
+                                                            busy || self.history_loading,
+                                                            cx.listener(move |this, _, _, cx| {
+                                                                this.remove_history_capture(
+                                                                    entry_id, cx,
+                                                                )
+                                                            }),
+                                                        ))
+                                                        .child(capture_button(
+                                                            "reveal-history-file",
+                                                            "Show file",
+                                                            false,
+                                                            move |_, _, cx| {
+                                                                cx.reveal_path(&reveal_path)
+                                                            },
+                                                        )),
+                                                )
+                                        },
+                                    ),
+                                ),
+                        )
+                        .child(
+                            div()
+                                .flex()
+                                .gap_2()
+                                .child(capture_button(
+                                    "history-latest",
+                                    "Latest",
+                                    self.history_loading || self.history_mutating,
+                                    cx.listener(|this, _, _, cx| this.refresh_history(None, cx)),
+                                ))
+                                .child(capture_button(
+                                    "history-older",
+                                    "Older",
+                                    self.history_loading
+                                        || self.history_mutating
+                                        || !self.history_has_more,
+                                    cx.listener(|this, _, _, cx| {
+                                        if let Some(entry) = this.history_entries.last() {
+                                            this.refresh_history(Some(entry.id), cx);
+                                        }
+                                    }),
+                                )),
                         ),
                 )
             })
@@ -1965,12 +2465,14 @@ fn close_application(cx: &mut App) {
     if cx.has_global::<ResidentController>() {
         let entity = cx.global::<ResidentController>().0.clone();
         let busy = entity.update(cx, |this, cx| {
+            this.cancel_capture_delay(cx);
             this.quitting = true;
             let busy = this.capturing
                 || this.copying
                 || this.saving
                 || this.switching_graphics
-                || this.settings_saving;
+                || this.settings_saving
+                || this.history_mutating;
             if busy {
                 this.capture_status = "Quitting: waiting for active work…".into();
                 cx.notify();
@@ -1986,9 +2488,13 @@ fn close_application(cx: &mut App) {
         if let Some(control) = handle.downcast::<SpikeShell>() {
             let waiting = control
                 .update(cx, |this, _, cx| {
+                    this.cancel_capture_delay(cx);
                     this.quitting = true;
-                    let busy =
-                        this.capturing || this.copying || this.saving || this.settings_saving;
+                    let busy = this.capturing
+                        || this.copying
+                        || this.saving
+                        || this.settings_saving
+                        || this.history_mutating;
                     if busy {
                         this.capture_status = "Quitting: waiting for active work to finish…".into();
                         this.restore_control(cx);
@@ -2063,6 +2569,15 @@ pub fn run() {
 
 #[cfg(target_os = "windows")]
 fn run_resident() {
+    let instance = match app_core::SingleInstance::acquire() {
+        Ok(Some(instance)) => Arc::new(Mutex::new(instance)),
+        Ok(None) => return,
+        Err(error) => {
+            tracing::error!(%error, "Could not establish single-instance ownership; app will not start");
+            std::process::exit(1);
+        }
+    };
+    let listener = instance.clone();
     let show = std::env::args().any(|arg| arg == "--show");
     let deadline = std::env::args()
         .find_map(|arg| {
@@ -2076,6 +2591,11 @@ fn run_resident() {
             cx.set_quit_mode(gpui::QuitMode::Explicit);
             let controller = cx.new(|cx| SpikeShell::new_controller(None, cx));
             cx.set_global(ResidentController(controller.clone()));
+            if let Err(error) = listener.lock().unwrap().listen(app_core::request_reopen) {
+                tracing::error!(%error, "Could not start launch listener");
+                cx.quit();
+                return;
+            }
             cx.on_action(|_: &Quit, cx| cx.defer(close_application));
             cx.bind_keys([
                 KeyBinding::new("escape", CloseOverlay, None),
@@ -2099,6 +2619,8 @@ fn run_resident() {
                 .detach();
             }
         });
+    // Keep ownership until GPUI has released its tray and hotkey registrations.
+    drop(instance);
 }
 
 /// Explicit diagnostic mode, never enabled by an ordinary application launch.
@@ -2190,6 +2712,104 @@ mod tests {
             .try_init()
             .unwrap();
         errors
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    #[ignore = "opens one real region overlay after a countdown; no file or clipboard output"]
+    fn delayed_region_can_cancel_and_complete() {
+        let errors = track_gui_errors();
+        let result = Arc::new(Mutex::new(None));
+        let report = result.clone();
+        gpui_platform::application()
+            .with_windowing(gpui::WindowingRequest::Headless)
+            .run(move |cx| {
+                cx.set_quit_mode(gpui::QuitMode::Explicit);
+                let controller = cx.new(|cx| SpikeShell::new_controller(None, cx));
+                cx.set_global(ResidentController(controller.clone()));
+                let owner = controller.downgrade();
+                cx.spawn(async move |cx| {
+                    let checked = async {
+                        owner
+                            .update(cx, |this, cx| {
+                                this.start_delayed_region(cx);
+                                assert!(this.capture_delay.is_some());
+                                this.cancel_capture_delay(cx);
+                            })
+                            .map_err(|e| e.to_string())?;
+                        cx.background_executor()
+                            .timer(std::time::Duration::from_millis(3100))
+                            .await;
+                        let canceled = owner
+                            .update(cx, |this, cx| {
+                                this.capture_delay.is_none()
+                                    && !this.capturing
+                                    && !this.graphics
+                                    && cx.windows().is_empty()
+                            })
+                            .map_err(|e| e.to_string())?;
+                        if !canceled {
+                            return Err("canceled countdown started capture".to_string());
+                        }
+                        owner
+                            .update(cx, |this, cx| this.start_delayed_region(cx))
+                            .map_err(|e| e.to_string())?;
+                        let deadline = std::time::Instant::now();
+                        loop {
+                            cx.background_executor()
+                                .timer(std::time::Duration::from_millis(20))
+                                .await;
+                            if owner
+                                .update(cx, |this, cx| {
+                                    this.capture_delay.is_none()
+                                        && this.preview_active
+                                        && this.live_overlay_count(cx) > 0
+                                })
+                                .map_err(|e| e.to_string())?
+                            {
+                                break;
+                            }
+                            if deadline.elapsed().as_secs() > 8 {
+                                return Err("countdown did not open region selection".into());
+                            }
+                        }
+                        owner
+                            .update(cx, |this, cx| this.close_overlays(cx))
+                            .map_err(|e| e.to_string())?;
+                        let deadline = std::time::Instant::now();
+                        loop {
+                            cx.background_executor()
+                                .timer(std::time::Duration::from_millis(20))
+                                .await;
+                            if owner
+                                .update(cx, |this, cx| {
+                                    !this.switching_graphics
+                                        && !this.graphics
+                                        && cx.windows().is_empty()
+                                })
+                                .map_err(|e| e.to_string())?
+                            {
+                                break;
+                            }
+                            if deadline.elapsed().as_secs() > 5 {
+                                return Err("cancel did not detach graphics".into());
+                            }
+                        }
+                        Ok(())
+                    }
+                    .await;
+                    *report.lock().unwrap() = Some(checked);
+                    cx.update(|cx| cx.quit());
+                })
+                .detach();
+            });
+        result
+            .lock()
+            .unwrap()
+            .take()
+            .expect("countdown test did not finish")
+            .unwrap();
+        assert_eq!(errors.load(std::sync::atomic::Ordering::Relaxed), 0);
     }
 
     #[cfg(target_os = "windows")]
