@@ -85,6 +85,8 @@ enum ControlPage {
 
 pub struct SpikeShell {
     page: ControlPage,
+    capture_menu_open: bool,
+    history_actions: Option<i64>,
     control: Option<AnyWindowHandle>,
     resident: bool,
     graphics: bool,
@@ -227,13 +229,14 @@ impl SpikeShell {
         let options = WindowOptions {
             window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
                 None,
-                size(px(820.0), px(720.0)),
+                size(px(1000.0), px(720.0)),
                 cx,
             ))),
             titlebar: Some(TitlebarOptions {
                 title: Some("screenshots".into()),
                 ..Default::default()
             }),
+            window_min_size: Some(size(px(680.), px(480.))),
             ..Default::default()
         };
         self.switching_graphics = true;
@@ -305,6 +308,7 @@ impl SpikeShell {
             return;
         }
         self.preview_active = false;
+        self.capture_menu_open = false;
         self.hide_history(cx);
         self.hide_upload_history();
         if self.page == ControlPage::History {
@@ -449,6 +453,8 @@ impl SpikeShell {
             xcap_windows: Vec::new(),
             refreshing: false,
             page: ControlPage::Captures,
+            capture_menu_open: false,
+            history_actions: None,
             diagnostics: false,
             settings_loading: !cfg!(test),
             settings_saving: false,
@@ -726,6 +732,7 @@ impl SpikeShell {
         self.history_refresh_pending = false;
         self.history_entries.clear();
         self.history_selected.clear();
+        self.history_actions = None;
         self.history_has_more = false;
         self.history_status.clear();
         self.history_action_status.clear();
@@ -736,6 +743,15 @@ impl SpikeShell {
         }
         self.history_filter = filter;
         self.restart_history(cx);
+    }
+    fn toggle_history_actions(&mut self, id: i64, revision: u64, cx: &mut Context<Self>) {
+        if !self.history_visible || self.history_loading || self.history_mutating
+            || self.history_revision != revision
+            || !self.history_entries.iter().any(|entry| entry.id == id) {
+            return;
+        }
+        self.history_actions = if self.history_actions == Some(id) { None } else { Some(id) };
+        cx.notify();
     }
     fn set_history_query(&mut self, query: String, cx: &mut Context<Self>) {
         if !self.history_visible || self.history_query == query || query.len() > 512 {
@@ -752,6 +768,7 @@ impl SpikeShell {
         }
         self.history_entries.clear();
         self.history_selected.clear();
+        self.history_actions = None;
         self.history_has_more = false;
         self.refresh_history(None, cx);
         cx.notify();
@@ -771,6 +788,7 @@ impl SpikeShell {
             return;
         };
         self.history_selected.clear();
+        self.history_actions = None;
         self.history_revision = self.history_revision.wrapping_add(1);
         self.clear_history_preview(cx);
         self.history_loading = true;
@@ -3144,88 +3162,69 @@ impl Render for SpikeShell {
                 cx.listener(|this, _: &CaptureCenterRegion, _, cx| this.capture_center_region(cx)),
             )
             .on_action(|_: &Quit, _, cx| cx.defer(close_application))
-            .child(div().id("control-sidebar").flex_none().w(px(224.)).h_full()
+            .child(div().id("control-sidebar").flex_none().w(px(216.)).h_full()
                 .flex().flex_col().bg(rgb(crate::theme::SURFACE)).border_r_1().border_color(rgb(crate::theme::BORDER))
-                .child(div().flex_none().px_4().py_4().text_lg().font_weight(gpui::FontWeight::SEMIBOLD).child("Screenshots"))
-                .child(div().id("sidebar-menu").flex_1().min_h_0().overflow_y_scroll().px_2().flex().flex_col().gap_1()
-                    .child(div().px_2().py_2().text_xs().text_color(rgb(crate::theme::MUTED)).child("CAPTURE"))            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap_1()
-                    .child(sidebar_item(
-                        "select-region",
-                        "Select region",
-                        unavailable,
-                        cx.listener(|this, _, _, cx| {
-                            this.open_overlays(OverlayMode::Fullscreen, cx)
-                        }),
-                    ))
-                    .child(sidebar_item(
-                        "select-region-to-edit",
-                        "Capture and annotate",
-                        unavailable,
-                        cx.listener(|this, _, _, cx| this.select_region_to_edit(cx)),
-                    ))
-                    .child(sidebar_item(
-                        "delayed-region",
-                        "Region in 3 seconds",
-                        unavailable,
-                        cx.listener(|this, _, _, cx| this.start_delayed_region(cx)),
-                    ))
-                    .child(sidebar_item(
-                        "capture-primary",
-                        "Primary display",
-                        unavailable,
-                        cx.listener(|this, _, _, cx| this.capture_primary(cx)),
-                    ))
-                    .child(sidebar_item(
-                        "capture-all",
-                        "All displays",
-                        unavailable,
-                        cx.listener(|this, _, _, cx| this.capture_all(cx)),
-                    )),
-            )
-                    .child(div().my_2().border_t_1().border_color(rgb(crate::theme::BORDER)))
-                    .children([
-                        ("nav-captures", "Screenshots", ControlPage::Captures),
-                        ("nav-history", "Capture history", ControlPage::History),
-                        ("nav-sources", "Displays & windows", ControlPage::Sources),
-                        ("nav-uploads", "Uploads", ControlPage::Uploads),
-                        ("nav-settings", "Settings", ControlPage::Settings),
-                    ].into_iter().map(|(id, label, page)| {
-                        sidebar_navigation(id, label, false, self.page == page,
-                            cx.listener(move |this, _, _, cx| this.show_page(page, cx)))
-                    }))
-                    .child(div().my_2().border_t_1().border_color(rgb(crate::theme::BORDER)))
+                .child(div().px_4().pt_5().pb_4().flex().items_center().gap_3()
+                    .child(sidebar_icon("nav-captures"))
+                    .child(div().text_lg().font_weight(gpui::FontWeight::SEMIBOLD).child("Screenshots")))
+                .child(div().id("sidebar-menu").flex_1().min_h_0().overflow_y_scroll().px_3().flex().flex_col().gap_1()
+                    .child(ui_button("select-region-to-edit", "New screenshot", unavailable, true,
+                        cx.listener(|this, _, _, cx| this.select_region_to_edit(cx))))
+                    .child(sidebar_navigation("capture-options", if self.capture_menu_open { "Capture options ▴" } else { "Capture options ▾" }, false, self.page == ControlPage::Sources,
+                        cx.listener(|this, _, _, cx| { this.capture_menu_open = !this.capture_menu_open; cx.notify(); })))
+                    .when(self.capture_menu_open, |menu| menu.child(div().pl_2().pb_2().flex().flex_col().gap_1()
+                        .child(sidebar_item("select-region", "Quick region", unavailable,
+                            cx.listener(|this, _, _, cx| this.open_overlays(OverlayMode::Fullscreen, cx))))
+                        .child(sidebar_item("delayed-region", "3 second delay", unavailable,
+                            cx.listener(|this, _, _, cx| this.start_delayed_region(cx))))
+                        .child(sidebar_item("capture-primary", "Primary display", unavailable,
+                            cx.listener(|this, _, _, cx| this.capture_primary(cx))))
+                        .child(sidebar_item("capture-all", "All displays", unavailable,
+                            cx.listener(|this, _, _, cx| this.capture_all(cx))))
+                        .child(sidebar_item("nav-sources", "Display or window…", false,
+                            cx.listener(|this, _, _, cx| this.show_page(ControlPage::Sources, cx))))))
+                    .child(div().px_3().pt_5().pb_2().text_xs().text_color(rgb(crate::theme::MUTED)).child("WORKSPACE"))
+                    .child(sidebar_navigation("nav-captures", "Screenshots", false,
+                        matches!(self.page, ControlPage::Captures | ControlPage::History),
+                        cx.listener(|this, _, _, cx| { if this.page != ControlPage::History { this.show_page(ControlPage::Captures, cx); } })))
+                    .child(sidebar_navigation("nav-uploads", "Uploads", false, self.page == ControlPage::Uploads,
+                        cx.listener(|this, _, _, cx| this.show_page(ControlPage::Uploads, cx))))
+                )
+                .child(div().flex_none().p_3().border_t_1().border_color(rgb(crate::theme::BORDER)).flex().flex_col().gap_1()
+                    .child(sidebar_navigation("nav-settings", "Settings", false, self.page == ControlPage::Settings,
+                        cx.listener(|this, _, _, cx| this.show_page(ControlPage::Settings, cx))))
                     .child(sidebar_item("sidebar-folder", "Screenshots folder", self.output_directory.is_none(),
                         cx.listener(|this, _, _, cx| { if let Some(path) = &this.output_directory { cx.reveal_path(path); } })))
                     .child(sidebar_item("sidebar-quit", "Quit", false, |_, _, cx| cx.defer(close_application)))
                 )
-            )            .child(div().id("control-content").flex_1().min_w_0().h_full().overflow_y_scroll().p_4().flex().flex_col().gap_3()
+            )
+            .child(div().id("control-content").flex_1().min_w_0().h_full().overflow_y_scroll().p_6().flex().flex_col().gap_4()
+                .child(div().flex().flex_col().gap_2().pb_3().border_b_1().border_color(rgb(crate::theme::BORDER))
+                    .child(div().text_2xl().font_weight(gpui::FontWeight::SEMIBOLD).child(match self.page {
+                        ControlPage::Captures | ControlPage::History => "Screenshots",
+                        ControlPage::Sources => "Choose what to capture",
+                        ControlPage::Uploads => "Uploads",
+                        ControlPage::Settings => "Settings",
+                    }))
+                    .child(div().text_sm().text_color(rgb(crate::theme::MUTED)).child(match self.page {
+                        ControlPage::Captures | ControlPage::History => "Capture an idea. Make it clear. Share when you're ready.",
+                        ControlPage::Sources => "Pick a display or window for your next screenshot.",
+                        ControlPage::Uploads => "Share a saved image with a destination you control.",
+                        ControlPage::Settings => "Choose where your screenshots live.",
+                    })))
+                .when(matches!(self.page, ControlPage::Captures | ControlPage::History), |view| view
+                    .child(div().flex().flex_wrap().gap_2()
+                        .child(ui_button("workspace-recent", "Recent", false, self.page == ControlPage::Captures,
+                            cx.listener(|this, _, _, cx| this.show_page(ControlPage::Captures, cx))))
+                        .child(ui_button("workspace-library", "Library", false, self.page == ControlPage::History,
+                            cx.listener(|this, _, _, cx| this.show_page(ControlPage::History, cx))))))
+                .when(self.capture_delay.is_some(), |view| view.child(div().p_3().rounded_md().bg(rgb(crate::theme::CONTROL)).flex().flex_wrap().items_center().gap_3()
+                    .child("Screenshot scheduled · 3 second delay")
+                    .child(capture_button("cancel-delayed-capture", "Cancel countdown", false,
+                        cx.listener(|this, _, _, cx| this.cancel_capture_delay(cx))))))
             .when(self.page == ControlPage::Captures, |view| {
-                view.child(div().text_xl().font_weight(gpui::FontWeight::SEMIBOLD).child("Capture workspace"))
-            .child(
-                div()
-                    .text_sm()
-                    .text_color(rgb(crate::theme::MUTED))
-                    .child("Capture, annotate, then choose where it goes."),
-            )
-            .child(
-                div()
-                    .text_sm()
-                    .text_color(rgb(crate::theme::MUTED))
-                    .child(self.hotkey_status.clone()),
-            )
-            .child(div().text_sm().child(self.capture_status.clone()))
-            .when(self.capture_delay.is_some(), |view| {
-                view.child(capture_button(
-                    "cancel-delayed-capture",
-                    "Cancel countdown",
-                    false,
-                    cx.listener(|this, _, _, cx| this.cancel_capture_delay(cx)),
-                ))
-            })
+                view.child(div().text_sm().text_color(rgb(crate::theme::MUTED)).child(self.hotkey_status.clone()))
+                    .child(div().text_sm().child(self.capture_status.clone()))
             .when(self.last_capture.is_none() && self.last_saved.is_none(), |view| view.child(
                 div().flex_1().min_h(px(320.)).flex().flex_col().items_center().justify_center()
                     .child(div().w_full().max_w(px(520.)).p_6().flex().flex_col().items_center().gap_3()
@@ -3247,7 +3246,7 @@ impl Render for SpikeShell {
                     .gap_2()
                     .border_1().border_color(rgb(crate::theme::BORDER))
                     .bg(rgb(crate::theme::SURFACE))
-                    .child("Last capture")
+                    .rounded_lg().child(div().text_lg().font_weight(gpui::FontWeight::SEMIBOLD).child("Latest screenshot"))
                     .children(
                         self.last_render
                             .clone()
@@ -3260,7 +3259,7 @@ impl Render for SpikeShell {
                             .gap_2()
                             .child(capture_button(
                                 "copy-last-capture",
-                                "Copy again",
+                                "Copy image",
                                 busy || (self.last_capture.is_none() && self.last_saved.is_none()),
                                 cx.listener(|this, _, _, cx| this.copy_last_capture(cx)),
                             ))
@@ -3308,7 +3307,7 @@ impl Render for SpikeShell {
                     .flex()
                     .flex_col()
                     .gap_2()
-                    .child(div().text_2xl().child("Uploads"))
+                    .p_4().rounded_lg().border_1().border_color(rgb(crate::theme::BORDER)).bg(rgb(crate::theme::SURFACE)).child(div().text_lg().font_weight(gpui::FontWeight::SEMIBOLD).child("Upload destination"))
                     .child(div().text_sm().text_color(rgb(crate::theme::MUTED)).child("Share a saved PNG with your configured destination."))
                     .child(div().text_sm().child(self.upload_status.clone()))
                     .children(self.upload_destination.as_ref().and_then(|value|value.credential_target()).map(|target| {
@@ -3407,7 +3406,7 @@ impl Render for SpikeShell {
                                                     cx.write_to_clipboard(gpui::ClipboardItem::new_string(url.clone())); this.clipboard_status="Upload history link copied".into(); cx.notify();
                                                 }
                                             })))
-                                            .child(capture_button("remove-upload-history-link","Remove entry",self.upload_history_loading || self.history_mutating,cx.listener(move |this,_,_,cx|this.remove_upload_entry(id,revision,cx)))))
+                                            .child(capture_button("remove-upload-history-link","Remove from library",self.upload_history_loading || self.history_mutating,cx.listener(move |this,_,_,cx|this.remove_upload_entry(id,revision,cx)))))
                                 })))
                             .child(div().flex().gap_2()
                                 .child(capture_button("upload-history-latest","Latest",self.upload_history_loading,cx.listener(|this,_,_,cx|this.refresh_upload_history(None,cx))))
@@ -3514,75 +3513,56 @@ impl Render for SpikeShell {
                         .flex()
                         .flex_col()
                         .gap_2()
-                        .child(div().text_lg().child("Capture history"))
-                        .child(div().text_sm().child("Upload PNG sends the selected saved file unchanged, including its metadata."))
-                        .child(
-                            div()
-                                .text_sm()
-                                .child("Search path, date or source · word prefixes · Esc clears"),
-                        )
+
+
                         .children(self.history_search_input.clone())
                         .child(
-                            div().flex().gap_2().children(
+                            div().flex().flex_wrap().gap_2().children(
                                 [
                                     (
                                         "history-filter-all",
                                         "All",
-                                        "All active",
+                                        "All",
                                         app_core::HistoryFilter::All,
                                     ),
                                     (
                                         "history-filter-captures",
                                         "Captures",
-                                        "Captures active",
+                                        "Captures",
                                         app_core::HistoryFilter::Captures,
                                     ),
                                     (
                                         "history-filter-imports",
                                         "Imports",
-                                        "Imports active",
+                                        "Imports",
                                         app_core::HistoryFilter::Imports,
                                     ),
                                 ]
                                 .into_iter()
                                 .map(
                                     |(id, label, active, filter)| {
-                                        capture_button(
+                                        ui_button(
                                             id,
                                             if self.history_filter == filter {
                                                 active
                                             } else {
                                                 label
                                             },
-                                            self.history_filter == filter || self.history_mutating,
+                                            self.history_mutating,
+                                            self.history_filter == filter,
                                             cx.listener(move |this, _, _, cx| {
                                                 this.set_history_filter(filter, cx)
                                             }),
                                         )
                                     },
                                 ),
-                            ),
-                        )
+                            )
                         .child(capture_button(
                             "import-history-images",
                             "Add PNGs…",
                             busy || self.history_loading,
                             cx.listener(|this, _, _, cx| this.import_history_images(cx)),
                         ))
-                        .child(div().text_sm().child(self.history_status.clone()))
-                        .child(
-                            div()
-                                .text_sm()
-                                .text_color(rgb(crate::theme::MUTED))
-                                .child("Removing an entry keeps the image file."),
-                        )
-                        .child(div().text_sm().child(self.history_action_status.clone()))
-                        .child(div().text_sm().child(self.history_preview_status.clone()))
-                        .child(
-                            div()
-                                .flex()
-                                .flex_wrap()
-                                .gap_2()
                                 .child(capture_button(
                                     "select-history-page",
                                     "Select all",
@@ -3592,7 +3572,18 @@ impl Render for SpikeShell {
                                     cx.listener(move |this, _, _, cx| {
                                         this.select_history_page(revision, cx)
                                     }),
-                                ))
+                                )),
+                        )
+                        .child(div().text_sm().child(self.history_status.clone()))
+                        .child(div().text_xs().text_color(rgb(crate::theme::MUTED)).child("Uploads send the saved PNG, including its metadata."))
+
+                        .when(!self.history_action_status.is_empty(), |view| view.child(div().text_sm().child(self.history_action_status.clone())))
+                        .when(!self.history_preview_status.is_empty(), |view| view.child(div().text_sm().child(self.history_preview_status.clone())))
+                        .when(!self.history_selected.is_empty(), |view| view.child(
+                            div()
+                                .flex()
+                                .flex_wrap()
+                                .gap_2()
                                 .child(capture_button(
                                     "clear-history-selection",
                                     "Clear selection",
@@ -3632,12 +3623,14 @@ impl Render for SpikeShell {
                                     }),
                                 ))
                                 .child(format!("{} selected", self.history_selected.len())),
-                        )
+                        ))
+                        .when(!self.history_loading && self.history_entries.is_empty(), |view| view.child(
+                            div().p_6().rounded_lg().border_1().border_color(rgb(crate::theme::BORDER)).bg(rgb(crate::theme::SURFACE))
+                                .child(div().text_lg().child("No images to show"))
+                                .child(div().mt_2().text_sm().text_color(rgb(crate::theme::MUTED)).child("Take a screenshot, add PNGs, or try a different search."))))
                         .child(
                             div()
                                 .id("capture-history-list")
-                                .max_h(px(320.0))
-                                .overflow_y_scroll()
                                 .flex()
                                 .flex_col()
                                 .gap_2()
@@ -3659,27 +3652,14 @@ impl Render for SpikeShell {
                                                 .flex_none()
                                                 .flex()
                                                 .flex_col()
-                                                .p_3()
-                                                .gap_1()
-                                                .rounded_md()
-                                                .bg(rgb(crate::theme::CONTROL))
+                                                .p_4()
+                                                .gap_3()
+                                                .rounded_lg()
+                                                .border_1().border_color(rgb(if self.history_selected.contains(&entry_id) { crate::theme::ACCENT } else { crate::theme::BORDER }))
+                                                .bg(rgb(crate::theme::SURFACE))
                                                 .children(preview.clone().map(|render| {
                                                     img(render).max_w(px(400.0)).max_h(px(240.0))
                                                 }))
-                                                .child(capture_button(
-                                                    "select-history-entry",
-                                                    if self.history_selected.contains(&entry_id) {
-                                                        "Selected"
-                                                    } else {
-                                                        "Select"
-                                                    },
-                                                    self.history_loading || self.history_mutating,
-                                                    cx.listener(move |this, _, _, cx| {
-                                                        this.toggle_history_selection(
-                                                            entry_id, revision, cx,
-                                                        )
-                                                    }),
-                                                ))
                                                 .child(
                                                     entry
                                                         .path
@@ -3704,6 +3684,20 @@ impl Render for SpikeShell {
                                                         .flex()
                                                         .flex_wrap()
                                                         .gap_2()
+                                                .child(capture_button(
+                                                    "select-history-entry",
+                                                    if self.history_selected.contains(&entry_id) {
+                                                        "Selected"
+                                                    } else {
+                                                        "Select"
+                                                    },
+                                                    self.history_loading || self.history_mutating,
+                                                    cx.listener(move |this, _, _, cx| {
+                                                        this.toggle_history_selection(
+                                                            entry_id, revision, cx,
+                                                        )
+                                                    }),
+                                                ))
                                                         .child(capture_button(
                                                             "preview-history-file",
                                                             if preview.is_some() {
@@ -3718,14 +3712,6 @@ impl Render for SpikeShell {
                                                                     entry_id, revision, cx,
                                                                 )
                                                             }),
-                                                        ))
-                                                        .child(capture_button(
-                                                            "open-history-file",
-                                                            "Open",
-                                                            false,
-                                                            move |_, _, cx| {
-                                                                cx.open_with_system(&open_path)
-                                                            },
                                                         ))
                                                         .child(capture_button(
                                                             "edit-history-file",
@@ -3755,6 +3741,25 @@ impl Render for SpikeShell {
                                                             }),
                                                         ))
                                                         .child(capture_button(
+                                                            "history-more-actions",
+                                                            if self.history_actions == Some(entry_id) { "Less ▴" } else { "More ▾" },
+                                                            self.history_loading || self.history_mutating,
+                                                            cx.listener(move |this, _, _, cx| {
+                                                                this.toggle_history_actions(entry_id, revision, cx);
+                                                            }),
+                                                        )),
+                                                )
+                                                .when(self.history_actions == Some(entry_id), |row| row.child(
+                                                    div().flex().flex_wrap().gap_2().pt_3().border_t_1().border_color(rgb(crate::theme::BORDER)).child(div().w_full().text_xs().text_color(rgb(crate::theme::MUTED)).child("Removing keeps the file. Upload sends the saved PNG and its metadata."))
+                                                        .child(capture_button(
+                                                            "open-history-file",
+                                                            "Open",
+                                                            false,
+                                                            move |_, _, cx| {
+                                                                cx.open_with_system(&open_path)
+                                                            },
+                                                        ))
+                                                        .child(capture_button(
                                                             "relink-history-file",
                                                             "Relink PNG…",
                                                             busy || self.history_loading,
@@ -3766,7 +3771,7 @@ impl Render for SpikeShell {
                                                         ))
                                                         .child(capture_button(
                                                             "remove-history-entry",
-                                                            "Remove entry",
+                                                            "Remove from library",
                                                             busy || self.history_loading,
                                                             cx.listener(move |this, _, _, cx| {
                                                                 if this.history_revision == revision
@@ -3784,8 +3789,8 @@ impl Render for SpikeShell {
                                                             move |_, _, cx| {
                                                                 cx.reveal_path(&reveal_path)
                                                             },
-                                                        )),
-                                                )
+                                                        ))
+                                                ))
                                         },
                                     ),
                                 ),
@@ -3825,7 +3830,7 @@ impl Render for SpikeShell {
                     .gap_2()
                     .border_1().border_color(rgb(crate::theme::BORDER))
                     .bg(rgb(crate::theme::SURFACE))
-                    .child(div().text_2xl().child("Settings"))
+                    .rounded_lg().child(div().text_lg().font_weight(gpui::FontWeight::SEMIBOLD).child("Storage"))
                     .child(div().text_sm().text_color(rgb(crate::theme::MUTED)).child("Save folder"))
                     .child(div().text_sm().child(folder))
                     .child(capture_button(
@@ -6150,6 +6155,7 @@ try {
                                         Arc::new(std::sync::atomic::AtomicBool::new(false));
                                     if this.page != page {
                                         this.history_visible = true;
+                                        this.history_actions = Some(42);
                                         this.upload_history_visible = true;
                                         this.history_cancel = Some(capture_cancel.clone());
                                         this.upload_history_cancel = Some(upload_cancel.clone());
@@ -6167,6 +6173,7 @@ try {
                                             page == ControlPage::History
                                         );
                                         assert!(!this.upload_history_visible);
+                                        assert!(this.history_actions.is_none());
                                         assert!(
                                             this.history_entries.is_empty()
                                                 && this.upload_history_entries.is_empty()
@@ -6207,13 +6214,53 @@ try {
                         cx.background_executor()
                             .timer(std::time::Duration::from_millis(80))
                             .await;
+                        let empty_window_id = window_id.clone();
                         cx.background_executor()
                             .spawn(async move {
                                 let directory = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
                                     .join("../../target/ui-preview");
-                                save_ui_probe_window(&directory, "workspace-empty.png", &window_id)
+                                save_ui_probe_window(&directory, "workspace-empty.png", &empty_window_id)
                             })
                             .await?;
+                        for (width, height, filename, library) in [
+                            (1000., 720., "workspace-library.png", true),
+                            (680., 480., "workspace-library-compact.png", true),
+                            (1000., 720., "workspace-capture-menu.png", false),
+                        ] {
+                            owner.update(cx, |this, cx| {
+                                this.show_page(if library { ControlPage::History } else { ControlPage::Captures }, cx);
+                                this.capture_menu_open = !library;
+                                if library {
+                                    this.history_entries = (1..=3).map(|id| app_core::HistoryEntry {
+                                        id,
+                                        path: PathBuf::from(format!("Example screenshot {id}.png")),
+                                        width: 1920,
+                                        height: 1080,
+                                        created_at: "2026-11-09 14:32".into(),
+                                    }).collect();
+                                    this.history_selected = vec![1];
+                                    this.history_actions = None;
+                                    this.toggle_history_actions(1, this.history_revision, cx);
+                                    assert_eq!(this.history_actions, Some(1));
+                                    this.toggle_history_actions(2, this.history_revision.wrapping_sub(1), cx);
+                                    assert_eq!(this.history_actions, Some(1));
+                                    this.toggle_history_actions(2, this.history_revision, cx);
+                                    assert_eq!(this.history_actions, Some(2));
+                                    this.toggle_history_actions(2, this.history_revision, cx);
+                                    assert_eq!(this.history_actions, None);
+                                    this.toggle_history_actions(1, this.history_revision, cx);
+                                    this.history_status = "3 example images".into();
+                                }
+                                this.control.unwrap().update(cx, |_, window, _| window.resize(size(px(width), px(height)))).unwrap();
+                                cx.notify();
+                            }).map_err(|e| e.to_string())?;
+                            cx.background_executor().timer(std::time::Duration::from_millis(80)).await;
+                            let window_id = window_id.clone();
+                            cx.background_executor().spawn(async move {
+                                let directory = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/ui-preview");
+                                save_ui_probe_window(&directory, filename, &window_id)
+                            }).await?;
+                        }
                         owner
                             .update(cx, |this, cx| this.retire_ui(cx))
                             .map_err(|error| error.to_string())?;

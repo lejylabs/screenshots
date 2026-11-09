@@ -2654,8 +2654,8 @@ impl Render for RedactionEditor {
                     .flex_col()
                     .gap_2()
                     .child(
-                        div().flex().items_center().justify_end().flex_wrap().gap_2()
-                            .child(div().flex_1().text_sm().child(if self.direct_capture { "Capture & annotate" } else { "Edit a copy · Original kept" })).children(
+                        div().flex().items_center().justify_end().flex_wrap().gap_2().pb_3().border_b_1().border_color(rgb(crate::theme::BORDER))
+                            .child(div().flex_1().min_w(px(120.)).text_sm().font_weight(gpui::FontWeight::SEMIBOLD).child(if self.direct_capture { "Capture & annotate" } else { "Edit a copy · Original kept" })).children(
                                 [
                                     ("export-copy-only", "Copy", OutputMode::CopyOnly),
                                     ("export-save-only", "Save", OutputMode::SaveOnly),
@@ -2683,7 +2683,7 @@ impl Render for RedactionEditor {
                                 cx.listener(|this, _, _, cx| this.cancel(cx)),
                             ))                    )
                     .child(
-                        div().flex().items_center().flex_wrap().gap_1()
+                        div().flex().items_center().flex_wrap().gap_1().py_1()
                             .children(TOOLBAR_TOOLS.into_iter().map(|(tool, id, label, separator)| {
                                 div().when(separator, |group| group.ml_2().pl_2().border_l_1().border_color(rgb(crate::theme::BORDER)))
                                     .child(div().id(id).role(gpui::Role::Button).aria_label(label)

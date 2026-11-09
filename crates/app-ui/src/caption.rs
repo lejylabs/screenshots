@@ -837,11 +837,20 @@ impl Render for CaptionInput {
         let layout_text = text.clone();
         let cursor = self.cursor();
         let marked = self.marked.clone();
+        let placeholder = if matches!(self.owner, InputOwner::History(_)) {
+            "Search images by name, date or source…"
+        } else {
+            "Type a label; Shift+Enter adds a line"
+        };
         div()
             .h(px(self.line_count() as f32 * LINE_HEIGHT + 8.0))
             .w_full()
             .overflow_hidden()
             .bg(rgb(crate::theme::CONTROL))
+            .rounded_md()
+            .border_1()
+            .border_color(rgb(crate::theme::BORDER))
+            .focus_visible(|style| style.border_color(rgb(crate::theme::FOCUS)))
             .track_focus(&self.focus)
             .key_context("CaptionInput")
             .on_key_down(cx.listener(Self::key))
@@ -888,14 +897,14 @@ impl Render for CaptionInput {
                             .split('\n')
                             .map(|part| {
                                 let display: SharedString = if text.is_empty() {
-                                    "Type a label; Shift+Enter adds a line".into()
+                                    placeholder.into()
                                 } else {
                                     part.to_owned().into()
                                 };
                                 let run = TextRun {
                                     len: display.len(),
                                     font: Font::default(),
-                                    color: rgb(crate::theme::TEXT).into(),
+                                    color: rgb(if text.is_empty() { crate::theme::MUTED } else { crate::theme::TEXT }).into(),
                                     background_color: None,
                                     underline: None,
                                     strikethrough: None,
