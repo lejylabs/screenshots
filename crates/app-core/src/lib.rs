@@ -28,10 +28,12 @@ mod selection;
 pub use pixelation::PixelationGrid;
 mod settings;
 mod upload;
+mod upload_credentials;
 pub use history::{
-    HistoryEntry, HistoryFilter, ImportReport, capture_history_page, capture_history_page_filtered,
-    history_database_path, import_capture_files, record_saved_capture, relink_history_entry,
-    remove_history_entries, remove_history_entry, search_capture_history,
+    HistoryEntry, HistoryFilter, ImportReport, UploadHistoryEntry, capture_history_page,
+    capture_history_page_filtered, history_database_path, import_capture_files,
+    record_saved_capture, record_uploaded_png, relink_history_entry, remove_history_entries,
+    remove_history_entry, remove_upload_history_entry, search_capture_history, upload_history_page,
 };
 pub use selection::{
     FrameAnnotation, PixelRegion, crop_snapshot, edit_snapshot, redact_snapshot,
@@ -40,7 +42,10 @@ pub use selection::{
     render_text_snapshot,
 };
 pub use settings::CaptureSettings;
-pub use upload::{UploadCancellation, UploadDestination, upload_png};
+pub use upload::{
+    UploadCancellation, UploadDestination, UploadProgress, UploadProgressReceiver,
+    UploadProgressReporter, upload_png, upload_png_with_progress, upload_progress_channel,
+};
 
 pub use clipboard::{ImageClipboard, load_png_thumbnail, load_saved_png};
 

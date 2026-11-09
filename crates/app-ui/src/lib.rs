@@ -115,8 +115,17 @@ pub struct SpikeShell {
     upload_config_loading: bool,
     upload_profile_checked: bool,
     upload_cancel: Option<app_core::UploadCancellation>,
+    upload_generation: u64,
+    upload_cancel_requested: bool,
     upload_status: String,
     upload_url: Option<String>,
+    upload_history_visible: bool,
+    upload_history_loading: bool,
+    upload_history_revision: u64,
+    upload_history_cancel: Option<Arc<std::sync::atomic::AtomicBool>>,
+    upload_history_entries: Vec<app_core::UploadHistoryEntry>,
+    upload_history_more: bool,
+    upload_history_status: String,
     history_status: String,
     list_status: String,
     capture_status: String,
@@ -286,6 +295,7 @@ impl SpikeShell {
         }
         self.preview_active = false;
         self.hide_history(cx);
+        self.hide_upload_history();
         self.last_render = None;
         let mut windows: Vec<AnyWindowHandle> = self.overlays.drain(..).map(Into::into).collect();
         windows.extend(self.control.take());
@@ -459,8 +469,17 @@ impl SpikeShell {
             upload_config_loading: false,
             upload_profile_checked: cfg!(test),
             upload_cancel: None,
+            upload_generation: 0,
+            upload_cancel_requested: false,
             upload_status: "Uploads disabled · Load a destination to enable manual uploads".into(),
             upload_url: None,
+            upload_history_visible: false,
+            upload_history_loading: false,
+            upload_history_revision: 0,
+            upload_history_cancel: None,
+            upload_history_entries: Vec::new(),
+            upload_history_more: false,
+            upload_history_status: String::new(),
             history_status: String::new(),
             list_status: String::new(),
             capture_status: "Ready".into(),
@@ -2267,24 +2286,146 @@ impl SpikeShell {
         cx.notify();
     }
 
+    fn hide_upload_history(&mut self) {
+        self.upload_history_visible = false;
+        self.upload_history_revision = self.upload_history_revision.wrapping_add(1);
+        if let Some(cancel) = &self.upload_history_cancel {
+            cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+        self.upload_history_entries.clear();
+        self.upload_history_more = false;
+        self.upload_history_status.clear();
+    }
+
+    fn refresh_upload_history(&mut self, before: Option<i64>, cx: &mut Context<Self>) {
+        if self.quitting || !self.upload_history_visible || self.upload_history_loading {
+            return;
+        }
+        let Some(database) = self.history_database.clone() else {
+            self.upload_history_status = "Upload history storage unavailable".into();
+            return;
+        };
+        self.upload_history_loading = true;
+        self.upload_history_revision = self.upload_history_revision.wrapping_add(1);
+        let revision = self.upload_history_revision;
+        let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        self.upload_history_cancel = Some(cancel.clone());
+        self.upload_history_status = "Loading upload history…".into();
+        cx.spawn(async move |this,cx| {
+            let result = cx.background_spawn(async move { app_core::upload_history_page(&database,before,|| cancel.load(std::sync::atomic::Ordering::Relaxed)).map_err(|error|format!("{error:#}")) }).await;
+            this.update(cx, |this,cx| {
+                this.upload_history_loading = false; this.upload_history_cancel = None;
+                if this.quitting { return; }
+                if this.upload_history_visible && revision == this.upload_history_revision {
+                    match result {
+                        Ok(mut entries) => {
+                            this.upload_history_more = entries.len()>20; entries.truncate(20);
+                            this.upload_history_status = if entries.is_empty() { "No successful uploads yet" } else { "Successful uploads · Newest first · Removing entries does not delete remote files" }.into();
+                            this.upload_history_entries = entries;
+                        }
+                        Err(error) => this.upload_history_status = format!("Could not load upload history: {error}"),
+                    }
+                } else if this.upload_history_visible { this.refresh_upload_history(None,cx); }
+                cx.notify();
+            }).ok();
+        }).detach();
+        cx.notify();
+    }
+
+    fn remove_upload_entry(&mut self, id: i64, revision: u64, cx: &mut Context<Self>) {
+        if self.quitting
+            || self.history_mutating
+            || !self.upload_history_visible
+            || self.upload_history_loading
+            || revision != self.upload_history_revision
+            || !self
+                .upload_history_entries
+                .iter()
+                .any(|entry| entry.id == id)
+        {
+            return;
+        }
+        let Some(database) = self.history_database.clone() else {
+            return;
+        };
+        self.upload_history_loading = true;
+        self.history_mutating = true;
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_spawn(async move {
+                    app_core::remove_upload_history_entry(&database, id)
+                        .map_err(|error| format!("{error:#}"))
+                })
+                .await;
+            this.update(cx, |this, cx| {
+                this.upload_history_loading = false;
+                if this.upload_history_visible {
+                    if revision != this.upload_history_revision {
+                        this.refresh_upload_history(None, cx);
+                    } else {
+                        match result {
+                            Ok(()) => this.refresh_upload_history(None, cx),
+                            Err(error) => {
+                                this.upload_history_status =
+                                    format!("Could not remove entry: {error}")
+                            }
+                        }
+                    }
+                }
+                this.finish_history_mutation(false, cx);
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+        cx.notify();
+    }
+
     fn start_upload(&mut self, cx: &mut Context<Self>) {
+        let Some(path) = self.last_saved.clone() else {
+            return;
+        };
+        self.start_upload_source(path, cx);
+    }
+
+    fn upload_history_image(&mut self, id: i64, revision: u64, cx: &mut Context<Self>) {
+        if !self.history_visible || self.history_loading || revision != self.history_revision {
+            return;
+        }
+        let Some(path) = self
+            .history_entries
+            .iter()
+            .find(|entry| entry.id == id)
+            .map(|entry| entry.path.clone())
+        else {
+            return;
+        };
+        self.start_upload_source(path, cx);
+    }
+
+    fn start_upload_source(&mut self, path: PathBuf, cx: &mut Context<Self>) {
         if self.quitting
             || self.upload_cancel.is_some()
             || self.upload_config_loading
             || self.saving
             || self.capturing
             || self.copying
+            || self.history_mutating
+            || self.editor.is_some()
+            || self.editor_closing
             || self.capture_delay.is_some()
         {
             return;
         }
-        let (Some(destination), Some(path)) =
-            (self.upload_destination.clone(), self.last_saved.clone())
-        else {
+        let Some(destination) = self.upload_destination.clone() else {
             return;
         };
         let cancel = app_core::UploadCancellation::default();
         self.upload_cancel = Some(cancel.clone());
+        self.upload_generation = self.upload_generation.wrapping_add(1);
+        self.upload_cancel_requested = false;
+        let generation = self.upload_generation;
+        let (reporter, mut progress) = app_core::upload_progress_channel();
         self.upload_url = None;
         let filename = path
             .file_name()
@@ -2296,10 +2437,60 @@ impl SpikeShell {
             destination.request_method(),
             destination.origin()
         );
+        let database = self.history_database.clone();
+        let progress_filename = filename.clone();
+        cx.spawn(async move |this, cx| {
+            while let Some(progress) = progress.next().await {
+                if this
+                    .update(cx, |this, cx| {
+                        if this.quitting
+                            || this.upload_generation != generation
+                            || this.upload_cancel.is_none()
+                            || this.upload_cancel_requested
+                        {
+                            return false;
+                        }
+                        this.upload_status = if progress.prepared == progress.total {
+                            format!(
+                                "{progress_filename} · PNG data prepared · Awaiting server response"
+                            )
+                        } else {
+                            format!(
+                                "{progress_filename} · Upload request: {} / {} PNG bytes",
+                                progress.prepared, progress.total
+                            )
+                        };
+                        cx.notify();
+                        true
+                    })
+                    .ok()
+                    != Some(true)
+                {
+                    break;
+                }
+            }
+        })
+        .detach();
         cx.spawn(async move |this, cx| {
             let result = cx
                 .background_spawn(async move {
-                    app_core::upload_png(&destination, &path, cancel)
+                    app_core::upload_png_with_progress(&destination, &path, cancel, reporter)
+                        .map(|url| {
+                            let history_error = database
+                                .as_ref()
+                                .map(|database| {
+                                    app_core::record_uploaded_png(
+                                        database,
+                                        &path,
+                                        &destination.origin(),
+                                        &url,
+                                    )
+                                })
+                                .transpose()
+                                .err()
+                                .map(|error| format!("{error:#}"));
+                            (url, history_error)
+                        })
                         .map_err(|error| format!("{error:#}"))
                 })
                 .await;
@@ -2307,10 +2498,23 @@ impl SpikeShell {
                 this.upload_cancel = None;
                 if !this.quitting {
                     match result {
-                        Ok(url) => {
+                        Ok((url, history_error)) => {
                             this.upload_status =
                                 format!("Uploaded {filename} · Link ready · Clipboard unchanged");
                             this.upload_url = Some(url);
+                            if let Some(error) = history_error {
+                                this.upload_status
+                                    .push_str(&format!(" · History not saved: {error}"));
+                            }
+                            if this.upload_history_loading {
+                                this.upload_history_revision =
+                                    this.upload_history_revision.wrapping_add(1);
+                                if let Some(cancel) = &this.upload_history_cancel {
+                                    cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+                                }
+                            } else {
+                                this.refresh_upload_history(None, cx);
+                            }
                         }
                         Err(error) => this.upload_status = format!("No upload link: {error}"),
                     }
@@ -2326,6 +2530,7 @@ impl SpikeShell {
 
     fn cancel_upload(&mut self, cx: &mut Context<Self>) {
         if let Some(cancel) = &self.upload_cancel {
+            self.upload_cancel_requested = true;
             cancel.cancel();
             self.upload_status =
                 "Canceling upload… The server may already have received the file.".into();
@@ -3035,6 +3240,13 @@ impl Render for SpikeShell {
                     .gap_2()
                     .child("Upload saved PNG")
                     .child(div().text_sm().child(self.upload_status.clone()))
+                    .children(self.upload_destination.as_ref().and_then(|value|value.credential_target()).map(|target| {
+                        div().text_sm().child(format!("Windows credential target: {target}"))
+                            .child(capture_button("copy-upload-credential-target","Copy credential target",false,cx.listener(move |this,_,_,cx| {
+                                cx.write_to_clipboard(gpui::ClipboardItem::new_string(target.clone()));
+                                this.clipboard_status="Credential target copied (no token)".into(); cx.notify();
+                            })))
+                    }))
                     .child(
                         div()
                             .flex()
@@ -3107,6 +3319,31 @@ impl Render for SpikeShell {
                     .flex()
                     .flex_col()
                     .gap_2()
+                    .child(capture_button("toggle-upload-history", if self.upload_history_visible {"Hide upload history"} else {"Upload history"}, false,
+                        cx.listener(|this,_,_,cx| { if this.upload_history_visible {this.hide_upload_history();} else {this.upload_history_visible=true;this.refresh_upload_history(None,cx);} cx.notify(); })))
+                    .when(self.upload_history_visible, |view| {
+                        let revision = self.upload_history_revision;
+                        view.child(div().text_sm().child(self.upload_history_status.clone()))
+                            .child(div().id("upload-history-list").max_h(px(320.0)).overflow_y_scroll().flex().flex_col().gap_2()
+                                .children(self.upload_history_entries.clone().into_iter().enumerate().map(|(index,entry)| {
+                                    let id=entry.id; let url=entry.url.clone();
+                                    div().id(("upload-history-row",index)).p_2().bg(rgb(0x242b36))
+                                        .child(entry.filename).child(div().text_sm().child(format!("{} · {}",entry.origin,entry.created_at)))
+                                        .child(div().text_sm().child(entry.url))
+                                        .child(div().flex().gap_2()
+                                            .child(capture_button("copy-upload-history-link","Copy link",false,cx.listener(move |this,_,_,cx| {
+                                                if this.upload_history_visible && this.upload_history_revision==revision && this.upload_history_entries.iter().any(|entry| entry.id==id) {
+                                                    cx.write_to_clipboard(gpui::ClipboardItem::new_string(url.clone())); this.clipboard_status="Upload history link copied".into(); cx.notify();
+                                                }
+                                            })))
+                                            .child(capture_button("remove-upload-history-link","Remove entry",self.upload_history_loading || self.history_mutating,cx.listener(move |this,_,_,cx|this.remove_upload_entry(id,revision,cx)))))
+                                })))
+                            .child(div().flex().gap_2()
+                                .child(capture_button("upload-history-latest","Latest",self.upload_history_loading,cx.listener(|this,_,_,cx|this.refresh_upload_history(None,cx))))
+                                .child(capture_button("upload-history-older","Older",self.upload_history_loading || !self.upload_history_more,cx.listener(|this,_,_,cx| {
+                                    if let Some(entry)=this.upload_history_entries.last() {this.refresh_upload_history(Some(entry.id),cx);}
+                                }))))
+                    })
                     .child("Capture a display")
                     .children(displays.into_iter().enumerate().map(|(index, display)| {
                         let id = display.id;
@@ -3218,6 +3455,7 @@ impl Render for SpikeShell {
                         .flex_col()
                         .gap_2()
                         .child(div().text_lg().child("Capture history"))
+                        .child(div().text_sm().child("Upload PNG sends the selected saved file unchanged, including its metadata."))
                         .child(
                             div()
                                 .text_sm()
@@ -3439,6 +3677,11 @@ impl Render for SpikeShell {
                                                                     cx,
                                                                 )
                                                             }),
+                                                        ))
+                                                        .child(capture_button(
+                                                            "upload-history-image", "Upload PNG",
+                                                            busy || self.history_loading || self.upload_config_loading || self.upload_cancel.is_some() || self.upload_destination.is_none(),
+                                                            cx.listener(move |this,_,_,cx| this.upload_history_image(entry_id,revision,cx)),
                                                         ))
                                                         .child(capture_button(
                                                             "copy-history-file",
@@ -4627,9 +4870,33 @@ mod tests {
                             if this.upload_cancel.is_some() {
                                 return Err("Upload started without a saved PNG".to_owned());
                             }
-                            this.last_saved = Some(source.clone());
-                            this.start_upload(cx);
-                            this.start_upload(cx);
+                            this.history_database =
+                                Some(source.parent().unwrap().join("history.sqlite3"));
+                            this.last_saved = Some(source.with_file_name("other-last.png"));
+                            this.history_visible = true;
+                            this.history_revision = 1;
+                            this.history_entries = vec![app_core::HistoryEntry {
+                                id: 7,
+                                path: source.clone(),
+                                width: 3,
+                                height: 2,
+                                created_at: String::new(),
+                            }];
+                            this.upload_history_image(7, 0, cx);
+                            this.upload_history_image(999, 1, cx);
+                            this.history_loading = true;
+                            this.upload_history_image(7, 1, cx);
+                            this.history_loading = false;
+                            this.history_mutating = true;
+                            this.upload_history_image(7, 1, cx);
+                            this.history_mutating = false;
+                            if this.upload_cancel.is_some() {
+                                return Err(
+                                    "Stale, missing or busy history entry started an upload".into(),
+                                );
+                            }
+                            this.upload_history_image(7, 1, cx);
+                            this.upload_history_image(7, 1, cx);
                             Ok(())
                         })?;
                         let started = std::time::Instant::now();
@@ -4646,7 +4913,8 @@ mod tests {
                             if this.upload_url.as_deref()
                                 != Some("https://example.invalid/share/native")
                                 || !this.upload_status.starts_with("Uploaded saved.png")
-                                || this.last_saved.as_ref() != Some(&source)
+                                || this.last_saved.as_ref()
+                                    != Some(&source.with_file_name("other-last.png"))
                                 || this.last_capture.is_some()
                                 || !cx.windows().is_empty()
                                 || this.graphics
@@ -4657,7 +4925,52 @@ mod tests {
                                 ));
                             }
                             Ok(())
-                        })
+                        })?;
+                        controller.update(cx, |this, cx| {
+                            this.upload_history_visible = true;
+                            this.refresh_upload_history(None, cx);
+                            this.hide_upload_history();
+                            this.upload_history_visible = true;
+                            this.refresh_upload_history(None, cx);
+                        });
+                        for phase in 0..2 {
+                            let started = std::time::Instant::now();
+                            while controller.update(cx, |this, _| this.upload_history_loading) {
+                                if started.elapsed().as_secs() > 8 {
+                                    return Err("Upload history timed out".into());
+                                }
+                                cx.background_executor()
+                                    .timer(std::time::Duration::from_millis(20))
+                                    .await;
+                            }
+                            controller.update(cx, |this, cx| {
+                                if phase == 0 {
+                                    if this.upload_history_entries.len() != 1
+                                        || this.upload_history_entries[0].url
+                                            != "https://example.invalid/share/native"
+                                        || this.upload_history_entries[0].filename != "saved.png"
+                                    {
+                                        return Err(
+                                            "Successful upload was not restored from history"
+                                                .to_owned(),
+                                        );
+                                    }
+                                    let id = this.upload_history_entries[0].id;
+                                    this.remove_upload_entry(id, this.upload_history_revision, cx);
+                                } else {
+                                    if !this.upload_history_entries.is_empty()
+                                        || this.history_mutating
+                                    {
+                                        return Err(
+                                            "Upload history removal did not finish".to_owned()
+                                        );
+                                    }
+                                    this.hide_upload_history();
+                                }
+                                Ok(())
+                            })?;
+                        }
+                        Ok(())
                     }
                     .await;
                     *report.lock().unwrap() = Some(checked);
@@ -4673,7 +4986,11 @@ mod tests {
             .expect("Upload UI did not finish")
             .unwrap();
         assert_eq!(std::fs::read(&path).unwrap(), original);
-        assert!(!root.join("history.sqlite3").exists());
+        assert!(
+            app_core::upload_history_page(&root.join("history.sqlite3"), None, || false)
+                .unwrap()
+                .is_empty()
+        );
         assert_eq!(
             unsafe { windows_sys::Win32::System::DataExchange::GetClipboardSequenceNumber() },
             clipboard

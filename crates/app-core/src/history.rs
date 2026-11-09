@@ -125,6 +125,12 @@ fn migrations() -> Migrations<'static> {
                 INSERT INTO captures_search(captures_search,rowid,file_path,created_at,source) VALUES('delete',old.id,old.file_path,old.created_at,old.source);
                 INSERT INTO captures_search(rowid,file_path,created_at,source) VALUES(new.id,new.file_path,new.created_at,new.source); END;
             INSERT INTO captures_search(captures_search) VALUES('rebuild');"),
+        M::up("CREATE TABLE uploads (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            filename TEXT NOT NULL CHECK(length(filename)<=1024),
+            origin TEXT NOT NULL CHECK(length(origin)<=2048),
+            url TEXT NOT NULL CHECK(length(url)<=2048), created_at TEXT NOT NULL
+        );"),
     ])
 }
 
@@ -137,6 +143,84 @@ fn open(path: &Path) -> Result<Connection> {
     )?;
     migrations().to_latest(&mut connection)?;
     Ok(connection)
+}
+
+/// Successful upload metadata contains no pixels or full source path.
+#[derive(Clone)]
+pub struct UploadHistoryEntry {
+    pub id: i64,
+    pub filename: String,
+    pub origin: String,
+    pub url: String,
+    pub created_at: String,
+}
+
+pub fn record_uploaded_png(database: &Path, source: &Path, origin: &str, url: &str) -> Result<()> {
+    let filename = source
+        .file_name()
+        .context("Invalid upload filename")?
+        .to_string_lossy();
+    ensure!(
+        filename.len() <= 1024 && origin.len() <= 2048,
+        "Upload metadata exceeds its size limit"
+    );
+    let parsed = reqwest::Url::parse(origin)?;
+    ensure!(
+        matches!(parsed.scheme(), "https" | "http")
+            && parsed.origin().ascii_serialization() == origin,
+        "Invalid upload origin"
+    );
+    let link = crate::upload::validate_link(url)?;
+    let mut connection = open(database)?;
+    let transaction = connection.transaction()?;
+    transaction.execute(
+        "INSERT INTO uploads(filename,origin,url,created_at) VALUES(?1,?2,?3,?4)",
+        params![
+            filename,
+            origin,
+            link,
+            chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
+        ],
+    )?;
+    transaction.commit()?;
+    Ok(())
+}
+
+pub fn upload_history_page(
+    database: &Path,
+    before: Option<i64>,
+    cancelled: impl Fn() -> bool,
+) -> Result<Vec<UploadHistoryEntry>> {
+    ensure!(!cancelled(), "Upload history request canceled");
+    let connection = open(database)?;
+    ensure!(!cancelled(), "Upload history request canceled");
+    let mut statement = connection.prepare("SELECT id,filename,origin,url,created_at FROM uploads WHERE id < ?1 ORDER BY id DESC LIMIT 21")?;
+    let rows = statement.query_map([before.unwrap_or(i64::MAX)], |row| {
+        Ok(UploadHistoryEntry {
+            id: row.get(0)?,
+            filename: row.get(1)?,
+            origin: row.get(2)?,
+            url: row.get(3)?,
+            created_at: row.get(4)?,
+        })
+    })?;
+    let mut entries = Vec::with_capacity(21);
+    for row in rows {
+        ensure!(!cancelled(), "Upload history request canceled");
+        let entry = row?;
+        crate::upload::validate_link(&entry.url)?;
+        entries.push(entry);
+    }
+    Ok(entries)
+}
+
+pub fn remove_upload_history_entry(database: &Path, id: i64) -> Result<()> {
+    ensure!(id > 0, "Invalid upload history ID");
+    let mut connection = open(database)?;
+    let transaction = connection.transaction()?;
+    transaction.execute("DELETE FROM uploads WHERE id=?1", [id])?;
+    transaction.commit()?;
+    Ok(())
 }
 
 /// Call on a worker, only after a complete PNG has been published.
@@ -331,6 +415,107 @@ pub fn remove_history_entries(database: &Path, ids: &[i64]) -> Result<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    #[ignore = "short optimized 10k-row upload metadata paging probe; no files or networking"]
+    fn upload_history_10k_page_cost() -> Result<()> {
+        let root = std::env::temp_dir().join(format!(
+            "screenshots-upload-page-cost-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let database = root.join("history.sqlite3");
+        let mut connection = open(&database)?;
+        let transaction = connection.transaction()?;
+        {
+            let mut insert=transaction.prepare("INSERT INTO uploads(filename,origin,url,created_at) VALUES('image.png','https://example.invalid',?1,'2026-11-09T00:00:00Z')")?;
+            for index in 0..10_000 {
+                insert.execute([format!("https://example.invalid/share/{index}")])?;
+            }
+        }
+        transaction.commit()?;
+        drop(connection);
+        let mut samples = Vec::new();
+        for _ in 0..25 {
+            let started = std::time::Instant::now();
+            let page = upload_history_page(&database, Some(9000), || false)?;
+            samples.push(started.elapsed());
+            assert_eq!(page.len(), 21);
+        }
+        samples.sort_unstable();
+        eprintln!(
+            "10k upload metadata page p95={:?}; 21 rows, no image/file/network work",
+            samples[23]
+        );
+        std::fs::remove_dir_all(root)?;
+        Ok(())
+    }
+
+    #[test]
+    fn upload_history_upgrades_pages_and_removes_metadata_without_source_files() -> Result<()> {
+        let root = std::env::temp_dir().join(format!(
+            "screenshots-upload-history-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let database = root.join("history.sqlite3");
+        assert!(upload_history_page(&database, None, || true).is_err());
+        assert!(!root.exists());
+        assert!(
+            record_uploaded_png(
+                &database,
+                Path::new("private.png"),
+                "https://example.invalid",
+                "javascript:bad"
+            )
+            .is_err()
+        );
+        assert!(!root.exists());
+        std::fs::create_dir_all(&root)?;
+        let mut legacy = Connection::open(&database)?;
+        migrations().to_version(&mut legacy, 3)?;
+        populate_metadata(&mut legacy, &root, 2)?;
+        drop(legacy);
+        let started = std::time::Instant::now();
+        for index in 0..25 {
+            record_uploaded_png(
+                &database,
+                &root
+                    .join("private-folder")
+                    .join(format!("image-{index}.png")),
+                "https://example.invalid",
+                &format!("https://example.invalid/share/{index}"),
+            )?;
+        }
+        eprintln!(
+            "25 durable upload metadata records: {:?}",
+            started.elapsed()
+        );
+        let first = upload_history_page(&database, None, || false)?;
+        assert_eq!(first.len(), 21);
+        assert_eq!(first[0].filename, "image-24.png");
+        let older = upload_history_page(&database, Some(first[19].id), || false)?;
+        assert_eq!(older.len(), 5);
+        assert!(older.iter().all(|entry| entry.id < first[19].id));
+        assert_eq!(capture_history_page(&database, None)?.len(), 2);
+        let highest = first[0].id;
+        remove_upload_history_entry(&database, highest)?;
+        remove_upload_history_entry(&database, highest)?;
+        record_uploaded_png(
+            &database,
+            Path::new("new.png"),
+            "https://example.invalid",
+            "https://example.invalid/new",
+        )?;
+        assert!(upload_history_page(&database, None, || false)?[0].id > highest);
+        assert!(!root.join("private-folder").exists());
+        let connection = open(&database)?;
+        let plan=connection.prepare("EXPLAIN QUERY PLAN SELECT id,filename,origin,url,created_at FROM uploads WHERE id < ?1 ORDER BY id DESC LIMIT 21")?.query_map([i64::MAX],|row|row.get::<_,String>(3))?.collect::<rusqlite::Result<Vec<_>>>()?.join(" ");
+        assert!(
+            plan.contains("INTEGER PRIMARY KEY") && !plan.contains("TEMP B-TREE"),
+            "{plan}"
+        );
+        drop(connection);
+        std::fs::remove_dir_all(root)?;
+        Ok(())
+    }
     fn search(
         database: &Path,
         before: Option<i64>,
@@ -613,7 +798,7 @@ mod tests {
         let connection = open(&database)?;
         assert_eq!(
             connection.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))?,
-            3
+            4
         );
         assert_eq!(
             connection.query_row("SELECT count(*) FROM captures", [], |row| row

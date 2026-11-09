@@ -46,6 +46,7 @@ tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter", "fmt"] }
 tray-icon = "0.26.1"
 uuid = { version = "1.29.1", features = ["v4", "v7", "serde"] }
+zeroize = "1.9"
 
 # Phase 0 still-image spike. Not a committed product backend yet.
 xcap = "=0.9.8"

@@ -3,6 +3,65 @@ use serde::{Deserialize, Serialize};
 use std::{io::Read, path::Path, sync::Arc, time::Duration};
 use tokio::io::{AsyncReadExt, AsyncSeekExt};
 
+#[derive(Clone, Copy, Default)]
+pub struct UploadProgress {
+    pub prepared: u64,
+    pub total: u64,
+}
+
+#[derive(Clone)]
+pub struct UploadProgressReporter(tokio::sync::watch::Sender<UploadProgress>);
+pub struct UploadProgressReceiver(tokio::sync::watch::Receiver<UploadProgress>);
+
+pub fn upload_progress_channel() -> (UploadProgressReporter, UploadProgressReceiver) {
+    let (sender, receiver) = tokio::sync::watch::channel(UploadProgress::default());
+    (
+        UploadProgressReporter(sender),
+        UploadProgressReceiver(receiver),
+    )
+}
+impl UploadProgressReceiver {
+    pub async fn next(&mut self) -> Option<UploadProgress> {
+        self.0.changed().await.ok()?;
+        Some(*self.0.borrow_and_update())
+    }
+}
+
+struct ProgressReader<R> {
+    reader: R,
+    progress: Option<UploadProgressReporter>,
+    prepared: u64,
+    total: u64,
+    last: std::time::Instant,
+}
+impl<R: tokio::io::AsyncRead + Unpin> tokio::io::AsyncRead for ProgressReader<R> {
+    fn poll_read(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buffer: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        let this = self.get_mut();
+        let before = buffer.filled().len();
+        let result = std::pin::Pin::new(&mut this.reader).poll_read(cx, buffer);
+        if this.progress.is_some()
+            && matches!(result, std::task::Poll::Ready(Ok(())))
+            && buffer.filled().len() > before
+        {
+            this.prepared += (buffer.filled().len() - before) as u64;
+            if this.prepared == this.total || this.last.elapsed() >= Duration::from_millis(250) {
+                if let Some(progress) = &this.progress {
+                    progress.0.send_replace(UploadProgress {
+                        prepared: this.prepared,
+                        total: this.total,
+                    });
+                }
+                this.last = std::time::Instant::now();
+            }
+        }
+        result
+    }
+}
+
 const MAX_RESPONSE: usize = 1024 * 1024;
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -19,6 +78,8 @@ pub struct UploadDestination {
     response: Option<UploadResponse>,
     #[serde(default)]
     allow_http: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    credential: Option<String>,
 }
 
 fn default_field() -> String {
@@ -41,6 +102,11 @@ enum UploadResponse {
 }
 
 impl UploadDestination {
+    pub fn credential_target(&self) -> Option<String> {
+        let name = self.credential.as_ref()?;
+        let origin = self.validate().ok()?.origin().ascii_serialization();
+        Some(format!("Screenshots/upload/{origin}/{name}"))
+    }
     pub fn request_method(&self) -> &'static str {
         match self.method {
             UploadMethod::Post => "POST",
@@ -133,6 +199,24 @@ impl UploadDestination {
             "Upload URL is invalid or exceeds 2048 bytes"
         );
         let url = reqwest::Url::parse(&self.url).context("Invalid upload URL")?;
+        if let Some(name) = &self.credential {
+            ensure!(
+                url.scheme() == "https",
+                "Bearer credentials require HTTPS, including for self-hosted destinations"
+            );
+            ensure!(
+                !name.is_empty()
+                    && name.len() <= 64
+                    && name
+                        .bytes()
+                        .all(|byte| byte.is_ascii_alphanumeric() || b"_-".contains(&byte)),
+                "Credential reference must contain 1–64 letters, digits, underscores or hyphens"
+            );
+            ensure!(
+                cfg!(target_os = "windows"),
+                "OS upload credential lookup is currently supported on Windows only"
+            );
+        }
         ensure!(
             url.scheme() == "https" || (url.scheme() == "http" && self.allow_http),
             "Use HTTPS, or explicitly enable allow_http for your HTTP destination"
@@ -143,7 +227,7 @@ impl UploadDestination {
                 && url.password().is_none()
                 && url.query().is_none()
                 && url.fragment().is_none(),
-            "Upload URLs must have a host and no credentials, query or fragment; authenticated destinations are not supported yet"
+            "Upload URLs must have a host and no embedded credentials, query or fragment"
         );
         ensure!(
             !self.field.is_empty()
@@ -190,6 +274,24 @@ pub fn upload_png(
     path: &Path,
     cancel: UploadCancellation,
 ) -> Result<String> {
+    run_upload(destination, path, cancel, None)
+}
+
+pub fn upload_png_with_progress(
+    destination: &UploadDestination,
+    path: &Path,
+    cancel: UploadCancellation,
+    progress: UploadProgressReporter,
+) -> Result<String> {
+    run_upload(destination, path, cancel, Some(progress))
+}
+
+fn run_upload(
+    destination: &UploadDestination,
+    path: &Path,
+    cancel: UploadCancellation,
+    progress: Option<UploadProgressReporter>,
+) -> Result<String> {
     let url = destination.validate()?;
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -199,7 +301,7 @@ pub fn upload_png(
         tokio::select! {
             biased;
             _ = cancel.0.notified() => anyhow::bail!("Upload canceled. The server may already have received the file."),
-            result = tokio::time::timeout(Duration::from_secs(60), transfer(destination, path, url)) => {
+            result = tokio::time::timeout(Duration::from_secs(60), transfer(destination, path, url, progress)) => {
                 result.context("Upload exceeded its 60 second deadline; the server may have received the file")?
             }
         }
@@ -210,6 +312,7 @@ async fn transfer(
     destination: &UploadDestination,
     path: &Path,
     url: reqwest::Url,
+    progress: Option<UploadProgressReporter>,
 ) -> Result<String> {
     ensure!(path.is_absolute(), "Upload source must be an absolute path");
     let mut file = tokio::fs::File::open(path)
@@ -231,8 +334,21 @@ async fn transfer(
     );
     file.rewind().await?;
     let length = metadata.len();
+    if let Some(progress) = &progress {
+        progress.0.send_replace(UploadProgress {
+            prepared: 0,
+            total: length,
+        });
+    }
+    let reader = ProgressReader {
+        reader: file.take(length),
+        progress,
+        prepared: 0,
+        total: length,
+        last: std::time::Instant::now(),
+    };
     let body = reqwest::Body::wrap_stream(tokio_util::io::ReaderStream::with_capacity(
-        file.take(length),
+        reader,
         64 * 1024,
     ));
     let client = reqwest::Client::builder()
@@ -248,7 +364,7 @@ async fn transfer(
         .no_deflate()
         .no_zstd()
         .build()?;
-    let request = match destination.method {
+    let mut request = match destination.method {
         UploadMethod::Post => {
             let part = reqwest::multipart::Part::stream_with_length(body, length)
                 .file_name("screenshot.png")
@@ -264,6 +380,12 @@ async fn transfer(
             .header(reqwest::header::IF_NONE_MATCH, "*")
             .body(body),
     };
+    if let Some(target) = destination.credential_target() {
+        request = request.header(
+            reqwest::header::AUTHORIZATION,
+            crate::upload_credentials::read_bearer(&target)?,
+        );
+    }
     let mut response = request
         .header(reqwest::header::ACCEPT_ENCODING, "identity")
         .send()
@@ -326,7 +448,7 @@ async fn transfer(
     validate_link(value)
 }
 
-fn validate_link(value: &str) -> Result<String> {
+pub(crate) fn validate_link(value: &str) -> Result<String> {
     ensure!(
         value.len() <= 2048 && !value.chars().any(char::is_control),
         "Upload response link is invalid or too long"
@@ -352,6 +474,57 @@ mod tests {
         thread,
     };
 
+    #[test]
+    fn progress_coalesces_closes_and_counts_only_consumed_png_bytes() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let (reporter, mut receiver) = upload_progress_channel();
+            for prepared in 0..1000 {
+                reporter.0.send_replace(UploadProgress {
+                    prepared,
+                    total: 2000,
+                });
+            }
+            let latest = tokio::time::timeout(Duration::from_secs(1), receiver.next())
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!((latest.prepared, latest.total), (999, 2000));
+            drop(reporter);
+            assert!(
+                tokio::time::timeout(Duration::from_secs(1), receiver.next())
+                    .await
+                    .unwrap()
+                    .is_none()
+            );
+            let (reporter, mut receiver) = upload_progress_channel();
+            let bytes = vec![12u8; 128 * 1024];
+            let mut reader = ProgressReader {
+                reader: bytes.as_slice(),
+                progress: Some(reporter),
+                prepared: 0,
+                total: bytes.len() as u64,
+                last: std::time::Instant::now(),
+            };
+            let mut output = Vec::new();
+            reader.read_to_end(&mut output).await.unwrap();
+            assert_eq!(output, bytes);
+            let progress = tokio::time::timeout(Duration::from_secs(1), receiver.next())
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                (progress.prepared, progress.total),
+                (bytes.len() as u64, bytes.len() as u64)
+            );
+            drop(reader);
+            assert!(receiver.next().await.is_none());
+        });
+    }
+
     fn fixture() -> (std::path::PathBuf, std::path::PathBuf) {
         let root =
             std::env::temp_dir().join(format!("screenshots-upload-{}", uuid::Uuid::new_v4()));
@@ -368,6 +541,7 @@ mod tests {
             json_pointer: "/result/url".into(),
             response: None,
             allow_http: true,
+            credential: None,
         }
     }
     fn read_request(stream: &mut TcpStream) -> Vec<u8> {
@@ -632,6 +806,55 @@ mod tests {
     }
 
     #[test]
+    fn credential_references_are_bound_to_https_origin_and_never_contain_tokens() -> Result<()> {
+        let mut config = destination("http://example.invalid/upload".into());
+        config.credential = Some("main".into());
+        assert!(config.validate().is_err());
+        config.url = "https://example.invalid/upload".into();
+        if cfg!(target_os = "windows") {
+            config.validate()?;
+            assert_eq!(
+                config.credential_target().as_deref(),
+                Some("Screenshots/upload/https://example.invalid/main")
+            );
+            let original = config.credential_target();
+            config.url = "https://other.invalid/upload".into();
+            assert_ne!(config.credential_target(), original);
+            config.url = "https://example.invalid:444/upload".into();
+            assert_ne!(config.credential_target(), original);
+        } else {
+            assert!(config.validate().is_err());
+        }
+        for name in ["", "../../other", "with spaces", "name\0", &"x".repeat(65)] {
+            config.credential = Some(name.into());
+            assert!(config.validate().is_err());
+        }
+        Ok(())
+    }
+
+    #[test]
+    #[cfg(target_os = "windows")]
+    #[ignore = "checks a unique nonexistent credential and verifies no connection to a loopback listener"]
+    fn missing_bearer_credential_prevents_any_request() {
+        let (root, path) = fixture();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let mut config = destination(format!("https://{}/upload", listener.local_addr().unwrap()));
+        config.credential = Some(format!("missing-{}", uuid::Uuid::new_v4()));
+        let error = upload_png(&config, &path, UploadCancellation::default()).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("No readable Windows upload credential")
+        );
+        assert_eq!(
+            listener.accept().unwrap_err().kind(),
+            std::io::ErrorKind::WouldBlock
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn destination_validation_rejects_implicit_http_secrets_and_unbounded_settings() {
         let mut config = destination("https://example.invalid/upload".into());
         assert!(config.validate().is_ok());
@@ -689,6 +912,40 @@ mod tests {
             started.elapsed()
         );
         let request = server.join().unwrap();
+        let (url, task) = self::server(
+            response(r#"{"result":{"url":"https://example.invalid/share/progress"}}"#),
+            None,
+            Duration::ZERO,
+        );
+        let (reporter, mut progress) = upload_progress_channel();
+        let started = std::time::Instant::now();
+        assert_eq!(
+            upload_png_with_progress(
+                &destination(url),
+                &path,
+                UploadCancellation::default(),
+                reporter
+            )
+            .unwrap(),
+            "https://example.invalid/share/progress"
+        );
+        eprintln!(
+            "Synthetic PNG loopback upload with progress including teardown: {:?}",
+            started.elapsed()
+        );
+        task.join().unwrap();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let final_progress = progress.next().await.unwrap();
+            assert_eq!(
+                (final_progress.prepared, final_progress.total),
+                (original.len() as u64, original.len() as u64)
+            );
+            assert!(progress.next().await.is_none());
+        });
         let text = String::from_utf8_lossy(&request);
         assert!(text.starts_with("POST /upload HTTP/1.1"));
         assert!(text.contains("name=\"file\""));
