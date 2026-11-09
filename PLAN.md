@@ -2,7 +2,45 @@
 
 > **Simple for beginners. Powerful for professionals.**
 
-**Status (2026-11-08):** This is a production delivery plan, not a claim that the current application is production-ready. Phase 0 remains open; see [the measured spike evidence](docs/phase-0.md). The performance contract below applies to the entire application and every future feature. Budgets are acceptance targets, not measurements of the current prototype.
+**Status (2026-11-09):** This is a production delivery plan, not a claim that the current application is production-ready. Phase 0 remains open; see [the measured spike evidence](docs/phase-0.md). The performance contract below applies to the entire application and every future feature. Budgets are acceptance targets, not measurements of the current prototype.
+
+## Session handoff — start here (2026-11-09)
+
+This section is the current continuation brief. The numbered sections below contain architecture, release requirements and detailed implementation evidence; their original bootstrap sequence is historical. Development has progressed through functional slices of Phases 1–5 while the cross-platform/performance release gates remain open. Do not restart the spike or treat implemented features as production acceptance.
+
+### User decisions to preserve
+
+- Continue the UI/UX work now; it is the foundation for further features, not a final-release cosmetic task. The current layout is an initial implementation, not an approved final design.
+- **ShareX is a reference for menu organization/layout only. Do not copy its theme/colors.** Use the [user-supplied modern ShareX menu reference](docs/design/sharex-menu-layout-reference.png) for the left navigation/right workspace relationship. The earlier CombineImages screenshot was also about layout, not a request to implement image combining. The product goal is a clearer, more polished overall experience than ShareX; that goal is not yet achieved or measured.
+- Keep our own **neutral dark mode**: near-black/charcoal surfaces, gray text/icons/borders and restrained action/focus accents. The shared palette is `crates/app-ui/src/theme.rs`; avoid reintroducing blue-tinted surfaces or scattered theme colors. Screenshot/annotation colors are separate document data.
+- All app-owned UI is **English**. User conversation may remain German. Native OS dialog/error language follows the OS.
+- All screenshot editing tools must remain available **before final output in the frozen overlay**, as well as in the standalone editor. Never save/copy/upload an unedited source implicitly.
+- Raw performance remains mandatory: near-zero idle work, bounded RAM/GPU use and immediate feedback. Read `AGENTS.md` and the performance contract before execution-path changes. Keep blocking work off GPUI's foreground executor, cancel obsolete jobs and preserve the in-memory capture pipeline.
+- Prefer complete, practical progress with focused checks. Do not spend sessions repeatedly running broad benchmarks or rebuilding already verified features; do not omit checks needed for an affected behavior.
+
+### Current implementation
+
+- **Windows functional prototype:** tray/resident lifecycle, single-instance forwarding, hotkeys, display/window/region capture, countdown, clipboard, PNG output and save-folder settings. Graphics attach on demand and detach when the last UI consumer closes.
+- **Shared editor:** crop, shapes, arrows, lines/endpoints, pen, text/style, numbering, highlight/spotlight, blur, pixelation and opaque redaction; selection/transforms, duplicate/reorder, bounded metadata undo/redo and zoom/pan. Copy, Save and Save & copy are explicit. Original files are preserved when editing a copy.
+- **Storage/sharing:** paged SQLite capture history with prefix search, filters, PNG import/relink, explicit preview, bounded selection/removal/export; explicit configurable POST/PUT uploads, progress/cancel, remembered credential-free profiles and upload history. Windows credentials support Bearer/API-key/Basic. Other secret-store integrations remain pending.
+- **Current main UI:** a fixed 224-logical-pixel sidebar, capture commands and separate Screenshots / Capture history / Displays & windows / Uploads / Settings workspaces. History loads explicitly; switching releases its view/preview state and cancels stale requests. This is not yet a finished gallery or a complete nested/context-menu design.
+- **Current editor UI:** grouped vector tool buttons with shortcut tooltips, contextual selection actions, color swatches and separate output actions. Toolbar height is measured, with bounded scrolling; overlay placement can switch top/bottom. This UI still needs design/interaction refinement.
+
+### Continue from here
+
+1. Finish the main capture workspace as a coherent screenshot gallery/list with scoped item actions/context menus, using existing capture/history operations. Refine capture-menu grouping and navigation against the layout reference. Do not introduce eager full-history image decoding; keep paging and thumbnail resources bounded.
+2. Apply the same design language and hierarchy to uploads/settings and the shared overlay/editor. Preserve keyboard access, truthful busy/output status, cancellation and all existing actions. Verify real native layout at useful window sizes; a successful compile does not verify appearance.
+3. Continue the functional/release backlog only with the UI direction preserved. Known open gates include arbitrary effect/layer-order agreement, complete gallery/context-menu UX, manual keyboard/IME/accessibility, mixed DPI/multi-monitor/topology changes, failure/recovery cases, packaging/reproducible releases and full performance acceptance. Linux/X11/Wayland/macOS are targets, not validated products today. Recording/OCR/plugins/cloud are later roadmap items.
+
+### Code and verification entry points
+
+- `crates/app-ui/src/lib.rs`: resident controller, sidebar/workspaces, history/upload UI and native UI probes. `redaction_editor.rs`: shared editor document interaction and toolbar. `caption.rs`: bounded native text/search input. `theme.rs`: shared static dark palette.
+- `crates/app-core/src/`: capture/pixel ownership, annotation export, storage and upload implementations. `README.md`: current user workflows/limits. Phase 4/5 notes below describe implemented slices in more detail.
+- Last relevant checks passed in release mode: app build, 30 editor fixtures (6 opt-in diagnostics skipped), native navigation/cancellation/renderer-detach, synthetic editor visual probe and overlay cancellation without output side effects. The final palette-only edit was checked with release build and the native main/editor probes; it did not rerun a hardware benchmark.
+- Ordinary build: `cargo build --release -p screenshots --offline`. Show the control window: `cargo run -p screenshots -- --show`. Fully quit an older running tray instance before checking a newly built UI; a second launch otherwise forwards to that existing instance.
+- Focused editor fixtures: `cargo test --release -p app-ui --offline redaction_editor::tests -- --test-threads=1`. Native opt-in probes are `control_pages_render_and_cancel_hidden_history` and `editor_toolbar_visual_probe` (same test command with `-- --ignored --test-threads=1 --nocapture`). They need Windows desktop access and capture only their own empty/synthetic app windows into ignored `target/ui-preview`; these local PNGs are disposable inspection artifacts, not reference designs.
+- Performance evidence: `docs/performance-resident.md`, `docs/region-latency.md` and `docs/control-open-latency.md`. Historical measured runs and their hashes are separate from targets. The sidebar run's 48.03 ms p95 second-frame callback is a development-machine proxy, not physical presentation/input acceptance; CPU/GPU memory, idle/soak and reference-hardware gates remain open.
+- At session start, inspect `git status` and the current code. Preserve existing work; do not assume the working tree is clean or that every prior edit still needs applying. No commit/push is required by this handoff.
 
 ## 1. Project Vision
 
@@ -1405,9 +1443,9 @@ C/C++ may be used selectively for native integrations when there is a demonstrab
 
 ## 16. First Development Steps
 
-The most important thing is to validate the technical foundation before implementing the complete application.
+This is the historical bootstrap sequence, retained to explain the technical gates. The current continuation task is the UI/UX work in the session handoff at the top; do not repeat these steps from scratch or stop that authorized UI work because release gates remain open.
 
-Recommended starting order:
+Original starting order:
 
 1. Keep this repository. The plan, license, and README are already here.
 2. Run Phase 0 in a small prototype, with a pinned GPUI revision.
@@ -1419,9 +1457,7 @@ Recommended starting order:
 8. Measure release-mode idle/startup/input/capture/memory behavior and pass or fail the Phase 0 gate with evidence.
 9. Only then create the application workspace and the shell described in Phase 1.
 
-**Do not start with the full UI or the editor.**
-
-The capture engine and desktop integration are the biggest technical risks. Resolve those first.
+The original instruction to validate capture/desktop integration before building the full UI described project bootstrap. Capture/editor/UI slices now exist; their unresolved platform and performance checks remain release requirements alongside continued UI development.
 
 ---
 
