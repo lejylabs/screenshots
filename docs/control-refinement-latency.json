@@ -1,0 +1,512 @@
+﻿{
+    "scenario":  "resident control reopen after graphics detach",
+    "release":  true,
+    "samples":  [
+                    {
+                        "cycle":  0,
+                        "first_frame_callback_ms":  60.8688,
+                        "second_frame_callback_ms":  64.152
+                    },
+                    {
+                        "cycle":  1,
+                        "first_frame_callback_ms":  37.1784,
+                        "second_frame_callback_ms":  39.4223
+                    },
+                    {
+                        "cycle":  2,
+                        "first_frame_callback_ms":  36.49,
+                        "second_frame_callback_ms":  38.7643
+                    },
+                    {
+                        "cycle":  3,
+                        "first_frame_callback_ms":  34.361200000000004,
+                        "second_frame_callback_ms":  36.6272
+                    },
+                    {
+                        "cycle":  4,
+                        "first_frame_callback_ms":  36.2787,
+                        "second_frame_callback_ms":  38.638600000000004
+                    },
+                    {
+                        "cycle":  5,
+                        "first_frame_callback_ms":  36.503800000000005,
+                        "second_frame_callback_ms":  39.0324
+                    },
+                    {
+                        "cycle":  6,
+                        "first_frame_callback_ms":  35.985499999999995,
+                        "second_frame_callback_ms":  38.191700000000004
+                    },
+                    {
+                        "cycle":  7,
+                        "first_frame_callback_ms":  38.7374,
+                        "second_frame_callback_ms":  40.8421
+                    },
+                    {
+                        "cycle":  8,
+                        "first_frame_callback_ms":  35.2075,
+                        "second_frame_callback_ms":  37.4328
+                    },
+                    {
+                        "cycle":  9,
+                        "first_frame_callback_ms":  35.3098,
+                        "second_frame_callback_ms":  37.2478
+                    },
+                    {
+                        "cycle":  10,
+                        "first_frame_callback_ms":  35.327,
+                        "second_frame_callback_ms":  37.302099999999996
+                    },
+                    {
+                        "cycle":  11,
+                        "first_frame_callback_ms":  33.992399999999996,
+                        "second_frame_callback_ms":  35.710899999999995
+                    },
+                    {
+                        "cycle":  12,
+                        "first_frame_callback_ms":  34.0472,
+                        "second_frame_callback_ms":  36.3601
+                    },
+                    {
+                        "cycle":  13,
+                        "first_frame_callback_ms":  33.9636,
+                        "second_frame_callback_ms":  36.1386
+                    },
+                    {
+                        "cycle":  14,
+                        "first_frame_callback_ms":  34.424099999999996,
+                        "second_frame_callback_ms":  36.4041
+                    },
+                    {
+                        "cycle":  15,
+                        "first_frame_callback_ms":  34.2044,
+                        "second_frame_callback_ms":  36.0558
+                    },
+                    {
+                        "cycle":  16,
+                        "first_frame_callback_ms":  37.2018,
+                        "second_frame_callback_ms":  40.18300000000001
+                    },
+                    {
+                        "cycle":  17,
+                        "first_frame_callback_ms":  35.657399999999996,
+                        "second_frame_callback_ms":  37.8649
+                    },
+                    {
+                        "cycle":  18,
+                        "first_frame_callback_ms":  34.7877,
+                        "second_frame_callback_ms":  36.871300000000005
+                    },
+                    {
+                        "cycle":  19,
+                        "first_frame_callback_ms":  35.6884,
+                        "second_frame_callback_ms":  37.9266
+                    },
+                    {
+                        "cycle":  20,
+                        "first_frame_callback_ms":  34.4249,
+                        "second_frame_callback_ms":  36.6706
+                    },
+                    {
+                        "cycle":  21,
+                        "first_frame_callback_ms":  34.1802,
+                        "second_frame_callback_ms":  36.2983
+                    },
+                    {
+                        "cycle":  22,
+                        "first_frame_callback_ms":  34.551,
+                        "second_frame_callback_ms":  36.8881
+                    },
+                    {
+                        "cycle":  23,
+                        "first_frame_callback_ms":  39.3551,
+                        "second_frame_callback_ms":  41.6394
+                    },
+                    {
+                        "cycle":  24,
+                        "first_frame_callback_ms":  36.8758,
+                        "second_frame_callback_ms":  39.0834
+                    },
+                    {
+                        "cycle":  25,
+                        "first_frame_callback_ms":  36.208400000000005,
+                        "second_frame_callback_ms":  38.2672
+                    },
+                    {
+                        "cycle":  26,
+                        "first_frame_callback_ms":  36.2327,
+                        "second_frame_callback_ms":  38.9805
+                    },
+                    {
+                        "cycle":  27,
+                        "first_frame_callback_ms":  36.172999999999995,
+                        "second_frame_callback_ms":  39.3093
+                    },
+                    {
+                        "cycle":  28,
+                        "first_frame_callback_ms":  40.5539,
+                        "second_frame_callback_ms":  42.937999999999995
+                    },
+                    {
+                        "cycle":  29,
+                        "first_frame_callback_ms":  40.2446,
+                        "second_frame_callback_ms":  42.744200000000006
+                    },
+                    {
+                        "cycle":  30,
+                        "first_frame_callback_ms":  45.9324,
+                        "second_frame_callback_ms":  48.9486
+                    },
+                    {
+                        "cycle":  31,
+                        "first_frame_callback_ms":  39.5458,
+                        "second_frame_callback_ms":  42.0831
+                    },
+                    {
+                        "cycle":  32,
+                        "first_frame_callback_ms":  43.298,
+                        "second_frame_callback_ms":  46.495799999999996
+                    },
+                    {
+                        "cycle":  33,
+                        "first_frame_callback_ms":  51.4602,
+                        "second_frame_callback_ms":  54.5084
+                    },
+                    {
+                        "cycle":  34,
+                        "first_frame_callback_ms":  45.1701,
+                        "second_frame_callback_ms":  49.483399999999996
+                    },
+                    {
+                        "cycle":  35,
+                        "first_frame_callback_ms":  42.3266,
+                        "second_frame_callback_ms":  44.199799999999996
+                    },
+                    {
+                        "cycle":  36,
+                        "first_frame_callback_ms":  38.7789,
+                        "second_frame_callback_ms":  40.771
+                    },
+                    {
+                        "cycle":  37,
+                        "first_frame_callback_ms":  39.1363,
+                        "second_frame_callback_ms":  41.3108
+                    },
+                    {
+                        "cycle":  38,
+                        "first_frame_callback_ms":  39.3452,
+                        "second_frame_callback_ms":  41.6502
+                    },
+                    {
+                        "cycle":  39,
+                        "first_frame_callback_ms":  40.6696,
+                        "second_frame_callback_ms":  42.381299999999996
+                    },
+                    {
+                        "cycle":  40,
+                        "first_frame_callback_ms":  34.3006,
+                        "second_frame_callback_ms":  36.288399999999996
+                    },
+                    {
+                        "cycle":  41,
+                        "first_frame_callback_ms":  34.363400000000006,
+                        "second_frame_callback_ms":  36.225300000000004
+                    },
+                    {
+                        "cycle":  42,
+                        "first_frame_callback_ms":  36.1371,
+                        "second_frame_callback_ms":  38.2681
+                    },
+                    {
+                        "cycle":  43,
+                        "first_frame_callback_ms":  35.5469,
+                        "second_frame_callback_ms":  37.769200000000005
+                    },
+                    {
+                        "cycle":  44,
+                        "first_frame_callback_ms":  37.7185,
+                        "second_frame_callback_ms":  39.6854
+                    },
+                    {
+                        "cycle":  45,
+                        "first_frame_callback_ms":  39.2336,
+                        "second_frame_callback_ms":  41.4432
+                    },
+                    {
+                        "cycle":  46,
+                        "first_frame_callback_ms":  38.4785,
+                        "second_frame_callback_ms":  41.1537
+                    },
+                    {
+                        "cycle":  47,
+                        "first_frame_callback_ms":  36.0681,
+                        "second_frame_callback_ms":  38.0087
+                    },
+                    {
+                        "cycle":  48,
+                        "first_frame_callback_ms":  34.8552,
+                        "second_frame_callback_ms":  37.3467
+                    },
+                    {
+                        "cycle":  49,
+                        "first_frame_callback_ms":  32.8891,
+                        "second_frame_callback_ms":  34.9034
+                    },
+                    {
+                        "cycle":  50,
+                        "first_frame_callback_ms":  35.1444,
+                        "second_frame_callback_ms":  37.0539
+                    },
+                    {
+                        "cycle":  51,
+                        "first_frame_callback_ms":  37.3014,
+                        "second_frame_callback_ms":  39.5241
+                    },
+                    {
+                        "cycle":  52,
+                        "first_frame_callback_ms":  39.6947,
+                        "second_frame_callback_ms":  42.7872
+                    },
+                    {
+                        "cycle":  53,
+                        "first_frame_callback_ms":  43.883900000000004,
+                        "second_frame_callback_ms":  45.9303
+                    },
+                    {
+                        "cycle":  54,
+                        "first_frame_callback_ms":  36.9366,
+                        "second_frame_callback_ms":  38.908699999999996
+                    },
+                    {
+                        "cycle":  55,
+                        "first_frame_callback_ms":  38.6443,
+                        "second_frame_callback_ms":  40.777899999999995
+                    },
+                    {
+                        "cycle":  56,
+                        "first_frame_callback_ms":  43.818000000000005,
+                        "second_frame_callback_ms":  46.636700000000005
+                    },
+                    {
+                        "cycle":  57,
+                        "first_frame_callback_ms":  40.592499999999994,
+                        "second_frame_callback_ms":  43.868900000000004
+                    },
+                    {
+                        "cycle":  58,
+                        "first_frame_callback_ms":  38.26390000000001,
+                        "second_frame_callback_ms":  40.378
+                    },
+                    {
+                        "cycle":  59,
+                        "first_frame_callback_ms":  34.041000000000004,
+                        "second_frame_callback_ms":  36.0899
+                    },
+                    {
+                        "cycle":  60,
+                        "first_frame_callback_ms":  35.1567,
+                        "second_frame_callback_ms":  36.9743
+                    },
+                    {
+                        "cycle":  61,
+                        "first_frame_callback_ms":  34.7189,
+                        "second_frame_callback_ms":  36.7093
+                    },
+                    {
+                        "cycle":  62,
+                        "first_frame_callback_ms":  34.0636,
+                        "second_frame_callback_ms":  36.575900000000004
+                    },
+                    {
+                        "cycle":  63,
+                        "first_frame_callback_ms":  33.2903,
+                        "second_frame_callback_ms":  35.410700000000006
+                    },
+                    {
+                        "cycle":  64,
+                        "first_frame_callback_ms":  33.983,
+                        "second_frame_callback_ms":  35.7106
+                    },
+                    {
+                        "cycle":  65,
+                        "first_frame_callback_ms":  37.772600000000004,
+                        "second_frame_callback_ms":  39.74720000000001
+                    },
+                    {
+                        "cycle":  66,
+                        "first_frame_callback_ms":  34.2963,
+                        "second_frame_callback_ms":  37.2509
+                    },
+                    {
+                        "cycle":  67,
+                        "first_frame_callback_ms":  34.6421,
+                        "second_frame_callback_ms":  36.682100000000005
+                    },
+                    {
+                        "cycle":  68,
+                        "first_frame_callback_ms":  33.8534,
+                        "second_frame_callback_ms":  35.923700000000004
+                    },
+                    {
+                        "cycle":  69,
+                        "first_frame_callback_ms":  34.2019,
+                        "second_frame_callback_ms":  36.372
+                    },
+                    {
+                        "cycle":  70,
+                        "first_frame_callback_ms":  34.2224,
+                        "second_frame_callback_ms":  36.7066
+                    },
+                    {
+                        "cycle":  71,
+                        "first_frame_callback_ms":  33.5261,
+                        "second_frame_callback_ms":  35.4503
+                    },
+                    {
+                        "cycle":  72,
+                        "first_frame_callback_ms":  36.4514,
+                        "second_frame_callback_ms":  38.2023
+                    },
+                    {
+                        "cycle":  73,
+                        "first_frame_callback_ms":  35.5801,
+                        "second_frame_callback_ms":  38.143499999999996
+                    },
+                    {
+                        "cycle":  74,
+                        "first_frame_callback_ms":  36.013000000000005,
+                        "second_frame_callback_ms":  38.0779
+                    },
+                    {
+                        "cycle":  75,
+                        "first_frame_callback_ms":  40.0831,
+                        "second_frame_callback_ms":  42.202400000000004
+                    },
+                    {
+                        "cycle":  76,
+                        "first_frame_callback_ms":  42.8971,
+                        "second_frame_callback_ms":  45.732299999999995
+                    },
+                    {
+                        "cycle":  77,
+                        "first_frame_callback_ms":  39.5978,
+                        "second_frame_callback_ms":  41.8809
+                    },
+                    {
+                        "cycle":  78,
+                        "first_frame_callback_ms":  39.897099999999995,
+                        "second_frame_callback_ms":  42.7185
+                    },
+                    {
+                        "cycle":  79,
+                        "first_frame_callback_ms":  42.188,
+                        "second_frame_callback_ms":  45.0409
+                    },
+                    {
+                        "cycle":  80,
+                        "first_frame_callback_ms":  44.2667,
+                        "second_frame_callback_ms":  46.3503
+                    },
+                    {
+                        "cycle":  81,
+                        "first_frame_callback_ms":  35.68000000000001,
+                        "second_frame_callback_ms":  38.2063
+                    },
+                    {
+                        "cycle":  82,
+                        "first_frame_callback_ms":  36.4049,
+                        "second_frame_callback_ms":  39.1021
+                    },
+                    {
+                        "cycle":  83,
+                        "first_frame_callback_ms":  34.4248,
+                        "second_frame_callback_ms":  36.6483
+                    },
+                    {
+                        "cycle":  84,
+                        "first_frame_callback_ms":  36.5738,
+                        "second_frame_callback_ms":  38.5139
+                    },
+                    {
+                        "cycle":  85,
+                        "first_frame_callback_ms":  35.109500000000004,
+                        "second_frame_callback_ms":  36.9215
+                    },
+                    {
+                        "cycle":  86,
+                        "first_frame_callback_ms":  39.309799999999996,
+                        "second_frame_callback_ms":  41.875299999999996
+                    },
+                    {
+                        "cycle":  87,
+                        "first_frame_callback_ms":  39.7622,
+                        "second_frame_callback_ms":  41.6155
+                    },
+                    {
+                        "cycle":  88,
+                        "first_frame_callback_ms":  35.1873,
+                        "second_frame_callback_ms":  37.2232
+                    },
+                    {
+                        "cycle":  89,
+                        "first_frame_callback_ms":  43.954,
+                        "second_frame_callback_ms":  47.0432
+                    },
+                    {
+                        "cycle":  90,
+                        "first_frame_callback_ms":  39.3643,
+                        "second_frame_callback_ms":  41.2544
+                    },
+                    {
+                        "cycle":  91,
+                        "first_frame_callback_ms":  37.801700000000004,
+                        "second_frame_callback_ms":  39.8711
+                    },
+                    {
+                        "cycle":  92,
+                        "first_frame_callback_ms":  38.2006,
+                        "second_frame_callback_ms":  40.1397
+                    },
+                    {
+                        "cycle":  93,
+                        "first_frame_callback_ms":  37.5379,
+                        "second_frame_callback_ms":  39.6541
+                    },
+                    {
+                        "cycle":  94,
+                        "first_frame_callback_ms":  38.0016,
+                        "second_frame_callback_ms":  40.3373
+                    },
+                    {
+                        "cycle":  95,
+                        "first_frame_callback_ms":  39.634,
+                        "second_frame_callback_ms":  41.7169
+                    },
+                    {
+                        "cycle":  96,
+                        "first_frame_callback_ms":  37.8435,
+                        "second_frame_callback_ms":  39.605399999999996
+                    },
+                    {
+                        "cycle":  97,
+                        "first_frame_callback_ms":  37.707499999999996,
+                        "second_frame_callback_ms":  39.7917
+                    },
+                    {
+                        "cycle":  98,
+                        "first_frame_callback_ms":  41.2467,
+                        "second_frame_callback_ms":  43.3551
+                    },
+                    {
+                        "cycle":  99,
+                        "first_frame_callback_ms":  37.287099999999995,
+                        "second_frame_callback_ms":  39.696000000000005
+                    },
+                    {
+                        "cycle":  100,
+                        "first_frame_callback_ms":  37.183,
+                        "second_frame_callback_ms":  39.1008
+                    }
+                ],
+    "executable_sha256":  "194f2aac0632eb69431841b8b1711a05d39958dffe329fb0ba7d869c933cfbf9"
+}

@@ -1,10 +1,10 @@
 //! Shared dark surfaces; accent is reserved for actions, selection and focus.
 pub const BACKGROUND: u32 = 0x101010;
-pub const SURFACE: u32 = 0x181818;
-pub const CONTROL: u32 = 0x222222;
-pub const HOVER: u32 = 0x2c2c2c;
+pub const SURFACE: u32 = 0x171717;
+pub const CONTROL: u32 = 0x232323;
+pub const HOVER: u32 = 0x2a2a2a;
 pub const PRESSED: u32 = 0x141414;
-pub const BORDER: u32 = 0x383838;
+pub const BORDER: u32 = 0x303030;
 pub const TEXT: u32 = 0xededed;
 pub const MUTED: u32 = 0xaaaaaa;
 pub const DISABLED: u32 = 0x777777;
