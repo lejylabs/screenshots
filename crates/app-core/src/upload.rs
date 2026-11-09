@@ -118,6 +118,7 @@ enum UploadMethod {
 enum UploadResponse {
     Text,
     Header { name: String },
+    RequestUrl,
 }
 
 impl UploadDestination {
@@ -205,6 +206,12 @@ impl UploadDestination {
             "Authentication requires an OS credential reference"
         );
         if let Some(response) = &self.response {
+            if matches!(response, UploadResponse::RequestUrl) {
+                ensure!(
+                    matches!(self.method, UploadMethod::Put),
+                    "request_url response mode requires PUT to a resource URL"
+                );
+            }
             ensure!(
                 self.json_pointer.is_empty(),
                 "Choose either json_pointer or response, not both"
@@ -273,6 +280,9 @@ impl UploadDestination {
                 .all(|part| part.starts_with('0') || part.starts_with('1')),
             "Invalid JSON pointer escape; use ~0 for ~ and ~1 for /"
         );
+        if matches!(self.response, Some(UploadResponse::RequestUrl)) {
+            validate_link(url.as_str())?;
+        }
         Ok(url)
     }
 
@@ -387,6 +397,8 @@ async fn transfer(
         .no_deflate()
         .no_zstd()
         .build()?;
+    let resource_url =
+        matches!(destination.response, Some(UploadResponse::RequestUrl)).then(|| url.to_string());
     let mut request = match destination.method {
         UploadMethod::Post => {
             let part = reqwest::multipart::Part::stream_with_length(body, length)
@@ -427,6 +439,14 @@ async fn transfer(
             .is_none_or(|length| length <= MAX_RESPONSE as u64),
         "Upload response exceeds 1 MiB; the file may already be uploaded"
     );
+    if let Some(url) = resource_url {
+        ensure!(
+            matches!(response.status().as_u16(), 200 | 201 | 204),
+            "PUT did not confirm resource completion (HTTP {}); no completed resource link is available",
+            response.status().as_u16()
+        );
+        return validate_link(&url);
+    }
     if let Some(UploadResponse::Header { name }) = &destination.response {
         let mut values = response.headers().get_all(name.as_str()).iter();
         let value = values
@@ -937,6 +957,70 @@ mod tests {
         config.allow_http = true;
         assert!(config.validate().is_err());
         Ok(())
+    }
+
+    #[test]
+    fn request_url_profiles_require_put_and_preserve_explicit_mode() -> Result<()> {
+        let mut config = destination("https://example.invalid/images/a.png".into());
+        config.json_pointer.clear();
+        config.response = Some(UploadResponse::RequestUrl);
+        assert!(config.validate().is_err());
+        config.method = UploadMethod::Put;
+        config.validate()?;
+        let (root, _) = fixture();
+        let path = root.join("destination.json");
+        config.save_at(&path)?;
+        assert!(matches!(
+            UploadDestination::load(&path)?.response,
+            Some(UploadResponse::RequestUrl)
+        ));
+        config.json_pointer = "/url".into();
+        assert!(config.validate().is_err());
+        config.json_pointer.clear();
+        config.url = format!("https://example.invalid/{}", "é".repeat(600));
+        assert!(config.validate().is_err());
+        std::fs::remove_dir_all(root)?;
+        Ok(())
+    }
+
+    #[test]
+    #[ignore = "PUT status-only responses from local loopback servers; synthetic PNG only"]
+    fn request_url_mode_uses_only_confirmed_put_resource_urls() {
+        let (root, path) = fixture();
+        let original = std::fs::read(&path).unwrap();
+        for (status, success) in [
+            (200, true),
+            (201, true),
+            (204, true),
+            (202, false),
+            (206, false),
+            (307, false),
+            (412, false),
+        ] {
+            let reply=format!("HTTP/1.1 {status} Test\r\nLocation: https://example.invalid/not-the-resource\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").into_bytes();
+            let (url, task) = server(reply, None, Duration::ZERO);
+            let mut config = destination(url.clone());
+            config.method = UploadMethod::Put;
+            config.json_pointer.clear();
+            config.response = Some(UploadResponse::RequestUrl);
+            let started = std::time::Instant::now();
+            let result = upload_png(&config, &path, UploadCancellation::default());
+            if success {
+                assert_eq!(result.unwrap(), url);
+                if status == 204 {
+                    eprintln!(
+                        "Synthetic PNG status-only PUT including teardown: {:?}",
+                        started.elapsed()
+                    );
+                }
+            } else {
+                assert!(result.is_err());
+            }
+            let request = task.join().unwrap();
+            assert!(request.starts_with(b"PUT /upload HTTP/1.1"));
+        }
+        assert_eq!(std::fs::read(&path).unwrap(), original);
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

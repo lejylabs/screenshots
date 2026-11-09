@@ -14,6 +14,22 @@ fn pen_point(position: [f32; 2], scale: f32, image: [u32; 2]) -> [u32; 2] {
             .clamp(0.0, (image[axis] - 1) as f32) as u32
     })
 }
+fn line_from_drag(
+    start: [f32; 2],
+    end: [f32; 2],
+    viewport: [f32; 2],
+    image: [u32; 2],
+    color: u32,
+    width: u8,
+    snap: bool,
+) -> Option<app_core::PenAnnotation> {
+    let endpoints =
+        ArrowAnnotation::from_drag_constrained(start, end, viewport, image, color, snap)?;
+    let mut line = app_core::PenAnnotation::from_trace(&[endpoints.start, endpoints.end], color)?;
+    line.width = width;
+    Some(line)
+}
+
 fn pen_path(
     pen: &app_core::PenAnnotation,
     origin: gpui::Point<gpui::Pixels>,
@@ -162,6 +178,8 @@ enum ResizeHandle {
     Corner([bool; 2]),
     ArrowStart,
     ArrowEnd,
+    StrokeStart,
+    StrokeEnd,
 }
 impl EditState {
     fn filled(&self, selected: Selected) -> Option<bool> {
@@ -279,6 +297,14 @@ impl EditState {
             .map(|(handle, _)| handle)
     }
     fn handles(&self, selected: Selected) -> Vec<(ResizeHandle, [f32; 2])> {
+        if let Selected::Pen(i) = selected {
+            if let Some(pen) = self.pens.get(i).filter(|pen| pen.points.len() == 2) {
+                return [ResizeHandle::StrokeStart, ResizeHandle::StrokeEnd]
+                    .into_iter()
+                    .zip(pen.positions())
+                    .collect();
+            }
+        }
         if let Selected::Arrow(i) = selected {
             return self.arrows.get(i).map_or_else(Vec::new, |arrow| {
                 vec![
@@ -314,6 +340,42 @@ impl EditState {
         if image.contains(&0) || delta.iter().any(|v| !v.is_finite()) {
             return false;
         }
+        if let Selected::Pen(i) = selected {
+            if matches!(handle, ResizeHandle::StrokeStart | ResizeHandle::StrokeEnd) {
+                let Some(pen) = self.pens.get(i).filter(|pen| pen.points.len() == 2) else {
+                    return false;
+                };
+                let mut endpoints = [[0u32; 2]; 2];
+                for (output, point) in endpoints.iter_mut().zip(pen.positions()) {
+                    *output = std::array::from_fn(|axis| {
+                        (point[axis] - 0.5)
+                            .round()
+                            .clamp(0.0, (image[axis] - 1) as f32) as u32
+                    });
+                }
+                let moving = if handle == ResizeHandle::StrokeStart {
+                    0
+                } else {
+                    1
+                };
+                let next = std::array::from_fn(|axis| {
+                    i64::from(endpoints[moving][axis])
+                        .saturating_add(delta[axis].round() as i64)
+                        .clamp(0, i64::from(image[axis]) - 1) as u32
+                });
+                if next == endpoints[moving] || next == endpoints[1 - moving] {
+                    return false;
+                }
+                endpoints[moving] = next;
+                let Some(mut updated) = app_core::PenAnnotation::from_trace(&endpoints, pen.color)
+                else {
+                    return false;
+                };
+                updated.width = pen.width;
+                self.pens[i] = updated;
+                return true;
+            }
+        }
         if let Selected::Arrow(i) = selected {
             let Some(arrow) = self.arrows.get_mut(i) else {
                 return false;
@@ -324,7 +386,8 @@ impl EditState {
                 _ => return false,
             };
             let next = std::array::from_fn(|axis| {
-                (i64::from(point[axis]) + delta[axis].round() as i64)
+                i64::from(point[axis])
+                    .saturating_add(delta[axis].round() as i64)
                     .clamp(0, i64::from(image[axis]) - 1) as u32
             });
             if next == opposite || next == *point {
@@ -985,6 +1048,7 @@ impl RectEdits {
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Tool {
+    Line,
     Spotlight,
     Number,
     Pen,
@@ -1002,6 +1066,7 @@ enum Tool {
 impl Tool {
     fn shortcut(key: &str) -> Option<Self> {
         match key {
+            "l" => Some(Self::Line),
             "v" => Some(Self::Select),
             "x" => Some(Self::Redact),
             "c" => Some(Self::Crop),
@@ -1589,6 +1654,41 @@ impl RedactionEditor {
             if self.edits.pens.len() != 1 {
                 return Err("Canceled pen gesture changed the document".into());
             }
+            let line = line_from_drag(
+                [64.0, 64.0],
+                [120.0, 68.0],
+                [dimensions[0] as f32, dimensions[1] as f32],
+                dimensions,
+                0x22c55e,
+                6,
+                true,
+            )
+            .ok_or("Line geometry unavailable")?;
+            if !self.edits.add_pen(line) {
+                return Err("Line admission failed".into());
+            }
+            self.edits.undo();
+            self.edits.redo();
+            if self.edits.pens.len() != 2
+                || self.edits.pens[1].points.len() != 2
+                || self.edits.pens[1].width != 6
+            {
+                return Err("Line metadata undo failed".into());
+            }
+            self.edits.transform_selected(
+                Selected::Pen(1),
+                Some(ResizeHandle::StrokeEnd),
+                [10.0, 20.0],
+                dimensions,
+            );
+            self.edits.undo();
+            self.edits.redo();
+            if self.edits.pens[1].positions().collect::<Vec<_>>()
+                != vec![[64.5, 64.5], [130.5, 84.5]]
+            {
+                return Err("Line endpoint undo failed".into());
+            }
+            self.selected = Some(Selected::Pen(1));
             self.tool = Tool::Select;
             cx.notify();
         }
@@ -2002,6 +2102,7 @@ impl Render for RedactionEditor {
                 | Tool::Highlight
                 | Tool::Spotlight
                 | Tool::Pen
+                | Tool::Line
         );
         let spotlight_style = self.tool == Tool::Spotlight
             || (self.tool == Tool::Select
@@ -2028,7 +2129,7 @@ impl Render for RedactionEditor {
         };
         let draws_stroke = matches!(
             self.tool,
-            Tool::Pen | Tool::Frame | Tool::Ellipse | Tool::Arrow
+            Tool::Pen | Tool::Line | Tool::Frame | Tool::Ellipse | Tool::Arrow
         );
         let palette_stroke_width = if draws_stroke {
             Some(self.stroke_width)
@@ -2148,6 +2249,19 @@ impl Render for RedactionEditor {
                     pen.width = self.stroke_width;
                     paint_order.push(Selected::Pen(pen_preview.len()));
                     pen_preview.push(pen);
+                }
+            } else if self.tool == Tool::Line {
+                if let Some(line) = line_from_drag(
+                    start,
+                    self.end,
+                    size,
+                    [dimensions.0, dimensions.1],
+                    self.frame_color,
+                    self.stroke_width,
+                    window.modifiers().shift,
+                ) {
+                    paint_order.push(Selected::Pen(pen_preview.len()));
+                    pen_preview.push(line);
                 }
             } else if self.tool == Tool::Arrow {
                 if let Some(mut arrow) = ArrowAnnotation::from_drag_constrained(
@@ -2329,6 +2443,7 @@ impl Render for RedactionEditor {
                             Tool::Crop => "Drag to crop; hold Shift for a square",
                             Tool::Frame => "Drag a frame; hold Shift for a square",
                             Tool::Arrow => "Drag tail to tip; hold Shift to snap to 45 degrees",
+                            Tool::Line => if self.pen_limit_hit {"Line limit reached. Remove marks to continue."}else{"Drag a straight line; hold Shift to snap to 45 degrees"},
                             Tool::Ellipse => "Drag an ellipse; hold Shift for a circle",
                             Tool::Redact => "Drag to redact; hold Shift for a square",
                         },
@@ -2345,6 +2460,7 @@ impl Render for RedactionEditor {
                             .flex_wrap()
                             .gap_2()
                             .child(capture_button("tool-pen",if self.tool==Tool::Pen {"Pen (D) active"}else{"Pen (D)"},false,cx.listener(|this,_,_,cx|{this.tool=Tool::Pen;this.drag=None;this.pen_trace.clear();this.pen_limit_hit=false;cx.notify();})))
+                            .child(capture_button("tool-line",if self.tool==Tool::Line {"Line (L) active"}else{"Line (L)"},false,cx.listener(|this,_,_,cx|{this.tool=Tool::Line;this.drag=None;this.pen_trace.clear();this.pen_limit_hit=false;cx.notify();})))
                             .child(capture_button("tool-highlight",if self.tool==Tool::Highlight {"Highlight (H) active"}else{"Highlight (H)"},false,cx.listener(|this,_,_,cx|{this.tool=Tool::Highlight;this.drag=None;cx.notify();})))
                             .child(capture_button("tool-spotlight",if self.tool==Tool::Spotlight {"Spotlight (S) active"}else{"Spotlight (S)"},false,cx.listener(|this,_,_,cx|{this.tool=Tool::Spotlight;this.drag=None;cx.notify();})))
                             .child(capture_button("layer-forward","Bring forward",self.tool!=Tool::Select||self.drag.is_some()||self.text_draft.is_some()||self.text_loading||self.selected.and_then(|selected|self.edits.layer_target(selected,true)).is_none(),cx.listener(|this,_,_,cx|this.move_layer(true,cx))))
@@ -2739,6 +2855,7 @@ impl Render for RedactionEditor {
                                 cx.listener(move |this, event: &gpui::MouseDownEvent, window, cx| {
                                     if this.text_draft.is_some() || this.text_loading {return;}
                                     if this.tool==Tool::Pen {this.begin_pen([f32::from(event.position.x)-origin[0],f32::from(event.position.y)-origin[1]],scale,[dimensions.0,dimensions.1],cx);return;}
+                                    if this.tool==Tool::Line {this.pen_limit_hit=false;}
                                     if this.tool==Tool::Number {let position=[((f32::from(event.position.x)-origin[0])/scale).floor().max(0.0) as u32,((f32::from(event.position.y)-origin[1])/scale).floor().max(0.0) as u32];this.begin_number(position,window,cx);return;}
                                     if this.tool==Tool::Text {let position=[((f32::from(event.position.x)-origin[0])/scale).floor().max(0.0) as u32,((f32::from(event.position.y)-origin[1])/scale).floor().max(0.0) as u32];this.begin_text(position,None,window,cx);return;}
                                     if this.tool == Tool::Pixelate && this.pixelation.is_none() { return; }
@@ -2798,7 +2915,9 @@ impl Render for RedactionEditor {
                                             f32::from(event.position.x) - origin[0],
                                             f32::from(event.position.y) - origin[1],
                                         ];
-                                        if this.tool == Tool::Arrow {
+                                        if this.tool == Tool::Line {
+                                            if let Some(line)=line_from_drag(start,end,size,[dimensions.0,dimensions.1],this.frame_color,this.stroke_width,event.modifiers.shift) {this.pen_limit_hit=!this.edits.add_pen(line);}
+                                        } else if this.tool == Tool::Arrow {
                                             if let Some(mut arrow) = ArrowAnnotation::from_drag_constrained(
                                                 start,
                                                 end,
@@ -2978,6 +3097,281 @@ impl Render for RedactionEditor {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    #[ignore = "short optimized endpoint metadata comparison; no windows, images or clipboard"]
+    fn line_endpoint_preview_cost() {
+        for line in [false, true] {
+            let mut edits = RectEdits::default();
+            let arrow = ArrowAnnotation::from_drag(
+                [10.0, 20.0],
+                [70.0, 20.0],
+                [100.0, 100.0],
+                [100, 100],
+                0,
+            )
+            .unwrap();
+            edits.add_arrow(arrow);
+            edits.add_pen(
+                app_core::PenAnnotation::from_trace(&[arrow.start, arrow.end], 0).unwrap(),
+            );
+            let selected = if line {
+                Selected::Pen(0)
+            } else {
+                Selected::Arrow(0)
+            };
+            let handle = if line {
+                ResizeHandle::StrokeEnd
+            } else {
+                ResizeHandle::ArrowEnd
+            };
+            let mut samples = Vec::new();
+            for _ in 0..100 {
+                let started = std::time::Instant::now();
+                let mut preview = edits.current.clone();
+                assert!(preview.resize(selected, handle, [10.0, 20.0], [100, 100]));
+                std::hint::black_box(preview.handles(selected));
+                samples.push(started.elapsed());
+            }
+            samples.sort_unstable();
+            eprintln!(
+                "Endpoint line={line}: metadata preview/handles p95={:?}",
+                samples[94]
+            );
+        }
+    }
+
+    #[test]
+    fn line_endpoints_edit_independently_with_preview_and_one_undo() {
+        let mut edits = RectEdits::default();
+        assert!(
+            edits.add_pen(
+                line_from_drag(
+                    [10.0, 20.0],
+                    [70.0, 20.0],
+                    [100.0, 100.0],
+                    [100, 100],
+                    0xff0000,
+                    6,
+                    false
+                )
+                .unwrap()
+            )
+        );
+        let selected = Selected::Pen(0);
+        let asset = edits.pens[0].points.clone();
+        let order = edits.order.clone();
+        assert_eq!(
+            edits.handles(selected),
+            vec![
+                (ResizeHandle::StrokeStart, [10.5, 20.5]),
+                (ResizeHandle::StrokeEnd, [70.5, 20.5])
+            ]
+        );
+        assert_eq!(
+            edits.handle_at(selected, [70.5, 20.5], 1.0),
+            Some(ResizeHandle::StrokeEnd)
+        );
+        let mut preview = edits.current.clone();
+        assert!(preview.resize(selected, ResizeHandle::StrokeEnd, [10.0, 20.0], [100, 100]));
+        assert_eq!(
+            preview.pens[0].positions().collect::<Vec<_>>(),
+            vec![[10.5, 20.5], [80.5, 40.5]]
+        );
+        assert!(Arc::ptr_eq(&asset, &edits.pens[0].points));
+        let previous = edits.past.len();
+        edits.transform_selected(
+            selected,
+            Some(ResizeHandle::StrokeEnd),
+            [10.0, 20.0],
+            [100, 100],
+        );
+        assert_eq!(edits.past.len(), previous + 1);
+        assert_eq!(edits.order, order);
+        assert_eq!((edits.pens[0].color, edits.pens[0].width), (0xff0000, 6));
+        assert_eq!(
+            edits.pens[0].positions().collect::<Vec<_>>(),
+            preview.pens[0].positions().collect::<Vec<_>>()
+        );
+        edits.undo();
+        assert!(Arc::ptr_eq(&asset, &edits.pens[0].points));
+        edits.redo();
+        let committed = edits.pens[0].points.clone();
+        let before = edits.past.len();
+        edits.transform_selected(
+            selected,
+            Some(ResizeHandle::StrokeEnd),
+            [-70.0, -20.0],
+            [100, 100],
+        );
+        assert_eq!(edits.past.len(), before);
+        assert!(Arc::ptr_eq(&committed, &edits.pens[0].points));
+        edits.transform_selected(
+            selected,
+            Some(ResizeHandle::StrokeStart),
+            [-f32::MAX, f32::MAX],
+            [100, 100],
+        );
+        assert_eq!(
+            edits.pens[0].positions().collect::<Vec<_>>(),
+            vec![[0.5, 99.5], [80.5, 40.5]]
+        );
+        assert!(!edits.current.resize(
+            selected,
+            ResizeHandle::StrokeEnd,
+            [f32::NAN, 0.0],
+            [100, 100]
+        ));
+        assert!(
+            !edits
+                .current
+                .resize(selected, ResizeHandle::StrokeEnd, [1.0, 0.0], [0, 100])
+        );
+        let mut freehand = RectEdits::default();
+        freehand.add_pen(
+            app_core::PenAnnotation::from_trace(&[[10, 10], [20, 30], [40, 20]], 0).unwrap(),
+        );
+        assert_eq!(freehand.handles(Selected::Pen(0)).len(), 4);
+    }
+
+    #[test]
+    #[ignore = "short optimized line/pen geometry comparison; no images, windows or clipboard"]
+    fn line_preview_geometry_cost() {
+        for line_tool in [false, true] {
+            let mut samples = Vec::new();
+            for _ in 0..100 {
+                let started = std::time::Instant::now();
+                let pen = if line_tool {
+                    line_from_drag(
+                        [80.0, 80.0],
+                        [400.0, 200.0],
+                        [3840.0, 2160.0],
+                        [3840, 2160],
+                        0xff0000,
+                        3,
+                        false,
+                    )
+                    .unwrap()
+                } else {
+                    app_core::PenAnnotation::from_trace(&[[80, 80], [400, 200]], 0xff0000).unwrap()
+                };
+                std::hint::black_box(pen_path(&pen, gpui::point(px(0.0), px(0.0)), 1.0).unwrap());
+                samples.push(started.elapsed());
+            }
+            samples.sort_unstable();
+            eprintln!(
+                "Line tool={line_tool}: geometry/path p95={:?}; two shared source points, no image allocation",
+                samples[94]
+            );
+        }
+    }
+
+    #[test]
+    fn straight_lines_snap_export_and_share_selection_undo() {
+        assert_eq!(Tool::shortcut("l"), Some(Tool::Line));
+        let line = line_from_drag(
+            [10.0, 20.0],
+            [70.0, 23.0],
+            [100.0, 100.0],
+            [100, 100],
+            0xff0000,
+            3,
+            true,
+        )
+        .unwrap();
+        assert_eq!(
+            line.positions().collect::<Vec<_>>(),
+            vec![[10.5, 20.5], [70.5, 20.5]]
+        );
+        for (start, end) in [
+            ([80.0, 90.0], [1.0, 4.0]),
+            ([-20.0, 40.0], [150.0, 44.0]),
+            ([22.0, 20.0], [25.0, 80.0]),
+        ] {
+            let snapped =
+                line_from_drag(start, end, [100.0, 100.0], [100, 100], 0, 3, true).unwrap();
+            let positions = snapped.positions().collect::<Vec<_>>();
+            let dx = (positions[0][0] - positions[1][0]).abs();
+            let dy = (positions[0][1] - positions[1][1]).abs();
+            assert!(dx == 0.0 || dy == 0.0 || dx == dy);
+            assert!(
+                positions
+                    .iter()
+                    .flatten()
+                    .all(|point| *point >= 0.0 && *point < 100.0)
+            );
+        }
+        assert!(
+            line_from_drag(
+                [1.0, 1.0],
+                [1.0, 1.0],
+                [100.0, 100.0],
+                [100, 100],
+                0,
+                3,
+                false
+            )
+            .is_none()
+        );
+        let source = CapturedImage {
+            display_id: "test".into(),
+            window_id: None,
+            width: 100,
+            height: 100,
+            png_path: std::path::PathBuf::from("unused.png"),
+            pixels: Arc::new(image::RgbaImage::from_pixel(
+                100,
+                100,
+                image::Rgba([255, 255, 255, 255]),
+            )),
+            elapsed_ms: 0,
+            source_format: app_core::PixelFormat::Rgba8UnormSrgb,
+        };
+        let annotations = [app_core::DrawAnnotation::Pen(line.clone())];
+        let output =
+            app_core::render_ordered_snapshot(&source, &[], None, &annotations, &[], None, &[])
+                .unwrap();
+        assert_eq!(output.pixels.get_pixel(40, 20).0, [255, 0, 0, 255]);
+        assert_eq!(output.pixels.get_pixel(68, 17).0, [255, 255, 255, 255]);
+        let sanitized = app_core::render_ordered_snapshot(
+            &source,
+            &[PixelRegion {
+                x: 35,
+                y: 15,
+                width: 10,
+                height: 10,
+            }],
+            None,
+            &annotations,
+            &[],
+            None,
+            &[],
+        )
+        .unwrap();
+        assert_eq!(sanitized.pixels.get_pixel(40, 20).0, [0, 0, 0, 255]);
+        assert_eq!(source.pixels.get_pixel(40, 20).0, [255, 255, 255, 255]);
+        let mut edits = RectEdits::default();
+        let points = line.points.clone();
+        assert!(edits.add_pen(line));
+        let selected = Selected::Pen(0);
+        assert_eq!(edits.pick([40.0, 20.0], 0.5), Some(selected));
+        edits.set_color(selected, 0);
+        edits.undo();
+        assert_eq!(edits.color(selected), Some(0xff0000));
+        edits.set_stroke_width(selected, 12);
+        edits.undo();
+        assert_eq!(edits.stroke_width(selected), Some(3));
+        let copy = edits.duplicate(selected, [100, 100]).unwrap();
+        assert_eq!(edits.pen_points(), 4);
+        assert!(Arc::ptr_eq(&points, &edits.pens[1].points));
+        edits.delete_selected(copy);
+        edits.undo();
+        assert_eq!(edits.pens.len(), 2);
+        for _ in 2..100 {
+            let line = edits.pens[0].clone();
+            assert!(edits.add_pen(line));
+        }
+        assert!(!edits.add_pen(edits.pens[0].clone()));
+    }
     #[test]
     fn text_styles_follow_assets_through_undo_duplication_and_transforms() {
         let area = PixelRegion {
@@ -4034,6 +4428,7 @@ mod tests {
             ("c", Tool::Crop),
             ("r", Tool::Frame),
             ("a", Tool::Arrow),
+            ("l", Tool::Line),
             ("e", Tool::Ellipse),
         ] {
             assert_eq!(Tool::shortcut(key), Some(tool));
