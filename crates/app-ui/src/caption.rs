@@ -841,7 +841,7 @@ impl Render for CaptionInput {
             .h(px(self.line_count() as f32 * LINE_HEIGHT + 8.0))
             .w_full()
             .overflow_hidden()
-            .bg(rgb(0x252830))
+            .bg(rgb(crate::theme::CONTROL))
             .track_focus(&self.focus)
             .key_context("CaptionInput")
             .on_key_down(cx.listener(Self::key))
@@ -895,7 +895,7 @@ impl Render for CaptionInput {
                                 let run = TextRun {
                                     len: display.len(),
                                     font: Font::default(),
-                                    color: rgb(0xf1f5f9).into(),
+                                    color: rgb(crate::theme::TEXT).into(),
                                     background_color: None,
                                     underline: None,
                                     strikethrough: None,
@@ -950,7 +950,7 @@ impl Render for CaptionInput {
                                             point(start.min(end), top),
                                             point(start.max(end), top + px(LINE_HEIGHT)),
                                         ),
-                                        rgba(0x22d3ee55),
+                                        rgba(crate::theme::SELECTION_FILL),
                                     ));
                                 }
                                 line.paint(
@@ -970,7 +970,7 @@ impl Render for CaptionInput {
                                             point(x_for(cursor), top),
                                             size(px(1.0), px(LINE_HEIGHT)),
                                         ),
-                                        rgb(0x22d3ee),
+                                        rgb(crate::theme::ACCENT),
                                     ));
                                 }
                                 if let Some(marked) = &marked {
@@ -982,7 +982,7 @@ impl Render for CaptionInput {
                                                 point(x.min(end), top + px(LINE_HEIGHT - 2.0)),
                                                 size((end - x).abs(), px(1.0)),
                                             ),
-                                            rgb(0x22d3ee),
+                                            rgb(crate::theme::ACCENT),
                                         ));
                                     }
                                 }

@@ -1063,6 +1063,197 @@ enum Tool {
     Arrow,
     Ellipse,
 }
+
+// Each group shares a purpose; keep the order identical in both editors.
+const TOOLBAR_TOOLS: [(Tool, &str, &str, bool); 14] = [
+    (Tool::Select, "tool-select", "Select (V)", false),
+    (Tool::Crop, "tool-crop", "Crop (C)", false),
+    (Tool::Frame, "tool-frame", "Rectangle (R)", true),
+    (Tool::Ellipse, "tool-ellipse", "Ellipse (E)", false),
+    (Tool::Line, "tool-line", "Line (L)", false),
+    (Tool::Arrow, "tool-arrow", "Arrow (A)", false),
+    (Tool::Pen, "tool-pen", "Pen (D)", false),
+    (Tool::Text, "tool-text", "Text (T)", true),
+    (Tool::Number, "tool-number", "Number (N)", false),
+    (Tool::Highlight, "tool-highlight", "Highlight (H)", false),
+    (Tool::Spotlight, "tool-spotlight", "Spotlight (S)", false),
+    (Tool::Redact, "tool-redact", "Redact (X)", true),
+    (Tool::Pixelate, "tool-pixelate", "Pixelate (P)", false),
+    (Tool::Blur, "tool-blur", "Blur (B)", false),
+];
+
+struct ToolTooltip(&'static str);
+impl Render for ToolTooltip {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .px_3()
+            .py_2()
+            .rounded_md()
+            .bg(rgb(crate::theme::HOVER))
+            .text_sm()
+            .text_color(rgb(crate::theme::TEXT))
+            .child(self.0)
+    }
+}
+
+fn tool_icon(tool: Tool) -> impl IntoElement {
+    gpui::canvas(
+        |_, _, _| (),
+        move |bounds, _, window, _| {
+            let strokes: &[&[[f32; 2]]] = match tool {
+                Tool::Select => &[&[
+                    [4., 3.],
+                    [4., 18.],
+                    [8., 14.],
+                    [12., 21.],
+                    [15., 19.],
+                    [11., 13.],
+                    [18., 13.],
+                    [4., 3.],
+                ]],
+                Tool::Crop => &[
+                    &[[6., 2.], [6., 18.], [22., 18.]],
+                    &[[2., 6.], [18., 6.], [18., 22.]],
+                ],
+                Tool::Frame => &[&[[4., 5.], [20., 5.], [20., 19.], [4., 19.], [4., 5.]]],
+                Tool::Ellipse => &[&[
+                    [12., 3.],
+                    [18., 5.],
+                    [21., 12.],
+                    [18., 19.],
+                    [12., 21.],
+                    [6., 19.],
+                    [3., 12.],
+                    [6., 5.],
+                    [12., 3.],
+                ]],
+                Tool::Line => &[&[[4., 20.], [20., 4.]]],
+                Tool::Arrow => &[&[[4., 20.], [20., 4.], [10., 4.]], &[[20., 4.], [20., 14.]]],
+                Tool::Pen => &[
+                    &[
+                        [4., 20.],
+                        [6., 14.],
+                        [17., 3.],
+                        [21., 7.],
+                        [10., 18.],
+                        [4., 20.],
+                    ],
+                    &[[14., 6.], [18., 10.]],
+                ],
+                Tool::Text => &[
+                    &[[3., 5.], [21., 5.]],
+                    &[[12., 5.], [12., 21.]],
+                    &[[8., 21.], [16., 21.]],
+                ],
+                Tool::Number => &[&[[7., 8.], [12., 4.], [12., 20.]], &[[7., 20.], [17., 20.]]],
+                Tool::Highlight => &[
+                    &[[5., 14.], [13., 4.], [20., 10.], [12., 19.], [5., 14.]],
+                    &[[4., 21.], [18., 21.]],
+                ],
+                Tool::Spotlight => &[
+                    &[[12., 6.], [18., 12.], [12., 18.], [6., 12.], [12., 6.]],
+                    &[[12., 1.], [12., 3.]],
+                    &[[12., 21.], [12., 23.]],
+                    &[[1., 12.], [3., 12.]],
+                    &[[21., 12.], [23., 12.]],
+                ],
+                Tool::Redact => &[&[[5., 9.], [19., 9.]], &[[5., 14.], [19., 14.]]],
+                Tool::Pixelate => &[
+                    &[[3., 3.], [21., 3.], [21., 21.], [3., 21.], [3., 3.]],
+                    &[[9., 3.], [9., 21.]],
+                    &[[15., 3.], [15., 21.]],
+                    &[[3., 9.], [21., 9.]],
+                    &[[3., 15.], [21., 15.]],
+                ],
+                Tool::Blur => &[
+                    &[
+                        [12., 2.],
+                        [5., 12.],
+                        [4., 16.],
+                        [7., 21.],
+                        [17., 21.],
+                        [20., 16.],
+                        [19., 12.],
+                        [12., 2.],
+                    ],
+                    &[[8., 15.], [8., 17.], [11., 19.]],
+                ],
+            };
+            let mut path =
+                gpui::PathBuilder::stroke(px(if tool == Tool::Redact { 4.0 } else { 1.6 }));
+            let map = |p: [f32; 2]| {
+                bounds.origin
+                    + gpui::point(
+                        bounds.size.width * (p[0] / 24.),
+                        bounds.size.height * (p[1] / 24.),
+                    )
+            };
+            for stroke in strokes {
+                path.move_to(map(stroke[0]));
+                for point in &stroke[1..] {
+                    path.line_to(map(*point));
+                }
+            }
+            if let Ok(path) = path.build() {
+                window.paint_path(path, rgb(crate::theme::TEXT));
+            }
+        },
+    )
+    .w(px(20.))
+    .h(px(20.))
+}
+
+fn color_swatch(
+    id: &'static str,
+    label: &'static str,
+    color: u32,
+    selected: bool,
+    disabled: bool,
+    on_click: impl Fn(&gpui::ClickEvent, &mut Window, &mut App) + 'static,
+) -> impl IntoElement {
+    div()
+        .id(id)
+        .role(gpui::Role::Button)
+        .aria_label(label)
+        .flex()
+        .items_center()
+        .justify_center()
+        .w(px(32.))
+        .h(px(32.))
+        .rounded_md()
+        .border_2()
+        .border_color(rgb(if selected {
+            crate::theme::ACCENT
+        } else {
+            crate::theme::BORDER
+        }))
+        .bg(rgb(crate::theme::CONTROL))
+        .when(!disabled, |button| {
+            button
+                .focusable()
+                .tab_index(0)
+                .cursor_pointer()
+                .focus_visible(|style| style.border_color(rgb(0xffffff)))
+                .hover(|style| style.bg(rgb(crate::theme::HOVER)))
+        })
+        .tooltip(move |_, cx| cx.new(|_| ToolTooltip(label)).into())
+        .on_click(move |event, window, cx| {
+            if !disabled {
+                on_click(event, window, cx);
+            }
+        })
+        .child(
+            div()
+                .w(px(18.))
+                .h(px(18.))
+                .rounded_sm()
+                .border_1()
+                .border_color(rgb(crate::theme::MUTED))
+                .bg(rgb(color))
+                .when(disabled, |swatch| swatch.opacity(0.4)),
+        )
+}
+
 impl Tool {
     fn shortcut(key: &str) -> Option<Self> {
         match key {
@@ -1102,6 +1293,7 @@ pub(super) struct RedactionEditor {
     owner: gpui::WeakEntity<SpikeShell>,
     direct_capture: bool,
     toolbar_bottom: bool,
+    toolbar_height: std::rc::Rc<std::cell::Cell<f32>>,
     edits: RectEdits,
     drag: Option<[f32; 2]>,
     end: [f32; 2],
@@ -1156,6 +1348,48 @@ impl Drop for RedactionEditor {
 }
 
 impl RedactionEditor {
+    #[cfg(all(test, target_os = "windows"))]
+    pub(super) fn prepare_toolbar_probe(&mut self, cx: &mut Context<Self>) {
+        if self.edits.frames.is_empty() {
+            self.edits.add_frame(FrameAnnotation {
+                area: PixelRegion {
+                    x: 270,
+                    y: 135,
+                    width: 920,
+                    height: 120,
+                },
+                color: 0xef4444,
+                width: 3,
+                filled: false,
+            });
+            self.edits.add_arrow(
+                ArrowAnnotation::from_drag(
+                    [480., 370.],
+                    [300., 220.],
+                    [1280., 720.],
+                    [1280, 720],
+                    0xef4444,
+                )
+                .unwrap(),
+            );
+        }
+        self.select_tool(Tool::Frame, cx);
+    }
+
+    fn select_tool(&mut self, tool: Tool, cx: &mut Context<Self>) {
+        self.tool = tool;
+        self.pen_trace.clear();
+        self.pen_limit_hit = false;
+        self.drag = None;
+        self.resize_handle = None;
+        if tool == Tool::Pixelate {
+            self.prepare_pixelation(cx);
+        }
+        if tool == Tool::Blur {
+            self.prepare_blur(cx);
+        }
+        cx.notify();
+    }
     fn cancel_pen(&mut self, cx: &mut Context<Self>) {
         self.drag = None;
         self.pen_trace.clear();
@@ -2033,6 +2267,7 @@ impl RedactionEditor {
             owner,
             direct_capture,
             toolbar_bottom: false,
+            toolbar_height: std::rc::Rc::new(std::cell::Cell::new(0.0)),
             edits: RectEdits::default(),
             drag: None,
             end: [0.0; 2],
@@ -2157,26 +2392,14 @@ impl Render for RedactionEditor {
         } else {
             None
         };
-        let toolbar_height = if show_palette { 220.0 } else { 172.0 }
-            + if layout[0] < 900.0 {
-                88.0
-            } else if layout[0] < 1400.0 {
-                44.0
-            } else {
-                0.0
-            }
-            + if self.tool == Tool::Number {
-                88.0
-            } else if self.tool == Tool::Text {
-                44.0
-            } else {
-                0.0
-            }
-            + self.text_draft.as_ref().map_or(0.0, |draft| {
-                80.0 + 24.0 * (draft.input.read(cx).line_count() - 1) as f32
-            })
-            + if self.text_error.is_some() { 24.0 } else { 0.0 }
-            + if duplicate_error.is_some() { 24.0 } else { 0.0 };
+        let toolbar_max_height = (layout[1] - 24.0).max(1.0) * 0.6;
+        let toolbar_height = if self.toolbar_height.get() > 0.0 {
+            self.toolbar_height.get()
+        } else {
+            320.0_f32.min(toolbar_max_height) + 24.0
+        };
+        let measured_toolbar = self.toolbar_height.clone();
+        let toolbar_owner = cx.entity().downgrade();
         let inset = if self.direct_capture { 0.0 } else { 16.0 };
         let workspace_top = if self.direct_capture {
             0.0
@@ -2335,8 +2558,8 @@ impl Render for RedactionEditor {
         div()
             .relative()
             .size_full()
-            .bg(rgb(0x111318))
-            .text_color(rgb(0xf1f5f9))
+            .bg(rgb(crate::theme::BACKGROUND))
+            .text_color(rgb(crate::theme::TEXT))
             .track_focus(&self.focus)
             .key_context("RedactionEditor")
             .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, _, cx| {
@@ -2346,13 +2569,8 @@ impl Render for RedactionEditor {
                 let key = event.keystroke.key.as_str();
                 if !modifiers.shift {
                     if let Some(tool) = Tool::shortcut(key) {
-                        this.tool = tool;
-                        this.pen_trace.clear();this.pen_limit_hit=false;
-                        if tool == Tool::Pixelate { this.prepare_pixelation(cx); }
-                        if tool == Tool::Blur { this.prepare_blur(cx); }
-                        this.drag = None;
-                        this.resize_handle = None;
-                        cx.stop_propagation(); cx.notify(); return;
+                        this.select_tool(tool, cx);
+                        cx.stop_propagation(); return;
                     }
                 }
                 if this.tool == Tool::Select && this.drag.is_none() {
@@ -2409,13 +2627,25 @@ impl Render for RedactionEditor {
             .on_mouse_up_out(gpui::MouseButton::Left,cx.listener(move|this,event:&gpui::MouseUpEvent,_,cx|this.finish_pen([f32::from(event.position.x)-origin[0],f32::from(event.position.y)-origin[1]],scale,[dimensions.0,dimensions.1],cx)))
             .child(gpui::deferred(
                 div()
+                    .on_children_prepainted(move |children, _, cx| {
+                        let top = children.iter().map(|b| f32::from(b.top())).fold(f32::INFINITY, f32::min);
+                        let bottom = children.iter().map(|b| f32::from(b.bottom())).fold(0.0, f32::max);
+                        let height = (bottom - top + 24.0).min(toolbar_max_height) + 24.0;
+                        if height.is_finite() && (measured_toolbar.get() - height).abs() > 0.5 {
+                            measured_toolbar.set(height);
+                            let owner = toolbar_owner.clone();
+                            cx.defer(move |cx| { owner.update(cx, |_, cx| cx.notify()).ok(); });
+                        }
+                    })
                     .id("editor-toolbar")
                     .absolute()
-                    .when(!self.toolbar_bottom, |view| view.top_0())
-                    .when(self.toolbar_bottom, |view| view.bottom_0())
-                    .bg(rgb(0x111318))
+                    .when(!self.toolbar_bottom, |view| view.top(px(12.)))
+                    .when(self.toolbar_bottom, |view| view.bottom(px(12.)))
+                    .bg(rgb(crate::theme::SURFACE))
+                    .border_1().border_color(rgb(crate::theme::BORDER)).rounded_lg()
+                    .mx_auto().max_w(px(1040.))
                     .occlude()
-                    .max_h_full()
+                    .max_h(px(toolbar_max_height))
                     .overflow_y_scroll()
                     .left_0()
                     .right_0()
@@ -2423,12 +2653,53 @@ impl Render for RedactionEditor {
                     .flex()
                     .flex_col()
                     .gap_2()
-                    .child(if self.direct_capture {
-                        "New capture · No original PNG saved · Choose Copy, Save, or both"
-                    } else {
-                        "Edit a copy · Existing original files and history entries are kept"
-                    })
-                    .child(div().text_sm().child(format!(
+                    .child(
+                        div().flex().items_center().justify_end().flex_wrap().gap_2()
+                            .child(div().flex_1().text_sm().child(if self.direct_capture { "Capture & annotate" } else { "Edit a copy · Original kept" })).children(
+                                [
+                                    ("export-copy-only", "Copy", OutputMode::CopyOnly),
+                                    ("export-save-only", "Save", OutputMode::SaveOnly),
+                                    ("export-save-copy", "Save & copy", OutputMode::SaveAndCopy),
+                                ]
+                                .into_iter()
+                                .map(|(id, label, mode)| {
+                                    crate::ui_button(
+                                        id,
+                                        label,
+                                        (self.edits.regions.is_empty()
+                                            && self.edits.frames.is_empty() && self.edits.highlights.is_empty() && self.edits.pens.is_empty()
+                                            && self.edits.arrows.is_empty()
+                                            && self.edits.ellipses.is_empty() && self.edits.pixelations.is_empty() && self.edits.blurs.is_empty() && self.edits.texts.is_empty()
+                                            && self.edits.crop.is_none()
+                                            && !self.direct_capture)
+                                            || self.drag.is_some() || self.text_draft.is_some() || self.text_loading,
+                                        matches!(mode, OutputMode::CopyOnly), cx.listener(move |this, _, _, cx| this.export(mode, cx)),
+                                    )
+                                }),
+                            ).child(capture_button(
+                                "redaction-cancel",
+                                "Cancel",
+                                false,
+                                cx.listener(|this, _, _, cx| this.cancel(cx)),
+                            ))                    )
+                    .child(
+                        div().flex().items_center().flex_wrap().gap_1()
+                            .children(TOOLBAR_TOOLS.into_iter().map(|(tool, id, label, separator)| {
+                                div().when(separator, |group| group.ml_2().pl_2().border_l_1().border_color(rgb(crate::theme::BORDER)))
+                                    .child(div().id(id).role(gpui::Role::Button).aria_label(label)
+                                        .focusable().tab_index(0).flex().items_center().justify_center()
+                                        .w(px(36.)).h(px(36.)).rounded_md().border_1()
+                                        .border_color(rgb(if self.tool == tool {crate::theme::ACCENT} else {crate::theme::BORDER}))
+                                        .bg(rgb(if self.tool == tool {crate::theme::PRIMARY} else {crate::theme::CONTROL}))
+                                        .cursor_pointer().hover(|style| style.bg(rgb(crate::theme::HOVER)))
+                                        .active(|style| style.bg(rgb(crate::theme::PRIMARY_PRESSED)))
+                                        .focus_visible(|style| style.border_color(rgb(crate::theme::FOCUS)))
+                                        .tooltip(move |_, cx| cx.new(|_| ToolTooltip(label)).into())
+                                        .on_click(cx.listener(move |this, _, _, cx| this.select_tool(tool, cx)))
+                                        .child(tool_icon(tool)))
+                            })),
+                    )
+                    .child(div().text_sm().text_color(rgb(crate::theme::MUTED)).child(format!(
                         "{} · {} / 100 annotations · Export: {} × {}",
                         match self.tool {
                             Tool::Spotlight=>"Drag a focus area; hold Shift for a square. Use Redact for sensitive content.",
@@ -2454,125 +2725,24 @@ impl Render for RedactionEditor {
                         crop_preview.map_or(dimensions.0, |area| area.width),
                         crop_preview.map_or(dimensions.1, |area| area.height)
                     )))
-                    .child(
-                        div()
-                            .flex()
-                            .flex_wrap()
-                            .gap_2()
-                            .child(capture_button("tool-pen",if self.tool==Tool::Pen {"Pen (D) active"}else{"Pen (D)"},false,cx.listener(|this,_,_,cx|{this.tool=Tool::Pen;this.drag=None;this.pen_trace.clear();this.pen_limit_hit=false;cx.notify();})))
-                            .child(capture_button("tool-line",if self.tool==Tool::Line {"Line (L) active"}else{"Line (L)"},false,cx.listener(|this,_,_,cx|{this.tool=Tool::Line;this.drag=None;this.pen_trace.clear();this.pen_limit_hit=false;cx.notify();})))
-                            .child(capture_button("tool-highlight",if self.tool==Tool::Highlight {"Highlight (H) active"}else{"Highlight (H)"},false,cx.listener(|this,_,_,cx|{this.tool=Tool::Highlight;this.drag=None;cx.notify();})))
-                            .child(capture_button("tool-spotlight",if self.tool==Tool::Spotlight {"Spotlight (S) active"}else{"Spotlight (S)"},false,cx.listener(|this,_,_,cx|{this.tool=Tool::Spotlight;this.drag=None;cx.notify();})))
-                            .child(capture_button("layer-forward","Bring forward",self.tool!=Tool::Select||self.drag.is_some()||self.text_draft.is_some()||self.text_loading||self.selected.and_then(|selected|self.edits.layer_target(selected,true)).is_none(),cx.listener(|this,_,_,cx|this.move_layer(true,cx))))
-                            .child(capture_button("layer-backward","Send backward",self.tool!=Tool::Select||self.drag.is_some()||self.text_draft.is_some()||self.text_loading||self.selected.and_then(|selected|self.edits.layer_target(selected,false)).is_none(),cx.listener(|this,_,_,cx|this.move_layer(false,cx))))
-                            .child(capture_button("tool-text",if self.tool==Tool::Text {"Text (T) active"}else{"Text (T)"},false,cx.listener(|this,_,_,cx|{this.tool=Tool::Text;this.drag=None;cx.notify();})))
-                            .child(capture_button("tool-number",if self.tool==Tool::Number {"Number (N) active"}else{"Number (N)"},false,cx.listener(|this,_,_,cx|{this.tool=Tool::Number;this.drag=None;cx.notify();})))
-                            .child(capture_button("edit-text","Edit text",!matches!(self.selected,Some(Selected::Text(_)))||self.text_draft.is_some()||self.text_loading,cx.listener(|this,_,window,cx|{if let Some(Selected::Text(index))=this.selected {if let Some(text)=this.edits.texts.get(index){this.begin_text([text.area.x,text.area.y],Some(index),window,cx);}}})))
-                            .child(capture_button(
-                                "tool-blur", if self.tool == Tool::Blur { "Blur (B) active" } else { "Blur (B)" },false,
-                                cx.listener(|this,_,_,cx| { this.tool=Tool::Blur; this.drag=None; this.prepare_blur(cx); cx.notify(); }),
-                            ))
-                            .child(capture_button(
-                                "tool-pixelate", if self.tool == Tool::Pixelate { "Pixelate (P) active" } else { "Pixelate (P)" }, false,
-                                cx.listener(|this,_,_,cx| { this.tool=Tool::Pixelate; this.drag=None; this.prepare_pixelation(cx); cx.notify(); }),
-                            ))
-                            .child(capture_button(
-                                "tool-select",
-                                if self.tool == Tool::Select {
-                                    "Select (V) (active)"
-                                } else {
-                                    "Select (V)"
-                                },
-                                false,
-                                cx.listener(|this, _, _, cx| {
-                                    this.tool = Tool::Select;
-                                    this.drag = None;
-                                    cx.notify();
-                                }),
-                            ))
-                            .child(capture_button(
+                    .when(self.tool == Tool::Select && self.selected.is_some(), |view| view.child(
+                        div().flex().flex_wrap().gap_2().items_center()
+                            .child(div().text_sm().text_color(rgb(crate::theme::MUTED)).child("SELECTION")).child(capture_button(
                                 "delete-annotation",
                                 "Delete",
                                 self.tool != Tool::Select || self.selected.is_none(),
                                 cx.listener(|this, _, _, cx| this.delete_selection(cx)),
                             ))
-                            .child(capture_button(
+.child(capture_button(
                                 "duplicate-annotation",
                                 "Duplicate",
                                 self.tool != Tool::Select || self.selected.is_none() || self.drag.is_some() || self.text_draft.is_some() || self.text_loading || duplicate_error.is_some(),
                                 cx.listener(|this, _, _, cx| this.duplicate_selection(cx)),
                             ))
-                            .child(capture_button(
-                                "tool-redact",
-                                if self.tool == Tool::Redact {
-                                    "Redact (X) ✓"
-                                } else {
-                                    "Redact (X)"
-                                },
-                                false,
-                                cx.listener(|this, _, _, cx| {
-                                    this.tool = Tool::Redact;
-                                    this.drag = None;
-                                    cx.notify();
-                                }),
-                            ))
-                            .child(capture_button(
-                                "tool-frame",
-                                if self.tool == Tool::Frame {
-                                    "Frame (R) ✓"
-                                } else {
-                                    "Frame (R)"
-                                },
-                                false,
-                                cx.listener(|this, _, _, cx| {
-                                    this.tool = Tool::Frame;
-                                    this.drag = None;
-                                    cx.notify();
-                                }),
-                            ))
-                            .child(capture_button(
-                                "tool-arrow",
-                                if self.tool == Tool::Arrow {
-                                    "Arrow (A) ✓"
-                                } else {
-                                    "Arrow (A)"
-                                },
-                                false,
-                                cx.listener(|this, _, _, cx| {
-                                    this.tool = Tool::Arrow;
-                                    this.drag = None;
-                                    cx.notify();
-                                }),
-                            ))
-                            .child(capture_button(
-                                "tool-ellipse",
-                                if self.tool == Tool::Ellipse {
-                                    "Ellipse (E) ✓"
-                                } else {
-                                    "Ellipse (E)"
-                                },
-                                false,
-                                cx.listener(|this, _, _, cx| {
-                                    this.tool = Tool::Ellipse;
-                                    this.drag = None;
-                                    cx.notify();
-                                }),
-                            ))
-                            .child(capture_button(
-                                "tool-crop",
-                                if self.tool == Tool::Crop {
-                                    "Crop (C) ✓"
-                                } else {
-                                    "Crop (C)"
-                                },
-                                false,
-                                cx.listener(|this, _, _, cx| {
-                                    this.tool = Tool::Crop;
-                                    this.drag = None;
-                                    cx.notify();
-                                }),
-                            ))
-                            .child(capture_button(
+.child(capture_button("layer-forward","Bring forward",self.tool!=Tool::Select||self.drag.is_some()||self.text_draft.is_some()||self.text_loading||self.selected.and_then(|selected|self.edits.layer_target(selected,true)).is_none(),cx.listener(|this,_,_,cx|this.move_layer(true,cx))))
+.child(capture_button("layer-backward","Send backward",self.tool!=Tool::Select||self.drag.is_some()||self.text_draft.is_some()||self.text_loading||self.selected.and_then(|selected|self.edits.layer_target(selected,false)).is_none(),cx.listener(|this,_,_,cx|this.move_layer(false,cx))))
+.child(capture_button("edit-text","Edit text",!matches!(self.selected,Some(Selected::Text(_)))||self.text_draft.is_some()||self.text_loading,cx.listener(|this,_,window,cx|{if let Some(Selected::Text(index))=this.selected {if let Some(text)=this.edits.texts.get(index){this.begin_text([text.area.x,text.area.y],Some(index),window,cx);}}})))                    ))
+                    .when(self.tool == Tool::Crop, |view| view.child(div().flex().gap_2().child(capture_button(
                                 "crop-full-image",
                                 "Full image",
                                 self.edits.crop.is_none(),
@@ -2581,7 +2751,13 @@ impl Render for RedactionEditor {
                                     this.drag = None;
                                     cx.notify();
                                 }),
-                            ))
+                            ))                    ))
+
+                    .child(
+                        div()
+                            .flex().flex_wrap()
+                            .gap_2()
+                            .items_center()
                             .child(capture_button(
                                 "redaction-undo",
                                 "Undo",
@@ -2593,7 +2769,7 @@ impl Render for RedactionEditor {
                                     cx.notify();
                                 }),
                             ))
-                            .child(capture_button(
+.child(capture_button(
                                 "redaction-redo",
                                 "Redo",
                                 self.edits.undone.is_empty() || self.text_draft.is_some() || self.text_loading,
@@ -2604,7 +2780,7 @@ impl Render for RedactionEditor {
                                     cx.notify();
                                 }),
                             ))
-                            .child(capture_button(
+.child(capture_button(
                                 "redaction-reset",
                                 "Reset",
                                 self.text_draft.is_some() || self.text_loading || (self.edits.regions.is_empty()
@@ -2623,40 +2799,6 @@ impl Render for RedactionEditor {
                                     cx.notify();
                                 }),
                             ))
-                            .children(
-                                [
-                                    ("export-copy-only", "Copy only", OutputMode::CopyOnly),
-                                    ("export-save-only", "Save only", OutputMode::SaveOnly),
-                                    ("export-save-copy", "Save and copy", OutputMode::SaveAndCopy),
-                                ]
-                                .into_iter()
-                                .map(|(id, label, mode)| {
-                                    capture_button(
-                                        id,
-                                        label,
-                                        (self.edits.regions.is_empty()
-                                            && self.edits.frames.is_empty() && self.edits.highlights.is_empty() && self.edits.pens.is_empty()
-                                            && self.edits.arrows.is_empty()
-                                            && self.edits.ellipses.is_empty() && self.edits.pixelations.is_empty() && self.edits.blurs.is_empty() && self.edits.texts.is_empty()
-                                            && self.edits.crop.is_none()
-                                            && !self.direct_capture)
-                                            || self.drag.is_some() || self.text_draft.is_some() || self.text_loading,
-                                        cx.listener(move |this, _, _, cx| this.export(mode, cx)),
-                                    )
-                                }),
-                            )
-                            .child(capture_button(
-                                "redaction-cancel",
-                                "Cancel",
-                                false,
-                                cx.listener(|this, _, _, cx| this.cancel(cx)),
-                            )),
-                    )
-                    .child(
-                        div()
-                            .flex()
-                            .gap_2()
-                            .items_center()
                             .child(capture_button(
                                 "zoom-out",
                                 "−",
@@ -2701,8 +2843,8 @@ impl Render for RedactionEditor {
                                 false,
                                 cx.listener(move |this, _, _, cx| this.set_zoom(None, scale, cx)),
                             ))
-                            .child(div().text_sm().child(format!(
-                                "{:.0}% · Wheel to pan · Shift+wheel horizontally",
+                            .child(div().text_sm().text_color(rgb(crate::theme::MUTED)).child(format!(
+                                "{:.0}% · Scroll to pan",
                                 scale * dpi * 100.0
                             ))),
                     )
@@ -2740,13 +2882,11 @@ impl Render for RedactionEditor {
                                     .into_iter()
                                     .map(
                                         |(id, label, selected, color)| {
-                                            capture_button(
+                                            color_swatch(
                                                 id,
-                                                if palette_color == Some(color) {
-                                                    selected
-                                                } else {
-                                                    label
-                                                },
+                                                if palette_color == Some(color) { selected } else { label },
+                                                color,
+                                                palette_color == Some(color),
                                                 palette_color.is_none() || self.text_loading,
                                                 cx.listener(move |this, _, _, cx| {
                                                     if spotlight_style { this.spotlight_color = color; } else { this.frame_color = color; }
@@ -2986,7 +3126,7 @@ impl Render for RedactionEditor {
                                       if let Some(render) = render {
                                         for area in areas {
                                             let clip = gpui::Bounds { origin: bounds.origin + gpui::point(px(area.x as f32*scale),px(area.y as f32*scale)), size:gpui::size(px(area.width as f32*scale),px(area.height as f32*scale)) };
-                                            window.paint_quad(gpui::fill(clip,rgb(0x111318)));
+                                            window.paint_quad(gpui::fill(clip,rgb(crate::theme::BACKGROUND)));
                                             window.with_content_mask(Some(gpui::ContentMask { bounds:clip }), |window| {
                                                 window.paint_image(bounds,bounds,Default::default(),render.clone(),0,false).ok();
                                             });
@@ -3077,7 +3217,7 @@ impl Render for RedactionEditor {
                                     .top(px(position[1]*scale-4.0))
                                     .w(px(8.0)).h(px(8.0))
                                     .bg(rgb(0x22d3ee))
-                                    .border_1().border_color(rgb(0x111318))
+                                    .border_1().border_color(rgb(crate::theme::BACKGROUND))
                             }))
                             .children(crop_preview.map(move |area| {
                                 div()

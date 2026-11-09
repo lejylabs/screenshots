@@ -28,3 +28,13 @@ cargo test --release -p app-ui resident_control_render_latency -- --ignored --no
 ```
 
 The probe opens/closes real windows 101 times and writes `target/performance/control-open-latency.json`. Capture/overlay p95, physical presentation, cold launch, mixed DPI and the 500-cycle memory gate remain open.
+
+## Navigation foundation follow-up
+
+2026-11-09. The control window now renders only the selected Captures/Uploads/Settings section, with a fixed navigation header and shared neutral/primary buttons. A separate native regression opens all sections, verifies cancellation/release of hidden history state and closes back to detached graphics without ERROR logs. The initial sandboxed attempt reported denied Windows cursor access; the desktop-enabled run passed.
+
+The same optimized 101-cycle reopen probe observed a first attachment of 56.71 ms to the first callback (59.72 ms to the second), then 41.18 ms p95 to the first and 43.86 ms p95 to the second callback over 100 reopen samples. The earlier second-callback p95 above was 52.86 ms. These separate development runs do not isolate a speedup or establish physical input/presentation acceptance. Current raw samples and test executable hash are preserved in [navigation follow-up samples](control-navigation-latency.json); the original report remains unchanged. No new process-memory/GPU/idle or manual keyboard/screen-reader/DPI acceptance is claimed.
+
+## Sidebar layout follow-up
+
+2026-11-09. The subsequent main-window layout replaces header tabs with a fixed 224-logical-pixel sidebar and separate screenshot/history/source/upload/settings workspaces. Its native navigation regression passes cancellation/cleanup checks and saves only the empty app HWND for visual inspection, without user pixels or clipboard writes. The optimized 101-cycle reopen probe observed 59.31 ms to the first callback on initial attachment; over 100 reopen samples, first-callback p95 was 44.75 ms and second-callback p95 was 48.03 ms (maximum 71.68 ms). The preceding header-navigation run's second-callback p95 was 43.86 ms. These separate runs do not establish the cause of their difference or a performance improvement. [Sidebar raw samples and executable hash](control-sidebar-latency.json) are preserved separately. Physical presentation, manual input/DPI/accessibility and full CPU/memory/idle acceptance remain open.

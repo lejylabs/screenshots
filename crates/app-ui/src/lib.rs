@@ -2,6 +2,7 @@
 
 mod caption;
 mod redaction_editor;
+mod theme;
 use redaction_editor::{OutputMode, RedactionEditor};
 
 use std::{
@@ -73,7 +74,17 @@ enum UiRequest {
     Overlay(OverlayMode),
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ControlPage {
+    Captures,
+    Sources,
+    History,
+    Uploads,
+    Settings,
+}
+
 pub struct SpikeShell {
+    page: ControlPage,
     control: Option<AnyWindowHandle>,
     resident: bool,
     graphics: bool,
@@ -296,6 +307,9 @@ impl SpikeShell {
         self.preview_active = false;
         self.hide_history(cx);
         self.hide_upload_history();
+        if self.page == ControlPage::History {
+            self.page = ControlPage::Captures;
+        }
         self.last_render = None;
         let mut windows: Vec<AnyWindowHandle> = self.overlays.drain(..).map(Into::into).collect();
         windows.extend(self.control.take());
@@ -434,6 +448,7 @@ impl SpikeShell {
             xcap_displays: Vec::new(),
             xcap_windows: Vec::new(),
             refreshing: false,
+            page: ControlPage::Captures,
             diagnostics: false,
             settings_loading: !cfg!(test),
             settings_saving: false,
@@ -686,6 +701,19 @@ impl SpikeShell {
         cx.notify();
     }
 
+    fn show_page(&mut self, page: ControlPage, cx: &mut Context<Self>) {
+        if self.page == page && (page != ControlPage::History || self.history_visible) {
+            return;
+        }
+        self.hide_history(cx);
+        self.hide_upload_history();
+        self.page = page;
+        if page == ControlPage::History {
+            self.history_visible = true;
+            self.refresh_history(None, cx);
+        }
+        cx.notify();
+    }
     fn hide_history(&mut self, cx: &mut Context<Self>) {
         self.clear_history_preview(cx);
         self.history_visible = false;
@@ -3067,12 +3095,19 @@ impl Render for SpikeShell {
             || self.switching_graphics
             || self.history_mutating;
         let unavailable = busy || self.output_directory.is_none();
-        let displays = self.xcap_displays.clone();
+        let displays = if self.page == ControlPage::Sources {
+            self.xcap_displays.clone()
+        } else {
+            Vec::new()
+        };
         let windows: Vec<_> = self
             .xcap_windows
             .iter()
             .filter(|window| {
-                !window.is_minimized && !window.title.is_empty() && window.pid != std::process::id()
+                self.page == ControlPage::Sources
+                    && !window.is_minimized
+                    && !window.title.is_empty()
+                    && window.pid != std::process::id()
             })
             .map(|window| {
                 (
@@ -3092,13 +3127,10 @@ impl Render for SpikeShell {
             .track_focus(&self.focus_handle)
             .key_context("SpikeShell")
             .flex()
-            .flex_col()
+            .flex_row()
             .size_full()
-            .p_6()
-            .gap_4()
-            .overflow_y_scroll()
-            .bg(rgb(0x111318))
-            .text_color(rgb(0xf1f5f9))
+            .bg(rgb(crate::theme::BACKGROUND))
+            .text_color(rgb(crate::theme::TEXT))
             .on_action(cx.listener(|this, _: &OpenProbeOverlays, _, cx| {
                 this.open_overlays(OverlayMode::Probe, cx)
             }))
@@ -3112,19 +3144,16 @@ impl Render for SpikeShell {
                 cx.listener(|this, _: &CaptureCenterRegion, _, cx| this.capture_center_region(cx)),
             )
             .on_action(|_: &Quit, _, cx| cx.defer(close_application))
-            .child(div().text_2xl().child("Screenshots"))
-            .child(
-                div()
-                    .text_sm()
-                    .text_color(rgb(0x94a3b8))
-                    .child("Capture. Copy. Done."),
-            )
-            .child(
+            .child(div().id("control-sidebar").flex_none().w(px(224.)).h_full()
+                .flex().flex_col().bg(rgb(crate::theme::SURFACE)).border_r_1().border_color(rgb(crate::theme::BORDER))
+                .child(div().flex_none().px_4().py_4().text_lg().font_weight(gpui::FontWeight::SEMIBOLD).child("Screenshots"))
+                .child(div().id("sidebar-menu").flex_1().min_h_0().overflow_y_scroll().px_2().flex().flex_col().gap_1()
+                    .child(div().px_2().py_2().text_xs().text_color(rgb(crate::theme::MUTED)).child("CAPTURE"))            .child(
                 div()
                     .flex()
-                    .flex_wrap()
-                    .gap_2()
-                    .child(capture_button(
+                    .flex_col()
+                    .gap_1()
+                    .child(sidebar_item(
                         "select-region",
                         "Select region",
                         unavailable,
@@ -3132,35 +3161,60 @@ impl Render for SpikeShell {
                             this.open_overlays(OverlayMode::Fullscreen, cx)
                         }),
                     ))
-                    .child(capture_button(
+                    .child(sidebar_item(
                         "select-region-to-edit",
                         "Capture and annotate",
                         unavailable,
                         cx.listener(|this, _, _, cx| this.select_region_to_edit(cx)),
                     ))
-                    .child(capture_button(
+                    .child(sidebar_item(
                         "delayed-region",
                         "Region in 3 seconds",
                         unavailable,
                         cx.listener(|this, _, _, cx| this.start_delayed_region(cx)),
                     ))
-                    .child(capture_button(
+                    .child(sidebar_item(
                         "capture-primary",
                         "Primary display",
                         unavailable,
                         cx.listener(|this, _, _, cx| this.capture_primary(cx)),
                     ))
-                    .child(capture_button(
+                    .child(sidebar_item(
                         "capture-all",
                         "All displays",
                         unavailable,
                         cx.listener(|this, _, _, cx| this.capture_all(cx)),
                     )),
             )
+                    .child(div().my_2().border_t_1().border_color(rgb(crate::theme::BORDER)))
+                    .children([
+                        ("nav-captures", "Screenshots", ControlPage::Captures),
+                        ("nav-history", "Capture history", ControlPage::History),
+                        ("nav-sources", "Displays & windows", ControlPage::Sources),
+                        ("nav-uploads", "Uploads", ControlPage::Uploads),
+                        ("nav-settings", "Settings", ControlPage::Settings),
+                    ].into_iter().map(|(id, label, page)| {
+                        sidebar_navigation(id, label, false, self.page == page,
+                            cx.listener(move |this, _, _, cx| this.show_page(page, cx)))
+                    }))
+                    .child(div().my_2().border_t_1().border_color(rgb(crate::theme::BORDER)))
+                    .child(sidebar_item("sidebar-folder", "Screenshots folder", self.output_directory.is_none(),
+                        cx.listener(|this, _, _, cx| { if let Some(path) = &this.output_directory { cx.reveal_path(path); } })))
+                    .child(sidebar_item("sidebar-quit", "Quit", false, |_, _, cx| cx.defer(close_application)))
+                )
+            )            .child(div().id("control-content").flex_1().min_w_0().h_full().overflow_y_scroll().p_4().flex().flex_col().gap_3()
+            .when(self.page == ControlPage::Captures, |view| {
+                view.child(div().text_xl().font_weight(gpui::FontWeight::SEMIBOLD).child("Capture workspace"))
             .child(
                 div()
                     .text_sm()
-                    .text_color(rgb(0x94a3b8))
+                    .text_color(rgb(crate::theme::MUTED))
+                    .child("Capture, annotate, then choose where it goes."),
+            )
+            .child(
+                div()
+                    .text_sm()
+                    .text_color(rgb(crate::theme::MUTED))
                     .child(self.hotkey_status.clone()),
             )
             .child(div().text_sm().child(self.capture_status.clone()))
@@ -3172,19 +3226,32 @@ impl Render for SpikeShell {
                     cx.listener(|this, _, _, cx| this.cancel_capture_delay(cx)),
                 ))
             })
-            .child(
+            .when(self.last_capture.is_none() && self.last_saved.is_none(), |view| view.child(
+                div().flex_1().min_h(px(320.)).flex().flex_col().items_center().justify_center()
+                    .child(div().w_full().max_w(px(520.)).p_6().flex().flex_col().items_center().gap_3()
+                    .rounded_lg().bg(rgb(crate::theme::SURFACE)).border_1().border_color(rgb(crate::theme::BORDER))
+                    .child(div().text_lg().child("Ready when you are"))
+                    .child(div().text_sm().text_color(rgb(crate::theme::MUTED)).child("Select a region and edit it before copying or saving."))
+                    .child(div().mt_3().flex().flex_wrap().gap_2()
+                        .child(ui_button("workspace-annotate", "Capture & annotate", unavailable, true,
+                            cx.listener(|this, _, _, cx| this.select_region_to_edit(cx))))
+                        .child(capture_button("workspace-region", "Quick region", unavailable,
+                            cx.listener(|this, _, _, cx| this.open_overlays(OverlayMode::Fullscreen, cx)))))
+            )))
+            .when(self.last_capture.is_some() || self.last_saved.is_some(), |view| {
+                view            .child(
                 div()
                     .flex()
                     .flex_col()
                     .p_4()
                     .gap_2()
-                    .rounded_lg()
-                    .bg(rgb(0x1d222c))
+                    .border_1().border_color(rgb(crate::theme::BORDER))
+                    .bg(rgb(crate::theme::SURFACE))
                     .child("Last capture")
                     .children(
                         self.last_render
                             .clone()
-                            .map(|render| img(render).h(px(160.0)).max_w_full().rounded_md()),
+                            .map(|render| img(render).h(px(240.0)).max_w_full()),
                     )
                     .child(
                         div()
@@ -3223,6 +3290,8 @@ impl Render for SpikeShell {
                     .child(div().text_sm().child(self.clipboard_status.clone()))
                     .child(div().text_sm().child(self.save_status.clone())),
             )
+            })
+            })
             .when(self.history_export_cancel.is_some(), |view| {
                 view.child(capture_button(
                     "cancel-history-export",
@@ -3233,12 +3302,14 @@ impl Render for SpikeShell {
                     cx.listener(|this, _, _, cx| this.cancel_history_export(cx)),
                 ))
             })
-            .child(
+            .when(self.page == ControlPage::Uploads, |view| {
+                view.child(
                 div()
                     .flex()
                     .flex_col()
                     .gap_2()
-                    .child("Upload saved PNG")
+                    .child(div().text_2xl().child("Uploads"))
+                    .child(div().text_sm().text_color(rgb(crate::theme::MUTED)).child("Share a saved PNG with your configured destination."))
                     .child(div().text_sm().child(self.upload_status.clone()))
                     .children(self.upload_destination.as_ref().and_then(|value|value.credential_target()).map(|target| {
                         div().text_sm().child(format!("Windows credential target: {target}"))
@@ -3327,7 +3398,7 @@ impl Render for SpikeShell {
                             .child(div().id("upload-history-list").max_h(px(320.0)).overflow_y_scroll().flex().flex_col().gap_2()
                                 .children(self.upload_history_entries.clone().into_iter().enumerate().map(|(index,entry)| {
                                     let id=entry.id; let url=entry.url.clone();
-                                    div().id(("upload-history-row",index)).p_2().bg(rgb(0x242b36))
+                                    div().id(("upload-history-row",index)).p_2().bg(rgb(crate::theme::CONTROL))
                                         .child(entry.filename).child(div().text_sm().child(format!("{} · {}",entry.origin,entry.created_at)))
                                         .child(div().text_sm().child(entry.url))
                                         .child(div().flex().gap_2()
@@ -3343,7 +3414,12 @@ impl Render for SpikeShell {
                                 .child(capture_button("upload-history-older","Older",self.upload_history_loading || !self.upload_history_more,cx.listener(|this,_,_,cx| {
                                     if let Some(entry)=this.upload_history_entries.last() {this.refresh_upload_history(Some(entry.id),cx);}
                                 }))))
-                    })
+                    }),
+            )
+            })
+            .when(self.page == ControlPage::Sources, |view| {
+                view.child(
+                div().flex().flex_col().gap_2()
                     .child("Capture a display")
                     .children(displays.into_iter().enumerate().map(|(index, display)| {
                         let id = display.id;
@@ -3352,7 +3428,7 @@ impl Render for SpikeShell {
                             .px_3()
                             .py_2()
                             .rounded_md()
-                            .bg(rgb(0x242b36))
+                            .bg(rgb(crate::theme::CONTROL))
                             .cursor_pointer()
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 if !unavailable {
@@ -3407,7 +3483,7 @@ impl Render for SpikeShell {
                                             .px_3()
                                             .py_2()
                                             .rounded_md()
-                                            .bg(rgb(0x242b36))
+                                            .bg(rgb(crate::theme::CONTROL))
                                             .cursor_pointer()
                                             .on_click(cx.listener(move |this, _, _, cx| {
                                                 if !unavailable {
@@ -3424,29 +3500,13 @@ impl Render for SpikeShell {
                         .child(
                             div()
                                 .text_sm()
-                                .text_color(rgb(0x94a3b8))
+                                .text_color(rgb(crate::theme::MUTED))
                                 .child(self.list_status.clone()),
                         ),
                 )
             })
-            .child(capture_button(
-                "toggle-history",
-                if self.history_visible {
-                    "Hide history"
-                } else {
-                    "Capture history"
-                },
-                false,
-                cx.listener(|this, _, _, cx| {
-                    if this.history_visible {
-                        this.hide_history(cx);
-                    } else {
-                        this.history_visible = true;
-                        this.refresh_history(None, cx);
-                    }
-                    cx.notify();
-                }),
-            ))
+            })
+            .when(self.page == ControlPage::History, |view| { view
             .when(self.history_visible, |view| {
                 let revision = self.history_revision;
                 view.child(
@@ -3513,7 +3573,7 @@ impl Render for SpikeShell {
                         .child(
                             div()
                                 .text_sm()
-                                .text_color(rgb(0x94a3b8))
+                                .text_color(rgb(crate::theme::MUTED))
                                 .child("Removing an entry keeps the image file."),
                         )
                         .child(div().text_sm().child(self.history_action_status.clone()))
@@ -3602,7 +3662,7 @@ impl Render for SpikeShell {
                                                 .p_3()
                                                 .gap_1()
                                                 .rounded_md()
-                                                .bg(rgb(0x242b36))
+                                                .bg(rgb(crate::theme::CONTROL))
                                                 .children(preview.clone().map(|render| {
                                                     img(render).max_w(px(400.0)).max_h(px(240.0))
                                                 }))
@@ -3631,7 +3691,7 @@ impl Render for SpikeShell {
                                                 .child(
                                                     div()
                                                         .text_sm()
-                                                        .text_color(rgb(0x94a3b8))
+                                                        .text_color(rgb(crate::theme::MUTED))
                                                         .child(format!(
                                                             "{} × {} · {}",
                                                             entry.width,
@@ -3755,15 +3815,18 @@ impl Render for SpikeShell {
                         ),
                 )
             })
-            .child(
+            })
+            .when(self.page == ControlPage::Settings, |view| {
+                view.child(
                 div()
                     .flex()
                     .flex_col()
                     .p_4()
                     .gap_2()
-                    .rounded_lg()
-                    .bg(rgb(0x1d222c))
-                    .child("Save folder")
+                    .border_1().border_color(rgb(crate::theme::BORDER))
+                    .bg(rgb(crate::theme::SURFACE))
+                    .child(div().text_2xl().child("Settings"))
+                    .child(div().text_sm().text_color(rgb(crate::theme::MUTED)).child("Save folder"))
                     .child(div().text_sm().child(folder))
                     .child(capture_button(
                         "choose-output-directory",
@@ -3793,7 +3856,7 @@ impl Render for SpikeShell {
                         .flex_col()
                         .gap_2()
                         .text_sm()
-                        .text_color(rgb(0x94a3b8))
+                        .text_color(rgb(crate::theme::MUTED))
                         .child(self.tray_status.clone())
                         .child(format!("{} overlay window(s)", self.overlays.len()))
                         .child(capture_button(
@@ -3812,6 +3875,8 @@ impl Render for SpikeShell {
                         )),
                 )
             })
+            })
+            )
     }
 }
 fn render_frame(shot: &CapturedImage) -> Arc<gpui::RenderImage> {
@@ -3829,24 +3894,232 @@ fn render_thumbnail(shot: &CapturedImage) -> Arc<gpui::RenderImage> {
     }
     Arc::new(gpui::RenderImage::new(vec![image::Frame::new(pixels)]))
 }
+fn sidebar_item(
+    id: &'static str,
+    label: &'static str,
+    disabled: bool,
+    on_click: impl Fn(&gpui::ClickEvent, &mut Window, &mut App) + 'static,
+) -> impl IntoElement {
+    sidebar_navigation(id, label, disabled, false, on_click)
+}
+
+fn sidebar_navigation(
+    id: &'static str,
+    label: &'static str,
+    disabled: bool,
+    selected: bool,
+    on_click: impl Fn(&gpui::ClickEvent, &mut Window, &mut App) + 'static,
+) -> impl IntoElement {
+    div()
+        .id(id)
+        .role(gpui::Role::Button)
+        .aria_label(label)
+        .w_full()
+        .flex_none()
+        .flex()
+        .items_center()
+        .gap_3()
+        .px_3()
+        .py_2()
+        .rounded_md()
+        .text_sm()
+        .text_color(rgb(if disabled {
+            crate::theme::DISABLED
+        } else {
+            crate::theme::TEXT
+        }))
+        .border_1()
+        .border_color(rgb(if selected {
+            crate::theme::ACCENT
+        } else {
+            crate::theme::SURFACE
+        }))
+        .bg(rgb(if selected {
+            crate::theme::CONTROL
+        } else {
+            crate::theme::SURFACE
+        }))
+        .when(!disabled, |item| {
+            item.focusable()
+                .tab_index(0)
+                .cursor_pointer()
+                .focus_visible(|style| style.border_color(rgb(crate::theme::FOCUS)))
+                .hover(|style| style.bg(rgb(crate::theme::HOVER)))
+                .active(|style| style.bg(rgb(crate::theme::PRESSED)))
+        })
+        .on_click(move |event, window, cx| {
+            if !disabled {
+                on_click(event, window, cx);
+            }
+        })
+        .child(sidebar_icon(id))
+        .child(div().flex_1().min_w_0().text_ellipsis().child(label))
+}
+
+fn sidebar_icon(id: &'static str) -> impl IntoElement {
+    gpui::canvas(
+        |_, _, _| (),
+        move |bounds, _, window, _| {
+            let strokes: &[&[[f32; 2]]] = match id {
+                "nav-captures" => &[
+                    &[[3., 4.], [21., 4.], [21., 20.], [3., 20.], [3., 4.]],
+                    &[[3., 17.], [9., 11.], [14., 16.], [17., 13.], [21., 17.]],
+                ],
+                "nav-history" => &[
+                    &[
+                        [4., 8.],
+                        [7., 4.],
+                        [16., 3.],
+                        [21., 8.],
+                        [21., 16.],
+                        [16., 21.],
+                        [8., 21.],
+                        [4., 17.],
+                    ],
+                    &[[3., 3.], [3., 9.], [9., 9.]],
+                    &[[12., 7.], [12., 13.], [16., 15.]],
+                ],
+                "nav-sources" | "capture-primary" | "capture-all" => &[
+                    &[[2., 3.], [22., 3.], [22., 17.], [2., 17.], [2., 3.]],
+                    &[[12., 17.], [12., 21.]],
+                    &[[7., 21.], [17., 21.]],
+                ],
+                "nav-uploads" => &[
+                    &[[12., 16.], [12., 3.], [7., 8.]],
+                    &[[12., 3.], [17., 8.]],
+                    &[[3., 15.], [3., 21.], [21., 21.], [21., 15.]],
+                ],
+                "nav-settings" => &[
+                    &[
+                        [8., 3.],
+                        [16., 3.],
+                        [21., 8.],
+                        [21., 16.],
+                        [16., 21.],
+                        [8., 21.],
+                        [3., 16.],
+                        [3., 8.],
+                        [8., 3.],
+                    ],
+                    &[[9., 9.], [15., 9.], [15., 15.], [9., 15.], [9., 9.]],
+                ],
+                "sidebar-folder" => &[&[
+                    [2., 6.],
+                    [9., 6.],
+                    [12., 9.],
+                    [22., 9.],
+                    [20., 21.],
+                    [2., 21.],
+                    [2., 6.],
+                ]],
+                "sidebar-quit" => &[
+                    &[[10., 3.], [3., 3.], [3., 21.], [10., 21.]],
+                    &[[9., 12.], [22., 12.], [17., 7.]],
+                    &[[22., 12.], [17., 17.]],
+                ],
+                _ => &[
+                    &[
+                        [3., 7.],
+                        [7., 7.],
+                        [9., 3.],
+                        [15., 3.],
+                        [17., 7.],
+                        [21., 7.],
+                        [21., 21.],
+                        [3., 21.],
+                        [3., 7.],
+                    ],
+                    &[[9., 11.], [15., 11.], [15., 17.], [9., 17.], [9., 11.]],
+                ],
+            };
+            let mut path = gpui::PathBuilder::stroke(px(1.5));
+            let map = |p: [f32; 2]| {
+                bounds.origin
+                    + point(
+                        bounds.size.width * (p[0] / 24.),
+                        bounds.size.height * (p[1] / 24.),
+                    )
+            };
+            for stroke in strokes {
+                path.move_to(map(stroke[0]));
+                for p in &stroke[1..] {
+                    path.line_to(map(*p));
+                }
+            }
+            if let Ok(path) = path.build() {
+                window.paint_path(path, rgb(crate::theme::ICON));
+            }
+        },
+    )
+    .w(px(16.))
+    .h(px(16.))
+    .flex_none()
+}
+
 fn capture_button(
     id: &'static str,
     label: &'static str,
     disabled: bool,
     on_click: impl Fn(&gpui::ClickEvent, &mut Window, &mut App) + 'static,
 ) -> impl IntoElement {
+    ui_button(id, label, disabled, false, on_click)
+}
+
+fn ui_button(
+    id: &'static str,
+    label: &'static str,
+    disabled: bool,
+    accented: bool,
+    on_click: impl Fn(&gpui::ClickEvent, &mut Window, &mut App) + 'static,
+) -> impl IntoElement {
     div()
         .id(id)
+        .role(gpui::Role::Button)
+        .aria_label(label)
         .flex_none()
         .px_3()
         .py_2()
         .rounded_md()
-        .bg(if disabled {
-            rgb(0x3f3f46)
+        .border_1()
+        .border_color(rgb(if accented {
+            crate::theme::ACCENT
         } else {
-            rgb(0x16a34a)
+            crate::theme::BORDER
+        }))
+        .text_sm()
+        .text_color(rgb(if disabled {
+            crate::theme::DISABLED
+        } else {
+            crate::theme::TEXT
+        }))
+        .bg(if disabled {
+            rgb(crate::theme::SURFACE)
+        } else if accented {
+            rgb(crate::theme::PRIMARY)
+        } else {
+            rgb(crate::theme::CONTROL)
         })
-        .cursor_pointer()
+        .when(!disabled, |button| {
+            button
+                .focusable()
+                .tab_index(0)
+                .focus_visible(|style| style.border_color(rgb(crate::theme::FOCUS)))
+                .cursor_pointer()
+                .hover(|style| {
+                    style.bg(rgb(if accented {
+                        crate::theme::PRIMARY_HOVER
+                    } else {
+                        crate::theme::HOVER
+                    }))
+                })
+                .active(|style| {
+                    style.bg(rgb(if accented {
+                        crate::theme::PRIMARY_PRESSED
+                    } else {
+                        crate::theme::PRESSED
+                    }))
+                })
+        })
         .on_click(move |event, window, cx| {
             if !disabled {
                 on_click(event, window, cx);
@@ -4016,7 +4289,7 @@ impl Render for Overlay {
                     .m_6()
                     .p_6()
                     .rounded_lg()
-                    .bg(rgb(0x111827))
+                    .bg(rgb(crate::theme::SURFACE))
                     .child(format!("{label}  display {id}"))
                     .child(div().text_sm().child(format!(
                         "display origin=({}, {})  size={}×{}  scale={scale:.2}",
@@ -5614,6 +5887,370 @@ mod tests {
             ));
         }
         Ok(())
+    }
+
+    #[cfg(target_os = "windows")]
+    fn save_ui_probe_window(
+        directory: &std::path::Path,
+        filename: &str,
+        window_id: &str,
+    ) -> Result<(), String> {
+        std::fs::create_dir_all(directory).map_err(|e| e.to_string())?; // XCap excludes this process; target only our synthetic HWND.
+        let script = r#"
+Add-Type -AssemblyName System.Drawing
+Add-Type @'
+using System;
+using System.Runtime.InteropServices;
+public static class UiWindowProbe {
+    [StructLayout(LayoutKind.Sequential)] public struct Rect { public int Left, Top, Right, Bottom; }
+    [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out Rect r);
+    [DllImport("user32.dll")] public static extern bool PrintWindow(IntPtr h, IntPtr dc, uint flags);
+}
+'@
+$handle = [IntPtr]::new([Int64]$env:SCREENSHOTS_UI_PROBE_HWND)
+$rect = New-Object UiWindowProbe+Rect
+if (![UiWindowProbe]::GetWindowRect($handle, [ref]$rect)) { throw 'Synthetic window missing' }
+$bitmap = New-Object Drawing.Bitmap ($rect.Right-$rect.Left), ($rect.Bottom-$rect.Top)
+$graphics = [Drawing.Graphics]::FromImage($bitmap)
+try {
+    $dc = $graphics.GetHdc()
+    try { if (![UiWindowProbe]::PrintWindow($handle, $dc, 2)) { throw 'Synthetic window capture failed' } }
+    finally { $graphics.ReleaseHdc($dc) }
+    $bitmap.Save($env:SCREENSHOTS_UI_PROBE_PATH, [Drawing.Imaging.ImageFormat]::Png)
+} finally { $graphics.Dispose(); $bitmap.Dispose() }
+"#;
+        let status = std::process::Command::new("powershell")
+            .args(["-NoProfile", "-NonInteractive", "-Command", script])
+            .env("SCREENSHOTS_UI_PROBE_HWND", window_id)
+            .env("SCREENSHOTS_UI_PROBE_PATH", directory.join(filename))
+            .status()
+            .map_err(|e| e.to_string())?;
+        if !status.success() {
+            return Err("synthetic window capture failed".to_string());
+        }
+        Ok::<_, String>(())
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    #[ignore = "opens the editor with synthetic pixels and saves only its own window for UI inspection"]
+    fn editor_toolbar_visual_probe() {
+        let errors = track_gui_errors();
+        let directory = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/ui-preview");
+        let pixels = image::RgbaImage::from_fn(1280, 720, |x, y| {
+            let color = if y < 72 {
+                [226, 232, 242, 255]
+            } else if x < 220 {
+                [240, 244, 250, 255]
+            } else if x > 280 && x < 1180 && y > 145 && y < 240 {
+                [208, 226, 253, 255]
+            } else if x > 280 && x < 1180 && y > 300 && y % 80 < 32 {
+                [228, 235, 244, 255]
+            } else {
+                [252, 253, 255, 255]
+            };
+            image::Rgba(color)
+        });
+        let source = CapturedImage {
+            display_id: "synthetic-ui".into(),
+            window_id: None,
+            width: 1280,
+            height: 720,
+            png_path: directory.join("unused-source.png"),
+            pixels: Arc::new(pixels),
+            elapsed_ms: 0,
+            source_format: app_core::PixelFormat::Rgba8UnormSrgb,
+        };
+        let result = Arc::new(Mutex::new(None));
+        let report = result.clone();
+        let platform = gpui_platform::current_platform(false);
+        let fonts = caption::CaptionFonts(platform.text_system());
+        gpui::Application::with_platform(platform)
+            .with_windowing(gpui::WindowingRequest::Headless)
+            .run(move |cx| {
+                cx.set_global(fonts);
+                cx.set_quit_mode(gpui::QuitMode::Explicit);
+                let controller = cx.new(|cx| SpikeShell::new_controller(None, cx));
+                cx.set_global(ResidentController(controller.clone()));
+                controller.update(cx, |this, cx| {
+                    this.last_capture = Some(source);
+                    this.output_directory = Some(directory.clone());
+                    this.show_control(cx);
+                });
+                let owner = controller.downgrade();
+                cx.spawn(async move |cx| {
+                    let checked = async {
+                        let deadline = std::time::Instant::now();
+                        loop {
+                            if owner
+                                .update(cx, |this, _| {
+                                    this.control.is_some() && !this.switching_graphics
+                                })
+                                .map_err(|e| e.to_string())?
+                            {
+                                break;
+                            }
+                            if deadline.elapsed().as_secs() > 10 {
+                                return Err("control did not open".to_string());
+                            }
+                            cx.background_executor()
+                                .timer(std::time::Duration::from_millis(5))
+                                .await;
+                        }
+                        owner
+                            .update(cx, |this, cx| this.open_redaction_editor(cx))
+                            .map_err(|e| e.to_string())?;
+                        let deadline = std::time::Instant::now();
+                        loop {
+                            if owner
+                                .update(cx, |this, _| this.editor.is_some())
+                                .map_err(|e| e.to_string())?
+                            {
+                                break;
+                            }
+                            if deadline.elapsed().as_secs() > 10 {
+                                return Err("editor did not open".to_string());
+                            }
+                            cx.background_executor()
+                                .timer(std::time::Duration::from_millis(5))
+                                .await;
+                        }
+                        for (width, height, filename) in [
+                            (1000., 760., "editor-wide.png"),
+                            (760., 500., "editor-narrow.png"),
+                        ] {
+                            let window_id = owner
+                                .update(cx, |this, cx| {
+                                    this.editor
+                                        .unwrap()
+                                        .update(cx, |editor, window, cx| {
+                                            editor.prepare_toolbar_probe(cx);
+                                            use raw_window_handle::{
+                                                HasWindowHandle, RawWindowHandle,
+                                            };
+                                            window.resize(size(px(width), px(height)));
+                                            show_control_window(window).unwrap();
+                                            match HasWindowHandle::window_handle(window)
+                                                .unwrap()
+                                                .as_raw()
+                                            {
+                                                RawWindowHandle::Win32(handle) => {
+                                                    handle.hwnd.get().to_string()
+                                                }
+                                                _ => unreachable!(),
+                                            }
+                                        })
+                                        .unwrap()
+                                })
+                                .map_err(|e| e.to_string())?;
+                            cx.background_executor()
+                                .timer(std::time::Duration::from_millis(200))
+                                .await;
+                            let directory = directory.clone();
+                            cx.background_executor()
+                                .spawn(async move {
+                                    std::fs::create_dir_all(&directory)
+                                        .map_err(|e| e.to_string())?;
+                                    save_ui_probe_window(&directory, filename, &window_id)
+                                })
+                                .await?;
+                        }
+                        owner
+                            .update(cx, |this, cx| {
+                                this.close_editor(cx);
+                                this.retire_ui(cx);
+                            })
+                            .map_err(|e| e.to_string())?;
+                        let deadline = std::time::Instant::now();
+                        loop {
+                            if owner
+                                .update(cx, |this, cx| {
+                                    if !this.editor_closing && this.control.is_some() {
+                                        this.retire_ui(cx);
+                                    }
+                                    !this.editor_closing
+                                        && !this.switching_graphics
+                                        && !this.graphics
+                                })
+                                .map_err(|e| e.to_string())?
+                            {
+                                break;
+                            }
+                            if deadline.elapsed().as_secs() > 10 {
+                                return Err("editor teardown timed out".to_string());
+                            }
+                            cx.background_executor()
+                                .timer(std::time::Duration::from_millis(5))
+                                .await;
+                        }
+                        Ok::<_, String>(())
+                    }
+                    .await;
+                    *report.lock().unwrap() = Some(checked);
+                    cx.update(|cx| cx.quit());
+                })
+                .detach();
+            });
+        result
+            .lock()
+            .unwrap()
+            .take()
+            .expect("visual probe completed")
+            .unwrap();
+        assert_eq!(errors.load(std::sync::atomic::Ordering::Relaxed), 0);
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    #[ignore = "opens the native control pages; no capture, files or clipboard writes"]
+    fn control_pages_render_and_cancel_hidden_history() {
+        let errors = track_gui_errors();
+        let result = Arc::new(Mutex::new(None));
+        let report = result.clone();
+        gpui_platform::application()
+            .with_windowing(gpui::WindowingRequest::Headless)
+            .run(move |cx| {
+                cx.set_quit_mode(gpui::QuitMode::Explicit);
+                let controller = cx.new(|cx| SpikeShell::new_controller(None, cx));
+                cx.set_global(ResidentController(controller.clone()));
+                controller.update(cx, |this, cx| this.show_control(cx));
+                let owner = controller.downgrade();
+                cx.spawn(async move |cx| {
+                    let checked = async {
+                        let deadline = std::time::Instant::now();
+                        loop {
+                            if owner
+                                .update(cx, |this, _| {
+                                    this.control.is_some() && !this.switching_graphics
+                                })
+                                .map_err(|error| error.to_string())?
+                            {
+                                break;
+                            }
+                            if deadline.elapsed().as_secs() > 10 {
+                                return Err("control opening timed out".to_string());
+                            }
+                            cx.background_executor()
+                                .timer(std::time::Duration::from_millis(5))
+                                .await;
+                        }
+                        for page in [
+                            ControlPage::Captures,
+                            ControlPage::Sources,
+                            ControlPage::History,
+                            ControlPage::Uploads,
+                            ControlPage::Settings,
+                            ControlPage::Captures,
+                        ] {
+                            owner
+                                .update(cx, |this, cx| {
+                                    let capture_cancel =
+                                        Arc::new(std::sync::atomic::AtomicBool::new(false));
+                                    let upload_cancel =
+                                        Arc::new(std::sync::atomic::AtomicBool::new(false));
+                                    if this.page != page {
+                                        this.history_visible = true;
+                                        this.upload_history_visible = true;
+                                        this.history_cancel = Some(capture_cancel.clone());
+                                        this.upload_history_cancel = Some(upload_cancel.clone());
+                                        this.show_page(page, cx);
+                                        assert!(
+                                            capture_cancel
+                                                .load(std::sync::atomic::Ordering::Relaxed)
+                                        );
+                                        assert!(
+                                            upload_cancel
+                                                .load(std::sync::atomic::Ordering::Relaxed)
+                                        );
+                                        assert_eq!(
+                                            this.history_visible,
+                                            page == ControlPage::History
+                                        );
+                                        assert!(!this.upload_history_visible);
+                                        assert!(
+                                            this.history_entries.is_empty()
+                                                && this.upload_history_entries.is_empty()
+                                        );
+                                        assert!(
+                                            this.history_preview.is_none()
+                                                && this.history_search_input.is_none()
+                                        );
+                                    }
+                                    assert!(this.page == page);
+                                })
+                                .map_err(|error| error.to_string())?;
+                            // Allow each invalidated native page to render, without injecting input.
+                            cx.background_executor()
+                                .timer(std::time::Duration::from_millis(40))
+                                .await;
+                        }
+                        let window_id = owner
+                            .update(cx, |this, cx| {
+                                this.control
+                                    .unwrap()
+                                    .update(cx, |_, window, _| {
+                                        use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+                                        window.resize(size(px(1000.), px(720.)));
+                                        match HasWindowHandle::window_handle(window)
+                                            .unwrap()
+                                            .as_raw()
+                                        {
+                                            RawWindowHandle::Win32(handle) => {
+                                                handle.hwnd.get().to_string()
+                                            }
+                                            _ => unreachable!(),
+                                        }
+                                    })
+                                    .unwrap()
+                            })
+                            .map_err(|e| e.to_string())?;
+                        cx.background_executor()
+                            .timer(std::time::Duration::from_millis(80))
+                            .await;
+                        cx.background_executor()
+                            .spawn(async move {
+                                let directory = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                                    .join("../../target/ui-preview");
+                                save_ui_probe_window(&directory, "workspace-empty.png", &window_id)
+                            })
+                            .await?;
+                        owner
+                            .update(cx, |this, cx| this.retire_ui(cx))
+                            .map_err(|error| error.to_string())?;
+                        let deadline = std::time::Instant::now();
+                        loop {
+                            if owner
+                                .update(cx, |this, cx| {
+                                    !this.switching_graphics
+                                        && !this.graphics
+                                        && cx.windows().is_empty()
+                                })
+                                .map_err(|error| error.to_string())?
+                            {
+                                break;
+                            }
+                            if deadline.elapsed().as_secs() > 10 {
+                                return Err("control closing timed out".to_string());
+                            }
+                            cx.background_executor()
+                                .timer(std::time::Duration::from_millis(5))
+                                .await;
+                        }
+                        Ok::<_, String>(())
+                    }
+                    .await;
+                    *report.lock().unwrap() = Some(checked);
+                    cx.update(|cx| cx.quit());
+                })
+                .detach();
+            });
+        result
+            .lock()
+            .unwrap()
+            .take()
+            .expect("native page test completed")
+            .unwrap();
+        assert_eq!(errors.load(std::sync::atomic::Ordering::Relaxed), 0);
     }
 
     #[cfg(target_os = "windows")]

@@ -716,10 +716,12 @@ The application core must remain independent of GPUI. That boundary keeps a late
 
 ### Main navigation
 
-Proposed sections:
+Implemented control-window sidebar destinations:
 
 ```text
-Captures
+Screenshots
+Capture history
+Displays & windows
 Uploads
 Settings
 ```
@@ -728,7 +730,15 @@ Recordings appears when recording exists. Workflows appears when the workflow en
 
 Not every section needs to be fully implemented in the MVP. Uploads can ship as soon as the HTTP uploader exists; until then the navigation does not show an empty section.
 
+The control window now follows a fixed-sidebar/large-workspace desktop layout, informed by the supplied modern ShareX main-window reference and [the linked layout screenshot](https://getsharex.com/img/screenshots/CombineImages.png). Capture commands stay directly accessible on the left; screenshot preview, capture history, display/window selection, uploads and settings have separate workspaces. An empty screenshot workspace offers explicit Capture & annotate and Quick region actions. Folder/quit remain in navigation. Menu entries use small native vector icons, neutral surfaces, a blue selected state, hover/pressed feedback, native GPUI focus traversal/keyboard activation and visible focus borders. Page changes use existing history cancellation/invalidation and preview release; active output/upload jobs continue. Closing a history view resets navigation to Screenshots to avoid a blank retired-history workspace on reopening. The shared active-tool styling remains in the overlay and standalone editor. Final visual design, complete context menus, capture-gallery layout, light theme, narrow-window/DPI interaction and assistive-technology acceptance remain open.
+
+Resource cost is one small page enum, a bounded set of sidebar/focus/accessibility nodes and tiny vector icon paths on invalidated renders; hidden page trees are not built. No image/texture cache, dependency, worker, timer or idle task is added. Native optimized testing opens all five destinations, verifies history cancellation on switching and renderer detach on close, and captures only its own empty window for layout inspection. A 101-cycle control-window probe observed 48.03 ms p95 to the second frame callback, versus 43.86 ms in the preceding header-navigation run. Separate development runs do not establish causality or a speedup; these are callback proxies, not physical presentation/input or complete CPU/RAM/GPU acceptance. See [sidebar measurement](docs/control-open-latency.md#sidebar-layout-follow-up).
+
 ### Quick Access Overlay
+
+Editor UI follow-up (2026-11-09): the shared frozen-overlay/standalone toolbar now groups 14 compact native vector buttons into Select/Crop, drawing, labels/highlighting and privacy effects. Tooltips include shortcut names and buttons retain focus borders/accessibility labels. Copy/Save/Save & copy are separated from drawing; color controls use real swatches; selection actions appear only for an existing selected mark. Keyboard and pointer tool changes share the same state cleanup/effect-preparation path. The bounded floating panel measures its children and defers one invalidation when its height changes, replacing the previous guessed workspace height. Its scroll height is capped at 60% of the viewport minus outer spacing; the existing top/bottom overlay placement remains available.
+
+The design references are the official [ShareX editor](https://getsharex.com/docs/image-editor) and [region capture](https://getsharex.com/docs/region-capture) documentation/screenshots, [Flameshot's in-place editing interface](https://flameshot.org/) and [Shottr's explicit export actions](https://shottr.cc/kb/startguide). These inform grouping/discoverability; no external artwork, UI framework or service is added. Incremental resources are up to 14 tiny vector paths per invalidated render, transient tooltip/focus metadata and one shared float cell per editor for measured height. There is no new image buffer/texture, worker, queue, permanent timer or idle work. Native optimized inspection uses a synthetic image and PrintWindow for only that editor HWND at 1000×760 and 760×500, preserving user pixels/clipboard; normal capture deliberately excludes the app's own windows. Release editor fixtures and the native overlay cancellation regression cover behavior. Final toolbar ergonomics, keyboard/screen-reader interaction, mixed DPI, light theme and complete CPU/RAM/GPU/input-latency acceptance remain open; the earlier control-window timing is not a measurement of this editor change.
 
 After taking a screenshot, display a small floating interface with the most important actions:
 
@@ -742,6 +752,8 @@ After taking a screenshot, display a small floating interface with the most impo
 The overlay should be quick, unobtrusive, and easy to use.
 
 ### UX principles
+
+Visual direction: ShareX is a reference for menu/workspace organization only, not its theme or colors. Keep an independent neutral dark mode: near-black canvas, charcoal surfaces, gray borders/text/icons and a restrained accent for primary actions, selected tools and keyboard focus. Main window, editor, overlay toolbar and text input share the static palette in `crates/app-ui/src/theme.rs`; image/annotation colors remain document data. Palette constants add no runtime service, dependency, cache or idle work.
 
 English is the default application language at launch, independently of the OS locale. All app-owned labels, menus, prompts, status text and errors must start in English. Localization may be added later; native OS dialog chrome and system error messages follow the OS language.
 
