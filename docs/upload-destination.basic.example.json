@@ -1,0 +1,7 @@
+{
+  "url": "https://example.invalid/upload",
+  "field": "file",
+  "json_pointer": "/url",
+  "credential": "account",
+  "authentication": "basic"
+}

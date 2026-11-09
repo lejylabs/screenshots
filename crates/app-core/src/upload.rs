@@ -80,6 +80,25 @@ pub struct UploadDestination {
     allow_http: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     credential: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    authentication: Option<UploadAuthentication>,
+}
+
+#[derive(Clone, Copy, Default, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum UploadAuthentication {
+    #[default]
+    Bearer,
+    ApiKey,
+    Basic,
+}
+impl UploadAuthentication {
+    pub(crate) fn header_name(self) -> &'static str {
+        match self {
+            Self::Bearer | Self::Basic => "authorization",
+            Self::ApiKey => "x-api-key",
+        }
+    }
 }
 
 fn default_field() -> String {
@@ -181,6 +200,10 @@ impl UploadDestination {
     }
 
     fn validate(&self) -> Result<reqwest::Url> {
+        ensure!(
+            self.authentication.is_none() || self.credential.is_some(),
+            "Authentication requires an OS credential reference"
+        );
         if let Some(response) = &self.response {
             ensure!(
                 self.json_pointer.is_empty(),
@@ -202,7 +225,7 @@ impl UploadDestination {
         if let Some(name) = &self.credential {
             ensure!(
                 url.scheme() == "https",
-                "Bearer credentials require HTTPS, including for self-hosted destinations"
+                "Upload credentials require HTTPS, including for self-hosted destinations"
             );
             ensure!(
                 !name.is_empty()
@@ -381,9 +404,10 @@ async fn transfer(
             .body(body),
     };
     if let Some(target) = destination.credential_target() {
+        let authentication = destination.authentication.unwrap_or_default();
         request = request.header(
-            reqwest::header::AUTHORIZATION,
-            crate::upload_credentials::read_bearer(&target)?,
+            authentication.header_name(),
+            crate::upload_credentials::read_header(&target, authentication)?,
         );
     }
     let mut response = request
@@ -542,6 +566,7 @@ mod tests {
             response: None,
             allow_http: true,
             credential: None,
+            authentication: None,
         }
     }
     fn read_request(stream: &mut TcpStream) -> Vec<u8> {
@@ -841,17 +866,77 @@ mod tests {
         listener.set_nonblocking(true).unwrap();
         let mut config = destination(format!("https://{}/upload", listener.local_addr().unwrap()));
         config.credential = Some(format!("missing-{}", uuid::Uuid::new_v4()));
-        let error = upload_png(&config, &path, UploadCancellation::default()).unwrap_err();
-        assert!(
-            error
-                .to_string()
-                .contains("No readable Windows upload credential")
-        );
-        assert_eq!(
-            listener.accept().unwrap_err().kind(),
-            std::io::ErrorKind::WouldBlock
-        );
+        for authentication in [
+            None,
+            Some(UploadAuthentication::ApiKey),
+            Some(UploadAuthentication::Basic),
+        ] {
+            config.authentication = authentication;
+            let error = upload_png(&config, &path, UploadCancellation::default()).unwrap_err();
+            assert!(
+                error
+                    .to_string()
+                    .contains("No readable Windows upload credential")
+            );
+            assert_eq!(
+                listener.accept().unwrap_err().kind(),
+                std::io::ErrorKind::WouldBlock
+            );
+        }
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn api_key_profiles_require_credentials_and_round_trip_without_secrets() -> Result<()> {
+        let mut config = destination("https://example.invalid/upload".into());
+        config.authentication = Some(UploadAuthentication::ApiKey);
+        assert!(config.validate().is_err());
+        config.credential = Some("main".into());
+        if cfg!(target_os = "windows") {
+            config.validate()?;
+            let target = config.credential_target();
+            let (root, _) = fixture();
+            let path = root.join("destination.json");
+            config.save_at(&path)?;
+            let loaded = UploadDestination::load(&path)?;
+            assert_eq!(loaded.authentication.unwrap().header_name(), "x-api-key");
+            assert_eq!(loaded.credential_target(), target);
+            config.authentication = None;
+            assert_eq!(
+                config.authentication.unwrap_or_default().header_name(),
+                "authorization"
+            );
+            assert_eq!(config.credential_target(), target);
+            std::fs::remove_dir_all(root)?;
+        }
+        config.url = "http://example.invalid/upload".into();
+        config.allow_http = true;
+        assert!(config.validate().is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn basic_profiles_require_an_os_reference_and_persist_only_the_mode() -> Result<()> {
+        let mut config = destination("https://example.invalid/upload".into());
+        config.authentication = Some(UploadAuthentication::Basic);
+        assert!(config.validate().is_err());
+        config.credential = Some("account".into());
+        if cfg!(target_os = "windows") {
+            let (root, _) = fixture();
+            let path = root.join("destination.json");
+            config.save_at(&path)?;
+            let loaded = UploadDestination::load(&path)?;
+            assert!(matches!(
+                loaded.authentication,
+                Some(UploadAuthentication::Basic)
+            ));
+            assert_eq!(loaded.credential_target(), config.credential_target());
+            std::fs::remove_dir_all(root)?;
+        }
+        config.url = "http://example.invalid/upload".into();
+        config.allow_http = true;
+        assert!(config.validate().is_err());
+        Ok(())
     }
 
     #[test]
