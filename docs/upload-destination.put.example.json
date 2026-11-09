@@ -1,0 +1,6 @@
+{
+  "url": "https://example.invalid/images/screenshot.png",
+  "method": "PUT",
+  "response": { "type": "header", "name": "Location" },
+  "allow_http": false
+}

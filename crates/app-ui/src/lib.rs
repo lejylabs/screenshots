@@ -113,6 +113,7 @@ pub struct SpikeShell {
     history_export_cancel: Option<Arc<std::sync::atomic::AtomicBool>>,
     upload_destination: Option<app_core::UploadDestination>,
     upload_config_loading: bool,
+    upload_profile_checked: bool,
     upload_cancel: Option<app_core::UploadCancellation>,
     upload_status: String,
     upload_url: Option<String>,
@@ -188,6 +189,7 @@ impl SpikeShell {
     }
 
     fn show_control(&mut self, cx: &mut Context<Self>) {
+        self.restore_upload_destination(cx);
         if self.quitting || self.capturing || self.preview_active || self.switching_graphics {
             return;
         }
@@ -455,6 +457,7 @@ impl SpikeShell {
             history_export_cancel: None,
             upload_destination: None,
             upload_config_loading: false,
+            upload_profile_checked: cfg!(test),
             upload_cancel: None,
             upload_status: "Uploads disabled · Load a destination to enable manual uploads".into(),
             upload_url: None,
@@ -480,6 +483,9 @@ impl SpikeShell {
             tray_status: "Tray: not tested on this platform".into(),
         };
         shell.refresh_xcap_lists(cx);
+        if shell.control.is_some() {
+            shell.restore_upload_destination(cx);
+        }
         #[cfg(not(test))]
         cx.spawn(async move |this, cx| {
             let settings = cx
@@ -2115,11 +2121,83 @@ impl SpikeShell {
         cx.notify();
     }
 
+    fn restore_upload_destination(&mut self, cx: &mut Context<Self>) {
+        if self.upload_profile_checked || self.upload_config_loading || self.quitting {
+            return;
+        }
+        self.upload_profile_checked = true;
+        self.upload_config_loading = true;
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_spawn(async {
+                    app_core::UploadDestination::load_remembered()
+                        .map_err(|error| format!("{error:#}"))
+                })
+                .await;
+            this.update(cx, |this, cx| {
+                this.upload_config_loading = false;
+                if !this.quitting {
+                    match result {
+                        Ok(Some(destination)) => {
+                            this.upload_status = format!(
+                                "Destination: {} · Remembered · Manual upload",
+                                destination.origin()
+                            );
+                            this.upload_destination = Some(destination);
+                        }
+                        Ok(None) => {}
+                        Err(error) => {
+                            this.upload_status =
+                                format!("Uploads disabled · Could not restore destination: {error}")
+                        }
+                    }
+                }
+                this.finish_quit_if_idle(cx);
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    fn persist_upload_destination(&mut self, forget: bool, cx: &mut Context<Self>) {
+        if self.quitting || self.upload_config_loading || self.upload_cancel.is_some() {
+            return;
+        }
+        let destination = self.upload_destination.clone();
+        if !forget && destination.is_none() {
+            return;
+        }
+        self.upload_profile_checked = true;
+        self.upload_config_loading = true;
+        if forget {
+            self.upload_destination = None;
+            self.upload_url = None;
+        }
+        cx.spawn(async move |this,cx| {
+            let result = cx.background_spawn(async move {
+                if forget { app_core::UploadDestination::forget_remembered() } else { destination.unwrap().remember() }.map_err(|error| format!("{error:#}"))
+            }).await;
+            this.update(cx, |this,cx| {
+                this.upload_config_loading = false;
+                this.upload_status = match (forget,result) {
+                    (true,Ok(())) => "Uploads disabled · Remembered destination removed".into(),
+                    (true,Err(error)) => format!("Uploads disabled for this session · Could not remove remembered destination: {error}"),
+                    (false,Ok(())) => format!("Destination: {} · Remembered · Manual upload", this.upload_destination.as_ref().map(|value|value.origin()).unwrap_or_default()),
+                    (false,Err(error)) => format!("Destination remains session only · Could not remember it: {error}"),
+                };
+                this.finish_quit_if_idle(cx); cx.notify();
+            }).ok();
+        }).detach();
+        cx.notify();
+    }
+
     fn load_upload_destination(&mut self, cx: &mut Context<Self>) {
         if self.quitting || self.upload_config_loading || self.upload_cancel.is_some() {
             return;
         }
         self.upload_config_loading = true;
+        self.upload_profile_checked = true;
         self.upload_destination = None;
         self.upload_url = None;
         self.upload_status = "Choose an upload destination configuration (JSON)".into();
@@ -2213,7 +2291,11 @@ impl SpikeShell {
             .unwrap_or_default()
             .to_string_lossy()
             .into_owned();
-        self.upload_status = format!("Uploading {filename} to {}…", destination.origin());
+        self.upload_status = format!(
+            "Uploading {filename} via {} to {}…",
+            destination.request_method(),
+            destination.origin()
+        );
         cx.spawn(async move |this, cx| {
             let result = cx
                 .background_spawn(async move {
@@ -2980,19 +3062,21 @@ impl Render for SpikeShell {
                                 cx.listener(|this, _, _, cx| this.cancel_upload(cx)),
                             ))
                             .child(capture_button(
-                                "forget-upload-destination",
-                                "Forget destination",
+                                "remember-upload-destination",
+                                "Remember destination",
                                 self.upload_config_loading
                                     || self.upload_cancel.is_some()
                                     || self.upload_destination.is_none(),
                                 cx.listener(|this, _, _, cx| {
-                                    if !this.upload_config_loading && this.upload_cancel.is_none() {
-                                        this.upload_destination = None;
-                                        this.upload_url = None;
-                                        this.upload_status =
-                                            "Uploads disabled · Destination forgotten".into();
-                                        cx.notify();
-                                    }
+                                    this.persist_upload_destination(false, cx)
+                                }),
+                            ))
+                            .child(capture_button(
+                                "forget-upload-destination",
+                                "Forget destination",
+                                self.upload_config_loading || self.upload_cancel.is_some(),
+                                cx.listener(|this, _, _, cx| {
+                                    this.persist_upload_destination(true, cx)
                                 }),
                             ))
                             .child(capture_button(

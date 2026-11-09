@@ -25,7 +25,7 @@ impl CaptureSettings {
         })
     }
 
-    fn config_path() -> Result<PathBuf> {
+    pub(crate) fn config_path() -> Result<PathBuf> {
         Ok(ProjectDirs::from("", "lejylabs", "screenshots")
             .context("Application settings folder is unavailable")?
             .config_dir()
