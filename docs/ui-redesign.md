@@ -31,7 +31,15 @@ upload boundaries. No additional dependency or service was introduced.
 Tokens and interaction principles live in [DESIGN.md](../DESIGN.md). The native
 implementation uses `theme.rs` rather than adding a CSS/webview theme layer.
 
-![Oldschool workspace](design/oldschool.png)
+## Screenshots
+
+| Oldschool (default) | Light table | Safelight |
+| --- | --- | --- |
+| ![Oldschool workspace](design/oldschool.png) | ![Light table workspace](design/light-table.png) | ![Safelight workspace](design/safelight.png) |
+
+The native editor below uses an isolated synthetic image.
+
+![Compact native editor](design/editor.png)
 
 ## Verification
 
