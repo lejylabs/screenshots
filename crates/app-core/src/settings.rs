@@ -7,10 +7,23 @@ use std::{
     path::{Path, PathBuf},
 };
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UiTheme {
+    // Keep the original light theme's persisted name compatible.
+    Default,
+    Safelight,
+    #[default]
+    #[serde(other)]
+    Oldschool,
+}
+
 #[derive(Serialize, Deserialize)]
 pub struct CaptureSettings {
     version: u32,
     pub output_directory: PathBuf,
+    #[serde(default)]
+    pub theme: UiTheme,
 }
 
 impl CaptureSettings {
@@ -22,7 +35,13 @@ impl CaptureSettings {
         Ok(Self {
             version: 1,
             output_directory,
+            theme: UiTheme::default(),
         })
+    }
+
+    pub fn with_theme(mut self, theme: UiTheme) -> Self {
+        self.theme = theme;
+        self
     }
 
     pub(crate) fn config_path() -> Result<PathBuf> {
@@ -54,7 +73,7 @@ impl CaptureSettings {
         ensure!(bytes.len() <= 65536, "Settings file is too large");
         let settings: Self = serde_json::from_slice(&bytes).context("Could not read settings")?;
         ensure!(settings.version == 1, "Unsupported settings version");
-        Self::for_directory(settings.output_directory)
+        Ok(Self::for_directory(settings.output_directory)?.with_theme(settings.theme))
     }
 
     pub fn save(&self) -> Result<()> {
@@ -112,6 +131,38 @@ mod tests {
         );
         fs::write(&path, br#"{"version":1,"output_directory":"relative"}"#)?;
         assert!(CaptureSettings::load_at(&path, dir.clone()).is_err());
+        fs::remove_dir_all(dir)?;
+        Ok(())
+    }
+
+    #[test]
+    fn themes_round_trip_and_older_settings_keep_working() -> Result<()> {
+        let dir = std::env::temp_dir().join(format!("screenshots-themes-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&dir)?;
+        let path = dir.join("settings.json");
+        assert_eq!(
+            CaptureSettings::load_at(&path, dir.clone())?.theme,
+            UiTheme::Oldschool
+        );
+        for theme in [UiTheme::Default, UiTheme::Oldschool, UiTheme::Safelight] {
+            CaptureSettings::for_directory(dir.clone())?
+                .with_theme(theme)
+                .save_at(&path)?;
+            let restored = CaptureSettings::load_at(&path, dir.clone())?;
+            assert_eq!(restored.theme, theme);
+            assert_eq!(restored.output_directory, dir);
+        }
+        for theme in [None, Some("future_theme")] {
+            let mut value = serde_json::json!({"version": 1, "output_directory": dir});
+            if let Some(theme) = theme {
+                value["theme"] = theme.into();
+            }
+            fs::write(&path, serde_json::to_vec(&value)?)?;
+            assert_eq!(
+                CaptureSettings::load_at(&path, dir.clone())?.theme,
+                UiTheme::Oldschool
+            );
+        }
         fs::remove_dir_all(dir)?;
         Ok(())
     }

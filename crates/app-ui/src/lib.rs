@@ -29,6 +29,11 @@ actions!(
         CapturePrimary,
         CaptureAll,
         CaptureCenterRegion,
+        NewScreenshot,
+        ShowRecent,
+        ShowLibrary,
+        ShowSources,
+        ShowSettings,
         Quit
     ]
 );
@@ -229,7 +234,7 @@ impl SpikeShell {
         let options = WindowOptions {
             window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
                 None,
-                size(px(1000.0), px(720.0)),
+                size(px(1060.0), px(760.0)),
                 cx,
             ))),
             titlebar: Some(TitlebarOptions {
@@ -427,6 +432,14 @@ impl SpikeShell {
     }
 
     fn new_controller(control: Option<AnyWindowHandle>, cx: &mut Context<Self>) -> Self {
+        let mac = cfg!(target_os = "macos");
+        cx.bind_keys([
+            KeyBinding::new(if mac { "cmd-n" } else { "ctrl-n" }, NewScreenshot, Some("SpikeShell")),
+            KeyBinding::new(if mac { "cmd-1" } else { "ctrl-1" }, ShowRecent, Some("SpikeShell")),
+            KeyBinding::new(if mac { "cmd-2" } else { "ctrl-2" }, ShowLibrary, Some("SpikeShell")),
+            KeyBinding::new(if mac { "cmd-3" } else { "ctrl-3" }, ShowSources, Some("SpikeShell")),
+            KeyBinding::new(if mac { "cmd-," } else { "ctrl-," }, ShowSettings, Some("SpikeShell")),
+        ]);
         let backend = XcapBackend::new(app_core::capture_output_dir());
         let caps = backend.capabilities();
         tracing::info!(
@@ -535,6 +548,7 @@ impl SpikeShell {
                 this.settings_loading = false;
                 match settings {
                     Ok(settings) => {
+                        theme::apply(settings.theme, cx);
                         this.backend = XcapBackend::new(&settings.output_directory);
                         this.output_directory = Some(settings.output_directory);
                     }
@@ -652,6 +666,7 @@ impl SpikeShell {
             return;
         }
         self.settings_saving = true;
+        let theme = theme::selected(cx);
         let dialog = cx.prompt_for_paths(gpui::PathPromptOptions {
             files: false,
             directories: true,
@@ -676,7 +691,7 @@ impl SpikeShell {
             let result = if let Some(path) = chosen {
                 cx.background_spawn(async move {
                     let settings = app_core::CaptureSettings::for_directory(path)
-                        .map_err(|error| format!("{error:#}"))?;
+                        .map_err(|error| format!("{error:#}"))?.with_theme(theme);
                     settings.save().map_err(|error| format!("{error:#}"))?;
                     Ok::<_, String>(settings.output_directory)
                 })
@@ -704,6 +719,37 @@ impl SpikeShell {
             .ok();
         })
         .detach();
+        cx.notify();
+    }
+
+    fn choose_theme(&mut self, selected: app_core::UiTheme, cx: &mut Context<Self>) {
+        if self.settings_loading || self.settings_saving || self.quitting || theme::selected(cx) == selected {
+            return;
+        }
+        let Some(directory) = self.output_directory.clone() else { return; };
+        let previous = theme::selected(cx);
+        theme::apply(selected, cx);
+        self.settings_saving = true;
+        self.settings_status = "Saving appearance…".into();
+        cx.spawn(async move |this, cx| {
+            let result = cx.background_spawn(async move {
+                // The default capture folder may not exist before the first screenshot.
+                std::fs::create_dir_all(&directory)?;
+                app_core::CaptureSettings::for_directory(directory)?.with_theme(selected).save()
+            }).await;
+            this.update(cx, |this, cx| {
+                this.settings_saving = false;
+                match result {
+                    Ok(()) => this.settings_status = "Appearance saved".into(),
+                    Err(error) => {
+                        theme::apply(previous, cx);
+                        this.settings_status = format!("Appearance unchanged: {error:#}");
+                    }
+                }
+                this.finish_quit_if_idle(cx);
+                cx.notify();
+            }).ok();
+        }).detach();
         cx.notify();
     }
 
@@ -1094,9 +1140,13 @@ impl SpikeShell {
         let Some(control) = self.control else {
             return;
         };
+        let focus = self.focus_handle.clone();
         cx.defer(move |cx| {
             let result = control
-                .update(cx, |_, window, _| show_control_window(window))
+                .update(cx, |_, window, cx| {
+                    window.focus(&focus, cx);
+                    show_control_window(window)
+                })
                 .map_err(|error| error.to_string())
                 .and_then(|result| result);
             if let Err(error) = result {
@@ -3088,6 +3138,7 @@ impl Focusable for SpikeShell {
 
 impl Render for SpikeShell {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = crate::theme::current(cx);
         let compact = window.viewport_size().width < px(820.);
         if self.history_visible && self.history_search_input.is_none() {
             let owner = cx.entity().downgrade();
@@ -3143,13 +3194,14 @@ impl Render for SpikeShell {
         let last_saved = self.last_saved.clone();
         div()
             .id("capture-home")
+            .font_family(crate::theme::font(cx))
             .track_focus(&self.focus_handle)
             .key_context("SpikeShell")
             .flex()
             .flex_row()
             .size_full()
-            .bg(rgb(crate::theme::BACKGROUND))
-            .text_color(rgb(crate::theme::TEXT))
+            .bg(rgb(theme.background))
+            .text_color(rgb(theme.text))
             .on_action(cx.listener(|this, _: &OpenProbeOverlays, _, cx| {
                 this.open_overlays(OverlayMode::Probe, cx)
             }))
@@ -3162,92 +3214,114 @@ impl Render for SpikeShell {
             .on_action(
                 cx.listener(|this, _: &CaptureCenterRegion, _, cx| this.capture_center_region(cx)),
             )
+            .on_action(cx.listener(|this, _: &NewScreenshot, _, cx| this.select_region_to_edit(cx)))
+            .on_action(cx.listener(|this, _: &ShowRecent, window, cx| { window.focus(&this.focus_handle, cx); this.show_page(ControlPage::Captures, cx); }))
+            .on_action(cx.listener(|this, _: &ShowLibrary, window, cx| { window.focus(&this.focus_handle, cx); this.show_page(ControlPage::History, cx); }))
+            .on_action(cx.listener(|this, _: &ShowSources, window, cx| { window.focus(&this.focus_handle, cx); this.show_page(ControlPage::Sources, cx); }))
+            .on_action(cx.listener(|this, _: &ShowSettings, window, cx| { window.focus(&this.focus_handle, cx); this.show_page(ControlPage::Settings, cx); }))
             .on_action(|_: &Quit, _, cx| cx.defer(close_application))
-            .child(div().id("control-sidebar").flex_none().w(px(if compact { 184. } else { 200. })).h_full()
-                .flex().flex_col().bg(rgb(crate::theme::SURFACE)).border_r_1().border_color(rgb(crate::theme::BORDER))
-                .child(div().px_4().pt_5().pb_4().flex().items_center().gap_3()
-                    .child(sidebar_icon("nav-captures"))
-                    .child(div().text_lg().font_weight(gpui::FontWeight::SEMIBOLD).child("Screenshots")))
+            .child(div().id("control-sidebar").flex_none().w(px(if theme.classic { 180. } else if compact { 184. } else { 216. })).h_full()
+                .flex().flex_col().bg(rgb(theme.surface)).border_r_1().border_color(rgb(theme.border))
+                .when(!theme.classic, |sidebar| sidebar.child(div().px_4().pt(px(if compact { 12. } else { 20. })).pb(px(if compact { 12. } else { 16. })).flex().items_center().gap_3()
+                    .child(div().w(px(32.)).h(px(32.)).flex_none().rounded(px(theme.radius)).bg(rgb(theme.selection)).flex().items_center().justify_center().child(ui_icon(cx, "select-region", 20.)))
+                    .child(div().text_lg().font_weight(gpui::FontWeight::SEMIBOLD).child("screenshots"))))
                 .child(div().id("sidebar-menu").flex_1().min_h_0().overflow_y_scroll().px_3().flex().flex_col().gap_1()
-                    .child(ui_button("select-region-to-edit", "＋  New screenshot", unavailable, true,
-                        cx.listener(|this, _, _, cx| this.select_region_to_edit(cx))))
-                    .child(sidebar_navigation("capture-options", if self.capture_menu_open { "Capture menu ▴" } else { "Capture menu ▾" }, false, self.page == ControlPage::Sources,
+                    .when(theme.classic, |menu| menu.flex_none().px_1().pt_2().gap_0())
+                    .when(!theme.classic, |menu| menu.child(ui_button(cx, "select-region-to-edit", "New screenshot", unavailable, true,
+                        cx.listener(|this, _, _, cx| this.select_region_to_edit(cx)))))
+                    .when(theme.classic, |menu| menu.child(sidebar_item(cx, "select-region-to-edit", "Capture & annotate", unavailable,
+                        cx.listener(|this, _, _, cx| this.select_region_to_edit(cx)))))
+                    .child(sidebar_navigation(cx, "capture-options", if theme.classic { if self.capture_menu_open { "Capture ▾" } else { "Capture ▸" } } else if self.capture_menu_open { "Capture menu −" } else { "Capture menu +" }, false, self.page == ControlPage::Sources,
                         cx.listener(|this, _, _, cx| { this.capture_menu_open = !this.capture_menu_open; cx.notify(); })))
                     .when(self.capture_menu_open, |menu| menu.child(div().pl_2().pb_2().flex().flex_col().gap_1()
-                        .child(sidebar_item("select-region", "Quick region", unavailable,
+                        .child(sidebar_item(cx, "select-region", "Quick region", unavailable,
                             cx.listener(|this, _, _, cx| this.open_overlays(OverlayMode::Fullscreen, cx))))
-                        .child(sidebar_item("delayed-region", "3 second delay", unavailable,
+                        .child(sidebar_item(cx, "delayed-region", "3 second delay", unavailable,
                             cx.listener(|this, _, _, cx| this.start_delayed_region(cx))))
-                        .child(sidebar_item("capture-primary", "Primary display", unavailable,
+                        .child(sidebar_item(cx, "capture-primary", "Primary display", unavailable,
                             cx.listener(|this, _, _, cx| this.capture_primary(cx))))
-                        .child(sidebar_item("capture-all", "All displays", unavailable,
+                        .child(sidebar_item(cx, "capture-all", "All displays", unavailable,
                             cx.listener(|this, _, _, cx| this.capture_all(cx))))
-                        .child(sidebar_item("nav-sources", "Display / window", false,
+                        .child(sidebar_item(cx, "nav-sources", "Display / window", false,
                             cx.listener(|this, _, _, cx| this.show_page(ControlPage::Sources, cx))))))
-                    .child(div().px_3().pt_5().pb_2().text_xs().text_color(rgb(crate::theme::MUTED)).child("LIBRARY"))
-                    .child(sidebar_navigation("nav-captures", "Screenshots", false,
-                        matches!(self.page, ControlPage::Captures | ControlPage::History),
-                        cx.listener(|this, _, _, cx| { if this.page != ControlPage::History { this.show_page(ControlPage::Captures, cx); } })))
-                    .child(sidebar_navigation("nav-uploads", "Uploads", false, self.page == ControlPage::Uploads,
+                    .child(div().h(px(if theme.classic { 8. } else if compact { 4. } else { 20. })))
+                    .child(sidebar_navigation(cx, "nav-captures", "Recent capture", false, self.page == ControlPage::Captures,
+                        cx.listener(|this, _, _, cx| this.show_page(ControlPage::Captures, cx))))
+                    .child(sidebar_navigation(cx, "nav-library", "Library", false, self.page == ControlPage::History,
+                        cx.listener(|this, _, _, cx| this.show_page(ControlPage::History, cx))))
+                    .child(sidebar_navigation(cx, "nav-sources", "Capture sources", false, self.page == ControlPage::Sources,
+                        cx.listener(|this, _, _, cx| this.show_page(ControlPage::Sources, cx))))
+                    .child(sidebar_navigation(cx, "nav-uploads", "Uploads", false, self.page == ControlPage::Uploads,
                         cx.listener(|this, _, _, cx| this.show_page(ControlPage::Uploads, cx))))
                 )
-                .child(div().flex_none().p_3().border_t_1().border_color(rgb(crate::theme::BORDER)).flex().flex_col().gap_1()
-                    .child(sidebar_navigation("nav-settings", "Settings", false, self.page == ControlPage::Settings,
+                .child(div().flex_none().p(px(if theme.classic { 4. } else if compact { 8. } else { 12. })).border_t_1().border_color(rgb(theme.border)).flex().flex_col().gap_1()
+                    .when(theme.classic, |footer| footer.gap_0())
+                    .child(sidebar_navigation(cx, "nav-settings", "Settings", false, self.page == ControlPage::Settings,
                         cx.listener(|this, _, _, cx| this.show_page(ControlPage::Settings, cx))))
-                    .child(sidebar_item("sidebar-folder", "Open folder", self.output_directory.is_none(),
+                    .child(sidebar_item(cx, "sidebar-folder", "Open folder", self.output_directory.is_none(),
                         cx.listener(|this, _, _, cx| { if let Some(path) = &this.output_directory { cx.reveal_path(path); } })))
-                    .child(sidebar_item("sidebar-quit", "Quit", false, |_, _, cx| cx.defer(close_application)))
+                    .child(sidebar_item(cx, "sidebar-quit", "Quit", false, |_, _, cx| cx.defer(close_application)))
+                    .when(!compact && !theme.classic, |footer| footer.child(div().px_3().pt_3().pb_1().text_xs().text_color(rgb(theme.muted)).child("On your device. In your control.")))
                 )
             )
-            .child(div().id("control-content").flex_1().min_w_0().h_full().overflow_y_scroll().p(px(if compact { 16. } else { 24. })).flex().flex_col().gap_3()
-                .child(div().flex().flex_col().gap_1().pb_1()
-                    .child(div().text_2xl().font_weight(gpui::FontWeight::SEMIBOLD).child(match self.page {
-                        ControlPage::Captures | ControlPage::History => "Screenshots",
-                        ControlPage::Sources => "Capture",
-                        ControlPage::Uploads => "Uploads",
-                        ControlPage::Settings => "Settings",
-                    }))
-                    .child(div().text_sm().text_color(rgb(crate::theme::MUTED)).child(match self.page {
-                        ControlPage::Captures | ControlPage::History => "Your captures, ready for the next step.",
-                        ControlPage::Sources => "Pick a display or window for your next screenshot.",
-                        ControlPage::Uploads => "Share a saved image with a destination you control.",
-                        ControlPage::Settings => "Choose where your screenshots live.",
-                    })))
-                .when(matches!(self.page, ControlPage::Captures | ControlPage::History), |view| view
-                    .child(div().flex().flex_wrap().gap_1().pb_3().border_b_1().border_color(rgb(crate::theme::BORDER))
-                        .child(quiet_button("workspace-recent", "Recent", false, self.page == ControlPage::Captures,
-                            cx.listener(|this, _, _, cx| this.show_page(ControlPage::Captures, cx))))
-                        .child(quiet_button("workspace-library", "Library", false, self.page == ControlPage::History,
-                            cx.listener(|this, _, _, cx| this.show_page(ControlPage::History, cx))))))
-                .when(self.capture_delay.is_some(), |view| view.child(div().p_3().rounded_md().bg(rgb(crate::theme::CONTROL)).flex().flex_wrap().items_center().gap_3()
+            .child(div().id("control-content").flex_1().min_w_0().h_full().overflow_y_scroll().p(px(if theme.classic { 12. } else if compact { 16. } else { 32. })).flex().flex_col().gap_4()
+                .when(theme.classic, |content| content.gap_2())
+                .child(div().flex_none().flex().items_start().justify_between().gap_3().pb_3()
+                    .child(div().flex_1().min_w_0().flex().flex_col().gap_2()
+                        .child(div().text_2xl().font_weight(gpui::FontWeight::SEMIBOLD)
+                            .when(theme.classic, |heading| heading.text_size(px(14.)))
+                            .child(match self.page {
+                            ControlPage::Captures => "Recent capture",
+                            ControlPage::History => "Library",
+                            ControlPage::Sources => "Displays & windows",
+                            ControlPage::Uploads => "Uploads",
+                            ControlPage::Settings => if theme.classic { "Settings" } else { "Make it yours" },
+                        }))
+                        .when(!theme.classic, |heading| heading.child(div().text_sm().text_color(rgb(theme.muted)).child(match self.page {
+                            ControlPage::Captures => "Your space to capture, annotate and share.",
+                            ControlPage::History => "Find it. Edit it. Put it to work.",
+                            ControlPage::Sources => "Choose exactly what goes in the frame.",
+                            ControlPage::Uploads => "Your images. Your destination. Always your choice.",
+                            ControlPage::Settings => "A workspace that feels like home.",
+                        }))))
+                    .child(quiet_button(cx, "appearance-shortcut", theme::name(theme::selected(cx)), false, false,
+                        cx.listener(|this, _, _, cx| this.show_page(ControlPage::Settings, cx)))))
+                .when(self.capture_delay.is_some(), |view| view.child(div().p_3().rounded(px(theme.radius)).bg(rgb(theme.control)).flex().flex_wrap().items_center().gap_3()
                     .child("Screenshot scheduled · 3 second delay")
-                    .child(capture_button("cancel-delayed-capture", "Cancel countdown", false,
+                    .child(capture_button(cx, "cancel-delayed-capture", "Cancel countdown", false,
                         cx.listener(|this, _, _, cx| this.cancel_capture_delay(cx))))))
             .when(self.page == ControlPage::Captures, |view| {
                 view.when(self.capture_status != "Ready", |view| view.child(div().text_sm().child(self.capture_status.clone())))
-            .when(self.last_capture.is_none() && self.last_saved.is_none(), |view| view.child(
-                div().flex_1().min_h(px(300.)).flex().flex_col().items_center().justify_center().py_6().gap_4()
-                    .child(div().w(px(72.)).h(px(72.)).rounded_xl().border_1().border_color(rgb(crate::theme::BORDER))
-                        .bg(rgb(crate::theme::SURFACE)).flex().items_center().justify_center().child(ui_icon("select-region", 32.)))
-                    .child(div().text_xl().font_weight(gpui::FontWeight::SEMIBOLD).child("Start with a screenshot"))
-                    .child(div().max_w(px(340.)).text_center().text_sm().text_color(rgb(crate::theme::MUTED)).child("Capture a region, add your annotations, then copy or save it. Everything stays on your device until you choose to upload."))
+            .when(theme.classic && self.last_capture.is_none() && self.last_saved.is_none(), |view| view.child(classic_capture_home(theme)))
+            .when(!theme.classic && self.last_capture.is_none() && self.last_saved.is_none(), |view| view.child(
+                div().relative().flex_none().min_h(px(300.)).p_6().rounded(px(theme.panel_radius))
+                    .border_1().border_color(rgb(theme.border)).bg(rgb(theme.surface))
+                    .flex().flex_col().items_center().justify_center().gap_4()
+                    .child(capture_frame(theme))
+                    .child(div().flex_none().w(px(64.)).h(px(64.)).rounded(px(theme.panel_radius)).bg(rgb(theme.selection))
+                        .flex().items_center().justify_center().child(ui_icon(cx, "select-region", 32.)))
+                    .child(div().text_xl().text_center().font_weight(gpui::FontWeight::SEMIBOLD).child("Frame it. Make it clear."))
+                    .child(div().max_w(px(340.)).text_center().text_sm().text_color(rgb(theme.muted)).child("Grab a region, make your point with annotations, then copy or save. Sharing is always up to you."))
                     .child(div().flex().flex_wrap().justify_center().gap_2()
-                        .child(ui_button("workspace-annotate", "Capture a region", unavailable, true,
+                        .child(ui_button(cx, "workspace-annotate", "Capture a region", unavailable, true,
                             cx.listener(|this, _, _, cx| this.select_region_to_edit(cx))))
-                        .child(quiet_button("workspace-open-library", "Open library →", false, false,
+                        .child(quiet_button(cx, "workspace-open-library", "Open library", false, false,
                             cx.listener(|this, _, _, cx| this.show_page(ControlPage::History, cx)))))
-                    .child(div().mt_2().text_xs().text_color(rgb(crate::theme::MUTED)).child(self.hotkey_status.clone()))
+                    .child(shortcut_hint("New screenshot", if cfg!(target_os = "macos") { "⌘ N" } else { "Ctrl N" }, theme))
             ))
             .when(self.last_capture.is_some() || self.last_saved.is_some(), |view| {
                 view            .child(
                 div()
                     .flex()
                     .flex_col()
+                    .flex_none()
                     .p_4()
                     .gap_2()
-                    .border_1().border_color(rgb(crate::theme::BORDER))
-                    .bg(rgb(crate::theme::SURFACE))
-                    .rounded_lg().child(div().text_lg().font_weight(gpui::FontWeight::SEMIBOLD).child("Latest screenshot"))
+                    .border_1().border_color(rgb(theme.border))
+                    .bg(rgb(theme.surface))
+                    .rounded(px(theme.panel_radius)).child(div().text_lg().font_weight(gpui::FontWeight::SEMIBOLD).child("Latest screenshot"))
+                    .children(self.last_saved.as_ref().and_then(|path| path.file_name()).map(|name|
+                        div().text_sm().text_color(rgb(theme.muted)).child(name.to_string_lossy().into_owned())))
                     .children(
                         self.last_render
                             .clone()
@@ -3258,25 +3332,25 @@ impl Render for SpikeShell {
                             .flex()
                             .flex_wrap()
                             .gap_2()
-                            .child(capture_button(
+                            .child(capture_button(cx,
                                 "copy-last-capture",
                                 "Copy image",
                                 busy || (self.last_capture.is_none() && self.last_saved.is_none()),
                                 cx.listener(|this, _, _, cx| this.copy_last_capture(cx)),
                             ))
-                            .child(capture_button(
+                            .child(capture_button(cx,
                                 "redact-last-capture",
                                 "Edit a copy",
                                 busy || (self.last_capture.is_none() && self.last_saved.is_none()),
                                 cx.listener(|this, _, _, cx| this.open_redaction_editor(cx)),
                             ))
-                            .child(capture_button(
+                            .child(capture_button(cx,
                                 "save-capture-as",
                                 "Save as…",
                                 busy || (self.last_capture.is_none() && self.last_saved.is_none()),
                                 cx.listener(|this, _, _, cx| this.save_capture_as(cx)),
                             ))
-                            .child(capture_button(
+                            .child(capture_button(cx,
                                 "reveal-last-capture",
                                 "Show file",
                                 last_saved.is_none(),
@@ -3292,8 +3366,17 @@ impl Render for SpikeShell {
             )
             })
             })
+            .when(self.page == ControlPage::Captures && !theme.classic, |view| view
+                .child(div().flex_none().p_2().rounded(px(theme.panel_radius)).border_1().border_color(rgb(theme.border))
+                    .bg(rgb(theme.surface)).flex().flex_col().gap_1()
+                    .child(capture_tile(cx, "select-region", "Quick region", "Copy & save directly", unavailable,
+                        cx.listener(|this, _, _, cx| this.open_overlays(OverlayMode::Fullscreen, cx))))
+                    .child(capture_tile(cx, "delayed-region", "3-second delay", "Time to open that menu", unavailable,
+                        cx.listener(|this, _, _, cx| this.start_delayed_region(cx))))
+                    .child(capture_tile(cx, "nav-sources", "Display or window", "Keep the rest out of frame", unavailable,
+                        cx.listener(|this, _, _, cx| this.show_page(ControlPage::Sources, cx))))))
             .when(self.history_export_cancel.is_some(), |view| {
-                view.child(capture_button(
+                view.child(capture_button(cx,
                     "cancel-history-export",
                     "Cancel export",
                     self.history_export_cancel
@@ -3303,42 +3386,42 @@ impl Render for SpikeShell {
                 ))
             })
             .when(self.page == ControlPage::Uploads, |view| {
-                view.child(div().p_5().rounded_lg().bg(rgb(crate::theme::SURFACE)).flex().flex_col().gap_4()
+                view.child(div().flex_none().p_5().rounded(px(theme.panel_radius)).bg(rgb(theme.surface)).flex().flex_col().gap_4()
                     .child(div().flex().items_center().gap_3()
-                        .child(div().w(px(40.)).h(px(40.)).rounded_md().bg(rgb(crate::theme::CONTROL)).flex().items_center().justify_center().child(ui_icon("nav-uploads", 20.)))
+                        .child(div().w(px(40.)).h(px(40.)).rounded(px(theme.radius)).bg(rgb(theme.control)).flex().items_center().justify_center().child(ui_icon(cx, "nav-uploads", 20.)))
                         .child(div().flex().flex_col().gap_1()
                             .child(div().font_weight(gpui::FontWeight::SEMIBOLD).child("Destination"))
-                            .child(div().text_sm().text_color(rgb(crate::theme::MUTED)).child(if self.upload_destination.is_some() { "Ready for an explicit upload" } else { "Connect your own image hosting service" }))))
-                    .child(div().text_sm().text_color(rgb(crate::theme::MUTED)).child("Load a destination JSON profile. Uploads only start when you choose an image and confirm."))
+                            .child(div().text_sm().text_color(rgb(theme.muted)).child(if self.upload_destination.is_some() { "Ready for an explicit upload" } else { "Connect your own image hosting service" }))))
+                    .child(div().text_sm().text_color(rgb(theme.muted)).child("Load a destination JSON profile. Uploads only start when you choose an image and confirm."))
                     .child(div().flex().flex_wrap().gap_2()
-                        .child(capture_button("load-upload-destination", if self.upload_destination.is_some() { "Change destination…" } else { "Choose destination…" },
+                        .child(capture_button(cx, "load-upload-destination", if self.upload_destination.is_some() { "Change destination…" } else { "Choose destination…" },
                             self.upload_config_loading || self.upload_cancel.is_some(), cx.listener(|this, _, _, cx| this.load_upload_destination(cx))))
                         .when(self.upload_destination.is_some(), |row| row
-                            .child(quiet_button("remember-upload-destination", "Remember", self.upload_config_loading || self.upload_cancel.is_some(), false,
+                            .child(quiet_button(cx, "remember-upload-destination", "Remember", self.upload_config_loading || self.upload_cancel.is_some(), false,
                                 cx.listener(|this, _, _, cx| this.persist_upload_destination(false, cx)))))
-                        .child(quiet_button("forget-upload-destination", "Forget destination", self.upload_config_loading || self.upload_cancel.is_some(), false,
+                        .child(quiet_button(cx, "forget-upload-destination", "Forget destination", self.upload_config_loading || self.upload_cancel.is_some(), false,
                             cx.listener(|this, _, _, cx| this.persist_upload_destination(true, cx)))))
                     .children(self.upload_destination.as_ref().and_then(|value| value.credential_target()).map(|target| {
-                        div().pt_3().border_t_1().border_color(rgb(crate::theme::BORDER)).flex().flex_col().gap_2()
-                            .child(div().text_xs().text_color(rgb(crate::theme::MUTED)).child(format!("Credential Manager target: {target}")))
-                            .child(quiet_button("copy-upload-credential-target", "Copy credential target", false, false,
+                        div().pt_3().border_t_1().border_color(rgb(theme.border)).flex().flex_col().gap_2()
+                            .child(div().text_xs().text_color(rgb(theme.muted)).child(format!("Credential Manager target: {target}")))
+                            .child(quiet_button(cx, "copy-upload-credential-target", "Copy credential target", false, false,
                                 cx.listener(move |this, _, _, cx| {
                                     cx.write_to_clipboard(gpui::ClipboardItem::new_string(target.clone()));
                                     this.clipboard_status = "Credential target copied (no token)".into(); cx.notify();
                                 })))
                     })))
-                .child(div().p_5().rounded_lg().bg(rgb(crate::theme::SURFACE)).flex().flex_col().gap_3()
+                .child(div().flex_none().p_5().rounded(px(theme.panel_radius)).bg(rgb(theme.surface)).flex().flex_col().gap_3()
                     .child(div().font_weight(gpui::FontWeight::SEMIBOLD).child("Share your latest screenshot"))
-                    .child(div().text_sm().text_color(rgb(crate::theme::MUTED)).child(
+                    .child(div().text_sm().text_color(rgb(theme.muted)).child(
                         self.last_saved.as_ref().and_then(|path| path.file_name()).map(|name| name.to_string_lossy().into_owned())
                             .unwrap_or_else(|| "Save a screenshot first, or choose an image from your library.".into())))
                     .child(div().flex().flex_wrap().gap_2()
-                        .child(ui_button("upload-saved-png", "Upload image", busy || self.upload_config_loading || self.upload_cancel.is_some()
+                        .child(ui_button(cx, "upload-saved-png", "Upload image", busy || self.upload_config_loading || self.upload_cancel.is_some()
                             || self.upload_destination.is_none() || self.last_saved.is_none(), true,
                             cx.listener(|this, _, _, cx| this.start_upload(cx))))
-                        .when(self.upload_cancel.is_some(), |row| row.child(capture_button("cancel-upload", "Cancel upload", false,
+                        .when(self.upload_cancel.is_some(), |row| row.child(capture_button(cx, "cancel-upload", "Cancel upload", false,
                             cx.listener(|this, _, _, cx| this.cancel_upload(cx)))))
-                        .when(self.upload_url.is_some(), |row| row.child(capture_button("copy-upload-link", "Copy link", false,
+                        .when(self.upload_url.is_some(), |row| row.child(capture_button(cx, "copy-upload-link", "Copy link", false,
                             cx.listener(|this, _, _, cx| {
                                 if let Some(url) = &this.upload_url {
                                     cx.write_to_clipboard(gpui::ClipboardItem::new_string(url.clone()));
@@ -3347,13 +3430,13 @@ impl Render for SpikeShell {
                                 }
                             })))))
                     .child(div().text_sm().child(self.upload_status.clone()))
-                    .children(self.upload_url.clone().map(|url| div().text_sm().text_color(rgb(crate::theme::ACCENT)).child(url))))
+                    .children(self.upload_url.clone().map(|url| div().text_sm().text_color(rgb(theme.accent)).child(url))))
             .child(
                 div()
                     .flex()
                     .flex_col()
                     .gap_2()
-                    .child(capture_button("toggle-upload-history", if self.upload_history_visible {"Hide upload history"} else {"Upload history"}, false,
+                    .child(capture_button(cx, "toggle-upload-history", if self.upload_history_visible {"Hide upload history"} else {"Upload history"}, false,
                         cx.listener(|this,_,_,cx| { if this.upload_history_visible {this.hide_upload_history();} else {this.upload_history_visible=true;this.refresh_upload_history(None,cx);} cx.notify(); })))
                     .when(self.upload_history_visible, |view| {
                         let revision = self.upload_history_revision;
@@ -3361,20 +3444,20 @@ impl Render for SpikeShell {
                             .child(div().id("upload-history-list").max_h(px(320.0)).overflow_y_scroll().flex().flex_col().gap_2()
                                 .children(self.upload_history_entries.clone().into_iter().enumerate().map(|(index,entry)| {
                                     let id=entry.id; let url=entry.url.clone();
-                                    div().id(("upload-history-row",index)).p_2().bg(rgb(crate::theme::CONTROL))
+                                    div().id(("upload-history-row",index)).p_2().bg(rgb(theme.control))
                                         .child(entry.filename).child(div().text_sm().child(format!("{} · {}",entry.origin,entry.created_at)))
                                         .child(div().text_sm().child(entry.url))
                                         .child(div().flex().gap_2()
-                                            .child(capture_button("copy-upload-history-link","Copy link",false,cx.listener(move |this,_,_,cx| {
+                                            .child(capture_button(cx, "copy-upload-history-link","Copy link",false,cx.listener(move |this,_,_,cx| {
                                                 if this.upload_history_visible && this.upload_history_revision==revision && this.upload_history_entries.iter().any(|entry| entry.id==id) {
                                                     cx.write_to_clipboard(gpui::ClipboardItem::new_string(url.clone())); this.clipboard_status="Upload history link copied".into(); cx.notify();
                                                 }
                                             })))
-                                            .child(capture_button("remove-upload-history-link","Remove from library",self.upload_history_loading || self.history_mutating,cx.listener(move |this,_,_,cx|this.remove_upload_entry(id,revision,cx)))))
+                                            .child(capture_button(cx, "remove-upload-history-link","Remove from library",self.upload_history_loading || self.history_mutating,cx.listener(move |this,_,_,cx|this.remove_upload_entry(id,revision,cx)))))
                                 })))
                             .child(div().flex().gap_2()
-                                .child(capture_button("upload-history-latest","Latest",self.upload_history_loading,cx.listener(|this,_,_,cx|this.refresh_upload_history(None,cx))))
-                                .child(capture_button("upload-history-older","Older",self.upload_history_loading || !self.upload_history_more,cx.listener(|this,_,_,cx| {
+                                .child(capture_button(cx, "upload-history-latest","Latest",self.upload_history_loading,cx.listener(|this,_,_,cx|this.refresh_upload_history(None,cx))))
+                                .child(capture_button(cx, "upload-history-older","Older",self.upload_history_loading || !self.upload_history_more,cx.listener(|this,_,_,cx| {
                                     if let Some(entry)=this.upload_history_entries.last() {this.refresh_upload_history(Some(entry.id),cx);}
                                 }))))
                     }),
@@ -3390,9 +3473,15 @@ impl Render for SpikeShell {
                             .id(("display-capture", index))
                             .px_3()
                             .py_2()
-                            .rounded_md()
-                            .bg(rgb(crate::theme::CONTROL))
-                            .cursor_pointer()
+                            .rounded(px(theme.radius))
+                            .bg(rgb(theme.surface))
+                            .border_1().border_color(rgb(theme.border))
+                            .role(gpui::Role::Button).aria_label(format!("Capture {}", display.name))
+                            .when(!unavailable, |row| row.focusable().tab_index(0).cursor_pointer()
+                                .hover(|style| style.bg(rgb(theme.hover)))
+                                .active(|style| style.bg(rgb(theme.pressed)))
+                                .focus_visible(|style| style.border_color(rgb(theme.focus))))
+                            .text_color(rgb(if unavailable { theme.disabled } else { theme.text }))
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 if !unavailable {
                                     this.start_capture(vec![CaptureJob::Display(id.clone())], cx);
@@ -3423,7 +3512,7 @@ impl Render for SpikeShell {
                                 .justify_between()
                                 .items_center()
                                 .child("Capture a window")
-                                .child(capture_button(
+                                .child(capture_button(cx,
                                     "refresh-windows",
                                     "Refresh",
                                     busy || self.refreshing,
@@ -3445,9 +3534,15 @@ impl Render for SpikeShell {
                                             .flex_none()
                                             .px_3()
                                             .py_2()
-                                            .rounded_md()
-                                            .bg(rgb(crate::theme::CONTROL))
-                                            .cursor_pointer()
+                                            .rounded(px(theme.radius))
+                                            .bg(rgb(theme.surface))
+                                            .border_1().border_color(rgb(theme.border))
+                                            .role(gpui::Role::Button).aria_label(format!("Capture {title}"))
+                                            .when(!unavailable, |row| row.focusable().tab_index(0).cursor_pointer()
+                                                .hover(|style| style.bg(rgb(theme.hover)))
+                                                .active(|style| style.bg(rgb(theme.pressed)))
+                                                .focus_visible(|style| style.border_color(rgb(theme.focus))))
+                                            .text_color(rgb(if unavailable { theme.disabled } else { theme.text }))
                                             .on_click(cx.listener(move |this, _, _, cx| {
                                                 if !unavailable {
                                                     this.start_capture(
@@ -3463,7 +3558,7 @@ impl Render for SpikeShell {
                         .child(
                             div()
                                 .text_sm()
-                                .text_color(rgb(crate::theme::MUTED))
+                                .text_color(rgb(theme.muted))
                                 .child(self.list_status.clone()),
                         ),
                 )
@@ -3505,7 +3600,7 @@ impl Render for SpikeShell {
                                 .into_iter()
                                 .map(
                                     |(id, label, active, filter)| {
-                                        quiet_button(
+                                        quiet_button(cx,
                                             id,
                                             if self.history_filter == filter {
                                                 active
@@ -3521,13 +3616,13 @@ impl Render for SpikeShell {
                                     },
                                 ),
                             )
-                        .child(quiet_button(
+                        .child(quiet_button(cx,
                             "import-history-images",
                             "Add PNGs…",
                             busy || self.history_loading,
                             false, cx.listener(|this, _, _, cx| this.import_history_images(cx)),
                         ))
-                                .child(quiet_button(
+                                .child(quiet_button(cx,
                                     "select-history-page",
                                     "Select all",
                                     self.history_loading
@@ -3538,7 +3633,7 @@ impl Render for SpikeShell {
                                     }),
                                 )),
                         )
-                        .child(div().text_xs().text_color(rgb(crate::theme::MUTED)).child(self.history_status.clone()))
+                        .child(div().text_xs().text_color(rgb(theme.muted)).child(self.history_status.clone()))
 
 
                         .when(!self.history_action_status.is_empty(), |view| view.child(div().text_sm().child(self.history_action_status.clone())))
@@ -3548,8 +3643,8 @@ impl Render for SpikeShell {
                                 .flex()
                                 .flex_wrap()
                                 .gap_1().items_center()
-                                .child(div().px_2().text_xs().text_color(rgb(crate::theme::MUTED)).child(format!("{} selected", self.history_selected.len())))
-                                .child(quiet_button(
+                                .child(div().px_2().text_xs().text_color(rgb(theme.muted)).child(format!("{} selected", self.history_selected.len())))
+                                .child(quiet_button(cx,
                                     "clear-history-selection",
                                     "Clear selection",
                                     self.history_mutating || self.history_selected.is_empty(),
@@ -3564,7 +3659,7 @@ impl Render for SpikeShell {
                                         }
                                     }),
                                 ))
-                                .child(quiet_button(
+                                .child(quiet_button(cx,
                                     "export-history-selection",
                                     "Export selected…",
                                     busy || self.history_loading
@@ -3573,7 +3668,7 @@ impl Render for SpikeShell {
                                         this.export_selected_history(revision, cx)
                                     }),
                                 ))
-                                .child(quiet_button(
+                                .child(quiet_button(cx,
                                     "remove-history-selection",
                                     "Remove selected",
                                     busy || self.history_loading
@@ -3590,9 +3685,9 @@ impl Render for SpikeShell {
                                 ,
                         ))
                         .when(!self.history_loading && self.history_entries.is_empty(), |view| view.child(
-                            div().p_6().rounded_lg().border_1().border_color(rgb(crate::theme::BORDER)).bg(rgb(crate::theme::SURFACE))
+                            div().p_6().rounded(px(theme.panel_radius)).border_1().border_color(rgb(theme.border)).bg(rgb(theme.surface))
                                 .child(div().text_lg().child("No images to show"))
-                                .child(div().mt_2().text_sm().text_color(rgb(crate::theme::MUTED)).child("Take a screenshot, add PNGs, or try a different search."))))
+                                .child(div().mt_2().text_sm().text_color(rgb(theme.muted)).child("Take a screenshot, add PNGs, or try a different search."))))
                         .child(
                             div()
                                 .id("capture-history-list")
@@ -3615,47 +3710,48 @@ impl Render for SpikeShell {
                                             let selected = self.history_selected.contains(&entry_id);
                                             let filename = entry.path.file_name().unwrap_or_default().to_string_lossy().into_owned();
                                             div().id(("history-entry", index)).flex_none().flex().flex_col().gap_3()
-                                                .p_3().rounded_lg().bg(rgb(crate::theme::SURFACE))
-                                                .border_1().border_color(if selected { rgb(crate::theme::BORDER) } else { rgba(0) })
+                                                .p_3().rounded(px(theme.panel_radius)).bg(rgb(theme.surface))
+                                                .when(theme.classic, |row| row.p_2().gap_1())
+                                                .border_1().border_color(if selected { rgb(theme.accent) } else { rgb(theme.border) })
                                                 .child(div().flex().flex_wrap().items_center().gap_2()
-                                                    .child(div().id(("history-preview", index)).role(gpui::Role::Button).aria_label("Preview image")
-                                                        .flex_1().min_w(px(160.)).flex().items_center().gap_3().p_1().rounded_md()
+                                                    .child(div().id(("history-preview", index)).role(gpui::Role::Button).aria_label(format!("Preview {filename}"))
+                                                        .flex_1().min_w(px(160.)).flex().items_center().gap_3().p_1().rounded(px(theme.radius))
                                                         .border_1().border_color(rgba(0))
                                                         .when(preview.is_some() || (!busy && !self.history_loading), |item| item.focusable().tab_index(0).cursor_pointer()
-                                                            .hover(|style| style.bg(rgb(crate::theme::HOVER)))
-                                                            .focus_visible(|style| style.border_color(rgb(crate::theme::FOCUS))))
+                                                            .hover(|style| style.bg(rgb(theme.hover)))
+                                                            .focus_visible(|style| style.border_color(rgb(theme.focus))))
                                                         .on_click(cx.listener(move |this, _, _, cx| this.preview_history_image(entry_id, revision, cx)))
                                                         .child(div().w(px(44.)).h(px(44.)).flex_none().flex().items_center().justify_center()
-                                                            .rounded_md().bg(rgb(crate::theme::CONTROL)).child(ui_icon("nav-captures", 22.)))
+                                                            .rounded(px(theme.radius)).bg(rgb(theme.control)).child(ui_icon(cx, "nav-captures", 22.)))
                                                         .child(div().flex_1().min_w_0().flex().flex_col().gap_1()
                                                             .child(div().text_sm().font_weight(gpui::FontWeight::MEDIUM).text_ellipsis().child(filename))
-                                                            .child(div().text_xs().text_color(rgb(crate::theme::MUTED)).child(format!("{} × {}  ·  {}", entry.width, entry.height, entry.created_at)))))
+                                                            .child(div().text_xs().text_color(rgb(theme.muted)).child(format!("{} × {}  ·  {}", entry.width, entry.height, entry.created_at)))))
                                                     .child(div().flex().flex_wrap().gap_1()
-                                                        .child(quiet_button("select-history-entry", if selected { "Selected" } else { "Select" },
+                                                        .child(quiet_button(cx, "select-history-entry", if selected { "Selected" } else { "Select" },
                                                             self.history_loading || self.history_mutating, selected,
                                                             cx.listener(move |this, _, _, cx| this.toggle_history_selection(entry_id, revision, cx))))
-                                                        .child(quiet_button("edit-history-file", "Edit", busy, false,
+                                                        .child(quiet_button(cx, "edit-history-file", "Edit", busy, false,
                                                             cx.listener(move |this, _, _, cx| this.open_history_editor(edit_path.clone(), cx))))
-                                                        .child(quiet_button("copy-history-file", "Copy", busy, false,
+                                                        .child(quiet_button(cx, "copy-history-file", "Copy", busy, false,
                                                             cx.listener(move |this, _, _, cx| this.copy_history_capture(copy_path.clone(), cx))))
-                                                        .child(quiet_button("history-more-actions", "More", self.history_loading || self.history_mutating,
+                                                        .child(quiet_button(cx, "history-more-actions", "More", self.history_loading || self.history_mutating,
                                                             self.history_actions == Some(entry_id),
                                                             cx.listener(move |this, _, _, cx| this.toggle_history_actions(entry_id, revision, cx))))))
-                                                .children(preview.map(|render| div().p_3().rounded_md().bg(rgb(crate::theme::BACKGROUND))
+                                                .children(preview.map(|render| div().p_3().rounded(px(theme.radius)).bg(rgb(theme.background))
                                                     .child(img(render).max_w_full().max_h(px(280.)))
-                                                    .child(div().mt_2().text_xs().text_color(rgb(crate::theme::MUTED)).child("Click the image name to close this preview."))))
+                                                    .child(div().mt_2().text_xs().text_color(rgb(theme.muted)).child("Click the image name to close this preview."))))
                                                 .when(self.history_actions == Some(entry_id), |row| row.child(
-                                                    div().pt_3().border_t_1().border_color(rgb(crate::theme::BORDER)).flex().flex_col().gap_2()
+                                                    div().pt_3().border_t_1().border_color(rgb(theme.border)).flex().flex_col().gap_2()
                                                         .child(div().flex().flex_wrap().gap_1()
-                                                            .child(quiet_button("open-history-file", "Open", false, false, move |_, _, cx| cx.open_with_system(&open_path)))
-                                                            .child(quiet_button("reveal-history-file", "Show in folder", false, false, move |_, _, cx| cx.reveal_path(&reveal_path)))
-                                                            .child(quiet_button("upload-history-image", "Upload PNG", busy || self.history_loading || self.upload_config_loading || self.upload_cancel.is_some() || self.upload_destination.is_none(), false,
+                                                            .child(quiet_button(cx, "open-history-file", "Open", false, false, move |_, _, cx| cx.open_with_system(&open_path)))
+                                                            .child(quiet_button(cx, "reveal-history-file", "Show in folder", false, false, move |_, _, cx| cx.reveal_path(&reveal_path)))
+                                                            .child(quiet_button(cx, "upload-history-image", "Upload PNG", busy || self.history_loading || self.upload_config_loading || self.upload_cancel.is_some() || self.upload_destination.is_none(), false,
                                                                 cx.listener(move |this, _, _, cx| this.upload_history_image(entry_id, revision, cx))))
-                                                            .child(quiet_button("relink-history-file", "Relink PNG…", busy || self.history_loading, false,
+                                                            .child(quiet_button(cx, "relink-history-file", "Relink PNG…", busy || self.history_loading, false,
                                                                 cx.listener(move |this, _, _, cx| this.relink_history_image(entry_id, revision, cx))))
-                                                            .child(quiet_button("remove-history-entry", "Remove from library", busy || self.history_loading, false,
+                                                            .child(quiet_button(cx, "remove-history-entry", "Remove from library", busy || self.history_loading, false,
                                                                 cx.listener(move |this, _, _, cx| { if this.history_revision == revision { this.remove_history_capture(entry_id, cx); } }))))
-                                                        .child(div().text_xs().text_color(rgb(crate::theme::MUTED)).child("Removing keeps your file. Upload sends the saved PNG, including metadata."))))
+                                                        .child(div().text_xs().text_color(rgb(theme.muted)).child("Removing keeps your file. Upload sends the saved PNG, including metadata."))))
                                         },
                                     ),
                                 ),
@@ -3664,13 +3760,13 @@ impl Render for SpikeShell {
                             div()
                                 .flex()
                                 .gap_2()
-                                .child(quiet_button(
+                                .child(quiet_button(cx,
                                     "history-latest",
                                     "Latest",
                                     self.history_loading || self.history_mutating,
                                     false, cx.listener(|this, _, _, cx| this.refresh_history(None, cx)),
                                 ))
-                                .child(quiet_button(
+                                .child(quiet_button(cx,
                                     "history-older",
                                     "Older",
                                     self.history_loading
@@ -3688,24 +3784,37 @@ impl Render for SpikeShell {
             })
             .when(self.page == ControlPage::Settings, |view| {
                 view.child(
+                div().flex_none().p_5().rounded(px(theme.panel_radius)).border_1().border_color(rgb(theme.border))
+                    .bg(rgb(theme.surface)).flex().flex_col().gap_4()
+                    .child(div().font_weight(gpui::FontWeight::SEMIBOLD).child("Appearance"))
+                    .child(div().text_sm().text_color(rgb(theme.muted)).child("Three personalities. The same familiar tools. Saved automatically."))
+                    .child(div().flex().flex_wrap().gap_3().children(
+                        [app_core::UiTheme::Oldschool, app_core::UiTheme::Default, app_core::UiTheme::Safelight]
+                            .into_iter().enumerate().map(|(index, option)| theme_option(cx, index, option,
+                                theme::selected(cx) == option,
+                                self.settings_loading || self.settings_saving || self.output_directory.is_none(),
+                                cx.listener(move |this, _, _, cx| this.choose_theme(option, cx))))))
+                    .child(div().text_sm().text_color(rgb(theme.muted)).child(self.settings_status.clone()))
+            ).child(
                 div()
                     .flex()
                     .flex_col()
+                    .flex_none()
                     .p_5()
                     .gap_3()
-                    .bg(rgb(crate::theme::SURFACE))
-                    .rounded_lg().child(div().font_weight(gpui::FontWeight::SEMIBOLD).child("Storage"))
-                    .child(div().text_sm().text_color(rgb(crate::theme::MUTED)).child("Save folder"))
+                    .bg(rgb(theme.surface))
+                    .rounded(px(theme.panel_radius)).child(div().font_weight(gpui::FontWeight::SEMIBOLD).child("Storage"))
+                    .child(div().text_sm().text_color(rgb(theme.muted)).child("Save folder"))
                     .child(div().text_sm().child(folder))
-                    .child(capture_button(
+                    .child(capture_button(cx,
                         "choose-output-directory",
                         "Change folder…",
                         busy,
                         cx.listener(|this, _, _, cx| this.choose_output_directory(cx)),
                     ))
-                    .child(div().text_sm().child(self.settings_status.clone())),
+                    .child(div().text_xs().text_color(rgb(theme.muted)).child("Existing files stay where they are.")),
             )
-            .child(capture_button(
+            .child(capture_button(cx,
                 "toggle-diagnostics",
                 if self.diagnostics {
                     "Hide diagnostics"
@@ -3725,10 +3834,11 @@ impl Render for SpikeShell {
                         .flex_col()
                         .gap_2()
                         .text_sm()
-                        .text_color(rgb(crate::theme::MUTED))
+                        .text_color(rgb(theme.muted))
+                        .child(self.hotkey_status.clone())
                         .child(self.tray_status.clone())
                         .child(format!("{} overlay window(s)", self.overlays.len()))
-                        .child(capture_button(
+                        .child(capture_button(cx,
                             "open-probe",
                             "Open test overlay",
                             unavailable,
@@ -3736,7 +3846,7 @@ impl Render for SpikeShell {
                                 this.open_overlays(OverlayMode::Probe, cx)
                             }),
                         ))
-                        .child(capture_button(
+                        .child(capture_button(cx,
                             "close-overlays",
                             "Close overlays",
                             false,
@@ -3763,26 +3873,124 @@ fn render_thumbnail(shot: &CapturedImage) -> Arc<gpui::RenderImage> {
     }
     Arc::new(gpui::RenderImage::new(vec![image::Frame::new(pixels)]))
 }
-fn sidebar_item(
+fn classic_capture_home(theme: theme::Palette) -> impl IntoElement {
+    let command = if cfg!(target_os = "macos") { "⌘" } else { "Ctrl" };
+    div().flex_none().self_center().w_full().max_w(px(480.)).mt(px(72.)).flex().flex_col().gap_3()
+        .child(div().text_sm().font_weight(gpui::FontWeight::SEMIBOLD).child("Capture shortcuts"))
+        .child(div().text_size(px(13.)).text_color(rgb(theme.muted))
+            .child("Use Capture on the left or a shortcut to get started."))
+        .child(div().flex().flex_col().border_t_1().border_color(rgb(theme.border))
+            .children([
+                ("N", "Capture & annotate"), ("1", "Recent capture"),
+                ("2", "Library"), ("3", "Displays & windows"), (",", "Settings"),
+            ].into_iter().map(move |(key, label)| div().flex().items_center().gap_4().py_2().text_size(px(13.))
+                .child(div().w(px(90.)).text_color(rgb(theme.accent)).child(format!("{command} + {key}")))
+                .child(label))))
+}
+
+fn capture_frame(theme: theme::Palette) -> impl IntoElement {
+    gpui::canvas(|_, _, _| (), move |bounds, _, window, _| {
+        let inset = px(12.);
+        let length = px(20.);
+        let mut path = gpui::PathBuilder::stroke(px(1.5));
+        for (x, y, dx, dy) in [
+            (bounds.left() + inset, bounds.top() + inset, 1., 1.),
+            (bounds.right() - inset, bounds.top() + inset, -1., 1.),
+            (bounds.right() - inset, bounds.bottom() - inset, -1., -1.),
+            (bounds.left() + inset, bounds.bottom() - inset, 1., -1.),
+        ] {
+            path.move_to(point(x, y + length * dy));
+            path.line_to(point(x, y));
+            path.line_to(point(x + length * dx, y));
+        }
+        if let Ok(path) = path.build() { window.paint_path(path, rgb(theme.accent)); }
+    }).absolute().top_0().left_0().size_full()
+}
+
+fn shortcut_hint(label: &'static str, keys: &'static str, theme: theme::Palette) -> impl IntoElement {
+    div().flex().items_center().gap_2().text_xs().text_color(rgb(theme.muted))
+        .child(label)
+        .child(div().px_2().py_1().rounded(px(theme.radius * 0.5)).border_1().border_color(rgb(theme.border)).child(keys))
+}
+
+fn capture_tile(
+    cx: &App,
+    id: &'static str,
+    label: &'static str,
+    description: &'static str,
+    disabled: bool,
+    on_click: impl Fn(&gpui::ClickEvent, &mut Window, &mut App) + 'static,
+) -> impl IntoElement {
+    let theme = theme::current(cx);
+    div().id(id).role(gpui::Role::Button).aria_label(label).aria_description(description)
+        .w_full().flex_none().p_3().rounded(px(theme.radius))
+        .border_1().border_color(rgba(0))
+        .flex().items_center().gap_3()
+        .when(!disabled, |tile| tile.focusable().tab_index(0).cursor_pointer()
+            .hover(|style| style.bg(rgb(theme.hover)))
+            .active(|style| style.bg(rgb(theme.pressed)))
+            .focus_visible(|style| style.border_color(rgb(theme.focus))))
+        .on_click(move |event, window, cx| { if !disabled { on_click(event, window, cx); } })
+        .child(ui_icon(cx, id, 20.))
+        .child(div().flex_1().min_w_0().flex().flex_col().gap_1()
+            .child(div().text_sm().font_weight(gpui::FontWeight::MEDIUM).whitespace_nowrap()
+                .text_color(rgb(if disabled { theme.disabled } else { theme.text })).child(label))
+            .child(div().text_xs().text_color(rgb(theme.muted)).child(description)))
+}
+
+fn theme_option(
+    cx: &App,
+    index: usize,
+    option: app_core::UiTheme,
+    selected: bool,
+    disabled: bool,
+    on_click: impl Fn(&gpui::ClickEvent, &mut Window, &mut App) + 'static,
+) -> impl IntoElement {
+    let theme = theme::current(cx);
+    let sample = theme::palette(option);
+    div().id(("theme-option", index)).role(gpui::Role::Button)
+        .aria_label(theme::name(option)).aria_description(theme::description(option)).aria_selected(selected)
+        .flex_1().min_w(px(160.)).p_3().flex().flex_col().gap_3()
+        .rounded(px(theme.radius)).border_2().border_color(rgb(if selected { theme.accent } else { theme.border }))
+        .bg(rgb(if selected { theme.selection } else { theme.background }))
+        .when(!disabled, |card| card.focusable().tab_index(0).cursor_pointer()
+            .hover(|style| style.bg(rgb(theme.hover)))
+            .active(|style| style.bg(rgb(theme.pressed)))
+            .focus_visible(|style| style.border_color(rgb(theme.focus))))
+        .on_click(move |event, window, cx| { if !disabled { on_click(event, window, cx); } })
+        .child(div().h(px(56.)).w_full().flex().gap_1().p_2().rounded(px(sample.radius))
+            .border_1().border_color(rgb(sample.bevel_light)).bg(rgb(sample.background))
+            .child(div().flex_1().h_full().rounded(px(sample.radius * 0.5)).bg(rgb(sample.surface)))
+            .child(div().flex_1().h_full().rounded(px(sample.radius * 0.5)).bg(rgb(sample.control)))
+            .child(div().w(px(24.)).h_full().rounded(px(sample.radius * 0.5)).bg(rgb(sample.primary))))
+        .child(div().flex().items_center().justify_between().gap_2().text_sm()
+            .child(div().font_weight(gpui::FontWeight::SEMIBOLD).child(theme::name(option)))
+            .child(div().text_color(rgb(theme.accent)).child(if selected { "✓" } else { "" })))
+        .child(div().text_xs().text_color(rgb(theme.muted)).child(theme::description(option)))
+}
+
+fn sidebar_item(cx: &App,
     id: &'static str,
     label: &'static str,
     disabled: bool,
     on_click: impl Fn(&gpui::ClickEvent, &mut Window, &mut App) + 'static,
 ) -> impl IntoElement {
-    sidebar_navigation(id, label, disabled, false, on_click)
+    sidebar_navigation(cx, id, label, disabled, false, on_click)
 }
 
-fn sidebar_navigation(
+fn sidebar_navigation(cx: &App,
     id: &'static str,
     label: &'static str,
     disabled: bool,
     selected: bool,
     on_click: impl Fn(&gpui::ClickEvent, &mut Window, &mut App) + 'static,
 ) -> impl IntoElement {
+    let theme = crate::theme::current(cx);
     div()
         .id(id)
         .role(gpui::Role::Button)
         .aria_label(label)
+        .aria_selected(selected)
         .w_full()
         .flex_none()
         .flex()
@@ -3790,53 +3998,62 @@ fn sidebar_navigation(
         .gap_3()
         .px_3()
         .py_2()
-        .rounded_md()
+        .rounded(px(theme.radius))
         .text_sm()
-        .text_color(rgb(if disabled {
-            crate::theme::DISABLED
-        } else {
-            crate::theme::TEXT
-        }))
+        .when(theme.classic, |item| item.px_2().py_1().gap_2().text_size(px(13.)))
+        .text_color(rgb(if disabled { theme.disabled } else if selected && !theme.classic { theme.accent } else { theme.text }))
         .border_1()
-        .border_color(rgb(if selected {
-            crate::theme::BORDER
-        } else {
-            crate::theme::SURFACE
-        }))
-        .bg(rgb(if selected {
-            crate::theme::CONTROL
-        } else {
-            crate::theme::SURFACE
-        }))
+        .border_color(if selected { rgb(theme.border) } else { rgba(0) })
+        .bg(rgb(if selected { theme.selection } else { theme.surface }))
         .when(!disabled, |item| {
             item.focusable()
                 .tab_index(0)
                 .cursor_pointer()
-                .focus_visible(|style| style.border_color(rgb(crate::theme::FOCUS)))
-                .hover(|style| style.bg(rgb(crate::theme::HOVER)))
-                .active(|style| style.bg(rgb(crate::theme::PRESSED)))
+                .focus_visible(|style| style.border_color(rgb(theme.focus)))
+                .hover(|style| style.bg(rgb(theme.hover)))
+                .active(|style| style.bg(rgb(theme.pressed)))
         })
         .on_click(move |event, window, cx| {
             if !disabled {
                 on_click(event, window, cx);
             }
         })
-        .child(sidebar_icon(id))
+        .child(sidebar_icon(cx, id))
         .child(div().flex_1().min_w_0().text_ellipsis().child(label))
 }
 
-fn sidebar_icon(id: &'static str) -> impl IntoElement {
-    ui_icon(id, 16.)
+fn sidebar_icon(cx: &App, id: &'static str) -> impl IntoElement {
+    ui_icon(cx, id, 16.)
 }
 
-fn ui_icon(id: &'static str, edge: f32) -> impl IntoElement {
+fn ui_icon(cx: &App, id: &'static str, edge: f32) -> impl IntoElement {
+    let theme = crate::theme::current(cx);
     gpui::canvas(
         |_, _, _| (),
         move |bounds, _, window, _| {
             let strokes: &[&[[f32; 2]]] = match id {
+                "select-region" => &[
+                    &[[3., 9.], [3., 3.], [9., 3.]], &[[15., 3.], [21., 3.], [21., 9.]],
+                    &[[21., 15.], [21., 21.], [15., 21.]], &[[9., 21.], [3., 21.], [3., 15.]],
+                ],
+                "appearance-shortcut" => &[
+                    &[[3., 3.], [10., 3.], [10., 10.], [3., 10.], [3., 3.]],
+                    &[[14., 3.], [21., 3.], [21., 10.], [14., 10.], [14., 3.]],
+                    &[[3., 14.], [10., 14.], [10., 21.], [3., 21.], [3., 14.]],
+                    &[[14., 14.], [21., 14.], [21., 21.], [14., 21.], [14., 14.]],
+                ],
+                "delayed-region" => &[
+                    &[[12., 3.], [18., 5.], [21., 12.], [18., 19.], [12., 21.], [6., 19.], [3., 12.], [6., 5.], [12., 3.]],
+                    &[[12., 7.], [12., 12.], [16., 14.]],
+                ],
                 "nav-captures" | "preview-history-file" => &[
                     &[[3., 4.], [21., 4.], [21., 20.], [3., 20.], [3., 4.]],
                     &[[3., 17.], [9., 11.], [14., 16.], [17., 13.], [21., 17.]],
+                ],
+                "nav-library" => &[
+                    &[[3., 4.], [3., 20.], [8., 20.], [8., 4.], [3., 4.]],
+                    &[[11., 4.], [11., 20.], [16., 20.], [16., 4.], [11., 4.]],
+                    &[[18., 5.], [22., 19.]],
                 ],
                 "select-history-entry" => &[
                     &[[5., 12.], [10., 17.], [20., 6.]],
@@ -3939,7 +4156,7 @@ fn ui_icon(id: &'static str, edge: f32) -> impl IntoElement {
                 }
             }
             if let Ok(path) = path.build() {
-                window.paint_path(path, rgb(crate::theme::ICON));
+                window.paint_path(path, rgb(theme.icon_color(id)));
             }
         },
     )
@@ -3948,89 +4165,92 @@ fn ui_icon(id: &'static str, edge: f32) -> impl IntoElement {
     .flex_none()
 }
 
-fn quiet_button(
+fn quiet_button(cx: &App,
     id: &'static str,
     label: &'static str,
     disabled: bool,
     selected: bool,
     on_click: impl Fn(&gpui::ClickEvent, &mut Window, &mut App) + 'static,
 ) -> impl IntoElement {
-    div().id(id).role(gpui::Role::Button).aria_label(label)
-        .flex_none().self_start().flex().items_center().justify_center().gap_2()
-        .px_3().py_2().rounded_md().text_sm().border_1()
-        .border_color(if selected { rgb(crate::theme::BORDER) } else { rgba(0) })
-        .bg(if selected { rgb(crate::theme::CONTROL) } else { rgba(0) })
-        .text_color(rgb(if disabled { crate::theme::DISABLED } else if selected { crate::theme::TEXT } else { crate::theme::MUTED }))
+    let theme = crate::theme::current(cx);
+    div().id(id).role(gpui::Role::Button).aria_label(label).aria_selected(selected)
+        .flex_none().self_start().whitespace_nowrap().flex().items_center().justify_center().gap_2()
+        .px_3().py_2().rounded(px(theme.radius)).text_sm().border_1()
+        .when(theme.classic, |button| button.px_2().py_1().text_size(px(13.)))
+        .border_color(if selected { rgb(theme.accent) } else { rgba(0) })
+        .bg(if selected { rgb(theme.selection) } else { rgba(0) })
+        .text_color(rgb(if disabled { theme.disabled } else if selected { theme.text } else { theme.muted }))
         .when(!disabled, |button| button.focusable().tab_index(0).cursor_pointer()
-            .focus_visible(|style| style.border_color(rgb(crate::theme::FOCUS)))
-            .hover(|style| style.bg(rgb(crate::theme::HOVER)).text_color(rgb(crate::theme::TEXT)))
-            .active(|style| style.bg(rgb(crate::theme::PRESSED))))
+            .focus_visible(|style| style.border_color(rgb(theme.focus)))
+            .hover(|style| style.bg(rgb(theme.hover)).text_color(rgb(theme.text)))
+            .active(|style| style.bg(rgb(theme.pressed))))
         .on_click(move |event, window, cx| { if !disabled { on_click(event, window, cx); } })
-        .when(matches!(id, "preview-history-file" | "copy-history-file" | "edit-history-file" | "history-more-actions" | "select-history-entry"), |button| button.child(sidebar_icon(if id == "select-history-entry" && !selected { "unselected-history-entry" } else { id })))
+        .when(id == "appearance-shortcut", |button| button.child(sidebar_icon(cx, id)))
+        .when(matches!(id, "preview-history-file" | "copy-history-file" | "edit-history-file" | "history-more-actions" | "select-history-entry"), |button| button.child(sidebar_icon(cx, if id == "select-history-entry" && !selected { "unselected-history-entry" } else { id })))
         .child(label)
 }
 
-fn capture_button(
+fn capture_button(cx: &App,
     id: &'static str,
     label: &'static str,
     disabled: bool,
     on_click: impl Fn(&gpui::ClickEvent, &mut Window, &mut App) + 'static,
 ) -> impl IntoElement {
-    quiet_button(id, label, disabled, false, on_click)
+    quiet_button(cx, id, label, disabled, false, on_click)
 }
 
-fn ui_button(
+fn ui_button(cx: &App,
     id: &'static str,
     label: &'static str,
     disabled: bool,
     accented: bool,
     on_click: impl Fn(&gpui::ClickEvent, &mut Window, &mut App) + 'static,
 ) -> impl IntoElement {
+    let theme = crate::theme::current(cx);
     div()
         .id(id)
         .role(gpui::Role::Button)
         .aria_label(label)
         .flex_none()
-        .px_3()
+        .whitespace_nowrap()
+        .flex().items_center().justify_center().gap_2()
+        .px_4()
         .py_2()
-        .rounded_md()
+        .rounded(px(theme.radius))
         .border_1()
         .border_color(rgb(if accented {
-            crate::theme::ACCENT
+            theme.accent
         } else {
-            crate::theme::BORDER
+            theme.border
         }))
         .text_sm()
-        .text_color(rgb(if disabled {
-            crate::theme::DISABLED
-        } else {
-            crate::theme::TEXT
-        }))
+        .text_color(rgb(if disabled { theme.disabled } else if accented { theme.primary_text } else { theme.text }))
         .bg(if disabled {
-            rgb(crate::theme::SURFACE)
+            rgb(theme.surface)
         } else if accented {
-            rgb(crate::theme::PRIMARY)
+            rgb(theme.primary)
         } else {
-            rgb(crate::theme::CONTROL)
+            rgb(theme.control)
         })
+        .when(theme.classic, |button| button.px_2().py_1().text_size(px(13.)))
         .when(!disabled, |button| {
             button
                 .focusable()
                 .tab_index(0)
-                .focus_visible(|style| style.border_color(rgb(crate::theme::FOCUS)))
+                .focus_visible(|style| style.border_color(rgb(if accented { theme.primary_text } else { theme.focus })))
                 .cursor_pointer()
                 .hover(|style| {
                     style.bg(rgb(if accented {
-                        crate::theme::PRIMARY_HOVER
+                        theme.primary_hover
                     } else {
-                        crate::theme::HOVER
+                        theme.hover
                     }))
                 })
                 .active(|style| {
                     style.bg(rgb(if accented {
-                        crate::theme::PRIMARY_PRESSED
+                        theme.primary_pressed
                     } else {
-                        crate::theme::PRESSED
+                        theme.pressed
                     }))
                 })
         })
@@ -4039,6 +4259,7 @@ fn ui_button(
                 on_click(event, window, cx);
             }
         })
+        .when(id == "select-region-to-edit", |button| button.child(div().text_lg().child("+")))
         .child(label)
 }
 
@@ -4132,6 +4353,7 @@ impl Focusable for Overlay {
 
 impl Render for Overlay {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = crate::theme::current(cx);
         let scale = window.scale_factor();
         let id = u64::from(self.display_id);
         let (label, fill) = match self.mode {
@@ -4192,7 +4414,7 @@ impl Render for Overlay {
                 let end = self.drag_end;
                 div().absolute().left(start.x.min(end.x)).top(start.y.min(end.y))
                     .w((end.x - start.x).abs()).h((end.y - start.y).abs())
-                    .border_2().border_color(rgb(0x60a5fa)).bg(rgba(0x60a5fa30))
+                    .border_2().border_color(rgb(theme.accent)).bg(rgba(theme.selection_fill))
             }))
             .child(
                 div()
@@ -4200,21 +4422,22 @@ impl Render for Overlay {
                     .flex()
                     .flex_col()
                     .gap_2()
-                    .m_6()
-                    .p_6()
-                    .rounded_lg()
-                    .bg(rgb(crate::theme::SURFACE))
-                    .child(format!("{label}  display {id}"))
-                    .child(div().text_sm().child(format!(
+                    .m_4()
+                    .p_4()
+                    .rounded(px(theme.panel_radius))
+                    .bg(rgb(theme.surface))
+                    .text_color(rgb(theme.text))
+                    .child(if self.mode == OverlayMode::Probe { format!("{label}  display {id}") } else { "Select a region".into() })
+                    .when(self.mode == OverlayMode::Probe, |panel| panel.child(div().text_sm().child(format!(
                         "display origin=({}, {})  size={}×{}  scale={scale:.2}",
                         self.bounds.origin.x,
                         self.bounds.origin.y,
                         self.bounds.size.width,
                         self.bounds.size.height
-                    )))
+                    ))))
                     .child(
-                        div().text_sm().text_color(rgb(0xa3a3a3)).child(
-                            if self.edit_selection { "Drag to select. Release to edit without saving the original. Escape cancels." } else { "Drag to select. Release to save and copy. Escape cancels. Selection stays on one monitor." },
+                        div().text_sm().text_color(rgb(theme.muted)).child(
+                            if self.edit_selection { "Drag to capture & annotate. Esc to cancel." } else { "Drag to copy & save. Esc to cancel. One display at a time." },
                         ),
                     ),
             )
@@ -4403,9 +4626,10 @@ pub fn run() {
                 KeyBinding::new("ctrl-q", Quit, None),
             ]);
 
-            let bounds = Bounds::centered(None, size(px(820.0), px(720.0)), cx);
+            let bounds = Bounds::centered(None, size(px(1060.0), px(760.0)), cx);
             cx.open_window(
                 WindowOptions {
+                    window_min_size: Some(size(px(680.), px(480.))),
                     window_bounds: Some(WindowBounds::Windowed(bounds)),
                     titlebar: Some(TitlebarOptions {
                         title: Some("screenshots".into()),
@@ -4522,7 +4746,7 @@ fn run_resource_probe(mode: &str) {
                 WindowOptions {
                     window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
                         None,
-                        size(px(820.0), px(720.0)),
+                        size(px(1060.0), px(760.0)),
                         cx,
                     ))),
                     titlebar: Some(TitlebarOptions {

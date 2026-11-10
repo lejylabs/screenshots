@@ -1084,19 +1084,28 @@ const TOOLBAR_TOOLS: [(Tool, &str, &str, bool); 14] = [
 
 struct ToolTooltip(&'static str);
 impl Render for ToolTooltip {
-    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = crate::theme::current(cx);
         div()
+            .font_family(crate::theme::font(cx))
             .px_3()
             .py_2()
-            .rounded_md()
-            .bg(rgb(crate::theme::HOVER))
+            .rounded(px(theme.radius))
+            .bg(rgb(theme.hover))
             .text_sm()
-            .text_color(rgb(crate::theme::TEXT))
+            .text_color(rgb(theme.text))
             .child(self.0)
     }
 }
 
-fn tool_icon(tool: Tool) -> impl IntoElement {
+fn tool_icon(cx: &App, tool: Tool) -> impl IntoElement {
+    let theme = crate::theme::current(cx);
+    let color = theme.icon_color(match tool {
+        Tool::Frame => "tool-frame", Tool::Arrow => "tool-arrow", Tool::Line => "tool-line",
+        Tool::Pen => "tool-pen", Tool::Ellipse => "tool-ellipse", Tool::Highlight => "tool-highlight",
+        Tool::Number => "tool-number", Tool::Redact => "tool-redact", Tool::Select => "tool-select",
+        _ => "tool-other",
+    });
     gpui::canvas(
         |_, _, _| (),
         move |bounds, _, window, _| {
@@ -1195,15 +1204,15 @@ fn tool_icon(tool: Tool) -> impl IntoElement {
                 }
             }
             if let Ok(path) = path.build() {
-                window.paint_path(path, rgb(crate::theme::TEXT));
+                window.paint_path(path, rgb(if theme.classic { color } else { theme.text }));
             }
         },
     )
-    .w(px(20.))
-    .h(px(20.))
+    .w(px(if theme.classic { 18. } else { 20. }))
+    .h(px(if theme.classic { 18. } else { 20. }))
 }
 
-fn color_swatch(
+fn color_swatch(cx: &App,
     id: &'static str,
     label: &'static str,
     color: u32,
@@ -1211,6 +1220,7 @@ fn color_swatch(
     disabled: bool,
     on_click: impl Fn(&gpui::ClickEvent, &mut Window, &mut App) + 'static,
 ) -> impl IntoElement {
+    let theme = crate::theme::current(cx);
     div()
         .id(id)
         .role(gpui::Role::Button)
@@ -1220,21 +1230,21 @@ fn color_swatch(
         .justify_center()
         .w(px(32.))
         .h(px(32.))
-        .rounded_md()
+        .rounded(px(theme.radius))
         .border_2()
         .border_color(rgb(if selected {
-            crate::theme::ACCENT
+            theme.accent
         } else {
-            crate::theme::BORDER
+            theme.border
         }))
-        .bg(rgb(crate::theme::CONTROL))
+        .bg(rgb(theme.control))
         .when(!disabled, |button| {
             button
                 .focusable()
                 .tab_index(0)
                 .cursor_pointer()
-                .focus_visible(|style| style.border_color(rgb(0xffffff)))
-                .hover(|style| style.bg(rgb(crate::theme::HOVER)))
+                .focus_visible(|style| style.border_color(rgb(theme.focus)))
+                .hover(|style| style.bg(rgb(theme.hover)))
         })
         .tooltip(move |_, cx| cx.new(|_| ToolTooltip(label)).into())
         .on_click(move |event, window, cx| {
@@ -1248,7 +1258,7 @@ fn color_swatch(
                 .h(px(18.))
                 .rounded_sm()
                 .border_1()
-                .border_color(rgb(crate::theme::MUTED))
+                .border_color(rgb(theme.muted))
                 .bg(rgb(color))
                 .when(disabled, |swatch| swatch.opacity(0.4)),
         )
@@ -2320,6 +2330,7 @@ impl RedactionEditor {
 
 impl Render for RedactionEditor {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = crate::theme::current(cx);
         let viewport = window.viewport_size();
         let layout = [f32::from(viewport.width), f32::from(viewport.height)];
         if self.layout != Some(layout) {
@@ -2556,10 +2567,11 @@ impl Render for RedactionEditor {
             }
         }
         div()
+            .font_family(crate::theme::font(cx))
             .relative()
             .size_full()
-            .bg(rgb(crate::theme::BACKGROUND))
-            .text_color(rgb(crate::theme::TEXT))
+            .bg(rgb(theme.background))
+            .text_color(rgb(theme.text))
             .track_focus(&self.focus)
             .key_context("RedactionEditor")
             .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, _, cx| {
@@ -2639,10 +2651,10 @@ impl Render for RedactionEditor {
                     })
                     .id("editor-toolbar")
                     .absolute()
-                    .when(!self.toolbar_bottom, |view| view.top(px(12.)))
-                    .when(self.toolbar_bottom, |view| view.bottom(px(12.)))
-                    .bg(rgb(crate::theme::SURFACE))
-                    .border_1().border_color(rgb(crate::theme::BORDER)).rounded_lg()
+                    .when(!self.toolbar_bottom, |view| view.top(px(if theme.classic { 4. } else { 12. })))
+                    .when(self.toolbar_bottom, |view| view.bottom(px(if theme.classic { 4. } else { 12. })))
+                    .bg(rgb(theme.surface))
+                    .border_1().border_color(rgb(theme.border)).rounded(px(theme.panel_radius))
                     .mx_auto().max_w(px(1040.))
                     .occlude()
                     .max_h(px(toolbar_max_height))
@@ -2653,8 +2665,10 @@ impl Render for RedactionEditor {
                     .flex()
                     .flex_col()
                     .gap_2()
+                    .when(theme.classic, |toolbar| toolbar.p_2().gap_1())
                     .child(
-                        div().flex().items_center().justify_end().flex_wrap().gap_2().pb_3().border_b_1().border_color(rgb(crate::theme::BORDER))
+                        div().flex().items_center().justify_end().flex_wrap().gap_2().pb_3().border_b_1().border_color(rgb(theme.border))
+                            .when(theme.classic, |row| row.pb_1().gap_1())
                             .child(div().flex_1().min_w(px(120.)).text_sm().font_weight(gpui::FontWeight::SEMIBOLD).child(if self.direct_capture { "Capture & annotate" } else { "Edit a copy · Original kept" })).children(
                                 [
                                     ("export-copy-only", "Copy", OutputMode::CopyOnly),
@@ -2663,7 +2677,7 @@ impl Render for RedactionEditor {
                                 ]
                                 .into_iter()
                                 .map(|(id, label, mode)| {
-                                    crate::ui_button(
+                                    crate::ui_button(cx,
                                         id,
                                         label,
                                         (self.edits.regions.is_empty()
@@ -2676,7 +2690,7 @@ impl Render for RedactionEditor {
                                         matches!(mode, OutputMode::CopyOnly), cx.listener(move |this, _, _, cx| this.export(mode, cx)),
                                     )
                                 }),
-                            ).child(capture_button(
+                            ).child(capture_button(cx,
                                 "redaction-cancel",
                                 "Cancel",
                                 false,
@@ -2685,21 +2699,21 @@ impl Render for RedactionEditor {
                     .child(
                         div().flex().items_center().flex_wrap().gap_1().py_1()
                             .children(TOOLBAR_TOOLS.into_iter().map(|(tool, id, label, separator)| {
-                                div().when(separator, |group| group.ml_2().pl_2().border_l_1().border_color(rgb(crate::theme::BORDER)))
+                                div().when(separator, |group| group.ml_2().pl_2().border_l_1().border_color(rgb(theme.border)))
                                     .child(div().id(id).role(gpui::Role::Button).aria_label(label)
                                         .focusable().tab_index(0).flex().items_center().justify_center()
-                                        .w(px(36.)).h(px(36.)).rounded_md().border_1()
-                                        .border_color(if self.tool == tool {rgb(crate::theme::BORDER)} else {rgba(0)})
-                                        .bg(if self.tool == tool {rgb(crate::theme::CONTROL)} else {rgba(0)})
-                                        .cursor_pointer().hover(|style| style.bg(rgb(crate::theme::HOVER)))
-                                        .active(|style| style.bg(rgb(crate::theme::PRIMARY_PRESSED)))
-                                        .focus_visible(|style| style.border_color(rgb(crate::theme::FOCUS)))
+                                        .w(px(if theme.classic { 28. } else { 36. })).h(px(if theme.classic { 28. } else { 36. })).rounded(px(theme.radius)).border_1()
+                                        .border_color(if self.tool == tool {rgb(theme.accent)} else {rgba(0)})
+                                        .bg(if self.tool == tool {rgb(theme.selection)} else {rgba(0)})
+                                        .cursor_pointer().hover(|style| style.bg(rgb(theme.hover)))
+                                        .active(|style| style.bg(rgb(theme.primary_pressed)))
+                                        .focus_visible(|style| style.border_color(rgb(theme.focus)))
                                         .tooltip(move |_, cx| cx.new(|_| ToolTooltip(label)).into())
                                         .on_click(cx.listener(move |this, _, _, cx| this.select_tool(tool, cx)))
-                                        .child(tool_icon(tool)))
+                                        .child(tool_icon(cx, tool)))
                             })),
                     )
-                    .child(div().text_sm().text_color(rgb(crate::theme::MUTED)).child(format!(
+                    .child(div().text_sm().text_color(rgb(theme.muted)).child(format!(
                         "{} · {} / 100 annotations · Export: {} × {}",
                         match self.tool {
                             Tool::Spotlight=>"Drag a focus area; hold Shift for a square. Use Redact for sensitive content.",
@@ -2727,22 +2741,22 @@ impl Render for RedactionEditor {
                     )))
                     .when(self.tool == Tool::Select && self.selected.is_some(), |view| view.child(
                         div().flex().flex_wrap().gap_2().items_center()
-                            .child(div().text_sm().text_color(rgb(crate::theme::MUTED)).child("SELECTION")).child(capture_button(
+                            .child(div().text_sm().text_color(rgb(theme.muted)).child("Selected mark")).child(capture_button(cx,
                                 "delete-annotation",
                                 "Delete",
                                 self.tool != Tool::Select || self.selected.is_none(),
                                 cx.listener(|this, _, _, cx| this.delete_selection(cx)),
                             ))
-.child(capture_button(
+.child(capture_button(cx,
                                 "duplicate-annotation",
                                 "Duplicate",
                                 self.tool != Tool::Select || self.selected.is_none() || self.drag.is_some() || self.text_draft.is_some() || self.text_loading || duplicate_error.is_some(),
                                 cx.listener(|this, _, _, cx| this.duplicate_selection(cx)),
                             ))
-.child(capture_button("layer-forward","Bring forward",self.tool!=Tool::Select||self.drag.is_some()||self.text_draft.is_some()||self.text_loading||self.selected.and_then(|selected|self.edits.layer_target(selected,true)).is_none(),cx.listener(|this,_,_,cx|this.move_layer(true,cx))))
-.child(capture_button("layer-backward","Send backward",self.tool!=Tool::Select||self.drag.is_some()||self.text_draft.is_some()||self.text_loading||self.selected.and_then(|selected|self.edits.layer_target(selected,false)).is_none(),cx.listener(|this,_,_,cx|this.move_layer(false,cx))))
-.child(capture_button("edit-text","Edit text",!matches!(self.selected,Some(Selected::Text(_)))||self.text_draft.is_some()||self.text_loading,cx.listener(|this,_,window,cx|{if let Some(Selected::Text(index))=this.selected {if let Some(text)=this.edits.texts.get(index){this.begin_text([text.area.x,text.area.y],Some(index),window,cx);}}})))                    ))
-                    .when(self.tool == Tool::Crop, |view| view.child(div().flex().gap_2().child(capture_button(
+.child(capture_button(cx, "layer-forward","Bring forward",self.tool!=Tool::Select||self.drag.is_some()||self.text_draft.is_some()||self.text_loading||self.selected.and_then(|selected|self.edits.layer_target(selected,true)).is_none(),cx.listener(|this,_,_,cx|this.move_layer(true,cx))))
+.child(capture_button(cx, "layer-backward","Send backward",self.tool!=Tool::Select||self.drag.is_some()||self.text_draft.is_some()||self.text_loading||self.selected.and_then(|selected|self.edits.layer_target(selected,false)).is_none(),cx.listener(|this,_,_,cx|this.move_layer(false,cx))))
+.child(capture_button(cx, "edit-text","Edit text",!matches!(self.selected,Some(Selected::Text(_)))||self.text_draft.is_some()||self.text_loading,cx.listener(|this,_,window,cx|{if let Some(Selected::Text(index))=this.selected {if let Some(text)=this.edits.texts.get(index){this.begin_text([text.area.x,text.area.y],Some(index),window,cx);}}})))                    ))
+                    .when(self.tool == Tool::Crop, |view| view.child(div().flex().gap_2().child(capture_button(cx,
                                 "crop-full-image",
                                 "Full image",
                                 self.edits.crop.is_none(),
@@ -2758,7 +2772,7 @@ impl Render for RedactionEditor {
                             .flex().flex_wrap()
                             .gap_2()
                             .items_center()
-                            .child(capture_button(
+                            .child(capture_button(cx,
                                 "redaction-undo",
                                 "Undo",
                                 self.edits.past.is_empty() || self.text_draft.is_some() || self.text_loading,
@@ -2769,7 +2783,7 @@ impl Render for RedactionEditor {
                                     cx.notify();
                                 }),
                             ))
-.child(capture_button(
+.child(capture_button(cx,
                                 "redaction-redo",
                                 "Redo",
                                 self.edits.undone.is_empty() || self.text_draft.is_some() || self.text_loading,
@@ -2780,7 +2794,7 @@ impl Render for RedactionEditor {
                                     cx.notify();
                                 }),
                             ))
-.child(capture_button(
+.child(capture_button(cx,
                                 "redaction-reset",
                                 "Reset",
                                 self.text_draft.is_some() || self.text_loading || (self.edits.regions.is_empty()
@@ -2799,7 +2813,7 @@ impl Render for RedactionEditor {
                                     cx.notify();
                                 }),
                             ))
-                            .child(capture_button(
+                            .child(capture_button(cx,
                                 "zoom-out",
                                 "−",
                                 scale <= minimum,
@@ -2814,7 +2828,7 @@ impl Render for RedactionEditor {
                                     )
                                 }),
                             ))
-                            .child(capture_button(
+                            .child(capture_button(cx,
                                 "zoom-in",
                                 "+",
                                 scale >= maximum,
@@ -2829,7 +2843,7 @@ impl Render for RedactionEditor {
                                     )
                                 }),
                             ))
-                            .child(capture_button(
+                            .child(capture_button(cx,
                                 "zoom-actual",
                                 "100%",
                                 false,
@@ -2837,19 +2851,19 @@ impl Render for RedactionEditor {
                                     this.set_zoom(Some(1.0 / dpi), scale, cx)
                                 }),
                             ))
-                            .child(capture_button(
+                            .child(capture_button(cx,
                                 "zoom-fit",
                                 "Fit",
                                 false,
                                 cx.listener(move |this, _, _, cx| this.set_zoom(None, scale, cx)),
                             ))
-                            .child(div().text_sm().text_color(rgb(crate::theme::MUTED)).child(format!(
+                            .child(div().text_sm().text_color(rgb(theme.muted)).child(format!(
                                 "{:.0}% · Scroll to pan",
                                 scale * dpi * 100.0
                             ))),
                     )
                     .when(self.direct_capture, |view| {
-                        view.child(capture_button(
+                        view.child(capture_button(cx,
                             "move-overlay-toolbar",
                             "Move toolbar",
                             false,
@@ -2864,10 +2878,10 @@ impl Render for RedactionEditor {
                     .children(duplicate_error.map(|error|div().text_sm().child(error)))
                     .children(self.text_draft.as_ref().map(|draft|draft.input.clone()))
                     .when(self.text_draft.is_some(),|view|view.child(div().flex().gap_2()
-                        .child(capture_button("apply-text","Apply text",self.text_loading||self.pixelation_loading||self.blur_loading,cx.listener(|this,_,window,cx|this.commit_text(window,cx))))
-                        .child(capture_button("cancel-text","Cancel text",false,cx.listener(|this,_,window,cx|this.cancel_text(window,cx))))))
-                    .when(self.tool==Tool::Number,|view|view.child(div().flex().gap_2().child(format!("Next: {}",self.edits.last_number.checked_add(1).map(|n|n.to_string()).unwrap_or_else(||"limit reached".into()))).child(capture_button("restart-numbers","Restart numbering",self.edits.last_number==0||self.text_loading||self.text_draft.is_some(),cx.listener(|this,_,_,cx|{this.edits.restart_numbers();this.text_error=None;cx.notify();})))))
-                    .when(matches!(self.tool,Tool::Text|Tool::Number),|view|view.child(div().flex().flex_wrap().gap_2().child(capture_button("text-bold",if self.text_bold {"Bold active"}else{"Bold"},self.text_loading,cx.listener(|this,_,_,cx|{this.text_bold=!this.text_bold;cx.notify();}))).child(capture_button("text-italic",if self.text_italic {"Italic active"}else{"Italic"},self.text_loading,cx.listener(|this,_,_,cx|{this.text_italic=!this.text_italic;cx.notify();}))).children([16,24,36].into_iter().map(|size|capture_button(match size{16=>"text-size-16",24=>"text-size-24",_=>"text-size-36"},match size{16=>"16 px",24=>"24 px",_=>"36 px"},self.text_loading||self.text_size==size,cx.listener(move|this,_,_,cx|{this.text_size=size;cx.notify();}))))))
+                        .child(capture_button(cx, "apply-text","Apply text",self.text_loading||self.pixelation_loading||self.blur_loading,cx.listener(|this,_,window,cx|this.commit_text(window,cx))))
+                        .child(capture_button(cx, "cancel-text","Cancel text",false,cx.listener(|this,_,window,cx|this.cancel_text(window,cx))))))
+                    .when(self.tool==Tool::Number,|view|view.child(div().flex().gap_2().child(format!("Next: {}",self.edits.last_number.checked_add(1).map(|n|n.to_string()).unwrap_or_else(||"limit reached".into()))).child(capture_button(cx, "restart-numbers","Restart numbering",self.edits.last_number==0||self.text_loading||self.text_draft.is_some(),cx.listener(|this,_,_,cx|{this.edits.restart_numbers();this.text_error=None;cx.notify();})))))
+                    .when(matches!(self.tool,Tool::Text|Tool::Number),|view|view.child(div().flex().flex_wrap().gap_2().child(capture_button(cx, "text-bold",if self.text_bold {"Bold active"}else{"Bold"},self.text_loading,cx.listener(|this,_,_,cx|{this.text_bold=!this.text_bold;cx.notify();}))).child(capture_button(cx, "text-italic",if self.text_italic {"Italic active"}else{"Italic"},self.text_loading,cx.listener(|this,_,_,cx|{this.text_italic=!this.text_italic;cx.notify();}))).children([16,24,36].into_iter().map(|size|capture_button(cx, match size{16=>"text-size-16",24=>"text-size-24",_=>"text-size-36"},match size{16=>"16 px",24=>"24 px",_=>"36 px"},self.text_loading||self.text_size==size,cx.listener(move|this,_,_,cx|{this.text_size=size;cx.notify();}))))))
                     .when(
                         show_palette,
                         |toolbar| {
@@ -2882,7 +2896,7 @@ impl Render for RedactionEditor {
                                     .into_iter()
                                     .map(
                                         |(id, label, selected, color)| {
-                                            color_swatch(
+                                            color_swatch(cx,
                                                 id,
                                                 if palette_color == Some(color) { selected } else { label },
                                                 color,
@@ -2909,7 +2923,7 @@ impl Render for RedactionEditor {
                                         ("highlight-50", "50%", "50% ✓", 128),
                                         ("highlight-75", "75%", "75% ✓", 191),
                                         ("highlight-100", "100%", "100% ✓", 255),
-                                    ].into_iter().map(|(id,label,active,opacity)| capture_button(
+                                    ].into_iter().map(|(id,label,active,opacity)| capture_button(cx,
                                         id,
                                         if palette_opacity == Some(opacity) { active } else { label },
                                         palette_opacity.is_none() || self.text_loading || self.text_draft.is_some() || self.drag.is_some(),
@@ -2929,7 +2943,7 @@ impl Render for RedactionEditor {
                                         ("stroke-width-3", "3 px", "3 px ✓", 3),
                                         ("stroke-width-6", "6 px", "6 px ✓", 6),
                                         ("stroke-width-12", "12 px", "12 px ✓", 12),
-                                    ].into_iter().map(|(id,label,active,width)| capture_button(
+                                    ].into_iter().map(|(id,label,active,width)| capture_button(cx,
                                         id,
                                         if palette_stroke_width == Some(width) { active } else { label },
                                         palette_stroke_width.is_none() || palette_filled == Some(true) || self.text_loading || self.text_draft.is_some() || self.drag.is_some(),
@@ -2946,7 +2960,7 @@ impl Render for RedactionEditor {
                                     .children([
                                         ("shape-outline", "Outline", "Outline ✓", false),
                                         ("shape-filled", "Filled", "Filled ✓", true),
-                                    ].into_iter().map(|(id,label,active,filled)| capture_button(
+                                    ].into_iter().map(|(id,label,active,filled)| capture_button(cx,
                                         id,
                                         if palette_filled == Some(filled) { active } else { label },
                                         self.text_loading || self.text_draft.is_some() || self.drag.is_some(),
@@ -3126,7 +3140,7 @@ impl Render for RedactionEditor {
                                       if let Some(render) = render {
                                         for area in areas {
                                             let clip = gpui::Bounds { origin: bounds.origin + gpui::point(px(area.x as f32*scale),px(area.y as f32*scale)), size:gpui::size(px(area.width as f32*scale),px(area.height as f32*scale)) };
-                                            window.paint_quad(gpui::fill(clip,rgb(crate::theme::BACKGROUND)));
+                                            window.paint_quad(gpui::fill(clip,rgb(theme.background)));
                                             window.with_content_mask(Some(gpui::ContentMask { bounds:clip }), |window| {
                                                 window.paint_image(bounds,bounds,Default::default(),render.clone(),0,false).ok();
                                             });
@@ -3209,15 +3223,15 @@ impl Render for RedactionEditor {
                                     .w(px((area.width as f32 * scale).max(2.0)))
                                     .h(px((area.height as f32 * scale).max(2.0)))
                                     .border_1()
-                                    .border_color(rgb(0x22d3ee))
+                                    .border_color(rgb(theme.accent))
                             }))
                             .children(resize_handles.into_iter().map(move |(_, position)| {
                                 div().absolute()
                                     .left(px(position[0]*scale-4.0))
                                     .top(px(position[1]*scale-4.0))
                                     .w(px(8.0)).h(px(8.0))
-                                    .bg(rgb(0x22d3ee))
-                                    .border_1().border_color(rgb(crate::theme::BACKGROUND))
+                                    .bg(rgb(theme.accent))
+                                    .border_1().border_color(rgb(theme.background))
                             }))
                             .children(crop_preview.map(move |area| {
                                 div()
@@ -3227,7 +3241,7 @@ impl Render for RedactionEditor {
                                     .w(px(area.width as f32 * scale))
                                     .h(px(area.height as f32 * scale))
                                     .border_2()
-                                    .border_color(rgb(0x60a5fa))
+                                    .border_color(rgb(theme.accent))
                             })),
                     ),
             )

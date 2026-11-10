@@ -831,6 +831,8 @@ impl EntityInputHandler for CaptionInput {
 }
 impl Render for CaptionInput {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = crate::theme::current(cx);
+        let ui_font = gpui::font(crate::theme::font(cx));
         let entity = cx.entity();
         let focus = self.focus.clone();
         let text = self.content.clone();
@@ -843,14 +845,20 @@ impl Render for CaptionInput {
             "Type a label; Shift+Enter adds a line"
         };
         div()
-            .h(px(self.line_count() as f32 * LINE_HEIGHT + 8.0))
+            .id("caption-input")
+            .role(gpui::Role::TextInput)
+            .aria_label(if matches!(self.owner, InputOwner::History(_)) { "Search library" } else { "Annotation text" })
+            .aria_value(self.content.clone())
+            .flex_none()
+            .h(px(self.line_count() as f32 * LINE_HEIGHT + 16.0))
             .w_full()
+            .px_3()
             .overflow_hidden()
-            .bg(rgb(crate::theme::CONTROL))
-            .rounded_md()
+            .bg(rgb(theme.control))
+            .rounded(px(theme.radius))
             .border_1()
-            .border_color(rgb(crate::theme::BORDER))
-            .focus_visible(|style| style.border_color(rgb(crate::theme::FOCUS)))
+            .border_color(rgb(theme.border))
+            .focus_visible(|style| style.border_color(rgb(theme.focus)))
             .track_focus(&self.focus)
             .key_context("CaptionInput")
             .on_key_down(cx.listener(Self::key))
@@ -903,8 +911,8 @@ impl Render for CaptionInput {
                                 };
                                 let run = TextRun {
                                     len: display.len(),
-                                    font: Font::default(),
-                                    color: rgb(if text.is_empty() { crate::theme::MUTED } else { crate::theme::TEXT }).into(),
+                                    font: ui_font.clone(),
+                                    color: rgb(if text.is_empty() { theme.muted } else { theme.text }).into(),
                                     background_color: None,
                                     underline: None,
                                     strikethrough: None,
@@ -924,7 +932,7 @@ impl Render for CaptionInput {
                     },
                     move |bounds, (lines, offset), window, cx| {
                         let text_bounds = Bounds::new(
-                            point(bounds.left(), bounds.top() + px(4.0)),
+                            point(bounds.left(), bounds.top() + px(8.0)),
                             size(bounds.size.width, px(lines.len() as f32 * LINE_HEIGHT)),
                         );
                         window.handle_input(
@@ -959,7 +967,7 @@ impl Render for CaptionInput {
                                             point(start.min(end), top),
                                             point(start.max(end), top + px(LINE_HEIGHT)),
                                         ),
-                                        rgba(crate::theme::SELECTION_FILL),
+                                        rgba(theme.selection_fill),
                                     ));
                                 }
                                 line.paint(
@@ -972,6 +980,7 @@ impl Render for CaptionInput {
                                 )
                                 .ok();
                                 if selection.is_empty()
+                                    && entity.read(cx).focus.is_focused(window)
                                     && row == row_for_index(&layout_text, cursor)
                                 {
                                     window.paint_quad(fill(
@@ -979,7 +988,7 @@ impl Render for CaptionInput {
                                             point(x_for(cursor), top),
                                             size(px(1.0), px(LINE_HEIGHT)),
                                         ),
-                                        rgb(crate::theme::ACCENT),
+                                        rgb(theme.accent),
                                     ));
                                 }
                                 if let Some(marked) = &marked {
@@ -991,7 +1000,7 @@ impl Render for CaptionInput {
                                                 point(x.min(end), top + px(LINE_HEIGHT - 2.0)),
                                                 size((end - x).abs(), px(1.0)),
                                             ),
-                                            rgb(crate::theme::ACCENT),
+                                            rgb(theme.accent),
                                         ));
                                     }
                                 }
