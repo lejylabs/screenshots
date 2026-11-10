@@ -50,27 +50,27 @@ pub fn palette(theme: UiTheme) -> Palette {
     match theme {
         UiTheme::Default => Palette {
             classic: false,
-            background: 0xeff2ef,
-            surface: 0xffffff,
-            control: 0xe1e9e5,
-            hover: 0xd4e2dd,
-            pressed: 0xc5d6ce,
-            border: 0xbacac2,
-            text: 0x182c26,
-            muted: 0x4b6258,
-            disabled: 0x7e8f87,
-            icon: 0x465e53,
-            accent: 0x075e4e,
-            primary: 0x075e4e,
-            primary_hover: 0x064f42,
-            primary_pressed: 0x043c32,
-            primary_text: 0xffffff,
-            focus: 0x0a6d5a,
-            selection: 0xd4e7df,
-            selection_fill: 0x075e4e33,
-            bevel_light: 0xffffff,
-            radius: 8.,
-            panel_radius: 12.,
+            background: 0x141414,
+            surface: 0x1b1b1b,
+            control: 0x252525,
+            hover: 0x323232,
+            pressed: 0x171717,
+            border: 0x3a3a3a,
+            text: 0xededed,
+            muted: 0xb0b0b0,
+            disabled: 0x767676,
+            icon: 0xc4c4c4,
+            accent: 0xe0e0e0,
+            primary: 0xdedede,
+            primary_hover: 0xf2f2f2,
+            primary_pressed: 0xbcbcbc,
+            primary_text: 0x151515,
+            focus: 0xfafafa,
+            selection: 0x303030,
+            selection_fill: 0xffffff33,
+            bevel_light: 0x3a3a3a,
+            radius: 6.,
+            panel_radius: 8.,
         },
         UiTheme::Oldschool => Palette {
             classic: true,
@@ -96,30 +96,6 @@ pub fn palette(theme: UiTheme) -> Palette {
             radius: 0.,
             panel_radius: 0.,
         },
-        UiTheme::Safelight => Palette {
-            classic: false,
-            background: 0x21181a,
-            surface: 0x2e2022,
-            control: 0x422c2e,
-            hover: 0x513639,
-            pressed: 0x241719,
-            border: 0x6a484b,
-            text: 0xfff1e2,
-            muted: 0xd9b9ad,
-            disabled: 0x9f7d74,
-            icon: 0xe3bfb0,
-            accent: 0xffa28a,
-            primary: 0xb33f34,
-            primary_hover: 0xc3463b,
-            primary_pressed: 0x8e3029,
-            primary_text: 0xfff4e8,
-            focus: 0xffb699,
-            selection: 0x503032,
-            selection_fill: 0xffa28a44,
-            bevel_light: 0x6a484b,
-            radius: 4.,
-            panel_radius: 8.,
-        },
     }
 }
 
@@ -142,16 +118,14 @@ impl Palette {
 
 pub fn name(theme: UiTheme) -> &'static str {
     match theme {
-        UiTheme::Default => "Light table",
+        UiTheme::Default => "Dark",
         UiTheme::Oldschool => "Oldschool",
-        UiTheme::Safelight => "Safelight",
     }
 }
 pub fn description(theme: UiTheme) -> &'static str {
     match theme {
-        UiTheme::Default => "Paper, graphite & deep petrol.",
-        UiTheme::Oldschool => "Default. Compact & familiar.",
-        UiTheme::Safelight => "Warm paper. Darkroom red.",
+        UiTheme::Default => "Default. Neutral and minimal.",
+        UiTheme::Oldschool => "Compact & familiar.",
     }
 }
 pub fn font(cx: &App) -> &'static str {
@@ -195,7 +169,7 @@ mod tests {
     }
     #[test]
     fn themes_keep_text_actions_and_focus_legible() {
-        for theme in [UiTheme::Default, UiTheme::Oldschool, UiTheme::Safelight] {
+        for theme in [UiTheme::Default, UiTheme::Oldschool] {
             let p = palette(theme);
             for bg in [p.background, p.surface, p.control, p.hover, p.selection] {
                 for fg in [p.text, p.muted] {

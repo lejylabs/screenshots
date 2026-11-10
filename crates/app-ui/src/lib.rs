@@ -3261,7 +3261,6 @@ impl Render for SpikeShell {
                     .child(sidebar_item(cx, "sidebar-folder", "Open folder", self.output_directory.is_none(),
                         cx.listener(|this, _, _, cx| { if let Some(path) = &this.output_directory { cx.reveal_path(path); } })))
                     .child(sidebar_item(cx, "sidebar-quit", "Quit", false, |_, _, cx| cx.defer(close_application)))
-                    .when(!compact && !theme.classic, |footer| footer.child(div().px_3().pt_3().pb_1().text_xs().text_color(rgb(theme.muted)).child("On your device. In your control.")))
                 )
             )
             .child(div().id("control-content").flex_1().min_w_0().h_full().overflow_y_scroll().p(px(if theme.classic { 12. } else if compact { 16. } else { 32. })).flex().flex_col().gap_4()
@@ -3275,14 +3274,14 @@ impl Render for SpikeShell {
                             ControlPage::History => "Library",
                             ControlPage::Sources => "Displays & windows",
                             ControlPage::Uploads => "Uploads",
-                            ControlPage::Settings => if theme.classic { "Settings" } else { "Make it yours" },
+                            ControlPage::Settings => "Settings",
                         }))
                         .when(!theme.classic, |heading| heading.child(div().text_sm().text_color(rgb(theme.muted)).child(match self.page {
-                            ControlPage::Captures => "Your space to capture, annotate and share.",
-                            ControlPage::History => "Find it. Edit it. Put it to work.",
-                            ControlPage::Sources => "Choose exactly what goes in the frame.",
-                            ControlPage::Uploads => "Your images. Your destination. Always your choice.",
-                            ControlPage::Settings => "A workspace that feels like home.",
+                            ControlPage::Captures => "Capture, edit and save screenshots.",
+                            ControlPage::History => "Search and manage saved images.",
+                            ControlPage::Sources => "Choose a display or window.",
+                            ControlPage::Uploads => "Upload saved PNGs to your configured destination.",
+                            ControlPage::Settings => "Appearance and storage.",
                         }))))
                     .child(quiet_button(cx, "appearance-shortcut", theme::name(theme::selected(cx)), false, false,
                         cx.listener(|this, _, _, cx| this.show_page(ControlPage::Settings, cx)))))
@@ -3294,20 +3293,15 @@ impl Render for SpikeShell {
                 view.when(self.capture_status != "Ready", |view| view.child(div().text_sm().child(self.capture_status.clone())))
             .when(theme.classic && self.last_capture.is_none() && self.last_saved.is_none(), |view| view.child(classic_capture_home(theme)))
             .when(!theme.classic && self.last_capture.is_none() && self.last_saved.is_none(), |view| view.child(
-                div().relative().flex_none().min_h(px(300.)).p_6().rounded(px(theme.panel_radius))
+                div().flex_none().p_5().rounded(px(theme.panel_radius))
                     .border_1().border_color(rgb(theme.border)).bg(rgb(theme.surface))
-                    .flex().flex_col().items_center().justify_center().gap_4()
-                    .child(capture_frame(theme))
-                    .child(div().flex_none().w(px(64.)).h(px(64.)).rounded(px(theme.panel_radius)).bg(rgb(theme.selection))
-                        .flex().items_center().justify_center().child(ui_icon(cx, "select-region", 32.)))
-                    .child(div().text_xl().text_center().font_weight(gpui::FontWeight::SEMIBOLD).child("Frame it. Make it clear."))
-                    .child(div().max_w(px(340.)).text_center().text_sm().text_color(rgb(theme.muted)).child("Grab a region, make your point with annotations, then copy or save. Sharing is always up to you."))
-                    .child(div().flex().flex_wrap().justify_center().gap_2()
+                    .flex().flex_col().gap_3()
+                    .child(div().text_lg().font_weight(gpui::FontWeight::MEDIUM).child("No screenshots yet"))
+                    .child(div().text_sm().text_color(rgb(theme.muted)).child("Capture a region to annotate, copy or save."))
+                    .child(div().flex().flex_wrap().items_center().gap_3()
                         .child(ui_button(cx, "workspace-annotate", "Capture a region", unavailable, true,
                             cx.listener(|this, _, _, cx| this.select_region_to_edit(cx))))
-                        .child(quiet_button(cx, "workspace-open-library", "Open library", false, false,
-                            cx.listener(|this, _, _, cx| this.show_page(ControlPage::History, cx)))))
-                    .child(shortcut_hint("New screenshot", if cfg!(target_os = "macos") { "⌘ N" } else { "Ctrl N" }, theme))
+                        .child(shortcut_hint("New screenshot", if cfg!(target_os = "macos") { "⌘ N" } else { "Ctrl N" }, theme)))
             ))
             .when(self.last_capture.is_some() || self.last_saved.is_some(), |view| {
                 view            .child(
@@ -3787,9 +3781,9 @@ impl Render for SpikeShell {
                 div().flex_none().p_5().rounded(px(theme.panel_radius)).border_1().border_color(rgb(theme.border))
                     .bg(rgb(theme.surface)).flex().flex_col().gap_4()
                     .child(div().font_weight(gpui::FontWeight::SEMIBOLD).child("Appearance"))
-                    .child(div().text_sm().text_color(rgb(theme.muted)).child("Three personalities. The same familiar tools. Saved automatically."))
+                    .child(div().text_sm().text_color(rgb(theme.muted)).child("Choose an appearance. Changes are saved automatically."))
                     .child(div().flex().flex_wrap().gap_3().children(
-                        [app_core::UiTheme::Oldschool, app_core::UiTheme::Default, app_core::UiTheme::Safelight]
+                        [app_core::UiTheme::Default, app_core::UiTheme::Oldschool]
                             .into_iter().enumerate().map(|(index, option)| theme_option(cx, index, option,
                                 theme::selected(cx) == option,
                                 self.settings_loading || self.settings_saving || self.output_directory.is_none(),
@@ -3886,25 +3880,6 @@ fn classic_capture_home(theme: theme::Palette) -> impl IntoElement {
             ].into_iter().map(move |(key, label)| div().flex().items_center().gap_4().py_2().text_size(px(13.))
                 .child(div().w(px(90.)).text_color(rgb(theme.accent)).child(format!("{command} + {key}")))
                 .child(label))))
-}
-
-fn capture_frame(theme: theme::Palette) -> impl IntoElement {
-    gpui::canvas(|_, _, _| (), move |bounds, _, window, _| {
-        let inset = px(12.);
-        let length = px(20.);
-        let mut path = gpui::PathBuilder::stroke(px(1.5));
-        for (x, y, dx, dy) in [
-            (bounds.left() + inset, bounds.top() + inset, 1., 1.),
-            (bounds.right() - inset, bounds.top() + inset, -1., 1.),
-            (bounds.right() - inset, bounds.bottom() - inset, -1., -1.),
-            (bounds.left() + inset, bounds.bottom() - inset, 1., -1.),
-        ] {
-            path.move_to(point(x, y + length * dy));
-            path.line_to(point(x, y));
-            path.line_to(point(x + length * dx, y));
-        }
-        if let Ok(path) = path.build() { window.paint_path(path, rgb(theme.accent)); }
-    }).absolute().top_0().left_0().size_full()
 }
 
 fn shortcut_hint(label: &'static str, keys: &'static str, theme: theme::Palette) -> impl IntoElement {

@@ -11,8 +11,8 @@ This section is the current continuation brief. The numbered sections below cont
 ### User decisions to preserve
 
 - Continue the UI/UX work now; it is the foundation for further features, not a final-release cosmetic task. The current layout is an initial implementation, not an approved final design.
-- **Use an independent native workbench.** Keep a compact task sidebar and a separate workspace. Oldschool is the default; Light table and Safelight are optional appearances. The product goal is a clear, polished capture experience; platform and resource acceptance remain tracked below.
-- Keep the three appearances consistent through the main window, editor and text input. Define all UI colors in `crates/app-ui/src/theme.rs`; screenshot/annotation colors remain separate document data.
+- **Use an independent native workbench.** Keep a compact task sidebar and a separate workspace. Dark is the default; Oldschool remains available as the compact alternative. The product goal is a clear, polished capture experience; platform and resource acceptance remain tracked below.
+- Keep both appearances consistent through the main window, editor and text input. Define all UI colors in `crates/app-ui/src/theme.rs`; screenshot/annotation colors remain separate document data.
 - All app-owned UI is **English**. User conversation may remain German. Native OS dialog/error language follows the OS.
 - All screenshot editing tools must remain available **before final output in the frozen overlay**, as well as in the standalone editor. Never save/copy/upload an unedited source implicitly.
 - Raw performance remains mandatory: near-zero idle work, bounded RAM/GPU use and immediate feedback. Read `AGENTS.md` and the performance contract before execution-path changes. Keep blocking work off GPUI's foreground executor, cancel obsolete jobs and preserve the in-memory capture pipeline.
@@ -792,7 +792,7 @@ The overlay should be quick, unobtrusive, and easy to use.
 
 ### UX principles
 
-Visual direction: use Oldschool by default, with Light table and Safelight as optional appearances. Main window, editor, overlay toolbar and text input share semantic palettes in `crates/app-ui/src/theme.rs`; image/annotation colors remain document data. Palette changes add no runtime service, dependency, cache or idle work.
+Visual direction: use a minimal neutral Dark appearance by default, with Oldschool as the compact alternative. Main window, editor, overlay toolbar and text input share semantic palettes in `crates/app-ui/src/theme.rs`; image/annotation colors remain document data. Palette changes add no runtime service, dependency, cache or idle work.
 
 English is the default application language at launch, independently of the OS locale. All app-owned labels, menus, prompts, status text and errors must start in English. Localization may be added later; native OS dialog chrome and system error messages follow the OS language.
 

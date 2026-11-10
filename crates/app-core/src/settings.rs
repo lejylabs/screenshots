@@ -10,12 +10,10 @@ use std::{
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum UiTheme {
-    // Keep the original light theme's persisted name compatible.
-    Default,
-    Safelight,
+    Oldschool,
     #[default]
     #[serde(other)]
-    Oldschool,
+    Default,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -142,9 +140,9 @@ mod tests {
         let path = dir.join("settings.json");
         assert_eq!(
             CaptureSettings::load_at(&path, dir.clone())?.theme,
-            UiTheme::Oldschool
+            UiTheme::Default
         );
-        for theme in [UiTheme::Default, UiTheme::Oldschool, UiTheme::Safelight] {
+        for theme in [UiTheme::Default, UiTheme::Oldschool] {
             CaptureSettings::for_directory(dir.clone())?
                 .with_theme(theme)
                 .save_at(&path)?;
@@ -152,7 +150,7 @@ mod tests {
             assert_eq!(restored.theme, theme);
             assert_eq!(restored.output_directory, dir);
         }
-        for theme in [None, Some("future_theme")] {
+        for theme in [None, Some("future_theme"), Some("safelight")] {
             let mut value = serde_json::json!({"version": 1, "output_directory": dir});
             if let Some(theme) = theme {
                 value["theme"] = theme.into();
@@ -160,7 +158,7 @@ mod tests {
             fs::write(&path, serde_json::to_vec(&value)?)?;
             assert_eq!(
                 CaptureSettings::load_at(&path, dir.clone())?.theme,
-                UiTheme::Oldschool
+                UiTheme::Default
             );
         }
         fs::remove_dir_all(dir)?;

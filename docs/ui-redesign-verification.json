@@ -1,116 +1,40 @@
 {
   "date": "2026-11-10",
-  "branch": "feat/newt",
-  "base_commit": "f4357f2",
-  "stack": "Rust 1.99 / pinned GPUI 1.27.0, native desktop",
+  "branch": "feat/minimal-dark-default",
+  "base_commit": "f26b20c",
+  "stack": "Rust 1.99 / GPUI 1.27.0, native desktop",
   "themes": [
     "default",
-    "oldschool",
-    "safelight"
+    "oldschool"
   ],
+  "default_appearance": "Dark",
   "checks": {
-    "workspace_check": "passed",
-    "release_build": "passed",
     "workspace_tests": {
       "passed": 91,
       "failed": 0,
       "ignored": 24
     },
-    "clippy": "completed; existing warnings remain",
-    "git_diff_check": "passed"
+    "release_build": "passed",
+    "contrast": "text, action, icon and focus fixtures passed",
+    "settings": "fresh/missing/unknown/retired values fall back to Dark; explicit Oldschool and Dark preferences round-trip"
   },
   "native_checks": [
-    "Real release windows captured at 1060x760; shell also inspected at 680x480.",
-    "Default, Oldschool and Safelight apply and persist in isolated settings.",
-    "Previously selected appearance restored after restart.",
-    "Theme save failure with read-only config directory rolls back and reports the error.",
-    "Library prefix search, empty results and Escape reset inspected with a synthetic local fixture.",
-    "Library preview and editor opened on the synthetic fixture only.",
-    "Frame annotation exported through Save only: one new 1280x720 PNG; original SHA-256 unchanged.",
-    "Editor cancel restores control focus; Settings shortcut works immediately afterward.",
-    "Final Safelight editor and compact Appearance inspected."
+    "Missing theme field starts in Dark.",
+    "Appearance offers exactly Dark and Oldschool.",
+    "Both options selected through native UI and persisted to isolated settings.",
+    "Settings inspected at 1060x760 and 680x480.",
+    "Editor inspected at 760x500 with a synthetic image; cancellation did not export or change source data."
   ],
-  "privacy": "Only app-owned windows were captured. Isolated XDG config/data/cache and a synthetic PNG fixture under target/ui-preview. No uploads, real desktop captures or user-image inputs.",
-  "limits": [
-    "Native interaction verified on Linux X11 via XWayland only; Windows/macOS interaction, mixed DPI and screen readers not verified.",
-    "Linux window enumeration is unsupported by the existing backend in this session.",
-    "Native file-picker import was not completed in automation; the UI used an isolated fixture database. Existing core import tests pass.",
-    "Clipboard untouched was reported by Save-only UI and covered by existing output fixtures; no user clipboard contents were read for verification.",
-    "Short idle comparison is exploratory, not acceptance against PLAN.md; CPU difference is inconclusive, GPU allocations not measured."
-  ],
-  "idle_comparison": {
-    "scenario": "Release, empty visible Recent workspace, 1060x760 logical pixels, X11 via XWayland; one exploratory 5-second idle sample each. Not reference-hardware acceptance or GPU accounting.",
-    "baseline_commit": "f4357f2",
-    "new": {
-      "sample_seconds": 5.001,
-      "cpu_percent_one_core": 0.4,
-      "rss_mib": 146.96,
-      "pss_mib": 134.4,
-      "private_mib": 130.83
-    },
-    "baseline": {
-      "sample_seconds": 5.0,
-      "cpu_percent_one_core": 0.2,
-      "rss_mib": 203.05,
-      "pss_mib": 191.4,
-      "private_mib": 187.61
-    },
-    "new_binary_sha256": "33457c2d6f9ad8406f82a39b91bba78c88594319f07dd04258da972a989c583b",
-    "baseline_binary_sha256": "5d52723e00014cb40e05e4a8186e3e8fe73cd80c10471cb8687a0e6b2e38161b"
-  },
+  "privacy": "Only app-owned windows captured. Isolated XDG config/data/cache and synthetic PNG inputs. No real desktop capture, upload or clipboard output.",
   "screenshots": [
-    "target/ui-preview/default-recent.png",
-    "target/ui-preview/default-settings.png",
-    "target/ui-preview/oldschool-recent.png",
-    "target/ui-preview/oldschool-settings.png",
-    "target/ui-preview/safelight-recent.png",
-    "target/ui-preview/safelight-settings.png",
-    "target/ui-preview/safelight-editor.png",
-    "target/ui-preview/safelight-settings-compact.png"
+    "docs/design/dark.png",
+    "docs/design/oldschool.png",
+    "docs/design/editor.png"
   ],
-  "release_binary_sha256": "1301f4ca478b3106386329618485c347ff5b4044c927e215f71e25ef518475a3",
-  "default_appearance_followup": {
-    "default": "oldschool",
-    "light_theme_label": "Light table",
-    "compatibility": "Explicit saved values, including the historical default light-theme key, remain unchanged.",
-    "checks": [
-      "Settings tests: fresh config, missing/unknown theme and all explicit selections passed.",
-      "Theme contrast test passed.",
-      "Release build passed.",
-      "Native fresh launch with isolated empty config shows Oldschool; own-window screenshot background asserted."
-    ],
-    "screenshot": "target/ui-default-check/fresh-default.png"
-  },
-  "oldschool_classic_followup": {
-    "style": "Compact native desktop: charcoal, task sidebar, blue selection and colorful native vector icons.",
-    "checks": [
-      "91 workspace tests passed; 24 opt-in tests ignored.",
-      "Release build passed. Text, focus and all classic icon colors pass contrast fixtures.",
-      "Native 1060x760 and 680x480 control windows inspected, including expanded Capture menu.",
-      "Native editor inspected at 1000x760 and 760x500 with synthetic pixels only.",
-      "Theme save and return to Default verified; startup restores Oldschool.",
-      "Three complete native keyboard-navigation cycles asserted against rendered page headers; final native Quit completed."
-    ],
-    "resources": "One small palette flag and bounded color dispatch on existing vector paths; fewer/lower-density views in the classic workspace. No dependency, cache, thread, timer or polling added.",
-    "limits": "Linux X11/XWayland only. Windows/macOS interactive checks and reference-hardware performance acceptance remain open. Prior idle samples above predate this follow-up.",
-    "screenshots": [
-      "target/ui-preview/classic/home.png",
-      "target/ui-preview/classic/capture-menu.png",
-      "target/ui-preview/classic/compact.png",
-      "target/ui-preview/classic/settings.png",
-      "target/ui-preview/classic/library.png",
-      "target/ui-preview/classic/editor.png",
-      "target/ui-preview/classic/editor-compact.png",
-      "target/ui-preview/classic/restart.png"
-    ]
-  },
-  "review_screenshot": "docs/design/oldschool.png",
-  "repository_cleanup": {
-    "scope": "Current tracked file contents and paths; Git history unchanged.",
-    "checks": [
-      "Current source and docs cleaned; obsolete external reference image removed.",
-      "Local release build and 91 workspace tests passed.",
-      "CI workflow YAML validated; pinned Rust and native Linux build packages configured."
-    ]
-  }
+  "limits": [
+    "Native interaction checked on Linux X11/XWayland only.",
+    "Windows/macOS, mixed DPI, screen readers and full reference-hardware performance acceptance remain open."
+  ],
+  "resources": "Removes one palette and ornamental vector frame; no new dependency, timer, worker, cache or image pipeline.",
+  "release_binary_sha256": "252bc3f3d77dbc6415c2be69708288adcb106516a432e8dad68babe70b858e94"
 }
