@@ -104,7 +104,29 @@ Open the control window with `cargo run --locked -p screenshots -- --show` (Wind
 
 New captures use the user's Pictures/Screenshots folder by default (application config storage is the fallback if no Pictures directory is available). **Change folder…** opens the native directory picker and persists the selection in the platform application's `settings.json`. A canceled or failed change preserves the previous folder. Settings load/save run on workers; capture is disabled while settings are loading/changing. Existing files under `target/captures` are left in place. Hardware tests keep their isolated test directories and do not read or alter user settings.
 
-**Save as…** exports the last capture through a native save dialog. PNG is the export format; existing files are never replaced, including after an overwrite confirmation from the native picker. Choose a free name if a destination already exists. Saved PNGs stream directly to the new destination without image decoding/re-encoding; unsaved captures export from their retained pixels. Canceling preserves the capture, clipboard and default folder. Quit waits for an active export, and export failure keeps the source available.
+**Settings → Capture filename template** customizes automatic PNG names, including
+edited/selected captures. For example, `Shot-{date}_{time}` uses UTC save date/time.
+Use letters, digits, spaces, `-` or `_` and those two tokens; paths/extensions are
+not allowed. A unique suffix and `.png` are always appended. Click **Save filename
+template** to apply; an empty value restores default names. Existing files and
+manual **Save as** names are preserved.
+
+**Library → Open image…** opens PNG, JPEG or WebP directly in the editor without
+importing it. The original file stays unchanged; Copy/Save remain explicit actions.
+
+**Save as (.png / .jpg / .webp)…** exports the latest finalized capture through a
+native save dialog. Choose the format by filename: `.png`, `.jpg`/`.jpeg` or
+`.webp`. **Settings → Default Save as format** controls the suggested filename and
+the format added when no extension is entered (PNG by default). An explicit
+extension overrides that preference. Set JPEG quality from 1 to 100 under
+**Settings → JPEG export quality** (default 90; click **Save quality** to apply).
+JPEG requires opaque pixels; choose PNG or lossless WebP to preserve transparency. JPEG/WebP are export
+copies: they keep the current image and PNG library unchanged. PNG exports retain
+the existing save/history behavior, and already saved PNGs stream without decoding
+or re-encoding. Unsaved captures export directly from retained pixels.
+Existing files are never replaced, including after native overwrite confirmation.
+Cancel/error preserves the source, clipboard and default folder; Quit waits for
+active export. The editor's direct Save actions still use PNG.
 
 **Upload image** sends the last saved image only after you explicitly click the button. First use **Choose destination…** with a JSON file based on [the destination example](docs/upload-destination.example.json), replacing its placeholder URL with your service. By default this uploader sends a multipart POST. A [PUT destination](docs/upload-destination.put.example.json) uses method: "PUT" to send the PNG directly as image/png with a known Content-Length; field is only used for POST and defaults to file. PUT sends If-None-Match: * so a conforming server rejects an existing target with HTTP 412. Configure a fresh resource URL for each new file; server enforcement must be verified for your endpoint. Unsupported method names are rejected. Configure the field name and choose a JSON pointer, a [plain-text response](docs/upload-destination.text.example.json), or a [response header](docs/upload-destination.header.example.json) for the returned HTTP(S) link. For text/header mode omit json_pointer; supplying both is rejected. Text responses may have leading/trailing whitespace. Header names are case-insensitive; missing or repeated link headers are rejected. Header mode requires a successful HTTP status and does not follow redirects or read the response body. For PUT endpoints returning no link, use [request-URL mode](docs/upload-destination.put-status.example.json): response type request_url returns the configured resource URL only after HTTP 200, 201 or 204. It rejects POST, 202/pending results, redirects and failures. This is a storage address, not a guarantee of a publicly readable share link; configure a direct file URL and use server-provided links when your service creates separate sharing addresses. For a response like {"url":"https://host/image"}, use /url; nested responses can use /data/url. A loaded destination initially stays in memory for this session. **Remember** saves the validated, credential-free profile beside the app settings; it is restored on a worker when the control window is first opened after restart. Capture/hotkey readiness never waits for it, and restoring never starts an upload. **Forget destination** disables uploads immediately and removes the saved profile. If removal fails, the UI reports that it may return after restart. It supports anonymous endpoints and [Windows Bearer/API-key/Basic credentials](docs/upload-authentication.md), HTTPS by default and anonymous HTTP only with explicit allow_http: true. Credential profiles reference a generic Windows credential bound to the HTTPS origin. Omit authentication for legacy Bearer behavior, or set authentication: "api_key" for X-API-Key, or authentication: "basic" for a stored username/password. Credentials are never stored in JSON. Embedded URL credentials, URL queries, custom headers and proxies are not supported in this slice; unknown JSON fields are rejected.
 

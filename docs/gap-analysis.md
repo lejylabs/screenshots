@@ -34,7 +34,7 @@ failure preservation and stale/UI behavior pass optimized checks. Native restart
 accessibility and full resource acceptance remain open; automatic monitor binding
 and per-template hotkey/task profiles remain missing.
 
-Open-image follow-up (2026-11-12): Recent capture now opens PNG/JPEG/WebP directly into
+Open-image follow-up (2026-11-12): Recent capture and Library open PNG/JPEG/WebP directly into
 the shared editor through a single-file native picker or Ctrl+O (Cmd+O on macOS).
 Originals remain unchanged and output stays explicit. Optimized headless UI checks
 pass; direct inputs have a 32 MiB encoded-file limit, predecode size checks and
@@ -62,6 +62,39 @@ inverse/relative transforms on a cancellable worker; no bitmap undo snapshots
 are retained. Exact pixels, history/UI and subsequent redaction/export are covered
 by optimized tests. Native interaction/resource acceptance remains open. Existing
 annotations cannot yet be transformed; resize/resampling is still missing.
+
+Export-format follow-up (2026-11-12): Save as now exports finalized pixels as PNG,
+JPEG (default quality 90, opaque pixels required) or lossless RGBA WebP. JPEG/WebP
+are explicit copies that preserve the current source and PNG-only library. New
+formats share worker-side no-overwrite publication; signatures, transparency,
+failure/cancel/source preservation pass optimized core/UI fixtures. Direct editor
+Save/quick captures remain PNG and non-PNG library entries remain absent. The
+default Save as format is implemented below; native picker/recovery/resource
+acceptance remains open.
+
+JPEG-quality follow-up (2026-11-12): Settings persists quality 1–100, defaulting
+older files to 90. Save as snapshots the applied value for in-memory and saved-PNG
+conversion. Validation/write failures retain the active value, and other settings
+preserve it. Optimized settings/encoder/UI fixtures cover migration, bounds,
+persistence/failure, quality effects and export wiring. Native interaction/restart/
+accessibility and resource acceptance remain open; PNG/WebP behavior is unchanged.
+
+Default-format follow-up (2026-11-12): Settings persists a default PNG/JPEG/WebP
+Save as format. It controls the suggested name and missing-extension fallback;
+explicit supported suffixes override it. Legacy settings default to PNG. Other
+preferences and failed writes preserve the active choice. Optimized settings/UI
+checks cover persistence, rollback and asynchronous export routing. Native picker
+suggestions/restart/accessibility and resource acceptance remain open. Direct
+editor/quick saves still use PNG; no automatic capture conversion is introduced.
+
+Naming follow-up (2026-11-12): automatic PNG output now supports a saved bounded
+filename template with literal text and {date}/{time} in UTC save time. A unique
+suffix and .png are mandatory; traversal, unsupported tokens and extensions are
+rejected. Edited/cropped outputs share the save path, while manual Save as retains
+the chosen name. Optimized parser/settings/UI fixtures verify persistence/failure,
+distinct synthetic outputs and matching last-saved/history paths. Native IME/
+accessibility, path/recovery and full resource acceptance remain open. Rich macros,
+folder templates and renaming existing files remain absent.
 
 Assessment date: 2026-11-12. Local baseline: `ed53567f5112818781b55af63fc6931f12d0cd36`
 on `main`, including the GPUI Kit rewrite. Static inspection of production code,
@@ -162,7 +195,7 @@ cut-out/background editing and output actions integrated into tasks.
 | Capability | Current status and gap | Priority |
 | --- | --- | --- |
 | Open/Paste/Drop into editor | Partial: direct Open image / Ctrl+O and a single external file drop support PNG/JPEG/WebP; Windows Paste image / Ctrl+Shift+V supports PNG and common DIB layouts. Last capture and PNG history editing exist. Other formats/platform paste, URL/raw-image drops and Explorer Open With remain missing. See the implementation follow-ups for verification limits. | A |
-| Image formats | Partial: app workflows decode/export PNG. Add JPEG/WebP import/export with explicit format, quality and transparency behavior; other formats follow actual demand/parity scope. | A/B |
+| Image formats | Partial: direct Open/Drop accepts PNG/JPEG/WebP; Save as has a saved default format, opaque JPEG quality 1–100 (default 90) and lossless RGBA WebP. The library and direct editor/quick saves remain PNG; capture/editor format preferences, lossy WebP and other formats remain pending. | A/B |
 | Resize and basic transforms | Partial: lossless 90-degree rotation and horizontal/vertical flip before crop/annotations, with metadata Undo/Redo. Transforming existing annotations, output resampling and aspect-locked dimensions remain missing. View zoom does not resize the exported file. | A |
 | Colors and typography | Partial: four drawing color swatches, discrete widths and text sizes; labels have four-line/512-byte limits. No general color/font selection, richer text/background/outline styling or reusable tool presets. | A/B |
 | Effect order | Partial: drawing annotations reorder; blur/pixelation are source-effect stages and opaque redaction is last. Arbitrary effect/drawing order is unavailable. Make restrictions clear or implement a consistent ordered document model. Keep opaque-redaction safety explicit. | A/B |

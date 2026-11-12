@@ -33,6 +33,18 @@ pub(super) fn exact_region_request(display: &DisplayInfo, values: &[String; 4]) 
 
 impl Render for CaptureWorkspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if self.page == ControlPage::Settings && !self.settings_loading && self.jpeg_quality_input.is_none() {
+            self.jpeg_quality_input = Some(cx.new(|cx| gpui::component::input::InputState::new(window, cx)
+                .default_value(self.jpeg_quality.to_string())
+                .validate(|value, _| value.len() <= 3 && value.bytes().all(|byte| byte.is_ascii_digit()))));
+        }
+        if self.page != ControlPage::Settings { self.jpeg_quality_input = None; }
+        if self.page == ControlPage::Settings && !self.settings_loading && self.filename_template_input.is_none() {
+            self.filename_template_input = Some(cx.new(|cx| gpui::component::input::InputState::new(window, cx)
+                .default_value(self.filename_template.clone()).placeholder("Default names")
+                .validate(|value, _| value.len() <= 96 && !value.chars().any(char::is_control))));
+        }
+        if self.page != ControlPage::Settings { self.filename_template_input = None; }
         if self.page == ControlPage::Sources && self.backend.capabilities().capture_region && self.exact_region_inputs.is_none() {
             self.exact_region_inputs = Some(std::array::from_fn(|index| cx.new(|cx|
                 gpui::component::input::InputState::new(window, cx)
@@ -223,7 +235,7 @@ impl Render for CaptureWorkspace {
                             ))
                             .child(capture_button(cx,
                                 "save-capture-as",
-                                "Save as…",
+                                "Save as (.png / .jpg / .webp)…",
                                 busy || (self.last_capture.is_none() && self.last_saved.is_none()),
                                 cx.listener(|this, _, _, cx| this.save_capture_as(cx)),
                             ))
@@ -487,6 +499,8 @@ impl Render for CaptureWorkspace {
                                     },
                                 ),
                             )
+                        .child(quiet_button(cx, "library-open-image", "Open image…", unavailable || self.preview_active, false,
+                            cx.listener(|this, _, _, cx| this.open_image(cx))))
                         .child(quiet_button(cx,
                             "import-history-images",
                             "Add PNGs…",
@@ -684,6 +698,31 @@ impl Render for CaptureWorkspace {
                         if let Some(profile) = CaptureOutputProfile::ALL.get(*ix) { this.choose_output_profile(*profile, cx); }
                     })))
                 .child(div().text_sm().text_color(colors.muted_foreground).child("Copy only keeps one image in memory without saving. Annotate first produces no output until you choose Copy or Save in the editor. With either option, capture one display or window at a time. Uploads always require a separate action.")))
+            .child(div().flex_none().p_5().rounded(px(theme.panel_radius)).bg(colors.group_box).flex().flex_col().gap_3()
+                .child(div().font_weight(gpui::FontWeight::SEMIBOLD).child("JPEG export quality"))
+                .child(div().text_sm().child(format!("Active quality: {} · Applies only to JPEG copies created with Save as. PNG and lossless WebP are unchanged. JPEG requires opaque pixels.", self.jpeg_quality)))
+                .children(self.jpeg_quality_input.iter().map(|input| gpui::component::input::Input::new(input)
+                    .id("jpeg-export-quality").aria_label("JPEG quality (1–100)").disabled(unavailable || self.preview_active)))
+                .child(capture_button(cx, "save-jpeg-quality", "Save quality (1–100)", unavailable || self.preview_active,
+                    cx.listener(|this, _, _, cx| this.save_jpeg_quality(cx)))))
+            .child(div().flex_none().p_5().rounded(px(theme.panel_radius)).bg(colors.group_box).flex().flex_col().gap_3()
+                .child(div().font_weight(gpui::FontWeight::SEMIBOLD).child("Default Save as format"))
+                .child(RadioGroup::new("save-as-format").layout(gpui::Axis::Vertical)
+                    .children(app_core::ImageExportFormat::ALL.map(app_core::ImageExportFormat::label))
+                    .selected_index(app_core::ImageExportFormat::ALL.iter().position(|format| *format == self.export_format))
+                    .disabled(unavailable || self.preview_active)
+                    .on_change(cx.listener(|this, index, _, cx| {
+                        if let Some(format) = app_core::ImageExportFormat::ALL.get(*index) { this.choose_export_format(*format, cx); }
+                    })))
+                .child(div().text_sm().child("Changes are saved automatically. Save as suggests this format and uses it when the filename has no extension. An explicit extension overrides it. Direct Save and quick captures still use PNG.")))
+            .child(div().flex_none().p_5().rounded(px(theme.panel_radius)).bg(colors.group_box).flex().flex_col().gap_3()
+                .child(div().font_weight(gpui::FontWeight::SEMIBOLD).child("Capture filename template"))
+                .child(div().text_sm().child("Automatic PNG saves only, including edited captures. Use letters, digits, spaces, - or _, and {date} / {time} for UTC save time. A unique suffix and .png are always added. Leave empty for default names; Save as keeps its manually chosen name."))
+                .child(div().text_sm().child(if self.filename_template.is_empty() { "Active: default names".to_owned() } else { format!("Active: {}", self.filename_template) }))
+                .children(self.filename_template_input.iter().map(|input| gpui::component::input::Input::new(input)
+                    .id("capture-filename-template").aria_label("Capture filename template").disabled(unavailable || self.preview_active)))
+                .child(capture_button(cx, "save-filename-template", "Save filename template", unavailable || self.preview_active,
+                    cx.listener(|this, _, _, cx| this.save_filename_template(cx)))))
             .child(self.hotkey_settings(cx))
             .child(capture_button(cx,
                 "toggle-diagnostics",

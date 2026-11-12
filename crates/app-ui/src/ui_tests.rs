@@ -71,6 +71,192 @@ fn open_workspace(cx: &mut TestAppContext) -> WindowHandle<CaptureWorkspace> {
     })
 }
 
+#[gpui::test]
+fn filename_template_validation_failure_and_input_lifetime_are_bounded(cx: &mut TestAppContext) {
+    let handle = open_workspace(cx);
+    let blocker = std::env::temp_dir().join(format!("screenshots-name-blocker-{}", std::process::id()));
+    std::fs::write(&blocker, b"not a folder").unwrap();
+    handle.update(cx, |this, _, _| this.output_directory = Some(blocker.clone())).unwrap();
+    cx.update_window(handle.into(), |_, window, cx| { window.press(&shortcut(","), cx); window.render_frame(cx); }).unwrap();
+    handle.update(cx, |this, window, cx| {
+        let input = this.filename_template_input.clone().unwrap();
+        input.update(cx, |input, cx| input.set_value("../bad", window, cx));
+        this.save_filename_template(cx);
+        assert!(!this.settings_saving && this.filename_template.is_empty());
+        assert!(this.settings_status.starts_with("Filename template unchanged:"));
+        input.update(cx, |input, cx| input.set_value("Shot-{date}", window, cx));
+        this.save_filename_template(cx);
+    }).unwrap();
+    cx.run_until_parked();
+    handle.update(cx, |this, _, _| {
+        assert!(!this.settings_saving && this.filename_template.is_empty());
+        assert!(this.settings_status.starts_with("Filename template unchanged:"));
+    }).unwrap();
+    cx.update_window(handle.into(), |_, window, cx| window.press(&shortcut("1"), cx)).unwrap();
+    handle.update(cx, |this, _, _| assert!(this.filename_template_input.is_none())).unwrap();
+    std::fs::remove_file(blocker).unwrap();
+}
+
+#[gpui::test]
+fn automatic_saves_use_custom_names_and_track_the_published_last_path(cx: &mut TestAppContext) {
+    let handle = open_workspace(cx);
+    let root = std::env::temp_dir().join(format!("screenshots-name-output-{}", std::process::id()));
+    std::fs::create_dir_all(&root).unwrap();
+    let database = root.join("history.sqlite");
+    let pixels = Arc::new(image::RgbaImage::from_pixel(3, 2, image::Rgba([12, 34, 56, 255])));
+    let shot = CapturedImage { width: 3, height: 2, pixels: pixels.clone(), png_path: root.join("original.png"),
+        display_id: "fixture".into(), window_id: None, elapsed_ms: 0,
+        source_format: app_core::PixelFormat::Rgba8UnormSrgb, display_geometry: None };
+    handle.update(cx, |this, _, cx| {
+        this.output_directory = Some(root.clone());
+        this.history_database = Some(database.clone());
+        this.filename_template = "Shot-{date}_{time}".into();
+        this.last_capture = Some(shot.clone());
+        this.output_captures(vec![shot.clone(), shot.clone()], false, cx);
+    }).unwrap();
+    cx.run_until_parked();
+    let saved = cx.update(|cx| {
+        let state = handle.read(cx).unwrap();
+        assert!(!state.saving && state.last_capture.is_none());
+        assert_eq!(state.clipboard_status, "No capture yet");
+        assert_eq!(state.save_status, "Save: 2 PNG(s) saved");
+        state.last_saved.clone().unwrap()
+    });
+    assert_eq!(saved.parent().unwrap(), root);
+    assert!(saved.file_name().unwrap().to_string_lossy().starts_with("Shot-"));
+    assert!(!shot.png_path.exists());
+    assert_eq!(image::open(&saved).unwrap().into_rgba8(), *pixels);
+    let files: Vec<_> = std::fs::read_dir(&root).unwrap().map(|entry| entry.unwrap().path())
+        .filter(|path| path.extension().is_some_and(|extension| extension == "png")).collect();
+    assert_eq!(files.len(), 2);
+    assert_ne!(files[0], files[1]);
+    let history = app_core::capture_history_page(&database, None).unwrap();
+    assert_eq!(history.len(), 2);
+    assert!(history.iter().any(|entry| entry.path == saved));
+    assert!(history.iter().all(|entry| files.contains(&entry.path)));
+    for entry in std::fs::read_dir(&root).unwrap() { std::fs::remove_file(entry.unwrap().path()).unwrap(); }
+    std::fs::remove_dir(root).unwrap();
+}
+
+#[gpui::test]
+fn default_export_format_failure_retains_active_choice(cx: &mut TestAppContext) {
+    let handle = open_workspace(cx);
+    let blocker = std::env::temp_dir().join(format!("screenshots-format-blocker-{}", std::process::id()));
+    std::fs::write(&blocker, b"not a folder").unwrap();
+    handle.update(cx, |this, _, _| {
+        this.output_directory = Some(blocker.clone());
+        this.jpeg_quality = 73;
+    }).unwrap();
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.press(&shortcut(","), cx);
+        window.render_frame(cx);
+        window.scroll("choose-output-directory", gpui::ScrollDelta::Pixels(point(px(0.), px(-650.))), cx);
+        window.render_frame(cx);
+        window.within("save-as-format").click(1usize, cx);
+    }).unwrap();
+    cx.run_until_parked();
+    handle.update(cx, |this, _, _| {
+        assert!(!this.settings_saving);
+        assert_eq!(this.export_format, app_core::ImageExportFormat::Png);
+        assert_eq!(this.jpeg_quality, 73);
+        assert!(this.settings_status.starts_with("Default export format unchanged:"));
+    }).unwrap();
+    std::fs::remove_file(blocker).unwrap();
+}
+
+#[gpui::test]
+fn jpeg_quality_input_validates_preserves_failed_saves_and_releases_on_exit(cx: &mut TestAppContext) {
+    let handle = open_workspace(cx);
+    let blocker = std::env::temp_dir().join(format!("screenshots-jpeg-blocker-{}", std::process::id()));
+    std::fs::write(&blocker, b"not a folder").unwrap();
+    handle.update(cx, |this, _, _| this.output_directory = Some(blocker.clone())).unwrap();
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.press(&shortcut(","), cx);
+        window.render_frame(cx);
+        let _ = window.find_by_label("JPEG quality (1–100)");
+    }).unwrap();
+    handle.update(cx, |this, window, cx| {
+        let input = this.jpeg_quality_input.clone().unwrap();
+        input.update(cx, |input, cx| input.set_value("101", window, cx));
+        this.save_jpeg_quality(cx);
+        assert!(!this.settings_saving);
+        assert!(this.settings_status.starts_with("JPEG quality unchanged:"));
+        input.update(cx, |input, cx| input.set_value("73", window, cx));
+    }).unwrap();
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.scroll("choose-output-directory", gpui::ScrollDelta::Pixels(point(px(0.), px(-450.))), cx);
+        window.render_frame(cx);
+        window.click("save-jpeg-quality", cx);
+    }).unwrap();
+    cx.run_until_parked();
+    handle.update(cx, |this, _, _| {
+        assert_eq!(this.jpeg_quality, 90);
+        assert!(!this.settings_saving);
+        assert!(this.settings_status.starts_with("JPEG quality unchanged:"));
+    }).unwrap();
+    cx.update_window(handle.into(), |_, window, cx| window.press(&shortcut("1"), cx)).unwrap();
+    handle.update(cx, |this, _, _| assert!(this.jpeg_quality_input.is_none())).unwrap();
+    std::fs::remove_file(blocker).unwrap();
+}
+
+#[gpui::test]
+fn save_as_image_formats_keep_current_pixels_and_png_library_unchanged(cx: &mut TestAppContext) {
+    let handle = open_workspace(cx);
+    let root = std::env::temp_dir().join(format!("screenshots-save-formats-{}", std::process::id()));
+    std::fs::create_dir_all(&root).unwrap();
+    let pixels = Arc::new(image::RgbaImage::from_pixel(3, 2, image::Rgba([12, 34, 56, 255])));
+    let source = root.join("unsaved-source.png");
+    let database = root.join("history.sqlite");
+    handle.update(cx, |this, _, _| {
+        this.output_directory = Some(root.clone());
+        this.jpeg_quality = 31;
+        this.export_format = app_core::ImageExportFormat::WebP;
+        this.history_database = Some(database.clone());
+        this.last_capture = Some(CapturedImage { width: 3, height: 2, pixels: pixels.clone(),
+            png_path: source.clone(), display_id: "fixture".into(), window_id: None, elapsed_ms: 0,
+            source_format: app_core::PixelFormat::Rgba8UnormSrgb, display_geometry: None });
+    }).unwrap();
+    for extension in ["jpg", "webp", "tiff", "jpg"] {
+        handle.update(cx, |this, _, cx| this.save_capture_as(cx)).unwrap();
+        assert!(cx.did_prompt_for_new_path());
+        let path = root.join(format!("export.{extension}"));
+        cx.simulate_new_path_selection(|_| Some(path.clone()));
+        cx.run_until_parked();
+        handle.update(cx, |this, _, _| {
+            assert!(!this.saving);
+            assert!(Arc::ptr_eq(&this.last_capture.as_ref().unwrap().pixels, &pixels));
+            assert!(this.last_saved.is_none());
+            assert!(!source.exists() && !database.exists());
+            assert_eq!(this.clipboard_status, "No capture yet");
+            if extension == "tiff" { assert!(this.save_status.starts_with("Image not saved:")); }
+        }).unwrap();
+    }
+    assert!(root.join("export.jpg").exists() && root.join("export.webp").exists());
+    let mut expected = Vec::new();
+    image::codecs::jpeg::JpegEncoder::new_with_quality(&mut expected, 31).encode_image(&*pixels).unwrap();
+    assert_eq!(std::fs::read(root.join("export.jpg")).unwrap(), expected);
+    assert!(!root.join("export.tiff").exists() && !root.join("export.png").exists());
+    assert_eq!(std::fs::read_dir(&root).unwrap().count(), 2);
+    handle.update(cx, |this, _, _| assert!(this.save_status.contains("already exists"))).unwrap();
+    handle.update(cx, |this, _, cx| this.save_capture_as(cx)).unwrap();
+    cx.simulate_new_path_selection(|_| None);
+    cx.run_until_parked();
+    handle.update(cx, |this, _, _| assert!(!this.saving && this.last_capture.is_some())).unwrap();
+    handle.update(cx, |this, _, cx| this.save_capture_as(cx)).unwrap();
+    // A later settings change cannot affect the already opened export dialog.
+    handle.update(cx, |this, _, _| this.export_format = app_core::ImageExportFormat::Jpeg).unwrap();
+    let bare = root.join("default-export");
+    cx.simulate_new_path_selection(|_| Some(bare));
+    cx.run_until_parked();
+    assert!(root.join("default-export.webp").exists());
+    assert!(!root.join("default-export.jpg").exists() && !root.join("default-export.png").exists());
+    assert_eq!(image::open(root.join("default-export.webp")).unwrap().into_rgba8(), *pixels);
+    std::fs::remove_file(root.join("default-export.webp")).unwrap();
+    for extension in ["jpg", "webp"] { std::fs::remove_file(root.join(format!("export.{extension}"))).unwrap(); }
+    std::fs::remove_dir(root).unwrap();
+}
+
 fn exact_display() -> DisplayInfo {
     DisplayInfo { id: "exact-fixture".into(), name: "Fixture display".into(), x: -320, y: 0,
         width: 320, height: 200, scale_factor: 1.5, rotation: 0., is_primary: true }
@@ -239,6 +425,41 @@ fn open_image_preserves_source_and_opens_without_output(cx: &mut TestAppContext)
     assert_eq!(std::fs::read_dir(&root).unwrap().count(), 1);
     std::fs::remove_file(&path).unwrap();
     std::fs::remove_dir(&root).unwrap();
+}
+
+#[gpui::test]
+fn library_open_image_opens_webp_without_importing_or_writing_output(cx: &mut TestAppContext) {
+    let handle = open_workspace(cx);
+    let root = std::env::temp_dir().join(format!("screenshots-library-open-{}", std::process::id()));
+    std::fs::create_dir_all(&root).unwrap();
+    let path = root.join("original.webp");
+    let pixels = image::RgbaImage::from_pixel(3, 2, image::Rgba([12, 34, 56, 78]));
+    pixels.save(&path).unwrap();
+    let original = std::fs::read(&path).unwrap();
+    handle.update(cx, |this, _, _| this.output_directory = Some(root.clone())).unwrap();
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.press(&shortcut("2"), cx);
+        window.render_frame(cx);
+        window.click("library-open-image", cx);
+    }).unwrap();
+    assert!(cx.did_prompt_for_paths());
+    cx.simulate_path_prompt_response(|options| {
+        assert!(!options.multiple && options.files && !options.directories);
+        Some(vec![path.clone()])
+    });
+    cx.run_until_parked();
+    handle.update(cx, |this, _, cx| {
+        assert_eq!(this.page, ControlPage::Captures);
+        assert!(!this.history_visible && this.history_search_input.is_none());
+        assert!(!this.capturing && this.last_capture.is_none() && this.last_saved.is_none());
+        assert!(this.history_entries.is_empty());
+        let editor = this.editor.unwrap().read(cx).unwrap();
+        assert_eq!(&*editor.source.pixels, &pixels);
+    }).unwrap();
+    assert_eq!(std::fs::read(&path).unwrap(), original);
+    assert_eq!(std::fs::read_dir(&root).unwrap().count(), 1);
+    std::fs::remove_file(path).unwrap();
+    std::fs::remove_dir(root).unwrap();
 }
 
 fn drop_paths(handle: WindowHandle<CaptureWorkspace>, paths: &[PathBuf], cx: &mut TestAppContext) {

@@ -148,6 +148,11 @@ pub struct CaptureWorkspace {
     settings_status: String,
     hotkey_bindings: app_core::CaptureHotkeys,
     output_profile: CaptureOutputProfile,
+    jpeg_quality: u8,
+    export_format: app_core::ImageExportFormat,
+    filename_template: String,
+    filename_template_input: Option<gpui::Entity<gpui::component::input::InputState>>,
+    jpeg_quality_input: Option<gpui::Entity<gpui::component::input::InputState>>,
     last_region: Option<app_core::RememberedRegion>,
     exact_region_inputs: Option<[gpui::Entity<gpui::component::input::InputState>; 4]>,
     exact_region_status: String,
@@ -362,6 +367,8 @@ impl CaptureWorkspace {
         self.preview_active = false;
         self.exact_region_inputs = None;
         self.region_preset_name = None;
+        self.jpeg_quality_input = None;
+        self.filename_template_input = None;
         self.exact_region_status.clear();
         #[cfg(target_os = "windows")]
         { self.hotkey_inputs = None; }
@@ -544,6 +551,11 @@ impl CaptureWorkspace {
             settings_status: String::new(),
             hotkey_bindings: app_core::CaptureHotkeys::default(),
             output_profile: CaptureOutputProfile::default(),
+            jpeg_quality: app_core::DEFAULT_JPEG_QUALITY,
+            export_format: app_core::ImageExportFormat::default(),
+            filename_template: String::new(),
+            filename_template_input: None,
+            jpeg_quality_input: None,
             last_region: None,
             exact_region_inputs: None,
             exact_region_status: String::new(),
@@ -636,6 +648,9 @@ impl CaptureWorkspace {
                         }
                         this.hotkey_bindings = settings.hotkeys;
                         this.output_profile = settings.output_profile;
+                        this.jpeg_quality = settings.jpeg_quality;
+                        this.export_format = settings.export_format;
+                        this.filename_template = settings.filename_template;
                         this.region_presets = settings.region_presets;
                         theme::apply(settings.theme, cx);
                         this.backend = XcapBackend::new(&settings.output_directory);
@@ -765,6 +780,9 @@ impl CaptureWorkspace {
         }
         self.settings_saving = true;
         let theme = theme::selected(cx);
+        let jpeg_quality = self.jpeg_quality;
+        let export_format = self.export_format;
+        let filename_template = self.filename_template.clone();
         let hotkeys = self.hotkey_bindings.clone();
         let profile = self.output_profile;
         let presets = self.region_presets.clone();
@@ -795,6 +813,9 @@ impl CaptureWorkspace {
                         .map_err(|error| format!("{error:#}"))?.with_theme(theme)
                         .with_hotkeys(hotkeys).map_err(|error| format!("{error:#}"))?
                         .with_output_profile(profile).with_region_presets(presets)
+                        .and_then(|settings| settings.with_jpeg_quality(jpeg_quality))
+                        .map(|settings| settings.with_export_format(export_format))
+                        .and_then(|settings| settings.with_filename_template(filename_template))
                         .map_err(|error| format!("{error:#}"))?;
                     settings.save().map_err(|error| format!("{error:#}"))?;
                     Ok::<_, String>(settings.output_directory)
@@ -832,6 +853,9 @@ impl CaptureWorkspace {
         }
         let Some(directory) = self.output_directory.clone() else { return; };
         let previous = theme::selected(cx);
+        let jpeg_quality = self.jpeg_quality;
+        let export_format = self.export_format;
+        let filename_template = self.filename_template.clone();
         let hotkeys = self.hotkey_bindings.clone();
         let profile = self.output_profile;
         let presets = self.region_presets.clone();
@@ -842,7 +866,7 @@ impl CaptureWorkspace {
             let result = cx.background_spawn(async move {
                 // The default capture folder may not exist before the first screenshot.
                 std::fs::create_dir_all(&directory)?;
-                app_core::CaptureSettings::for_directory(directory)?.with_theme(selected).with_hotkeys(hotkeys)?.with_output_profile(profile).with_region_presets(presets)?.save()
+                app_core::CaptureSettings::for_directory(directory)?.with_theme(selected).with_hotkeys(hotkeys)?.with_output_profile(profile).with_region_presets(presets)?.with_jpeg_quality(jpeg_quality)?.with_export_format(export_format).with_filename_template(filename_template)?.save()
             }).await;
             this.update(cx, |this, cx| {
                 this.settings_saving = false;
@@ -861,6 +885,9 @@ impl CaptureWorkspace {
     }
 
     fn choose_output_profile(&mut self, selected: CaptureOutputProfile, cx: &mut Context<Self>) {
+        let jpeg_quality = self.jpeg_quality;
+        let export_format = self.export_format;
+        let filename_template = self.filename_template.clone();
         if self.settings_loading || self.settings_saving || self.quitting || self.capturing
             || self.copying || self.saving || self.preview_active || self.editor.is_some()
             || self.editor_closing || self.switching_graphics || self.capture_delay.is_some()
@@ -875,7 +902,7 @@ impl CaptureWorkspace {
             let result = cx.background_spawn(async move {
                 std::fs::create_dir_all(&directory)?;
                 app_core::CaptureSettings::for_directory(directory)?.with_theme(appearance)
-                    .with_hotkeys(hotkeys)?.with_output_profile(selected).with_region_presets(presets)?.save()
+                    .with_hotkeys(hotkeys)?.with_output_profile(selected).with_region_presets(presets)?.with_jpeg_quality(jpeg_quality)?.with_export_format(export_format).with_filename_template(filename_template)?.save()
             }).await;
             this.update(cx, |this, cx| {
                 this.settings_saving = false;
@@ -893,6 +920,125 @@ impl CaptureWorkspace {
         cx.notify();
     }
 
+    fn save_jpeg_quality(&mut self, cx: &mut Context<Self>) {
+        let export_format = self.export_format;
+        let filename_template = self.filename_template.clone();
+        if self.page != ControlPage::Settings || self.image_input_busy() { return; }
+        let Some(input) = &self.jpeg_quality_input else { return; };
+        let quality = input.read(cx).value().parse::<u8>().ok().filter(|quality| (1..=100).contains(quality));
+        let Some(quality) = quality else {
+            self.settings_status = "JPEG quality unchanged: enter a whole number from 1 to 100.".into();
+            cx.notify();
+            return;
+        };
+        if quality == self.jpeg_quality {
+            self.settings_status = format!("JPEG quality already active: {quality}");
+            cx.notify();
+            return;
+        }
+        let Some(directory) = self.output_directory.clone() else { return; };
+        let appearance = theme::selected(cx);
+        let hotkeys = self.hotkey_bindings.clone();
+        let profile = self.output_profile;
+        let presets = self.region_presets.clone();
+        self.settings_saving = true;
+        self.settings_status = "Saving JPEG quality…".into();
+        cx.spawn(async move |this, cx| {
+            let result = cx.background_spawn(async move {
+                let settings = app_core::CaptureSettings::for_directory(directory)?.with_theme(appearance)
+                    .with_hotkeys(hotkeys)?.with_output_profile(profile).with_region_presets(presets)?
+                    .with_jpeg_quality(quality)?.with_export_format(export_format).with_filename_template(filename_template)?;
+                std::fs::create_dir_all(&settings.output_directory)?;
+                settings.save()
+            }).await;
+            this.update(cx, |this, cx| {
+                this.settings_saving = false;
+                match result {
+                    Ok(()) => { this.jpeg_quality = quality; this.settings_status = format!("JPEG quality saved: {quality}"); }
+                    Err(error) => this.settings_status = format!("JPEG quality unchanged: {error:#}"),
+                }
+                this.finish_quit_if_idle(cx);
+                cx.notify();
+            }).ok();
+        }).detach();
+        cx.notify();
+    }
+
+    fn choose_export_format(&mut self, format: app_core::ImageExportFormat, cx: &mut Context<Self>) {
+        let filename_template = self.filename_template.clone();
+        if self.page != ControlPage::Settings || self.image_input_busy() || self.export_format == format { return; }
+        let Some(directory) = self.output_directory.clone() else { return; };
+        let appearance = theme::selected(cx);
+        let hotkeys = self.hotkey_bindings.clone();
+        let profile = self.output_profile;
+        let presets = self.region_presets.clone();
+        let quality = self.jpeg_quality;
+        self.settings_saving = true;
+        self.settings_status = "Saving default export format…".into();
+        cx.spawn(async move |this, cx| {
+            let result = cx.background_spawn(async move {
+                let settings = app_core::CaptureSettings::for_directory(directory)?.with_theme(appearance)
+                    .with_hotkeys(hotkeys)?.with_output_profile(profile).with_region_presets(presets)?
+                    .with_jpeg_quality(quality)?.with_export_format(format).with_filename_template(filename_template)?;
+                std::fs::create_dir_all(&settings.output_directory)?;
+                settings.save()
+            }).await;
+            this.update(cx, |this, cx| {
+                this.settings_saving = false;
+                match result {
+                    Ok(()) => { this.export_format = format; this.settings_status = format!("Default export format saved: {}", format.label()); }
+                    Err(error) => this.settings_status = format!("Default export format unchanged: {error:#}"),
+                }
+                this.finish_quit_if_idle(cx);
+                cx.notify();
+            }).ok();
+        }).detach();
+        cx.notify();
+    }
+
+    fn save_filename_template(&mut self, cx: &mut Context<Self>) {
+        if self.page != ControlPage::Settings || self.image_input_busy() { return; }
+        let Some(input) = &self.filename_template_input else { return; };
+        let template = input.read(cx).value().trim().to_owned();
+        if let Err(error) = app_core::validate_capture_name_template(&template) {
+            self.settings_status = format!("Filename template unchanged: {error}");
+            cx.notify(); return;
+        }
+        if template == self.filename_template {
+            self.settings_status = "Filename template already active.".into();
+            cx.notify(); return;
+        }
+        let Some(directory) = self.output_directory.clone() else { return; };
+        let appearance = theme::selected(cx);
+        let hotkeys = self.hotkey_bindings.clone();
+        let profile = self.output_profile;
+        let presets = self.region_presets.clone();
+        let quality = self.jpeg_quality;
+        let format = self.export_format;
+        self.settings_saving = true;
+        self.settings_status = "Saving filename template…".into();
+        cx.spawn(async move |this, cx| {
+            let result = cx.background_spawn(async move {
+                let settings = app_core::CaptureSettings::for_directory(directory)?.with_theme(appearance)
+                    .with_hotkeys(hotkeys)?.with_output_profile(profile).with_region_presets(presets)?
+                    .with_jpeg_quality(quality)?.with_export_format(format).with_filename_template(template)?;
+                std::fs::create_dir_all(&settings.output_directory)?;
+                settings.save()?;
+                Ok::<_, anyhow::Error>(settings.filename_template)
+            }).await;
+            this.update(cx, |this, cx| {
+                this.settings_saving = false;
+                match result {
+                    Ok(template) => { this.filename_template = template; this.settings_status = "Filename template saved.".into(); }
+                    Err(error) => this.settings_status = format!("Filename template unchanged: {error:#}"),
+                }
+                this.finish_quit_if_idle(cx);
+                cx.notify();
+            }).ok();
+        }).detach();
+        cx.notify();
+    }
+
     fn show_page(&mut self, page: ControlPage, cx: &mut Context<Self>) {
         if self.page == page && (page != ControlPage::History || self.history_visible) {
             return;
@@ -900,6 +1046,8 @@ impl CaptureWorkspace {
         self.hide_history(cx);
         self.hide_upload_history();
         self.page = page;
+        self.jpeg_quality_input = None;
+        self.filename_template_input = None;
         self.exact_region_inputs = None;
         self.region_preset_name = None;
         self.exact_region_status.clear();
@@ -921,6 +1069,9 @@ impl CaptureWorkspace {
     }
     #[cfg(target_os = "windows")]
     fn save_hotkeys(&mut self, bindings: app_core::CaptureHotkeys, cx: &mut Context<Self>) {
+        let jpeg_quality = self.jpeg_quality;
+        let export_format = self.export_format;
+        let filename_template = self.filename_template.clone();
         if self.page != ControlPage::Settings || self.settings_loading || self.settings_saving || self.quitting {
             return;
         }
@@ -950,7 +1101,7 @@ impl CaptureWorkspace {
             let result = cx.background_spawn(async move {
                 std::fs::create_dir_all(&directory)?;
                 app_core::CaptureSettings::for_directory(directory)?
-                    .with_theme(appearance).with_hotkeys(saved_bindings)?.with_output_profile(profile).with_region_presets(presets)?.save()
+                    .with_theme(appearance).with_hotkeys(saved_bindings)?.with_output_profile(profile).with_region_presets(presets)?.with_jpeg_quality(jpeg_quality)?.with_export_format(export_format).with_filename_template(filename_template)?.save()
             }).await;
             this.update(cx, |this, cx| {
                 this.settings_saving = false;
@@ -1698,6 +1849,9 @@ impl CaptureWorkspace {
     }
 
     fn persist_region_presets(&mut self, presets: Vec<app_core::RegionPreset>, cx: &mut Context<Self>) {
+        let jpeg_quality = self.jpeg_quality;
+        let export_format = self.export_format;
+        let filename_template = self.filename_template.clone();
         let Some(directory) = self.output_directory.clone() else { return; };
         let appearance = theme::selected(cx);
         let hotkeys = self.hotkey_bindings.clone();
@@ -1707,7 +1861,7 @@ impl CaptureWorkspace {
         cx.spawn(async move |this, cx| {
             let result = cx.background_spawn(async move {
                 let settings = app_core::CaptureSettings::for_directory(directory)?.with_theme(appearance)
-                    .with_hotkeys(hotkeys)?.with_output_profile(profile).with_region_presets(presets)?;
+                    .with_hotkeys(hotkeys)?.with_output_profile(profile).with_region_presets(presets)?.with_jpeg_quality(jpeg_quality)?.with_export_format(export_format).with_filename_template(filename_template)?;
                 std::fs::create_dir_all(&settings.output_directory)?;
                 settings.save()?;
                 Ok::<_, anyhow::Error>(settings.region_presets)
@@ -3063,10 +3217,13 @@ impl CaptureWorkspace {
     }
 
     fn save_capture_as(&mut self, cx: &mut Context<Self>) {
+        let jpeg_quality = self.jpeg_quality;
+        let export_format = self.export_format;
         if self.capture_delay.is_some() {
             return;
         }
-        if self.capturing || self.copying || self.saving || self.settings_saving || self.quitting {
+        if self.capturing || self.copying || self.saving || self.settings_saving || self.quitting
+            || self.editor.is_some() || self.editor_closing || self.preview_active || self.switching_graphics {
             return;
         }
         let shot = self.last_capture.clone();
@@ -3083,7 +3240,8 @@ impl CaptureWorkspace {
                 .unwrap_or(std::path::Path::new("."))
                 .to_path_buf()
         });
-        let dialog = cx.prompt_for_new_path(&directory, Some("Screenshot.png"));
+        let suggested_name = format!("Screenshot.{}", export_format.extension());
+        let dialog = cx.prompt_for_new_path(&directory, Some(&suggested_name));
         let history_database = self.history_database.clone();
         self.saving = true;
         cx.spawn(async move |this, cx| {
@@ -3103,12 +3261,15 @@ impl CaptureWorkspace {
                 this.update(cx, |this, cx| { this.saving = false; this.finish_quit_if_idle(cx); cx.notify(); }).ok();
                 return;
             };
-            if !path.extension().is_some_and(|extension| extension.eq_ignore_ascii_case("png")) { path.set_extension("png"); }
+            if path.extension().is_none_or(|extension| extension.is_empty()) { path.set_extension(export_format.extension()); }
             let result = cx.background_spawn(async move {
-                let result = if let Some(shot) = shot { shot.save_png_as(&path) } else { app_core::export_saved_png(&source, &path) };
-                result.map(|_| {
-                    let history_error = history_database.as_ref().and_then(|database| app_core::record_saved_capture(database, &path).err()).map(|error| format!("{error:#}"));
-                    (path, history_error)
+                let result = if let Some(shot) = shot { shot.save_image_as(&path, jpeg_quality) } else { app_core::export_saved_png_as(&source, &path, jpeg_quality) };
+                result.map(|format| {
+                    let history_error = if format == app_core::ImageExportFormat::Png {
+                        history_database.as_ref().and_then(|database| app_core::record_saved_capture(database, &path).err())
+                            .map(|error| format!("{error:#}"))
+                    } else { None };
+                    (path, format, history_error)
                 }).map_err(|error| match error {
                     app_core::CaptureError::Io(error) if error.kind() == std::io::ErrorKind::AlreadyExists =>
                         "The file already exists. Choose a new name; existing files are never overwritten.".to_owned(),
@@ -3118,18 +3279,22 @@ impl CaptureWorkspace {
             this.update(cx, |this, cx| {
                 this.saving = false;
                 match result {
-                    Ok((path, history_error)) => {
-                        this.save_status = format!("PNG saved: {}", path.display());
-                        this.last_saved = Some(path);
-                        this.last_capture = None;
+                    Ok((path, format, history_error)) => {
+                        this.save_status = format!("{} saved: {}", format.label(), path.display());
+                        if format == app_core::ImageExportFormat::Png {
+                            this.last_saved = Some(path);
+                            this.last_capture = None;
+                        } else {
+                            this.save_status.push_str(" · Exported a copy; current image and library unchanged");
+                        }
                         if let Some(error) = history_error {
                             this.history_status = format!("PNG saved, but history was not updated: {error}");
                             this.save_status.push_str(" · History update failed");
-                        } else if this.history_visible { this.refresh_history(None, cx); }
+                        } else if this.history_visible && format == app_core::ImageExportFormat::Png { this.refresh_history(None, cx); }
                     }
                     Err(error) => {
                         this.quitting = false;
-                        this.save_status = format!("PNG not saved: {error}");
+                        this.save_status = format!("Image not saved: {error}");
                         this.restore_control(cx);
                         if this.resident && this.control.is_none() { this.show_control(cx); }
                     }
@@ -3168,6 +3333,7 @@ impl CaptureWorkspace {
     }
 
     fn output_captures(&mut self, saves: Vec<CapturedImage>, copy: bool, cx: &mut Context<Self>) {
+        let filename_template = if saves.is_empty() { String::new() } else { self.filename_template.clone() };
         if self.capture_delay.is_some() || self.copying || self.saving || self.quitting {
             return;
         }
@@ -3239,8 +3405,11 @@ impl CaptureWorkspace {
                     .background_spawn(async move {
                         saves
                             .into_iter()
-                            .map(|shot| {
-                                let saved = shot.save_png().map_err(|error| error.to_string());
+                            .map(|mut shot| {
+                                let saved = app_core::capture_file_name(&filename_template).and_then(|name| {
+                                    if let Some(name) = name { shot.png_path.set_file_name(name); }
+                                    shot.save_png().map_err(anyhow::Error::from)
+                                }).map_err(|error| error.to_string());
                                 let history_error = if saved.is_ok() {
                                     history_database
                                         .as_ref()
@@ -3269,8 +3438,7 @@ impl CaptureWorkspace {
                         })
                         .collect();
                     this.save_status = if errors.is_empty() {
-                        this.last_saved =
-                            this.last_capture.as_ref().map(|shot| shot.png_path.clone());
+                        this.last_saved = results.last().map(|(path, _, _)| path.clone());
                         this.last_capture = None;
                         tracing::info!(count = results.len(), "capture outputs saved");
                         format!("Save: {} PNG(s) saved", results.len())

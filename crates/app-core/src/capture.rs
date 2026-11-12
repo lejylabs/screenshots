@@ -615,6 +615,123 @@ mod tests {
     use super::*;
 
     #[test]
+    fn jpeg_quality_controls_memory_and_saved_png_exports() -> anyhow::Result<()> {
+        let root = std::env::temp_dir().join(format!("screenshots-jpeg-quality-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&root)?;
+        let shot = CapturedImage { width: 64, height: 64,
+            pixels: Arc::new(RgbaImage::from_fn(64, 64, |x, y| image::Rgba([
+                ((x * 47 + y * 13) % 256) as u8, ((y * 71 + x * 19) % 256) as u8, ((x + y) * 31 % 256) as u8, 255]))),
+            png_path: root.join("source.png"), display_id: "fixture".into(), window_id: None,
+            elapsed_ms: 0, source_format: PixelFormat::Rgba8UnormSrgb, display_geometry: None };
+        shot.save_png()?;
+        let mut errors = Vec::new();
+        for quality in [10, 100] {
+            let memory = root.join(format!("memory-{quality}.jpg"));
+            let saved = root.join(format!("saved-{quality}.jpg"));
+            shot.save_image_as(&memory, quality)?;
+            export_saved_png_as(&shot.png_path, &saved, quality)?;
+            assert_eq!(fs::read(&memory)?, fs::read(&saved)?);
+            let decoded = image::open(&memory)?.into_rgba8();
+            assert_eq!(decoded.dimensions(), (64, 64));
+            errors.push(decoded.as_raw().iter().zip(shot.pixels.as_raw()).map(|(a, b)| u64::from(a.abs_diff(*b))).sum::<u64>());
+            fs::remove_file(memory)?; fs::remove_file(saved)?;
+        }
+        assert!(errors[1] < errors[0], "{errors:?}");
+        for quality in [0, 101, 255] {
+            let destination = root.join("invalid.jpg");
+            assert!(shot.save_image_as(&destination, quality).is_err());
+            assert!(export_saved_png_as(&shot.png_path, &destination, quality).is_err());
+            assert!(!destination.exists());
+        }
+        assert_eq!(fs::read_dir(&root)?.count(), 1);
+        fs::remove_file(shot.png_path)?; fs::remove_dir(root)?;
+        Ok(())
+    }
+
+    #[test]
+    fn image_export_formats_preserve_sources_alpha_and_existing_files() -> anyhow::Result<()> {
+        use image::GenericImageView as _;
+        let root = std::env::temp_dir().join(format!("screenshots-format-export-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&root)?;
+        let mut shot = CapturedImage { display_id: "fixture".into(), window_id: None, width: 3, height: 2,
+            pixels: Arc::new(RgbaImage::from_pixel(3, 2, image::Rgba([12, 34, 56, 255]))),
+            png_path: root.join("source.png"), elapsed_ms: 0, source_format: PixelFormat::Rgba8UnormSrgb, display_geometry: None };
+        shot.save_png()?;
+        let original = fs::read(&shot.png_path)?;
+        for extension in ["png", "JPG", "jpeg", "webp"] {
+            let destination = root.join(format!("copy.{extension}"));
+            let format = shot.save_image_as(&destination, 90)?;
+            let bytes = fs::read(&destination)?;
+            assert_eq!(image::guess_format(&bytes)?, match format {
+                ImageExportFormat::Png => image::ImageFormat::Png,
+                ImageExportFormat::Jpeg => image::ImageFormat::Jpeg,
+                ImageExportFormat::WebP => image::ImageFormat::WebP,
+            });
+            let decoded = image::load_from_memory(&bytes)?.into_rgba8();
+            assert_eq!(decoded.dimensions(), (3, 2));
+            if format != ImageExportFormat::Jpeg { assert_eq!(decoded, *shot.pixels); }
+            assert!(shot.save_image_as(&destination, 90).is_err());
+            assert_eq!(fs::read(&destination)?, bytes);
+            let from_png = root.join(format!("from-png.{extension}"));
+            assert_eq!(export_saved_png_as(&shot.png_path, &from_png, 90)?, format);
+            assert_eq!(image::open(&from_png)?.dimensions(), (3, 2));
+            fs::remove_file(destination)?;
+            fs::remove_file(from_png)?;
+        }
+        for extension in ["gif", "bmp", ""] {
+            let destination = root.join(format!("unsupported.{extension}"));
+            assert!(shot.save_image_as(&destination, 90).is_err());
+            assert!(!destination.exists());
+        }
+        shot.pixels = Arc::new(RgbaImage::from_fn(3, 2, |x, _| image::Rgba([12, 34, 56, if x == 0 { 0 } else { 78 }])));
+        let transparent = root.join("transparent.webp");
+        shot.save_image_as(&transparent, 90)?;
+        assert_eq!(image::open(&transparent)?.into_rgba8(), *shot.pixels);
+        let rejected = root.join("transparent.jpg");
+        assert!(shot.save_image_as(&rejected, 90).unwrap_err().to_string().contains("transparency"));
+        assert!(!rejected.exists());
+        let wide = CapturedImage { width: 65536, height: 1,
+            pixels: Arc::new(RgbaImage::from_pixel(65536, 1, image::Rgba([12, 34, 56, 255]))), ..shot.clone() };
+        let failed = root.join("encoder-failure.jpg");
+        assert!(wide.save_image_as(&failed, 90).is_err());
+        assert!(!failed.exists());
+        assert_eq!(fs::read(&shot.png_path)?, original);
+        assert_eq!(fs::read_dir(&root)?.count(), 2);
+        fs::remove_file(transparent)?;
+        fs::remove_file(shot.png_path)?;
+        fs::remove_dir(root)?;
+        Ok(())
+    }
+
+    #[test]
+    #[ignore = "short optimized 4K PNG/JPEG/WebP export comparison; synthetic images and temporary files only"]
+    fn image_export_4k_cost() -> anyhow::Result<()> {
+        let root = std::env::temp_dir().join(format!("screenshots-export-cost-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&root)?;
+        let shot = CapturedImage { width: 3840, height: 2160,
+            pixels: Arc::new(RgbaImage::from_fn(3840, 2160, |x, y| image::Rgba([
+                (x % 251) as u8, (y % 251) as u8, ((x + y) % 251) as u8, 255]))),
+            png_path: root.join("unused.png"), display_id: "fixture".into(), window_id: None,
+            elapsed_ms: 0, source_format: PixelFormat::Rgba8UnormSrgb, display_geometry: None };
+        for (extension, quality) in [("png", 90), ("jpg", 50), ("jpg", 90), ("jpg", 100), ("webp", 90)] {
+            let path = root.join(format!("export.{extension}"));
+            let mut timings = Vec::new();
+            let mut length = 0;
+            for _ in 0..3 {
+                let started = Instant::now();
+                shot.save_image_as(&path, quality)?;
+                timings.push(started.elapsed());
+                length = fs::metadata(&path)?.len();
+                fs::remove_file(&path)?;
+            }
+            timings.sort_unstable();
+            eprintln!("4K {extension} (JPEG quality {quality}) encode + durable publication median={:?}; output={length} bytes; 3 synthetic warm samples; excludes dialog/presentation/process memory", timings[1]);
+        }
+        fs::remove_dir(root)?;
+        Ok(())
+    }
+
+    #[test]
     fn exact_region_metadata_checks_display_geometry_and_bounds_without_pixels() {
         let display = DisplayInfo { id: "fixture".into(), name: "Fixture".into(), x: -1920, y: -100,
             width: 1920, height: 1080, scale_factor: 1.5, rotation: 0., is_primary: false };
@@ -1033,6 +1150,14 @@ mod tests {
 }
 
 impl CapturedImage {
+    pub fn save_image_as(&self, destination: &Path, jpeg_quality: u8) -> Result<ImageExportFormat, CaptureError> {
+        validate_image_size(self.pixels.width(), self.pixels.height())?;
+        let format = ImageExportFormat::from_path(destination)?;
+        if format == ImageExportFormat::Png { self.save_png_as(destination)?; }
+        else { write_image_export(&self.pixels, destination, format, jpeg_quality)?; }
+        Ok(format)
+    }
+
     pub fn save_png(&self) -> Result<(), CaptureError> {
         self.save_png_as(&self.png_path)
     }
@@ -1055,6 +1180,72 @@ impl CapturedImage {
             Ok(())
         })
     }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ImageExportFormat {
+    #[default]
+    Png,
+    Jpeg,
+    #[serde(rename = "webp")]
+    WebP,
+}
+
+impl ImageExportFormat {
+    pub const ALL: [Self; 3] = [Self::Png, Self::Jpeg, Self::WebP];
+    pub fn extension(self) -> &'static str {
+        match self { Self::Png => "png", Self::Jpeg => "jpg", Self::WebP => "webp" }
+    }
+    fn validate_quality(self, quality: u8) -> Result<(), CaptureError> {
+        if self == Self::Jpeg && !(1..=100).contains(&quality) {
+            return Err(CaptureError::Backend("JPEG quality must be between 1 and 100".into()));
+        }
+        Ok(())
+    }
+    pub fn from_path(path: &Path) -> Result<Self, CaptureError> {
+        match path.extension().and_then(|extension| extension.to_str()).map(str::to_ascii_lowercase).as_deref() {
+            Some("png") => Ok(Self::Png),
+            Some("jpg" | "jpeg") => Ok(Self::Jpeg),
+            Some("webp") => Ok(Self::WebP),
+            _ => Err(CaptureError::Backend("Use a .png, .jpg, .jpeg or .webp file name".into())),
+        }
+    }
+    pub fn label(self) -> &'static str {
+        match self { Self::Png => "PNG", Self::Jpeg => "JPEG", Self::WebP => "WebP" }
+    }
+}
+
+fn write_image_export(pixels: &RgbaImage, destination: &Path, format: ImageExportFormat, jpeg_quality: u8) -> Result<(), CaptureError> {
+    use image::ImageEncoder as _;
+    validate_image_size(pixels.width(), pixels.height())?;
+    format.validate_quality(jpeg_quality)?;
+    if format == ImageExportFormat::Jpeg && pixels.pixels().any(|pixel| pixel.0[3] != 255) {
+        return Err(CaptureError::Backend("JPEG cannot preserve transparency. Choose PNG or WebP.".into()));
+    }
+    write_output(destination, |file| {
+        let mut writer = BufWriter::with_capacity(64 * 1024, file);
+        match format {
+            ImageExportFormat::Jpeg => image::codecs::jpeg::JpegEncoder::new_with_quality(&mut writer, jpeg_quality).encode_image(pixels)?,
+            ImageExportFormat::WebP => image::codecs::webp::WebPEncoder::new_lossless(&mut writer)
+                .write_image(pixels.as_raw(), pixels.width(), pixels.height(), image::ExtendedColorType::Rgba8)?,
+            ImageExportFormat::Png => unreachable!(),
+        }
+        writer.flush()?;
+        Ok(())
+    })
+}
+
+/// Explicit JPEG/WebP export of an existing PNG; PNG keeps the streaming copy path.
+pub fn export_saved_png_as(source: &Path, destination: &Path, jpeg_quality: u8) -> Result<ImageExportFormat, CaptureError> {
+    let format = ImageExportFormat::from_path(destination)?;
+    format.validate_quality(jpeg_quality)?;
+    if format == ImageExportFormat::Png { export_saved_png(source, destination)?; }
+    else {
+        let pixels = crate::load_saved_png(source).map_err(|error| CaptureError::Backend(format!("Could not load source PNG: {error:#}")))?;
+        write_image_export(&pixels, destination, format, jpeg_quality)?;
+    }
+    Ok(format)
 }
 
 /// Export an already saved capture without decoding, allocating another frame or encoding again.
@@ -1149,7 +1340,7 @@ fn write_output_checked(
         file.sync_all()?;
         drop(file);
         check()?;
-        publish_png(&temporary, destination)?;
+        publish_output(&temporary, destination)?;
         Ok(())
     })();
     if let Err(error) = fs::remove_file(&temporary) {
@@ -1160,7 +1351,7 @@ fn write_output_checked(
     result
 }
 #[cfg(target_os = "windows")]
-fn publish_png(temporary: &Path, destination: &Path) -> std::io::Result<()> {
+fn publish_output(temporary: &Path, destination: &Path) -> std::io::Result<()> {
     use std::os::windows::ffi::OsStrExt;
     use windows_sys::Win32::Storage::FileSystem::{MOVEFILE_WRITE_THROUGH, MoveFileExW};
     let source: Vec<_> = temporary.as_os_str().encode_wide().chain(Some(0)).collect();
@@ -1177,7 +1368,7 @@ fn publish_png(temporary: &Path, destination: &Path) -> std::io::Result<()> {
 }
 
 #[cfg(not(target_os = "windows"))]
-fn publish_png(temporary: &Path, destination: &Path) -> std::io::Result<()> {
+fn publish_output(temporary: &Path, destination: &Path) -> std::io::Result<()> {
     // No partial-file copy fallback on filesystems that cannot publish without replacement.
     fs::hard_link(temporary, destination)
 }

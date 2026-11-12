@@ -58,11 +58,18 @@ priorities do not establish implementation or runtime acceptance.
 
 #### Current feature slice: open PNG, JPEG and WebP directly in the editor
 
-Implemented (2026-11-12): Recent capture offers Open image, also available
+Implemented (2026-11-12): Recent capture and Library offer Open image, also available
 with Ctrl+O (Cmd+O on macOS). The native single-file picker opens a copy through
 worker-side bounded PNG/JPEG/WebP decoding and the shared standalone editor, without
 importing history, changing the last capture, writing a source copy or copying to
 the clipboard. Final outputs remain explicit; the original file stays unchanged.
+
+The Library entry reuses the same job/admission path and releases its search and
+preview state on entry to the editor workflow. An optimized headless UI fixture
+opens a WebP with exact alpha/pixels and verifies unchanged source bytes and no
+output files. This adds only a page-local Kit button; no decoding, cache, worker,
+timer or persistent state is added to Library rendering. Native picker/accessibility
+and platform/resource acceptance remain open.
 Cancellation and selection/load errors release admission; Quit discards late picker
 results. Existing capture admission covers selection and decoding, preventing
 queued pickers/decodes. The existing close-during-load behavior waits for work;
@@ -270,6 +277,142 @@ explicit no-capture Use, stale callbacks and input release. Native keyboard/IME/
 accessibility, packaged restart workflow, disk-full/recovery and full platform/
 resource gates remain open. Automatic monitor binding and per-preset hotkeys or
 output chains remain outside this slice.
+
+#### Current feature slice: JPEG/WebP export copies through Save as
+
+Implemented (2026-11-12): Recent capture's Save as accepts .png, .jpg/.jpeg and
+.webp case-insensitively; a missing extension defaults to PNG, and unsupported
+extensions fail rather than being silently renamed. JPEG defaults to quality 90
+and rejects any nonopaque alpha with PNG/WebP guidance. WebP is lossless and keeps
+RGBA, including alpha. New encoders receive only finalized pixels, not source
+metadata. Existing PNG byte-copy behavior remains unchanged. Direct editor Save
+and quick-capture outputs still use PNG; the default Save as preference is described below.
+
+JPEG/WebP are explicit export copies: their paths never enter the PNG-only library
+or replace its current source. Existing in-memory/source-path ownership remains
+unchanged, preserving exact-pixel Copy/Edit and preventing a lossy re-import into
+the capture pipeline. The status identifies the actual format/path and explains
+the copy behavior. PNG Save as retains its existing source/history transition.
+An active editor/overlay blocks Save as so it cannot export an earlier unedited
+source while pending edits exist. No export copies or reads the clipboard.
+
+Encoding/transcoding stays on the existing single-admission worker. In-memory
+sources encode directly; saved PNGs decode only when conversion is required, while
+PNG-to-PNG retains bounded streaming. All formats share durable temporary-file
+publication without replacement and cleanup on failure; cancellation of the dialog
+preserves the source, and Quit follows the existing active-save lifecycle. There
+is no new dependency, thread, timer, queue, runtime, cache or retained frame. New
+formats use a 64 KiB output writer; JPEG reads RGBA by tiles without a full RGB
+conversion image, and WebP uses the installed encoder's active scratch/encoded
+buffers. Those allocations count toward existing active-image budgets; encoder
+peak/process/GPU memory and full platform/resource acceptance remain unmeasured.
+
+Optimized fixtures verify signatures, dimensions, lossless pixels/alpha, saved-PNG
+conversion, original/existing-file preservation, unsupported formats, transparent
+JPEG rejection, encoder failure and temporary cleanup. A headless save-dialog
+fixture verifies JPEG/WebP source/library/clipboard preservation, unsupported suffix,
+conflict and cancel outcomes. Three warm synthetic 4K encode plus durable-publication
+samples observed medians of 28.42 ms PNG, 85.40 ms JPEG and 14.55 ms WebP. Different
+formats/quality/output sizes and the small structured fixture prevent a general
+speed/compression claim; these are worker development observations, excluding
+dialog, physical input/presentation and process memory. Native picker interaction,
+disk-full/recovery and reference-hardware/resource gates remain open.
+
+#### Current feature slice: saved JPEG export quality
+
+Implemented (2026-11-12): Settings offers JPEG export quality 1–100 with an explicit
+Save quality action and separate active-value label. Legacy settings default to
+90; malformed/out-of-range stored values are rejected. Folder/theme/hotkey/output-
+profile/region-template saves preserve quality, and quality saves preserve those
+settings. Worker-side persistence commits the active value only after success;
+validation/write failure retains it. Save as snapshots quality before awaiting its
+dialog for both retained pixels and saved-PNG conversion. Encoder boundaries reject
+invalid quality before publication and before PNG decoding for conversion.
+
+PNG/WebP, transparency handling, source/library preservation and no-overwrite
+publication remain unchanged. Changing this preference starts no image job.
+Resource cost is one resident scalar, one scalar per export job and a three-digit
+Kit input owned only by Settings and released on page exit/UI close. No dependency,
+runtime, thread, timer, watcher, image, cache or queue is added. All active-image
+budgets and encoder/platform resource gates remain unchanged.
+
+Optimized settings tests cover defaults, bounds, reload, invalid configuration,
+failed-save preservation and other preference retention. Encoder tests verify
+quality effects and matching in-memory/saved-PNG exports. UI tests cover validation,
+failed writes, active-value preservation, scrolling, field release and passing a
+nondefault quality to Save as. Three warm synthetic 4K JPEG encode/durable-save
+samples observed median 77.25 ms at quality 50, 80.46 ms at 90 and 101.89 ms at 100.
+These content/quality-specific development observations exclude dialog, physical
+presentation and process/GPU memory; they establish no general latency distribution
+or reference-hardware acceptance. Native Settings/picker/keyboard/IME/accessibility,
+packaged restart and resource gates remain open. Transparency flattening and lossy
+WebP remain outside this slice; the Save as default is implemented below.
+
+#### Current feature slice: saved default Save as format
+
+Implemented (2026-11-12): Settings offers PNG/JPEG/WebP under Default Save as
+format. The choice is persisted on the existing worker and committed only after
+success; failures retain the previous active selection. Older settings default to
+PNG, unknown stored formats are rejected, and all folder/theme/hotkey/output/
+template/JPEG-quality saves preserve this preference and vice versa.
+
+Save as snapshots the choice before opening its dialog, suggests Screenshot.png,
+Screenshot.jpg or Screenshot.webp, and supplies that suffix if the chosen name has
+none. An explicit supported extension wins; unsupported extensions still fail.
+The in-memory/saved-PNG export and existing JPEG quality/transparency policies are
+reused. Direct editor saves and quick captures continue to use PNG, with the PNG
+library and JPEG/WebP copy semantics preserved. Choosing a default does not start
+an image operation or silently convert a capture.
+
+Resource cost: one resident enum, one per pending export and three page-local
+radio choices. No dependency, runtime, thread, timer, watcher, image, cache or queue
+is added. Persistence uses existing single-admission settings jobs; filename work
+is bounded metadata. Encoder/native capture paths are unchanged, so no new image
+latency/process/GPU measurement is claimed for this preference.
+
+Optimized settings/UI tests cover all formats, legacy defaults, unknown values,
+preference preservation, failed-save rollback, explicit suffix override and a
+suffix-free WebP export that keeps the value snapshotted before the dialog even
+if the model changes while it is pending. The headless picker does not expose
+suggested filenames for inspection; actual native suggestions, keyboard/IME/
+accessibility, packaged restart and full resource gates remain open.
+
+#### Current feature slice: automatic PNG filename templates
+
+Implemented (2026-11-12): Settings offers Capture filename template, up to 96
+UTF-8 bytes, with an explicit Save action. Empty retains the legacy naming path.
+Allowed literals are letters/digits/spaces/hyphen/underscore; {date} and {time}
+expand to UTC save date/time. Paths, dots/extensions, control characters and other
+tokens are rejected. A UUID suffix plus .png is always added; expanded names are
+bounded to 240 bytes and one path component, including Windows reserved-name cases
+made safe by the suffix. No source title, monitor ID or document text is inserted.
+
+The template is snapshotted for explicit automatic PNG output, including display,
+window, region and editor/crop saves. Naming occurs on the existing save worker
+after any clipboard stage; Copy-only/preview/cancel does not generate a name or
+file. Manual Save as names remain explicit. Save/history outcomes use the actual
+published path, and publication still refuses replacement. In particular, last_saved
+now comes from the worker result rather than an earlier provisional source path.
+The source pixels and capture/render pipeline are unchanged.
+
+The existing bounded settings file persists the validated template; older files
+default to empty. Other preference saves preserve it and template saves preserve
+them. Validation/write failure retains the active value, and the page-local input
+is released on exit/UI close. Resource cost is one at-most-96-byte resident string,
+one save-job snapshot and bounded temporary filename/date strings. There is no
+new image buffer, dependency, thread, runtime, queue, watcher or timer. Empty/copy-
+only paths avoid optional naming work; all existing resource budgets remain.
+
+Optimized fixtures cover deterministic UTC expansion, bounds, traversal/extension/
+token rejection, Unicode literals, unique names, legacy defaults, persistence and
+failed-write preservation. A headless synthetic two-image save verifies exact
+pixels, unchanged clipboard state, distinct files, the actual last path and matching
+SQLite history paths. A 1,000-call optimized metadata probe observed p95 100 ns with
+the template disabled and 1 microsecond enabled, timer-resolution limited; this
+excludes filesystem/image/native input/presentation and establishes no end-to-end
+or hardware acceptance. Native Settings/IME/accessibility, filesystem/path/recovery
+and full process/GPU/latency/soak gates remain open. Rich naming macros, directory
+templates and renaming existing captures are outside this slice.
 
 #### Current feature slice: configurable Windows global hotkeys
 
