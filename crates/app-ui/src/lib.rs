@@ -118,6 +118,7 @@ enum ControlPage {
 
 #[derive(Clone, Copy)]
 enum HistoryCommand {
+    CopyPath,
     Open,
     Reveal,
     Upload,
@@ -151,7 +152,8 @@ pub struct CaptureWorkspace {
     jpeg_quality: u8,
     export_format: app_core::ImageExportFormat,
     export_size: app_core::ExportSize,
-    export_width_input: Option<gpui::Entity<gpui::component::input::InputState>>,
+    export_dimension_input: Option<gpui::Entity<gpui::component::input::InputState>>,
+    export_height_input: Option<gpui::Entity<gpui::component::input::InputState>>,
     filename_template: String,
     filename_template_input: Option<gpui::Entity<gpui::component::input::InputState>>,
     jpeg_quality_input: Option<gpui::Entity<gpui::component::input::InputState>>,
@@ -371,7 +373,8 @@ impl CaptureWorkspace {
         self.region_preset_name = None;
         self.jpeg_quality_input = None;
         self.filename_template_input = None;
-        self.export_width_input = None;
+        self.export_dimension_input = None;
+        self.export_height_input = None;
         self.exact_region_status.clear();
         #[cfg(target_os = "windows")]
         { self.hotkey_inputs = None; }
@@ -557,7 +560,8 @@ impl CaptureWorkspace {
             jpeg_quality: app_core::DEFAULT_JPEG_QUALITY,
             export_format: app_core::ImageExportFormat::default(),
             export_size: app_core::ExportSize::Original,
-            export_width_input: None,
+            export_dimension_input: None,
+            export_height_input: None,
             filename_template: String::new(),
             filename_template_input: None,
             jpeg_quality_input: None,
@@ -1051,7 +1055,8 @@ impl CaptureWorkspace {
         self.hide_history(cx);
         self.hide_upload_history();
         self.page = page;
-        self.export_width_input = None;
+        self.export_dimension_input = None;
+        self.export_height_input = None;
         self.jpeg_quality_input = None;
         self.filename_template_input = None;
         self.exact_region_inputs = None;
@@ -1194,6 +1199,9 @@ impl CaptureWorkspace {
         match command {
             HistoryCommand::Open => cx.open_with_system(&path),
             HistoryCommand::Reveal => cx.reveal_path(&path),
+            HistoryCommand::CopyPath => {
+                if !self.history_loading { self.copy_file_path(path, Some(revision), cx); }
+            }
             HistoryCommand::Upload => self.upload_history_image(id, revision, cx),
             HistoryCommand::Relink => self.relink_history_image(id, revision, cx),
             HistoryCommand::Remove => self.remove_history_capture(id, cx),
@@ -2393,6 +2401,47 @@ impl CaptureWorkspace {
         cx.notify();
     }
 
+    fn copy_last_file_path(&mut self, cx: &mut Context<Self>) {
+        if let Some(path) = self.last_saved.clone() {
+            self.copy_file_path(path, None, cx);
+        }
+    }
+
+    fn copy_file_path(&mut self, path: PathBuf, history_revision: Option<u64>, cx: &mut Context<Self>) {
+        if self.capturing || self.capture_delay.is_some() || self.copying || self.saving
+            || self.quitting || self.settings_loading || self.settings_saving || self.history_mutating
+            || self.switching_graphics || self.preview_active || self.editor.is_some() || self.editor_closing { return; }
+        let Some(text) = path.to_str() else {
+            self.clipboard_status = "Could not copy file path: the path cannot be represented as Unicode text.".into();
+            if history_revision.is_some() { self.history_action_status = self.clipboard_status.clone(); }
+            cx.notify(); return;
+        };
+        let text = text.to_owned();
+        let clipboard = self.clipboard.clone();
+        self.copying = true;
+        self.clipboard_status = "Copying file path…".into();
+        if history_revision.is_some() { self.history_action_status = self.clipboard_status.clone(); }
+        cx.spawn(async move |this, cx| {
+            let result = cx.background_spawn(async move {
+                clipboard.lock().map_err(|_| "Clipboard state is unavailable".to_string())?
+                    .copy_text(text).map_err(|error| format!("{error:#}"))
+            }).await;
+            this.update(cx, |this, cx| {
+                this.copying = false;
+                this.clipboard_status = match result {
+                    Ok(()) => "File path copied to clipboard".into(),
+                    Err(error) => format!("Could not copy file path: {error}"),
+                };
+                if history_revision.is_some_and(|revision| this.history_visible && this.history_revision == revision) {
+                    this.history_action_status = this.clipboard_status.clone();
+                }
+                this.finish_quit_if_idle(cx);
+                cx.notify();
+            }).ok();
+        }).detach();
+        cx.notify();
+    }
+
     fn copy_history_capture(&mut self, path: PathBuf, cx: &mut Context<Self>) {
         if self.capturing
             || self.capture_delay.is_some()
@@ -3233,13 +3282,23 @@ impl CaptureWorkspace {
             return;
         }
         let size = match self.export_size {
-            app_core::ExportSize::Width(_) => {
-                let width = self.export_width_input.as_ref().and_then(|input| input.read(cx).value().parse::<u32>().ok());
-                let Some(width) = width.filter(|width| *width > 0) else {
-                    self.save_status = "Image not saved: enter a positive whole-pixel export width.".into();
+            app_core::ExportSize::Exact(_, _) => {
+                let width = self.export_dimension_input.as_ref().and_then(|input| input.read(cx).value().parse::<u32>().ok());
+                let height = self.export_height_input.as_ref().and_then(|input| input.read(cx).value().parse::<u32>().ok());
+                let (Some(width), Some(height)) = (width.filter(|value| *value > 0), height.filter(|value| *value > 0)) else {
+                    self.save_status = "Image not saved: enter positive whole-pixel export width and height.".into();
                     cx.notify(); return;
                 };
-                app_core::ExportSize::Width(width)
+                app_core::ExportSize::Exact(width, height)
+            }
+            app_core::ExportSize::Width(_) | app_core::ExportSize::Height(_) => {
+                let height = matches!(self.export_size, app_core::ExportSize::Height(_));
+                let value = self.export_dimension_input.as_ref().and_then(|input| input.read(cx).value().parse::<u32>().ok());
+                let Some(value) = value.filter(|value| *value > 0) else {
+                    self.save_status = format!("Image not saved: enter a positive whole-pixel export {}.", if height { "height" } else { "width" });
+                    cx.notify(); return;
+                };
+                if height { app_core::ExportSize::Height(value) } else { app_core::ExportSize::Width(value) }
             }
             size => size,
         };

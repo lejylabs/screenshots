@@ -104,6 +104,14 @@ pub struct ImageClipboard {
 }
 
 impl ImageClipboard {
+    /// Explicit text output; retain ownership using the same native clipboard instance.
+    pub fn copy_text(&mut self, text: String) -> Result<()> {
+        if self.clipboard.is_none() {
+            self.clipboard = Some(arboard::Clipboard::new().context("open clipboard")?);
+        }
+        self.clipboard.as_mut().unwrap().set_text(text).context("copy text to clipboard")
+    }
+
     /// Explicit recopy only; the live capture/selection pipeline stays in memory.
     pub fn copy_saved_png(&mut self, path: &std::path::Path) -> Result<(u32, u32)> {
         self.copy_image(&load_saved_png(path)?)
@@ -129,6 +137,16 @@ impl ImageClipboard {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[ignore = "uses the system clipboard and replaces its contents with a synthetic path"]
+    fn file_path_text_round_trip() -> Result<()> {
+        let mut clipboard = ImageClipboard::default();
+        let text = "C:\\Saved captures\\Grüße image.png".to_string();
+        clipboard.copy_text(text.clone())?;
+        assert_eq!(clipboard.clipboard.as_mut().unwrap().get_text()?, text);
+        Ok(())
+    }
 
     #[test]
     fn editor_input_extent_is_bounded_even_when_the_file_grows() -> Result<()> {

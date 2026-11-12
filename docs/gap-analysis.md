@@ -61,7 +61,7 @@ annotations. Undo/Redo/Reset retain orientation metadata and compute lossless
 inverse/relative transforms on a cancellable worker; no bitmap undo snapshots
 are retained. Exact pixels, history/UI and subsequent redaction/export are covered
 by optimized tests. Native interaction/resource acceptance remains open. Existing
-annotations cannot yet be transformed; resize/resampling is still missing.
+annotations cannot yet be transformed; export resampling is described below.
 
 Export-format follow-up (2026-11-12): Save as now exports finalized pixels as PNG,
 JPEG (default quality 90, opaque pixels required) or lossless RGBA WebP. JPEG/WebP
@@ -102,7 +102,16 @@ PNG library. Worker-side box resampling weights RGB by alpha, keeps rounded pixe
 bounds and uses one RGBA output without full-size float scratch. Optimized tests
 cover pixel/alpha/dimension behavior, format/source preservation and UI snapshot/
 history behavior. Native interaction/recovery/memory acceptance remains open;
-arbitrary dimensions, upscaling and canvas resize remain absent.
+Custom width and Custom height now allow a bounded physical-pixel dimension with
+the other dimension following the aspect ratio, rounded up. Both reuse the same
+page-local input and worker kernel; switching axis resets the input. Optimized
+fixtures cover bounds, pixels/alpha, saved/live sources, format routing, modal
+snapshotting and input release. Exact dimensions additionally allows independent
+width/height with an explicit aspect-ratio warning, no upscaling and the same
+bounded worker/copy semantics. Optimized fixtures verify both axis bounds,
+pixels/alpha, format routing, snapshots and release of its extra page-local input.
+Upscaling and canvas resize remain absent. Native interaction/recovery/memory
+acceptance remains open.
 
 Assessment date: 2026-11-12. Local baseline: `ed53567f5112818781b55af63fc6931f12d0cd36`
 on `main`, including the GPUI Kit rewrite. Static inspection of production code,
@@ -204,13 +213,13 @@ cut-out/background editing and output actions integrated into tasks.
 | --- | --- | --- |
 | Open/Paste/Drop into editor | Partial: direct Open image / Ctrl+O and a single external file drop support PNG/JPEG/WebP; Windows Paste image / Ctrl+Shift+V supports PNG and common DIB layouts. Last capture and PNG history editing exist. Other formats/platform paste, URL/raw-image drops and Explorer Open With remain missing. See the implementation follow-ups for verification limits. | A |
 | Image formats | Partial: direct Open/Drop accepts PNG/JPEG/WebP; Save as has a saved default format, opaque JPEG quality 1–100 (default 90) and lossless RGBA WebP. The library and direct editor/quick saves remain PNG; capture/editor format preferences, lossy WebP and other formats remain pending. | A/B |
-| Resize and basic transforms | Partial: Save as exports smaller 50%/25% copies; lossless 90-degree rotation and horizontal/vertical flip are available before crop/annotations with metadata Undo/Redo. Arbitrary dimensions/upscaling, canvas resize and transforming existing annotations remain missing. View zoom does not resize the exported file. | A |
+| Resize and basic transforms | Partial: Save as exports smaller 50%/25% copies, a custom width/height with aspect ratio kept, or independent exact dimensions without upscaling; lossless 90-degree rotation and horizontal/vertical flip are available before crop/annotations with metadata Undo/Redo. Upscaling, canvas resize and transforming existing annotations remain missing. View zoom does not resize the exported file. | A |
 | Colors and typography | Partial: four drawing color swatches, discrete widths and text sizes; labels have four-line/512-byte limits. No general color/font selection, richer text/background/outline styling or reusable tool presets. | A/B |
 | Effect order | Partial: drawing annotations reorder; blur/pixelation are source-effect stages and opaque redaction is last. Arbitrary effect/drawing order is unavailable. Make restrictions clear or implement a consistent ordered document model. Keep opaque-redaction safety explicit. | A/B |
 | Advanced annotations | Missing speech balloons, inserted image/logo/clipboard objects, cursor stamps, emoji, magnify, clone/smart eraser, annotation rotation and richer arrow/shape options. | B/C |
 | Canvas and presentation | Missing canvas expansion, cut-out strips, padding/background/shadow composition, watermark and reusable effect/export presets. | B |
 | Editor sharing | Partial: final pixels can be copied/saved, but no direct finalized-document upload or pin action. Upload currently requires a saved PNG. | A/B |
-| Other outputs | Missing print, copy-file/copy-path choices and drag-out of a prepared image/file representation. | B |
+| Other outputs | Partial: Recent capture can explicitly copy its confirmed saved path as plain text; Library More can copy an entry's recorded path. Unsaved captures and stale library actions are rejected; failures are reported. Native clipboard acceptance remains open. Print, copy-file transfer data and drag-out of a prepared image/file representation remain missing. | B |
 | Editable projects | No persistent document/session format. Useful for longer edits, but not asserted here as a prerequisite merely because in-memory undo exists. | Product decision |
 
 Evidence: [PNG decode and clipboard output](../crates/app-core/src/clipboard.rs),

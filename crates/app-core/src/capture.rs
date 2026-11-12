@@ -637,6 +637,20 @@ mod tests {
             export_saved_png_as(&shot.png_path, &custom, 73, ExportSize::Width(3))?;
             assert_eq!(image::open(&custom)?.into_rgba8().dimensions(), (3, 3));
             fs::remove_file(custom)?;
+            let custom = root.join(format!("height.{extension}"));
+            shot.save_image_as(&custom, 73, ExportSize::Height(3))?;
+            assert_eq!(image::open(&custom)?.into_rgba8().dimensions(), (3, 3));
+            fs::remove_file(&custom)?;
+            export_saved_png_as(&shot.png_path, &custom, 73, ExportSize::Height(2))?;
+            assert_eq!(image::open(&custom)?.into_rgba8().dimensions(), (2, 2));
+            fs::remove_file(custom)?;
+            let custom = root.join(format!("exact.{extension}"));
+            shot.save_image_as(&custom, 73, ExportSize::Exact(3, 1))?;
+            assert_eq!(image::open(&custom)?.into_rgba8().dimensions(), (3, 1));
+            fs::remove_file(&custom)?;
+            export_saved_png_as(&shot.png_path, &custom, 73, ExportSize::Exact(1, 3))?;
+            assert_eq!(image::open(&custom)?.into_rgba8().dimensions(), (1, 3));
+            fs::remove_file(custom)?;
             assert!(shot.save_image_as(&target, 73, ExportSize::Half).is_err());
             assert_eq!(fs::read(&target)?, bytes);
             fs::remove_file(target)?; fs::remove_file(saved)?;
@@ -755,7 +769,7 @@ mod tests {
             elapsed_ms: 0, source_format: PixelFormat::Rgba8UnormSrgb, display_geometry: None };
         for (extension, quality, scale) in [("png", 90, ExportSize::Original), ("png", 90, ExportSize::Half), ("png", 90, ExportSize::Quarter),
             ("jpg", 50, ExportSize::Original), ("jpg", 90, ExportSize::Original), ("jpg", 100, ExportSize::Original), ("webp", 90, ExportSize::Original),
-            ("png", 90, ExportSize::Width(640))] {
+            ("png", 90, ExportSize::Width(640)), ("png", 90, ExportSize::Height(360)), ("png", 90, ExportSize::Exact(640, 360))] {
             let path = root.join(format!("export.{extension}"));
             let mut timings = Vec::new();
             let mut length = 0;

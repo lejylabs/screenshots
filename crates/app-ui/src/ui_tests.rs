@@ -72,44 +72,118 @@ fn open_workspace(cx: &mut TestAppContext) -> WindowHandle<CaptureWorkspace> {
 }
 
 #[gpui::test]
-fn custom_export_width_validates_snapshots_and_releases_input(cx: &mut TestAppContext) {
+fn copy_file_path_requires_a_saved_capture_and_reports_worker_failure(cx: &mut TestAppContext) {
     let handle = open_workspace(cx);
-    let root = std::env::temp_dir().join(format!("screenshots-width-save-{}", std::process::id()));
-    std::fs::create_dir_all(&root).unwrap();
-    let pixels = Arc::new(image::RgbaImage::from_pixel(5, 3, image::Rgba([12, 34, 56, 78])));
-    handle.update(cx, |this, _, _| {
-        this.output_directory = Some(root.clone());
-        this.last_capture = Some(CapturedImage { width: 5, height: 3, pixels: pixels.clone(),
-            png_path: root.join("unsaved.png"), display_id: "fixture".into(), window_id: None,
-            elapsed_ms: 0, source_format: app_core::PixelFormat::Rgba8UnormSrgb, display_geometry: None });
+    handle.update(cx, |this, _, cx| {
+        this.last_capture = Some(CapturedImage { width: 1, height: 1,
+            pixels: Arc::new(image::RgbaImage::new(1, 1)), png_path: PathBuf::from("unsaved.png"),
+            display_id: "fixture".into(), window_id: None, elapsed_ms: 0,
+            source_format: app_core::PixelFormat::Rgba8UnormSrgb, display_geometry: None });
+        this.copy_last_file_path(cx);
+        assert!(!this.copying);
     }).unwrap();
-    cx.update_window(handle.into(), |_, window, cx| { window.render_frame(cx); window.within("save-as-size").click(3usize, cx); window.render_frame(cx); }).unwrap();
-    handle.update(cx, |this, window, cx| {
-        let input = this.export_width_input.clone().unwrap();
-        for invalid in ["0", "6"] {
-            input.update(cx, |input, cx| input.set_value(invalid, window, cx));
-            this.save_capture_as(cx);
-            assert!(!this.saving);
-        }
-        input.update(cx, |input, cx| input.set_value("2", window, cx));
-        this.save_capture_as(cx);
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        assert_eq!(window.find("copy-last-file-path").disabled(), Some(true));
     }).unwrap();
-    assert!(cx.did_prompt_for_new_path());
-    handle.update(cx, |this, window, cx| this.export_width_input.as_ref().unwrap().update(cx, |input, cx| input.set_value("1", window, cx))).unwrap();
-    cx.simulate_new_path_selection(|_| Some(root.join("custom.webp")));
+    let path = PathBuf::from("C:/Saved captures/Grüße image.png");
+    handle.update(cx, |this, _, cx| {
+        this.last_saved = Some(path.clone());
+        this.saving = true;
+        this.copy_last_file_path(cx);
+        assert!(!this.copying);
+        this.saving = false;
+        this.preview_active = true;
+        this.copy_last_file_path(cx);
+        assert!(!this.copying);
+        this.preview_active = false;
+        // Poison the state before native clipboard creation; the user's clipboard is untouched.
+        let clipboard = this.clipboard.clone();
+        assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = clipboard.lock().unwrap();
+            panic!("synthetic clipboard state failure");
+        })).is_err());
+    }).unwrap();
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        assert_ne!(window.find("copy-last-file-path").disabled(), Some(true));
+        window.click("copy-last-file-path", cx);
+    }).unwrap();
+    handle.update(cx, |this, _, cx| {
+        assert!(this.copying);
+        this.copy_last_file_path(cx);
+    }).unwrap();
     cx.run_until_parked();
-    let output = image::open(root.join("custom.webp")).unwrap().into_rgba8();
-    assert_eq!(output.dimensions(), (2, 2));
-    assert!(output.pixels().all(|pixel| pixel.0 == [12, 34, 56, 78]));
     handle.update(cx, |this, _, _| {
-        assert!(!this.saving && this.last_saved.is_none());
-        assert!(Arc::ptr_eq(&this.last_capture.as_ref().unwrap().pixels, &pixels));
-        assert!(this.save_status.contains("Width 2 px"));
+        assert!(!this.copying);
+        assert_eq!(this.last_saved.as_ref(), Some(&path));
+        assert!(this.last_capture.is_some());
+        assert_eq!(this.clipboard_status, "Could not copy file path: Clipboard state is unavailable");
     }).unwrap();
-    cx.update_window(handle.into(), |_, window, cx| window.press(&shortcut("3"), cx)).unwrap();
-    handle.update(cx, |this, _, _| assert!(this.export_width_input.is_none())).unwrap();
-    assert_eq!(std::fs::read_dir(&root).unwrap().count(), 1);
-    std::fs::remove_file(root.join("custom.webp")).unwrap(); std::fs::remove_dir(root).unwrap();
+}
+
+#[gpui::test]
+fn custom_export_dimensions_validate_snapshot_and_release_input(cx: &mut TestAppContext) {
+    for (index, axis, too_large, dimensions) in [(3, "Width", "6", (2, 2)), (4, "Height", "4", (4, 2)), (5, "Exact", "6", (2, 1))] {
+        let handle = open_workspace(cx);
+        let root = std::env::temp_dir().join(format!("screenshots-{axis}-save-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let pixels = Arc::new(image::RgbaImage::from_pixel(5, 3, image::Rgba([12, 34, 56, 78])));
+        handle.update(cx, |this, _, _| {
+            this.output_directory = Some(root.clone());
+            this.last_capture = Some(CapturedImage { width: 5, height: 3, pixels: pixels.clone(),
+                png_path: root.join("unsaved.png"), display_id: "fixture".into(), window_id: None,
+                elapsed_ms: 0, source_format: app_core::PixelFormat::Rgba8UnormSrgb, display_geometry: None });
+        }).unwrap();
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.render_frame(cx);
+            window.within("save-as-size").click(if index == 3 { 4usize } else { 3usize }, cx);
+            window.render_frame(cx);
+            window.within("save-as-size").click(index, cx);
+            window.render_frame(cx);
+        }).unwrap();
+        handle.update(cx, |this, window, cx| {
+            let input = this.export_dimension_input.clone().unwrap();
+            assert_eq!(input.read(cx).value().as_str(), if index == 4 { "480" } else { "640" });
+            if let Some(height) = this.export_height_input.clone() {
+                input.update(cx, |input, cx| input.set_value("2", window, cx));
+                for invalid in ["", "0", "4", "4294967295"] {
+                    height.update(cx, |input, cx| input.set_value(invalid, window, cx));
+                    this.save_capture_as(cx);
+                    assert!(!this.saving);
+                }
+                height.update(cx, |input, cx| input.set_value("1", window, cx));
+            }
+            for invalid in ["", "0", too_large, "4294967295"] {
+                input.update(cx, |input, cx| input.set_value(invalid, window, cx));
+                this.save_capture_as(cx);
+                assert!(!this.saving);
+            }
+            input.update(cx, |input, cx| input.set_value("2", window, cx));
+            this.save_capture_as(cx);
+        }).unwrap();
+        assert!(cx.did_prompt_for_new_path());
+        handle.update(cx, |this, window, cx| this.export_dimension_input.as_ref().unwrap().update(cx, |input, cx| input.set_value("1", window, cx))).unwrap();
+        handle.update(cx, |this, window, cx| {
+            if let Some(height) = &this.export_height_input {
+                height.update(cx, |input, cx| input.set_value("2", window, cx));
+            }
+        }).unwrap();
+        cx.simulate_new_path_selection(|_| Some(root.join("custom.webp")));
+        cx.run_until_parked();
+        let output = image::open(root.join("custom.webp")).unwrap().into_rgba8();
+        assert_eq!(output.dimensions(), dimensions);
+        assert!(output.pixels().all(|pixel| pixel.0 == [12, 34, 56, 78]));
+        handle.update(cx, |this, _, _| {
+            assert!(!this.saving && this.last_saved.is_none());
+            assert!(Arc::ptr_eq(&this.last_capture.as_ref().unwrap().pixels, &pixels));
+            assert!(this.save_status.contains(&if index == 5 { "2 x 1 px".to_string() } else { format!("{axis} 2 px") }));
+        }).unwrap();
+        cx.update_window(handle.into(), |_, window, cx| window.press(&shortcut("3"), cx)).unwrap();
+        handle.update(cx, |this, _, _| assert!(this.export_dimension_input.is_none() && this.export_height_input.is_none())).unwrap();
+        assert_eq!(std::fs::read_dir(&root).unwrap().count(), 1);
+        std::fs::remove_file(root.join("custom.webp")).unwrap(); std::fs::remove_dir(root).unwrap();
+    }
 }
 
 #[gpui::test]
@@ -823,6 +897,59 @@ fn stale_library_menu_cannot_mutate_a_new_page(cx: &mut TestAppContext) {
         assert!(state.history_action_status.is_empty());
         assert!(!state.history_mutating);
     });
+}
+
+#[gpui::test]
+fn library_copy_path_routes_menu_and_discards_stale_status(cx: &mut TestAppContext) {
+    let handle = open_workspace(cx);
+    cx.update_window(handle.into(), |_, window, cx| window.press(&shortcut("2"), cx)).unwrap();
+    cx.run_until_parked();
+    handle.update(cx, |this, _, cx| {
+        this.history_entries = vec![app_core::HistoryEntry { id: 42,
+            path: PathBuf::from("C:/Saved captures/Grüße.png"), width: 2, height: 3,
+            created_at: "2026-11-12".into() }];
+        let revision = this.history_revision;
+        this.run_history_command(42, revision.wrapping_add(1), HistoryCommand::CopyPath, cx);
+        this.run_history_command(43, revision, HistoryCommand::CopyPath, cx);
+        this.history_loading = true;
+        this.run_history_command(42, revision, HistoryCommand::CopyPath, cx);
+        this.history_loading = false;
+        assert!(!this.copying);
+        let clipboard = this.clipboard.clone();
+        assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = clipboard.lock().unwrap();
+            panic!("synthetic clipboard state failure");
+        })).is_err());
+    }).unwrap();
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.click("history-more-actions", cx);
+        let item = window.find_by_label("Copy file path");
+        assert!(item.visible());
+        use gpui::test::TestEventExt;
+        let bounds = item.bounds();
+        window.pointer_down(bounds.center(), gpui::MouseButton::Left, cx);
+        window.pointer_up(bounds.center(), gpui::MouseButton::Left, cx);
+    }).unwrap();
+    handle.update(cx, |this, _, _| {
+        assert!(this.copying);
+        assert_eq!(this.history_action_status, "Copying file path…");
+        this.history_revision = this.history_revision.wrapping_add(1);
+        this.history_action_status = "New page status".into();
+    }).unwrap();
+    cx.run_until_parked();
+    handle.update(cx, |this, _, cx| {
+        assert!(!this.copying);
+        assert_eq!(this.history_action_status, "New page status");
+        assert!(this.last_saved.is_none() && this.last_capture.is_none());
+        this.run_history_command(42, this.history_revision, HistoryCommand::CopyPath, cx);
+    }).unwrap();
+    cx.run_until_parked();
+    handle.update(cx, |this, _, _| {
+        assert!(!this.copying);
+        assert_eq!(this.history_action_status, "Could not copy file path: Clipboard state is unavailable");
+        assert_eq!(this.history_entries.len(), 1);
+    }).unwrap();
 }
 
 #[gpui::test]

@@ -7,12 +7,17 @@ pub enum ExportSize {
     Half,
     Quarter,
     Width(u32),
+    Height(u32),
+    Exact(u32, u32),
 }
 
 impl ExportSize {
     pub fn validate(self) -> Result<(), CaptureError> {
-        if let Self::Width(width) = self {
-            validate_image_size(width, 1)?;
+        if let Self::Width(value) | Self::Height(value) = self {
+            validate_image_size(value, 1)?;
+        }
+        if let Self::Exact(width, height) = self {
+            validate_image_size(width, height)?;
         }
         Ok(())
     }
@@ -23,6 +28,14 @@ impl ExportSize {
             Self::Original => (width, height),
             Self::Half => (width.div_ceil(2), height.div_ceil(2)),
             Self::Quarter => (width.div_ceil(4), height.div_ceil(4)),
+            Self::Exact(target_width, target_height) => {
+                if target_width > width || target_height > height {
+                    return Err(CaptureError::Backend(
+                        "Export dimensions cannot exceed the source dimensions".into(),
+                    ));
+                }
+                (target_width, target_height)
+            }
             Self::Width(target) => {
                 if target > width {
                     return Err(CaptureError::Backend(
@@ -32,6 +45,17 @@ impl ExportSize {
                 (
                     target,
                     (u64::from(height) * u64::from(target)).div_ceil(u64::from(width)) as u32,
+                )
+            }
+            Self::Height(target) => {
+                if target > height {
+                    return Err(CaptureError::Backend(
+                        "Export height cannot exceed the source height".into(),
+                    ));
+                }
+                (
+                    (u64::from(width) * u64::from(target)).div_ceil(u64::from(height)) as u32,
+                    target,
                 )
             }
         };
@@ -44,6 +68,8 @@ impl ExportSize {
             Self::Half => "50%".into(),
             Self::Quarter => "25%".into(),
             Self::Width(width) => format!("Width {width} px"),
+            Self::Height(height) => format!("Height {height} px"),
+            Self::Exact(width, height) => format!("{width} x {height} px"),
         }
     }
 }
@@ -130,6 +156,55 @@ pub(crate) fn downscale_export(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn exact_dimensions_validate_each_axis_and_average_complete_source_boxes() {
+        let source = image::RgbaImage::from_fn(5, 3, |x, y| {
+            image::Rgba([(x * 20) as u8, (y * 40) as u8, 100, 255])
+        });
+        let resized = downscale_export(&source, ExportSize::Exact(2, 1)).unwrap();
+        assert_eq!(resized.dimensions(), (2, 1));
+        assert_eq!(resized.get_pixel(0, 0).0, [10, 40, 100, 255]);
+        assert_eq!(resized.get_pixel(1, 0).0, [60, 40, 100, 255]);
+        for (width, height) in [(0, 1), (1, 0), (6, 1), (1, 4), (u32::MAX, 1), (1, u32::MAX)] {
+            assert!(downscale_export(&source, ExportSize::Exact(width, height)).is_err());
+        }
+        assert!(ExportSize::Exact(100_000, 100_000).validate().is_err());
+        for (width, height) in [(5, 3), (5, 1), (1, 3), (1, 1)] {
+            let size = ExportSize::Exact(width, height);
+            assert_eq!(size.dimensions(5, 3).unwrap(), (width, height));
+            assert_eq!(downscale_export(&source, size).unwrap().dimensions(), (width, height));
+        }
+        assert_eq!(downscale_export(&source, ExportSize::Exact(5, 3)).unwrap(), source);
+        let mut alpha = image::RgbaImage::from_pixel(5, 3, image::Rgba([0, 0, 255, 0]));
+        alpha.put_pixel(0, 0, image::Rgba([255, 0, 0, 255]));
+        let resized = downscale_export(&alpha, ExportSize::Exact(2, 1)).unwrap();
+        assert_eq!(resized.get_pixel(0, 0).0, [255, 0, 0, 43]);
+        assert_eq!(resized.get_pixel(1, 0).0, [0, 0, 0, 0]);
+    }
+
+    #[test]
+    fn custom_height_matches_transposed_width_for_pixels_alpha_and_skinny_images() {
+        assert_eq!(ExportSize::Height(360).dimensions(1920, 1080).unwrap(), (640, 360));
+        assert_eq!(ExportSize::Height(2).dimensions(5, 3).unwrap(), (4, 2));
+        for invalid in [0, 4, u32::MAX] {
+            assert!(ExportSize::Height(invalid).dimensions(5, 3).is_err());
+        }
+        for (width, height) in [(5, 3), (1, 9), (9, 1), (1, 1), (1, 100_000)] {
+            let source = image::RgbaImage::from_fn(width, height, |x, y| {
+                image::Rgba([(x % 256) as u8, (y % 256) as u8, 100, if y % 2 == 0 { 255 } else { 0 }])
+            });
+            for target in [1, height.div_ceil(2), height] {
+                let resized = downscale_export(&source, ExportSize::Height(target)).unwrap();
+                let transposed = image::RgbaImage::from_fn(height, width, |x, y| *source.get_pixel(y, x));
+                let expected = downscale_export(&transposed, ExportSize::Width(target)).unwrap();
+                assert_eq!(resized.dimensions(), (expected.height(), expected.width()));
+                for (x, y, pixel) in resized.enumerate_pixels() {
+                    assert_eq!(pixel, expected.get_pixel(y, x));
+                }
+            }
+        }
+    }
 
     #[test]
     fn custom_width_preserves_bounds_coverage_and_uses_wide_accumulators() {

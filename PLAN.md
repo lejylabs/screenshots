@@ -473,6 +473,81 @@ Three warm synthetic 4K samples measured median resize/encode/durable PNG save a
 These small development observations exclude dialog, presentation and process/GPU
 memory; the native interaction, recovery and resource acceptance gates above remain open.
 
+Follow-up (2026-11-12): Custom height adds the symmetric physical-pixel choice;
+width follows the aspect ratio rounded up, with no upscaling. Width and height
+share one lazy ten-digit input, reset when switching choices and released on page
+exit/UI close. Both snapshot their value before the dialog and export copies from
+finalized pixels, preserving source/library/clipboard. Saved-PNG dimensions remain
+worker-validated. No new buffer, worker, runtime, cache, timer or dependency is
+introduced; the existing output allocation, encoder scratch and admission apply.
+Optimized core/UI fixtures cover invalid/upscale heights, uneven ratios, skinny
+images, transposed width/height pixel and alpha agreement, all export formats,
+live/saved sources, choice switching, snapshotting and input release. Three warm
+synthetic 4K PNG samples observed median resize/encode/durable publication of
+12.14 ms for Width(640) and 12.25 ms for Height(360), both producing 640x360.
+This short comparison is inconclusive for performance differences and excludes
+native dialog/presentation and process/GPU/peak memory; resource acceptance remains
+open. Independent width/height is implemented below; upscaling and canvas resize
+remain separate work.
+
+Follow-up (2026-11-12): Exact dimensions allows independent positive physical-pixel
+width and height, each no larger than the source. The UI explicitly warns that
+this choice can change the aspect ratio. It exports finalized pixels as a copy
+through the existing worker and no-overwrite publication; source, clipboard and
+PNG library remain unchanged. Both values are snapshotted before the save dialog;
+live dimensions are checked before it, saved-PNG dimensions on the worker.
+The existing integer-box alpha-weighted kernel handles both axes independently.
+Resource cost is one extra lazy ten-digit input only while Exact dimensions is
+visible, released on choice/page exit or UI close, and two scalar job values.
+There is no new dependency, worker, runtime, queue, cache, timer or image scratch;
+the existing bounded RGBA output and encoder allocations apply. Optimized core/UI
+fixtures cover axis bounds, allocation admission, uneven ratios, exact pixels and
+alpha, live/saved sources in all formats, modal snapshots and input release.
+Three synthetic optimized 4K PNG samples observed median resize/encode/durable
+publication of 16.15 ms Width(640), 15.91 ms Height(360) and 15.70 ms Exact(640,360).
+All produce the same output dimensions and encoded length. Concurrent desktop
+compilation and the short sample make performance differences inconclusive;
+these development observations exclude native presentation and process/GPU memory.
+Native interaction/accessibility, recovery and process/GPU memory acceptance
+remain open. Upscaling and canvas resize remain outside this slice.
+
+#### Current feature slice: copy the saved capture's file path
+
+Recent capture offers Copy file path only for its confirmed last_saved path.
+Unsaved pixel-only captures cannot copy a provisional filename. JPEG/WebP and
+resized export copies retain their existing source semantics: this action refers
+to the saved current capture, not the last exported copy. The explicit action
+replaces clipboard content with plain path text, without quoting/escaping, file
+transfer data, image decoding, filesystem checks or clipboard verification.
+Paths that cannot be represented losslessly as Unicode text report failure.
+
+The existing lazy native clipboard instance performs set_text on the existing
+worker with shared single-copy admission. Success is reported only after the
+native call succeeds; native/lock failures release admission and report failure.
+Quit waits for admitted work. Resource cost is one transient path string and
+one operation-scoped future; no new runtime, thread, timer, queue, cache or image
+buffer is introduced. Clipboard ownership follows the existing native instance.
+Optimized headless checks cover disabled unsaved state, busy/preview admission,
+duplicate commands, worker failure and source preservation without touching the
+user's clipboard. A separate ignored native Unicode/space path round-trip fixture
+is available for explicit clipboard acceptance. Native cross-application paste,
+contention, ownership, latency and process-memory/resource acceptance remain open;
+no new performance measurement is claimed for this metadata-only action.
+
+Library follow-up (2026-11-12): each row's More menu offers Copy file path for
+that entry's recorded path, including paths whose files are currently missing.
+The shared path-copy worker replaces clipboard content with text only, with the
+same Unicode/error/admission/Quit behavior. Menu dispatch resolves the entry ID
+against the current bounded page and rejects stale revisions, missing IDs and
+loading/mutating pages. Completion updates Library status only while its original
+page revision is still visible; it cannot replace a newer page's status.
+No filesystem access, decoding, image reference, queue, dependency or idle work is
+added. Resource cost is one existing menu item and one transient path/revision
+snapshot. Optimized headless checks cover menu routing, stale/missing entry
+rejection, native-state failure, source preservation and stale completion status,
+without touching the real clipboard. Native clipboard/resource acceptance remains
+open; no additional performance measurement is claimed for this shared metadata path.
+
 #### Current feature slice: configurable Windows global hotkeys
 
 Implemented in the working tree (2026-11-12): three editable/disableable bindings

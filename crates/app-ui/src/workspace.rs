@@ -34,13 +34,19 @@ pub(super) fn exact_region_request(display: &DisplayInfo, values: &[String; 4]) 
 impl Render for CaptureWorkspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if self.page == ControlPage::Captures && (self.last_capture.is_some() || self.last_saved.is_some()) {
-            if let app_core::ExportSize::Width(width) = self.export_size {
-                if self.export_width_input.is_none() {
-                    self.export_width_input = Some(cx.new(|cx| gpui::component::input::InputState::new(window, cx)
-                        .default_value(width.to_string()).validate(|value, _| value.len() <= 10 && value.bytes().all(|byte| byte.is_ascii_digit()))));
+            if let app_core::ExportSize::Width(value) | app_core::ExportSize::Height(value) | app_core::ExportSize::Exact(value, _) = self.export_size {
+                if self.export_dimension_input.is_none() {
+                    self.export_dimension_input = Some(cx.new(|cx| gpui::component::input::InputState::new(window, cx)
+                        .default_value(value.to_string()).validate(|value, _| value.len() <= 10 && value.bytes().all(|byte| byte.is_ascii_digit()))));
                 }
-            } else { self.export_width_input = None; }
-        } else { self.export_width_input = None; }
+            } else { self.export_dimension_input = None; }
+        } else { self.export_dimension_input = None; }
+        if self.export_dimension_input.is_some() && let app_core::ExportSize::Exact(_, height) = self.export_size {
+            if self.export_height_input.is_none() {
+                self.export_height_input = Some(cx.new(|cx| gpui::component::input::InputState::new(window, cx)
+                    .default_value(height.to_string()).validate(|value, _| value.len() <= 10 && value.bytes().all(|byte| byte.is_ascii_digit()))));
+            }
+        } else { self.export_height_input = None; }
         if self.page == ControlPage::Settings && !self.settings_loading && self.jpeg_quality_input.is_none() {
             self.jpeg_quality_input = Some(cx.new(|cx| gpui::component::input::InputState::new(window, cx)
                 .default_value(self.jpeg_quality.to_string())
@@ -248,6 +254,12 @@ impl Render for CaptureWorkspace {
                                 cx.listener(|this, _, _, cx| this.save_capture_as(cx)),
                             ))
                             .child(capture_button(cx,
+                                "copy-last-file-path",
+                                "Copy file path",
+                                busy || self.preview_active || self.last_saved.is_none(),
+                                cx.listener(|this, _, _, cx| this.copy_last_file_path(cx)),
+                            ))
+                            .child(capture_button(cx,
                                 "reveal-last-capture",
                                 "Show file",
                                 last_saved.is_none(),
@@ -258,20 +270,30 @@ impl Render for CaptureWorkspace {
                                 },
                             )),
                     )
-                    .child(div().text_sm().child("Save as size · aspect ratio kept, rounded to whole pixels. Smaller outputs are copies; the current image and library stay unchanged."))
+                    .child(div().text_sm().child("Save as size · custom outputs are copies; the current image and library stay unchanged. Exact dimensions can change the aspect ratio."))
                     .child(RadioGroup::new("save-as-size")
-                        .children(["Original", "50%", "25%", "Custom width"])
+                        .children(["Original", "50%", "25%", "Custom width", "Custom height", "Exact dimensions"])
                         .selected_index(Some(match self.export_size { app_core::ExportSize::Original => 0,
-                            app_core::ExportSize::Half => 1, app_core::ExportSize::Quarter => 2, app_core::ExportSize::Width(_) => 3 }))
+                            app_core::ExportSize::Half => 1, app_core::ExportSize::Quarter => 2,
+                            app_core::ExportSize::Width(_) => 3, app_core::ExportSize::Height(_) => 4, app_core::ExportSize::Exact(_, _) => 5 }))
                         .disabled(busy || self.preview_active)
                         .on_change(cx.listener(|this, index, _, cx| {
-                            if let Some(size) = [app_core::ExportSize::Original, app_core::ExportSize::Half, app_core::ExportSize::Quarter, app_core::ExportSize::Width(640)].get(*index) {
-                                this.export_size = *size; cx.notify();
+                            if let Some(size) = [app_core::ExportSize::Original, app_core::ExportSize::Half, app_core::ExportSize::Quarter, app_core::ExportSize::Width(640), app_core::ExportSize::Height(480), app_core::ExportSize::Exact(640, 480)].get(*index) {
+                                this.export_size = *size; this.export_dimension_input = None; this.export_height_input = None; cx.notify();
                             }
                         })))
-                    .children(self.export_width_input.iter().map(|input| div().flex().flex_col().gap_1()
-                        .child("Export width in physical pixels · height follows the aspect ratio; no upscaling")
-                        .child(gpui::component::input::Input::new(input).id("export-width").aria_label("Export width in pixels").disabled(busy || self.preview_active))))
+                    .children(self.export_dimension_input.iter().map(|input| div().flex().flex_col().gap_1()
+                        .child(if matches!(self.export_size, app_core::ExportSize::Exact(_, _)) {
+                            "Export width in physical pixels · independent of height; no upscaling"
+                        } else if matches!(self.export_size, app_core::ExportSize::Height(_)) {
+                            "Export height in physical pixels · width follows the aspect ratio; no upscaling"
+                        } else { "Export width in physical pixels · height follows the aspect ratio; no upscaling" })
+                        .child(gpui::component::input::Input::new(input).id("export-dimension")
+                            .aria_label(if matches!(self.export_size, app_core::ExportSize::Height(_)) { "Export height in pixels" } else { "Export width in pixels" })
+                            .disabled(busy || self.preview_active))))
+                    .children(self.export_height_input.iter().map(|input| div().flex().flex_col().gap_1()
+                        .child("Export height in physical pixels · independent of width; no upscaling")
+                        .child(gpui::component::input::Input::new(input).id("export-height").aria_label("Export height in pixels").disabled(busy || self.preview_active))))
                     .child(div().text_sm().child(self.clipboard_status.clone()))
                     .child(div().text_sm().child(self.save_status.clone())),
             )
@@ -991,6 +1013,7 @@ impl CaptureWorkspace {
                 [
                     ("Open", HistoryCommand::Open, false),
                     ("Show in folder", HistoryCommand::Reveal, false),
+                    ("Copy file path", HistoryCommand::CopyPath, !available.0),
                     (
                         "Upload PNG",
                         HistoryCommand::Upload,
