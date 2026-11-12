@@ -4,6 +4,62 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     IsWindow, IsWindowVisible, SW_HIDE, SW_SHOWNOACTIVATE, ShowWindowAsync,
 };
 
+/// Snapshot the foreground target before hiding UI or attaching graphics.
+pub fn foreground_window_capture() -> Result<crate::CaptureRequest> {
+    window_capture_request(unsafe {
+        windows_sys::Win32::UI::WindowsAndMessaging::GetForegroundWindow()
+    })
+}
+
+fn window_capture_request(
+    handle: windows_sys::Win32::Foundation::HWND,
+) -> Result<crate::CaptureRequest> {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        GetClassNameW, GetDesktopWindow, GetShellWindow, GetWindowThreadProcessId, IsIconic,
+    };
+    ensure!(
+        !handle.is_null() && unsafe { IsWindow(handle) } != 0,
+        "No active window is available"
+    );
+    ensure!(
+        unsafe { IsWindowVisible(handle) } != 0 && unsafe { IsIconic(handle) } == 0,
+        "The active window is hidden or minimized"
+    );
+    let mut class = [0u16; 64];
+    let class_length = unsafe { GetClassNameW(handle, class.as_mut_ptr(), class.len() as i32) };
+    ensure!(class_length > 0, "The active window is no longer available");
+    ensure!(
+        handle != unsafe { GetDesktopWindow() }
+            && handle != unsafe { GetShellWindow() }
+            && ![
+                "Progman",
+                "WorkerW",
+                "Shell_TrayWnd",
+                "Shell_SecondaryTrayWnd"
+            ]
+            .iter()
+            .any(|name| class[..class_length as usize]
+                .iter()
+                .copied()
+                .eq(name.encode_utf16())),
+        "Focus an application window instead of the desktop or taskbar"
+    );
+    let mut process_id = 0;
+    ensure!(
+        unsafe { GetWindowThreadProcessId(handle, &mut process_id) } != 0 && process_id != 0,
+        "The active window is no longer available"
+    );
+    ensure!(
+        process_id != std::process::id(),
+        "Focus another application's window before capturing"
+    );
+    // XCap's Windows window ID is the low 32 bits of HWND.
+    Ok(crate::CaptureRequest::ForegroundWindow {
+        window_id: (handle as usize as u32).to_string(),
+        process_id,
+    })
+}
+
 #[derive(Clone, Copy)]
 pub struct DesktopWindow(isize);
 
@@ -84,6 +140,103 @@ mod tests {
         System::LibraryLoader::GetModuleHandleW,
         UI::WindowsAndMessaging::*,
     };
+
+    #[test]
+    #[ignore = "requires an explicitly supplied external solid-color window fixture; captures only that window into RAM"]
+    fn captures_only_the_explicit_window_fixture() -> Result<()> {
+        capture_fixture(false)
+    }
+
+    #[test]
+    #[ignore = "requires an explicitly supplied external fixture that can acquire foreground focus; captures only that window into RAM"]
+    fn captures_only_the_expected_foreground_fixture() -> Result<()> {
+        capture_fixture(true)
+    }
+
+    fn capture_fixture(require_foreground: bool) -> Result<()> {
+        let expected_process: u32 =
+            std::env::var("SCREENSHOTS_ACTIVE_WINDOW_FIXTURE_PID")?.parse()?;
+        let handle =
+            std::env::var("SCREENSHOTS_ACTIVE_WINDOW_FIXTURE_HANDLE")?.parse::<isize>()? as HWND;
+        let request = if require_foreground {
+            let ready = std::time::Instant::now();
+            while unsafe { GetForegroundWindow() } != handle {
+                ensure!(
+                    ready.elapsed() < std::time::Duration::from_secs(2),
+                    "The explicit fixture is not foreground; no capture attempted"
+                );
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            foreground_window_capture()?
+        } else {
+            window_capture_request(handle)?
+        };
+        let crate::CaptureRequest::ForegroundWindow {
+            window_id,
+            process_id,
+        } = request
+        else {
+            anyhow::bail!("Unexpected capture request");
+        };
+        ensure!(
+            process_id == expected_process,
+            "The foreground window is not the explicit fixture; no capture attempted"
+        );
+        let backend =
+            crate::XcapBackend::new(std::env::temp_dir().join("screenshots-unused-fixture-output"));
+        let started = std::time::Instant::now();
+        let shots = backend.capture_batch(vec![crate::CaptureRequest::ForegroundWindow {
+            window_id: window_id.clone(),
+            process_id,
+        }])?;
+        let capture_elapsed = started.elapsed();
+        let shot = &shots[0];
+        ensure!(
+            shot.window_id.as_ref() == Some(&window_id),
+            "Wrong captured window"
+        );
+        ensure!(
+            shot.width > 0 && shot.width <= 1024 && shot.height > 0 && shot.height <= 1024,
+            "Unexpected fixture dimensions"
+        );
+        ensure!(!shot.png_path.exists(), "Capture persisted a source frame");
+        ensure!(
+            backend
+                .capture_batch(vec![crate::CaptureRequest::ForegroundWindow {
+                    window_id: window_id.clone(),
+                    process_id: process_id.wrapping_add(1)
+                }])
+                .is_err(),
+            "A different process was accepted"
+        );
+        let handle = window_id.parse::<u32>()? as usize as HWND;
+        let mut current_process = 0;
+        ensure!(
+            unsafe { GetWindowThreadProcessId(handle, &mut current_process) } != 0
+                && current_process == expected_process,
+            "Fixture ownership changed; refusing to close it"
+        );
+        ensure!(
+            unsafe { PostMessageW(handle, WM_CLOSE, 0, 0) } != 0,
+            "Could not close the synthetic fixture"
+        );
+        DesktopWindow::from_handle(handle as isize).wait_until_destroyed()?;
+        ensure!(
+            backend
+                .capture_batch(vec![crate::CaptureRequest::ForegroundWindow {
+                    window_id,
+                    process_id
+                }])
+                .is_err(),
+            "A closed foreground target was accepted"
+        );
+        eprintln!(
+            "Synthetic window capture/preparation: {:?}; complete fixture checks: {:?}",
+            capture_elapsed,
+            started.elapsed()
+        );
+        Ok(())
+    }
 
     thread_local! {
         static REQUESTING: Cell<bool> = const { Cell::new(false) };
@@ -183,6 +336,14 @@ mod tests {
                     );
                     std::thread::sleep(std::time::Duration::from_millis(5));
                 }
+                if visible {
+                    ensure!(
+                        window_capture_request(hwnd).err().is_some_and(|error| error
+                            .to_string()
+                            .contains("Focus another application's window")),
+                        "Own window was not rejected"
+                    );
+                }
                 if let Some(worker) = worker {
                     worker.join().expect("visibility worker")?;
                 }
@@ -203,6 +364,9 @@ mod tests {
 
     #[test]
     fn rejects_invalid_handle() {
+        assert!(window_capture_request(std::ptr::null_mut()).is_err());
+        assert!(window_capture_request(unsafe { GetDesktopWindow() }).is_err());
+        assert!(window_capture_request(unsafe { GetShellWindow() }).is_err());
         let window = DesktopWindow::from_handle(0);
         assert!(window.request_visible(false).is_err());
         assert!(window.request_visible(true).is_err());

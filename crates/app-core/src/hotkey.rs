@@ -19,6 +19,7 @@ pub enum CaptureCommand {
     Primary,
     Region,
     EditRegion,
+    ActiveWindow,
 }
 
 impl CaptureCommand {
@@ -27,6 +28,7 @@ impl CaptureCommand {
             Self::Primary => 0,
             Self::Region => 1,
             Self::EditRegion => 2,
+            Self::ActiveWindow => 3,
         }]
     }
 }
@@ -80,6 +82,7 @@ impl CaptureHotkey {
             CaptureCommand::Primary,
             CaptureCommand::Region,
             CaptureCommand::EditRegion,
+            CaptureCommand::ActiveWindow,
         ]
         .into_iter()
         .enumerate()
@@ -114,6 +117,7 @@ impl CaptureHotkey {
             CaptureCommand::Primary,
             CaptureCommand::Region,
             CaptureCommand::EditRegion,
+            CaptureCommand::ActiveWindow,
         ]) {
             if !value.is_empty() {
                 desired.push((value.parse::<HotKey>()?, command));
@@ -247,9 +251,13 @@ mod tests {
     fn admitted_shortcuts_parse_with_the_native_backend() -> Result<()> {
         for key in ["Q", "0", "F1", "F24", "PrintScreen"] {
             for modifier in ["Ctrl", "Alt", "Super", "Ctrl+Alt+Shift+Super"] {
-                let bindings =
-                    crate::CaptureHotkeys([format!("{modifier}+{key}"), "".into(), "".into()])
-                        .validated()?;
+                let bindings = crate::CaptureHotkeys([
+                    format!("{modifier}+{key}"),
+                    "".into(),
+                    "".into(),
+                    "".into(),
+                ])
+                .validated()?;
                 assert!(bindings.0[0].parse::<HotKey>().is_ok(), "{}", bindings.0[0]);
                 assert_eq!(shortcut_label(bindings.0[0].parse()?), bindings.0[0]);
             }
@@ -269,8 +277,9 @@ mod tests {
             prepared: None,
             cleanup_failed: false,
         };
-        let first = crate::CaptureHotkeys(["Ctrl+Alt+F20".into(), "".into(), "".into()]);
-        let second = crate::CaptureHotkeys(["Ctrl+Alt+F21".into(), "".into(), "".into()]);
+        let first = crate::CaptureHotkeys(["Ctrl+Alt+F20".into(), "".into(), "".into(), "".into()]);
+        let second =
+            crate::CaptureHotkeys(["Ctrl+Alt+F21".into(), "".into(), "".into(), "".into()]);
         hotkeys.prepare(&first)?;
         assert!(hotkeys.keys.is_empty());
         hotkeys.finish(true)?;
@@ -292,8 +301,12 @@ mod tests {
         let conflict: HotKey = "Ctrl+Alt+F22".parse()?;
         let blocker = GlobalHotKeyManager::new()?;
         blocker.register(conflict)?;
-        let desired =
-            crate::CaptureHotkeys([second.0[0].clone(), "Ctrl+Alt+F22".into(), "".into()]);
+        let desired = crate::CaptureHotkeys([
+            second.0[0].clone(),
+            "Ctrl+Alt+F22".into(),
+            "".into(),
+            "".into(),
+        ]);
         assert!(hotkeys.prepare(&desired).is_err());
         assert_eq!(hotkeys.keys, original);
         assert!(hotkeys.pending.is_empty());
@@ -302,12 +315,21 @@ mod tests {
         hotkeys.finish(true)?;
         assert_ne!(hotkeys.keys, original);
         assert!(hotkeys.is_registered(&second.0[0], CaptureCommand::Primary));
-        let swapped = crate::CaptureHotkeys(["".into(), second.0[0].clone(), "".into()]);
+        let swapped = crate::CaptureHotkeys(["".into(), second.0[0].clone(), "".into(), "".into()]);
         hotkeys.prepare(&swapped)?;
         assert!(hotkeys.is_registered(&second.0[0], CaptureCommand::Primary));
         hotkeys.finish(true)?;
         assert!(hotkeys.is_registered(&second.0[0], CaptureCommand::Region));
-        hotkeys.prepare(&crate::CaptureHotkeys(["".into(), "".into(), "".into()]))?;
+        let active = crate::CaptureHotkeys(["".into(), "".into(), "".into(), second.0[0].clone()]);
+        hotkeys.prepare(&active)?;
+        hotkeys.finish(true)?;
+        assert!(hotkeys.is_registered(&second.0[0], CaptureCommand::ActiveWindow));
+        hotkeys.prepare(&crate::CaptureHotkeys([
+            "".into(),
+            "".into(),
+            "".into(),
+            "".into(),
+        ]))?;
         hotkeys.finish(true)?;
         assert!(hotkeys.keys.is_empty());
         drop(hotkeys);
@@ -320,6 +342,7 @@ mod tests {
             "".into(),
             "Ctrl+Alt+F22".into(),
             "Ctrl+Alt+F23".into(),
+            "".into(),
         ]))?;
         assert_eq!(startup.keys.len(), 1);
         assert!(startup.is_registered("Ctrl+Alt+F23", CaptureCommand::EditRegion));
@@ -335,10 +358,12 @@ mod tests {
         let primary = HotKey::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), Code::KeyS);
         let region = HotKey::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), Code::KeyR);
         let edit = HotKey::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), Code::KeyE);
+        let active = HotKey::new(Some(Modifiers::CONTROL | Modifiers::ALT), Code::KeyW);
         let keys = [
             (primary, CaptureCommand::Primary),
             (region, CaptureCommand::Region),
             (edit, CaptureCommand::EditRegion),
+            (active, CaptureCommand::ActiveWindow),
         ];
         for (key, command) in keys {
             assert_eq!(

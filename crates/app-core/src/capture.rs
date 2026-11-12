@@ -44,6 +44,10 @@ impl CaptureBudget {
 pub enum CaptureRequest {
     Display(String),
     Window(String),
+    ForegroundWindow {
+        window_id: String,
+        process_id: u32,
+    },
     Region {
         display_id: String,
         x: i32,
@@ -55,7 +59,7 @@ pub enum CaptureRequest {
 
 enum PreparedCapture {
     Display(Monitor, String),
-    Window(Window, String, String),
+    Window(Window, String, String, Option<u32>),
     Region(Monitor, String, u32, u32, u32, u32),
 }
 
@@ -66,7 +70,7 @@ impl PreparedCapture {
                 monitor.width().map_err(backend_error)?,
                 monitor.height().map_err(backend_error)?,
             )),
-            Self::Window(window, _, _) => Ok((
+            Self::Window(window, _, _, _) => Ok((
                 window.width().map_err(backend_error)?,
                 window.height().map_err(backend_error)?,
             )),
@@ -211,7 +215,12 @@ impl XcapBackend {
                         monitor.capture_image().map_err(backend_error)?,
                         "display".to_owned(),
                     ),
-                    PreparedCapture::Window(window, display, id) => {
+                    PreparedCapture::Window(window, display, id, expected_process) => {
+                        if expected_process
+                            .is_some_and(|expected| window.pid().ok() != Some(expected))
+                        {
+                            return Err(CaptureError::WindowNotFound(id));
+                        }
                         let image = window.capture_image().map_err(backend_error)?;
                         (display, Some(id.clone()), image, format!("window-{id}"))
                     }
@@ -262,30 +271,48 @@ impl XcapBackend {
                     monitor, display_id, x, y, width, height,
                 ))
             }
-            CaptureRequest::Window(id) => {
-                if !self.capabilities().capture_window {
-                    return Err(CaptureError::Unsupported("window capture"));
-                }
-                let numeric_id = id
-                    .parse::<u32>()
-                    .map_err(|_| CaptureError::WindowNotFound(id.clone()))?;
-                let window = Window::all()
-                    .map_err(backend_error)?
-                    .into_iter()
-                    .find(|window| window.id().is_ok_and(|value| value == numeric_id))
-                    .ok_or_else(|| CaptureError::WindowNotFound(id.clone()))?;
-                if window.pid().map_err(backend_error)? == std::process::id() {
-                    return Err(CaptureError::Unsupported(
-                        "capturing this application's own window",
-                    ));
-                }
-                if window.is_minimized().map_err(backend_error)? {
-                    return Err(CaptureError::Unsupported("capturing a minimized window"));
-                }
-                let display = monitor_id(&window.current_monitor().map_err(backend_error)?)?;
-                Ok(PreparedCapture::Window(window, display, id))
-            }
+            CaptureRequest::Window(id) => self.prepare_window(id, None),
+            CaptureRequest::ForegroundWindow {
+                window_id,
+                process_id,
+            } => self.prepare_window(window_id, Some(process_id)),
         }
+    }
+
+    fn prepare_window(
+        &self,
+        id: String,
+        expected_process: Option<u32>,
+    ) -> Result<PreparedCapture, CaptureError> {
+        if !self.capabilities().capture_window {
+            return Err(CaptureError::Unsupported("window capture"));
+        }
+        let numeric_id = id
+            .parse::<u32>()
+            .map_err(|_| CaptureError::WindowNotFound(id.clone()))?;
+        let window = Window::all()
+            .map_err(backend_error)?
+            .into_iter()
+            .find(|window| window.id().is_ok_and(|value| value == numeric_id))
+            .ok_or_else(|| CaptureError::WindowNotFound(id.clone()))?;
+        if window.pid().map_err(backend_error)? == std::process::id() {
+            return Err(CaptureError::Unsupported(
+                "capturing this application's own window",
+            ));
+        }
+        if expected_process.is_some_and(|expected| window.pid().ok() != Some(expected)) {
+            return Err(CaptureError::WindowNotFound(id));
+        }
+        if window.is_minimized().map_err(backend_error)? {
+            return Err(CaptureError::Unsupported("capturing a minimized window"));
+        }
+        let display = monitor_id(&window.current_monitor().map_err(backend_error)?)?;
+        Ok(PreparedCapture::Window(
+            window,
+            display,
+            id,
+            expected_process,
+        ))
     }
 
     fn find_monitor(&self, display_id: &str) -> Result<Monitor, CaptureError> {

@@ -126,6 +126,42 @@ completed without capture/clipboard actions. Its samples and machine details sta
 only under `target/output-profile-verification/`, excluded from version control.
 It is a development regression check, not the five-minute/reference-hardware gate.
 
+#### Current feature slice: Windows active-window capture
+
+Implemented in the working tree (2026-11-12): Active window is a fourth configurable
+global capture shortcut, initially disabled. Existing three-element hotkey settings
+migrate by appending the disabled slot; other bindings, theme, folder and output
+profile remain intact. Restore defaults disables the new slot. Menus no longer
+advertise hard-coded shortcut labels after users change their bindings.
+
+The hotkey snapshots foreground HWND/process identity before UI hiding/graphics
+attachment. Only short native queries run on the UI thread. Window enumeration,
+process revalidation and capture use the existing worker/admission pipeline.
+The backend rechecks process identity before grabbing pixels; target validation
+rejects own windows, desktop/taskbar surfaces, minimized, stale or changed-process
+targets without capturing a fallback desktop.
+Source pixels remain in memory and use the selected output profile/editor.
+
+Capture menu and tray expose an explicitly labeled three-second active-window
+countdown so the user can focus the intended application. It reuses the existing
+cancellable delay task; close/Quit cancels it. No foreground tracking hook, polling,
+resident timer, thread, runtime, cache or dependency is introduced. Resource cost
+is one optional bounded shortcut string, one menu item and a small ID/process
+request payload; registration staging now owns at most eight keys. Native window
+IDs remain session-scoped; revalidation is not a guarantee against every native
+same-process handle-reuse race.
+
+Optimized core/UI, legacy-settings, countdown-cancel, native hotkey/tray and own
+window checks pass. An explicit external solid-color fixture verifies capture in
+RAM, wrong-process rejection and failure after closing the target. Attempts to
+automate foreground focus aborted before capture; full real hotkey/focus and
+countdown targeting acceptance remain open alongside mixed DPI/accessibility and
+reference-hardware/soak checks. Fixture/machine details stay only under ignored
+`target/active-window-verification/`; no raw verification JSON is added to docs.
+The optimized release build and a short resident CPU/private-memory comparison
+were completed. Raw reports stay in that ignored directory; they do not establish
+five-minute idle, physical presentation or reference-hardware acceptance.
+
 ### Code and verification entry points
 
 - `crates/app-ui/src/workspace.rs`: Kit screen composition. `window.rs`: Base Root and typed content access. `lib.rs`: native controller/jobs. `redaction_editor.rs`: image interactions and Kit toolbar. `caption.rs`: bounded source-label input/rasterization. `theme.rs` / `assets.rs`: shared presentation.

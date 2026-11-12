@@ -55,6 +55,13 @@ enum OverlayMode {
     Fullscreen,
 }
 
+#[derive(Clone, Copy)]
+enum DelayedCapture {
+    Region,
+    #[cfg(target_os = "windows")]
+    ActiveWindow,
+}
+
 struct ResidentController(gpui::Entity<CaptureWorkspace>);
 impl gpui::Global for ResidentController {}
 
@@ -132,7 +139,7 @@ pub struct CaptureWorkspace {
     hotkey_bindings: app_core::CaptureHotkeys,
     output_profile: CaptureOutputProfile,
     #[cfg(target_os = "windows")]
-    hotkey_inputs: Option<[gpui::Entity<gpui::component::input::InputState>; 3]>,
+    hotkey_inputs: Option<[gpui::Entity<gpui::component::input::InputState>; 4]>,
     history_database: Option<PathBuf>,
     history_visible: bool,
     history_filter: app_core::HistoryFilter,
@@ -625,7 +632,7 @@ impl CaptureWorkspace {
                 Ok(tray) => {
                     shell.tray = Some(tray);
                     shell.tray_status =
-                        "Tray: Select region / Capture / Show control window / Quit".into();
+                        "Tray: capture / active-window countdown / Show control window / Quit".into();
                     tracing::info!("tray icon created");
                 }
                 Err(error) => {
@@ -678,6 +685,7 @@ impl CaptureWorkspace {
                                         Some(app_core::CaptureCommand::EditRegion) => {
                                             this.select_region_to_edit(cx)
                                         }
+                                        Some(app_core::CaptureCommand::ActiveWindow) => this.capture_active_window(cx),
                                         None => {}
                                     }
                                 }
@@ -692,6 +700,7 @@ impl CaptureWorkspace {
                                         Some(app_core::TrayCommand::EditRegion) => {
                                             this.select_region_to_edit(cx)
                                         }
+                                        Some(app_core::TrayCommand::ActiveWindow) => this.start_delayed_capture(DelayedCapture::ActiveWindow, cx),
                                         Some(app_core::TrayCommand::Show) => this.show_control(cx),
                                         Some(app_core::TrayCommand::Quit) => {
                                             cx.defer(close_application)
@@ -1276,6 +1285,10 @@ impl CaptureWorkspace {
     }
 
     fn start_delayed_region(&mut self, cx: &mut Context<Self>) {
+        self.start_delayed_capture(DelayedCapture::Region, cx);
+    }
+
+    fn start_delayed_capture(&mut self, target: DelayedCapture, cx: &mut Context<Self>) {
         if self.editor.is_some() || self.editor_closing {
             return;
         }
@@ -1292,7 +1305,9 @@ impl CaptureWorkspace {
         {
             return;
         }
-        self.capture_status = "Region capture in 3 seconds… Press Escape to cancel.".into();
+        let label = match target { DelayedCapture::Region => "Region", #[cfg(target_os = "windows")] DelayedCapture::ActiveWindow => "Active window" };
+        let instruction = match target { DelayedCapture::Region => "Press Escape to cancel.", #[cfg(target_os = "windows")] DelayedCapture::ActiveWindow => "Focus the target window. Escape in this app cancels." };
+        self.capture_status = format!("{label} capture in 3 seconds… {instruction}");
         self.capture_delay = Some(cx.spawn(async move |this, cx| {
             for remaining in (0..3).rev() {
                 cx.background_executor()
@@ -1306,10 +1321,14 @@ impl CaptureWorkspace {
                         }
                         if remaining == 0 {
                             this.capture_delay.take();
-                            this.open_overlays(OverlayMode::Fullscreen, cx);
+                            match target {
+                                DelayedCapture::Region => this.open_overlays(OverlayMode::Fullscreen, cx),
+                                #[cfg(target_os = "windows")]
+                                DelayedCapture::ActiveWindow => this.capture_active_window(cx),
+                            }
                         } else {
                             this.capture_status = format!(
-                                "Region capture in {remaining} {}… Press Escape to cancel.",
+                                "{label} capture in {remaining} {}… {instruction}",
                                 if remaining == 1 { "second" } else { "seconds" }
                             );
                         }
@@ -1507,6 +1526,22 @@ impl CaptureWorkspace {
             return;
         };
         self.start_capture(vec![CaptureJob::Display(display.id)], cx);
+    }
+
+    #[cfg(target_os = "windows")]
+    fn capture_active_window(&mut self, cx: &mut Context<Self>) {
+        if self.capturing || self.copying || self.saving || self.quitting || self.settings_loading
+            || self.settings_saving || self.switching_graphics || self.preview_active
+            || self.editor.is_some() || self.editor_closing || self.capture_delay.is_some()
+            || self.output_directory.is_none() { return; }
+        match app_core::foreground_window_capture() {
+            Ok(request) => self.start_capture(vec![request], cx),
+            Err(error) => {
+                self.capture_status = format!("Active window not captured: {error}");
+                self.show_control(cx);
+                cx.notify();
+            }
+        }
     }
 
     fn capture_all(&mut self, cx: &mut Context<Self>) {

@@ -38,9 +38,9 @@ Save only and Save and copy can still save all displays separately; the latter
 copies the last image as before. Uploads remain a separate explicit action.
 
 On Windows, **Settings → Global shortcuts** configures Primary display, Quick
-region and Capture and annotate. Enter a combination such as `Ctrl+Alt+Q`, leave
+region, Capture and annotate, and Active window. Enter a combination such as `Ctrl+Alt+Q`, leave
 it empty to disable the command, then choose **Save shortcuts**. **Restore defaults**
-saves the original Ctrl+Shift+S/R/E bindings. Supported keys are letters, digits,
+saves the original Ctrl+Shift+S/R/E bindings and disables Active window. Supported keys are letters, digits,
 F1–F24 and PrintScreen; modifiers are Ctrl, Alt, Shift and Super (Windows key).
 Letters/digits require Ctrl, Alt or Super. Duplicate bindings and OS conflicts
 leave the previous working bindings in place. New keys are reserved until settings
@@ -49,6 +49,19 @@ separately from the editable fields. If native cleanup fails, the app reports th
 remaining bindings and requires a restart before another change. Settings persist
 across restarts and folder/theme changes. Non-Windows shortcut configuration is
 not implemented. These settings do not change the existing capture output behavior.
+
+**Active window** is a Windows capture command. Assign its initially disabled
+shortcut in Settings, focus the desired application's window, then press that
+shortcut. The target is recorded before this app hides windows or attaches its
+editor; changing focus afterward does not select a different target. The saved
+capture output profile applies, including Annotate first with no automatic output.
+Capturing this app's own windows, the desktop or taskbar is refused.
+
+The **Capture menu → Active window in 3 seconds** and matching tray command give
+you time to focus the target window. Cancel countdown/Escape in the control window,
+closing that window, or Quit cancels the countdown. A missing, minimized, closed
+or changed-process target fails without falling back to the desktop. Foreground
+focus/hotkey interaction and DPI acceptance remain separate manual checks.
 
 The native GPUI workspace has two appearances: **Dark**, the default (neutral charcoal surfaces, grayscale controls and minimal decoration), and **Oldschool** (compact task navigation, blue selection, colorful function icons and square controls). Choose one under **Settings → Appearance**, or use the theme button in the workspace header. Changes apply immediately across the control window, editor, text inputs and region guide. Appearance saves on a worker alongside the capture folder; failures restore the previous theme and show an error. New installations, settings without a theme, and retired or unknown theme values use Dark. An explicit Oldschool choice is preserved. Annotation colors and exported image pixels are independent of the UI theme.
 

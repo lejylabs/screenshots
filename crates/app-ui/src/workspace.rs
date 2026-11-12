@@ -710,6 +710,11 @@ impl CaptureWorkspace {
                             .icon(ui_icon(cx, "capture-primary", 16.))
                             .disable(unavailable)
                             .on_click(cx.listener(|this, _, _, cx| this.capture_primary(cx))),
+                        #[cfg(target_os = "windows")]
+                        SidebarMenuItem::new("Active window in 3 seconds")
+                            .icon(ui_icon(cx, "capture-primary", 16.))
+                            .disable(unavailable)
+                            .on_click(cx.listener(|this, _, _, cx| this.start_delayed_capture(DelayedCapture::ActiveWindow, cx))),
                         SidebarMenuItem::new("All displays")
                             .icon(ui_icon(cx, "capture-all", 16.))
                             .disable(unavailable || (self.output_profile.requires_single_image() && self.xcap_displays.len() > 1))

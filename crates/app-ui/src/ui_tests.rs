@@ -104,6 +104,28 @@ fn output_profile_failure_preserves_active_choice_and_rejects_multi_image_output
 
 #[cfg(target_os = "windows")]
 #[gpui::test]
+fn active_window_countdown_can_cancel_without_starting_capture(cx: &mut TestAppContext) {
+    let handle = open_workspace(cx);
+    cx.update(|cx| handle.update(cx, |this, _, cx| {
+        this.output_directory = Some(std::env::temp_dir());
+        this.start_delayed_capture(DelayedCapture::ActiveWindow, cx);
+        assert!(this.capture_delay.is_some());
+        assert!(this.capture_status.contains("Focus the target window"));
+        this.cancel_capture_delay(cx);
+    }).unwrap());
+    cx.executor().advance_clock(std::time::Duration::from_secs(4));
+    cx.run_until_parked();
+    cx.update(|cx| {
+        let view = handle.read(cx).unwrap();
+        assert!(view.capture_delay.is_none());
+        assert!(!view.capturing && !view.copying && !view.saving);
+        assert!(view.last_capture.is_none() && view.editor.is_none());
+        assert_eq!(view.capture_status, "Delayed capture canceled");
+    });
+}
+
+#[cfg(target_os = "windows")]
+#[gpui::test]
 fn shortcut_fields_are_named_and_released_with_settings(cx: &mut TestAppContext) {
     let handle = open_workspace(cx);
     let window: AnyWindowHandle = handle.into();

@@ -1,4 +1,4 @@
-//! Windows tray spike. Create, poll and drop on the UI event-loop thread.
+//! Windows tray commands. Create and drop on the UI event-loop thread.
 use anyhow::Result;
 use tray_icon::{
     Icon, TrayIcon, TrayIconBuilder,
@@ -10,6 +10,7 @@ pub enum TrayCommand {
     Capture,
     Region,
     EditRegion,
+    ActiveWindow,
     Show,
     Quit,
 }
@@ -19,6 +20,7 @@ pub struct SpikeTray {
     capture: MenuItem,
     region: MenuItem,
     edit_region: MenuItem,
+    active_window: MenuItem,
     show: MenuItem,
     quit: MenuItem,
 }
@@ -26,12 +28,20 @@ pub struct SpikeTray {
 impl SpikeTray {
     pub fn new() -> Result<Self> {
         let menu = Menu::new();
-        let capture = MenuItem::new("Capture primary (Ctrl+Shift+S)", true, None);
-        let region = MenuItem::new("Select region (Ctrl+Shift+R)", true, None);
-        let edit_region = MenuItem::new("Capture and annotate (Ctrl+Shift+E)", true, None);
+        let capture = MenuItem::new("Capture primary", true, None);
+        let region = MenuItem::new("Select region", true, None);
+        let edit_region = MenuItem::new("Capture and annotate", true, None);
+        let active_window = MenuItem::new("Active window in 3 seconds…", true, None);
         let show = MenuItem::new("Show control window", true, None);
         let quit = MenuItem::new("Quit", true, None);
-        menu.append_items(&[&edit_region, &region, &capture, &show, &quit])?;
+        menu.append_items(&[
+            &edit_region,
+            &region,
+            &capture,
+            &active_window,
+            &show,
+            &quit,
+        ])?;
         // A simple camera frame for the prototype; no external asset needed.
         let mut pixels = vec![0; 32 * 32 * 4];
         for y in 6..26 {
@@ -55,6 +65,7 @@ impl SpikeTray {
             capture,
             region,
             edit_region,
+            active_window,
             show,
             quit,
         })
@@ -70,6 +81,8 @@ impl SpikeTray {
                     Some(TrayCommand::Region)
                 } else if event.id == *self.edit_region.id() {
                     Some(TrayCommand::EditRegion)
+                } else if event.id == *self.active_window.id() {
+                    Some(TrayCommand::ActiveWindow)
                 } else if event.id == *self.show.id() {
                     Some(TrayCommand::Show)
                 } else if event.id == *self.quit.id() {
@@ -88,6 +101,8 @@ impl SpikeTray {
             Some(TrayCommand::Region)
         } else if event.id == *self.edit_region.id() {
             Some(TrayCommand::EditRegion)
+        } else if event.id == *self.active_window.id() {
+            Some(TrayCommand::ActiveWindow)
         } else if event.id == *self.show.id() {
             Some(TrayCommand::Show)
         } else if event.id == *self.quit.id() {
@@ -107,6 +122,12 @@ mod tests {
     fn tray_creation_and_cleanup() -> Result<()> {
         let tray = SpikeTray::new()?;
         assert!(tray.take_commands().is_empty());
+        assert_eq!(
+            tray.command(MenuEvent {
+                id: tray.active_window.id().clone()
+            }),
+            Some(TrayCommand::ActiveWindow)
+        );
         drop(tray);
         Ok(())
     }

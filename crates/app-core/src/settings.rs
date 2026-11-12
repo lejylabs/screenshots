@@ -8,7 +8,26 @@ use std::{
 };
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct CaptureHotkeys(pub [String; 3]);
+#[serde(from = "StoredCaptureHotkeys")]
+pub struct CaptureHotkeys(pub [String; 4]);
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum StoredCaptureHotkeys {
+    Current([String; 4]),
+    Legacy([String; 3]),
+}
+
+impl From<StoredCaptureHotkeys> for CaptureHotkeys {
+    fn from(stored: StoredCaptureHotkeys) -> Self {
+        match stored {
+            StoredCaptureHotkeys::Current(keys) => Self(keys),
+            StoredCaptureHotkeys::Legacy([primary, region, edit]) => {
+                Self([primary, region, edit, String::new()])
+            }
+        }
+    }
+}
 
 impl Default for CaptureHotkeys {
     fn default() -> Self {
@@ -16,13 +35,18 @@ impl Default for CaptureHotkeys {
             "Ctrl+Shift+S".into(),
             "Ctrl+Shift+R".into(),
             "Ctrl+Shift+E".into(),
+            String::new(),
         ])
     }
 }
 
 impl CaptureHotkeys {
-    pub const LABELS: [&'static str; 3] =
-        ["Primary display", "Quick region", "Capture and annotate"];
+    pub const LABELS: [&'static str; 4] = [
+        "Primary display",
+        "Quick region",
+        "Capture and annotate",
+        "Active window",
+    ];
 
     pub fn validated(&self) -> Result<Self> {
         let mut result = Self(std::array::from_fn(|_| String::new()));
@@ -241,6 +265,22 @@ impl CaptureSettings {
 mod tests {
     use super::*;
     #[test]
+    fn legacy_hotkeys_keep_bindings_and_active_window_starts_disabled() -> Result<()> {
+        let legacy: CaptureHotkeys = serde_json::from_str(r#"["Alt+Q","","Ctrl+F9"]"#)?;
+        assert_eq!(legacy.0, ["Alt+Q", "", "Ctrl+F9", ""]);
+        assert!(CaptureHotkeys::default().0[3].is_empty());
+        let mut current = legacy.clone();
+        current.0[3] = "Ctrl+Alt+W".into();
+        assert_eq!(
+            serde_json::from_slice::<CaptureHotkeys>(&serde_json::to_vec(&current)?)?,
+            current
+        );
+        current.0[3] = "alt+q".into();
+        assert!(current.validated().is_err());
+        assert!(serde_json::from_str::<CaptureHotkeys>(r#"["Q","R"]"#).is_err());
+        Ok(())
+    }
+    #[test]
     fn output_profiles_round_trip_preserve_other_settings_and_reject_unknown_values() -> Result<()>
     {
         let dir = std::env::temp_dir().join(format!(
@@ -249,7 +289,7 @@ mod tests {
         ));
         fs::create_dir_all(&dir)?;
         let path = dir.join("settings.json");
-        let hotkeys = CaptureHotkeys(["Alt+Q".into(), "".into(), "Ctrl+F9".into()]);
+        let hotkeys = CaptureHotkeys(["Alt+Q".into(), "".into(), "Ctrl+F9".into(), "".into()]);
         for profile in CaptureOutputProfile::ALL {
             CaptureSettings::for_directory(dir.clone())?
                 .with_hotkeys(hotkeys.clone())?
@@ -289,9 +329,14 @@ mod tests {
 
     #[test]
     fn shortcuts_validate_normalize_and_reject_duplicates() -> Result<()> {
-        let keys = CaptureHotkeys([" shift + ctrl + q ".into(), "PrintScreen".into(), "".into()])
-            .validated()?;
-        assert_eq!(keys.0, ["Ctrl+Shift+Q", "PrintScreen", ""]);
+        let keys = CaptureHotkeys([
+            " shift + ctrl + q ".into(),
+            "PrintScreen".into(),
+            "".into(),
+            "".into(),
+        ])
+        .validated()?;
+        assert_eq!(keys.0, ["Ctrl+Shift+Q", "PrintScreen", "", ""]);
         for invalid in [
             "Q",
             "Shift+Q",
@@ -304,24 +349,29 @@ mod tests {
             "Ctrl+Enter",
         ] {
             assert!(
-                CaptureHotkeys([invalid.into(), "".into(), "".into()])
+                CaptureHotkeys([invalid.into(), "".into(), "".into(), "".into()])
                     .validated()
                     .is_err(),
                 "{invalid}"
             );
         }
         assert!(
-            CaptureHotkeys(["ctrl+shift+q".into(), "Shift+Ctrl+Q".into(), "".into()])
+            CaptureHotkeys([
+                "ctrl+shift+q".into(),
+                "Shift+Ctrl+Q".into(),
+                "".into(),
+                "".into()
+            ])
+            .validated()
+            .is_err()
+        );
+        assert!(
+            CaptureHotkeys([" ".repeat(65), "".into(), "".into(), "".into()])
                 .validated()
                 .is_err()
         );
         assert!(
-            CaptureHotkeys([" ".repeat(65), "".into(), "".into()])
-                .validated()
-                .is_err()
-        );
-        assert!(
-            CaptureHotkeys(["".into(), "".into(), "".into()])
+            CaptureHotkeys(["".into(), "".into(), "".into(), "".into()])
                 .validated()
                 .is_ok()
         );
@@ -334,7 +384,7 @@ mod tests {
             std::env::temp_dir().join(format!("screenshots-hotkeys-{}", uuid::Uuid::new_v4()));
         fs::create_dir_all(&dir)?;
         let path = dir.join("settings.json");
-        let hotkeys = CaptureHotkeys(["Ctrl+Alt+Q".into(), "F12".into(), "".into()]);
+        let hotkeys = CaptureHotkeys(["Ctrl+Alt+Q".into(), "F12".into(), "".into(), "".into()]);
         CaptureSettings::for_directory(dir.clone())?
             .with_hotkeys(hotkeys.clone())?
             .save_at(&path)?;
