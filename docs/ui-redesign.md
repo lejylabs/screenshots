@@ -84,8 +84,9 @@ compared binary hashes are in the verification JSON.
 
 ## Limits
 
-Native functional inspection here is Linux X11/XWayland. Windows receives a CI
-compile check of the platform paths and opt-in native tests; interactive Windows,
+Native functional inspection here is Linux X11/XWayland. The complete Windows
+GNU workspace and opt-in test bodies type-check locally with MinGW-w64. Windows
+MSVC receives a CI compile check of those same paths; interactive Windows,
 macOS, mixed DPI, screen-reader acceptance and the full reference-hardware resource
 budgets remain separate gates. No successful compile or headless test establishes
 physical presentation/input latency or complete platform acceptance.

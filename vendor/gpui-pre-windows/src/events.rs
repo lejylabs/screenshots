@@ -337,10 +337,10 @@ impl WindowsWindowInner {
         }
         unsafe {
             SendMessageW(
-                Some(self.platform_window_handle),
+                self.platform_window_handle,
                 WM_GPUI_CLOSE_ONE_WINDOW,
-                WPARAM(self.validation_number),
-                LPARAM(handle.0 as isize),
+                Some(WPARAM(self.validation_number)),
+                Some(LPARAM(handle.0 as isize)),
             );
         }
         Some(0)

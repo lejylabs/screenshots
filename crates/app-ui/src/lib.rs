@@ -5866,7 +5866,7 @@ try {
                                         this.capture_status.clone(),
                                         this.overlays
                                             .iter()
-                                            .map(|handle| handle.window_id())
+                                            .map(|handle| AnyWindowHandle::from(*handle).window_id())
                                             .collect::<Vec<_>>(),
                                     )
                                 })

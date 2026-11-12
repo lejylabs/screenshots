@@ -26,7 +26,7 @@
     "new_module_rustfmt": "passed",
     "native_x11_probe": "passed; native Kit UI events with synthetic image; save verified, original preserved, normal Quit",
     "windows_typecheck": "CI job added; result tracked on PR",
-    "windows_local_cross_check": "blocked by absent x86_64-w64-mingw32-windres before application type checking"
+    "windows_local_cross_check": "passed: cargo +1.99.0 check --workspace --all-targets --locked --target x86_64-pc-windows-gnu; isolated MinGW-w64 GCC 16.2.0 / headers 14.0.0, compilation only"
   },
   "native_checks": [
     "Dark default and English UI.",
@@ -176,5 +176,20 @@
     "Native functional inspection is Linux X11/XWayland only.",
     "Windows/macOS/Wayland interactive behavior, mixed DPI, IME/screen-reader acceptance and full resource budgets remain open.",
     "Historical Windows renderer/capture benchmark documents describe older binaries; their timings do not transfer to the rewritten toolkit."
-  ]
+  ],
+  "windows_compile_followup": {
+    "date": "2026-11-12",
+    "initial_failed_commit": "f98a8944a958ec73a805a650d2b0792e10431ef6",
+    "initial_ci_job": "https://github.com/lejylabs/screenshots/actions/runs/43191928756/job/131093155486",
+    "fixes": [
+      "Match the pinned Windows 0.62.2 SendMessageW signature while preserving synchronous validated teardown.",
+      "Read window identities through AnyWindowHandle in the opt-in Windows overlay-reuse test."
+    ],
+    "local_checks": [
+      "Entire Windows GNU workspace, binaries and opt-in test bodies type-check successfully.",
+      "Linux workspace tests: 98 passed, 25 opt-in/platform diagnostics ignored.",
+      "git diff --check passed."
+    ],
+    "limits": "Native Windows MSVC CI remains authoritative for that target; no interactive Windows runtime result is claimed."
+  }
 }
