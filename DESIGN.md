@@ -1,83 +1,59 @@
 # screenshots design system
 
-A native GPUI workbench. The image is the work; the interface should help it move
-from capture to annotation to an explicit output. Keep the existing core, workers,
-bounded previews, cancellation and privacy guarantees.
+A native GPUI Kit workbench with two appearances. The image is the work; the
+interface helps it move from capture to annotation to explicit output.
 
-## Default selection
+## Appearances
 
-Oldschool is the startup and settings fallback. Light table and Safelight are
-optional appearances. The historical serialized `default` value remains the
-light palette, now labelled Light table, so explicit preferences do not change.
-
-## Visual idea
-
-The capture workspace is a digital light table: paper-like surfaces, graphite
-text and petrol controls. A four-corner viewfinder marks the region-capture area.
-Safelight translates a photographic darkroom into warm paper text and deep
-red-brown surfaces with coral controls. These are custom palettes for this tool,
-not imported preset themes. Oldschool combines compact task navigation, charcoal surfaces and colorful function icons.
-
-## Structure and hierarchy
-
-- A stable sidebar holds the primary capture command, Recent capture, Library,
-  Capture sources, Uploads and Settings. Capture menu holds less frequent modes.
-- One workspace per destination. Hidden pages do not render or fetch.
-- Recent capture: one main region command, followed by a compact command list.
-  A finished image replaces the empty state with its preview and output actions.
-- Library: search, filters, selection actions, bounded image rows and pagination.
-- Settings: Appearance, Storage, then optional diagnostics.
-- Editor: output actions, grouped annotation tools, then contextual controls.
-
-Oldschool uses the same commands and destinations in a denser task menu, with a
-shortcut-based empty workspace. Light table and Safelight retain the larger capture
-workspace. Keep command behavior and keyboard shortcuts consistent across themes. Do not add marketing sections, fake
-metrics, browser frames, ornamental artwork, or empty destinations.
-
-## Native tokens
-
-`crates/app-ui/src/theme.rs` is the single source for palettes, geometry and UI
-font selection. `Palette` is copied into render/paint closures. Active appearance
-lives in GPUI app state, not a process-wide mutable static. Theme changes invalidate
-windows once. No CSS, webview, theme framework or remotely loaded font is needed.
-
-| Theme | Character | Geometry | UI fonts |
+| Appearance | Character | Geometry | UI fonts |
 | --- | --- | --- | --- |
-| Light table | Bright light-table surfaces, graphite text, deep petrol actions | 8px controls / 12px panels | Segoe UI / system / Cantarell |
-| Oldschool | Compact desktop: charcoal, blue selection, colorful function icons | Square, compact rows and 28px tool buttons | Segoe UI / DejaVu Sans |
-| Safelight | Red-brown surfaces, warm paper text, coral actions | 4px controls / 8px panels | Segoe UI / system / Cantarell |
+| Dark (default) | Neutral charcoal, grayscale controls, restrained borders | 6px controls / 8px panels | Segoe UI / system / Cantarell |
+| Oldschool | Compact task menu, blue selection, colorful function icons | Square controls, Kit small tools | Segoe UI / DejaVu Sans |
 
-Annotation palettes, masks, source pixels and export colors never follow these
-tokens. Changing appearance must not change the document.
+Dark is the startup and settings fallback. Retired or unknown saved values fall
+back to Dark; an explicit Oldschool choice remains Oldschool. Both options share
+the same capture, history, editor and output behavior. UI appearance never changes
+annotation colors, masks or exported pixels.
 
-## Typography and space
+## Structure
 
-Use native readable body text, medium-weight commands and semibold section
-headings. Roman headings, no uppercase section kickers. Follow existing GPUI
-spacing helpers on a 4px scale. Short command labels stay on one line. Source
-filenames may ellipsize; content and status can wrap.
+- Sidebar: capture command, Capture menu, Recent capture, Library, Capture
+  sources, Uploads and Settings.
+- Dark uses a simple empty state and a compact capture command list. No slogan,
+  ornamental viewfinder, gradients or animated decoration.
+- Oldschool keeps dense task navigation and the shortcut-based empty workspace.
+- Library: search, filters, selection actions, bounded rows and pagination.
+- Settings: Appearance, Storage, optional diagnostics.
+- Editor: explicit output choices, grouped tools, contextual controls.
 
-## Interaction
+## Components, tokens and interaction
 
-- Primary capture/output actions have filled accent controls with their own
-  high-contrast foreground token. Secondary commands stay quieter.
-- Selection has both a border and a visible check/state, with accessibility state.
-- Keyboard focus appears immediately. No permanent animation or polling timer.
-- Theme selection applies optimistically, disables competing settings writes,
-  saves on the existing worker executor and rolls back if saving fails.
-- Preserve independent save/copy/upload outcomes; do not imply success early.
-- No automatic capture, clipboard writes or uploads on navigation/theme changes.
+GPUI Kit 0.9.1 owns standard control behavior. Use its Sidebar, Button, Input,
+Checkbox, RadioGroup, PopupMenu and Kbd components for application commands and
+forms. Every native window mounts the Kit Base Root. The application retains
+explicit typed access to the content inside that Root for native lifecycle jobs.
+
+`theme.rs` applies product palettes through `Theme::update`, keeping styled tokens
+and Base projections synchronized. Dark and Oldschool remain app preferences;
+annotation colors are document data. Kit initialization is deferred until a UI
+window is needed, preserving resident startup readiness. Optional script, speech,
+syntax and profiling runtimes are not enabled.
+
+The custom image canvas, annotation metadata and pre-insert-bounded source-label
+editor remain domain code. Label raster fonts are independent of UI appearance.
+Search uses retained Kit Input state, admits at most 512 UTF-8 bytes and releases
+its input/subscription when the page closes. Menus dispatch revision-scoped
+commands so a stale popup cannot affect a newly loaded page.
+
+Use native relative spacing and component sizes, readable type, visible focus
+and selected state. Keep copy/save/upload outcomes independent and truthful.
+Navigation does not trigger capture, clipboard output or uploads. Preserve worker
+ownership, cancellation, paged data and in-memory pixels. No webview, remote asset,
+JavaScript engine, extra worker pool or permanent timer is introduced.
 
 ## Window sizes
 
-The shell opens at 1060×760 and supports 680×480. Major workspace sections do
-not shrink below their measured content. The sidebar and main workspace scroll
-independently. Theme choices wrap; output/selection controls wrap as complete
-controls. The editor retains its existing 760×400 standalone minimum and bounded
-scrolling toolbar. This desktop app does not claim mobile support.
-
-## Review
-
-Native adaptation of the frontend-design / Hallmark principles: hierarchy,
-consistent semantic tokens, real states, high contrast and restrained decoration.
-Web-only CSS/export/mobile rules do not apply to this GPUI implementation.
+The shell opens at 1060×760 and supports 680×480. Content keeps its natural height
+and scrolls, while complete controls wrap. The standalone editor retains its
+760×400 minimum and bounded scrolling toolbar. This desktop app does not claim
+mobile support.

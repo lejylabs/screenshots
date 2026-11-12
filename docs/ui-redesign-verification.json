@@ -1,116 +1,195 @@
 {
-  "date": "2026-11-10",
-  "branch": "feat/newt",
-  "base_commit": "f4357f2",
-  "stack": "Rust 1.99 / pinned GPUI 1.27.0, native desktop",
+  "date": "2026-11-11",
+  "branch": "feat/gpui-kit-rewrite",
+  "base_commit": "4bbbd2cf90e33e227ce5851d21581df38d70612d",
+  "stack": {
+    "rust": "1.99.0",
+    "gpui_kit": "0.9.1",
+    "gpui_pre_family": "0.3.12",
+    "upstream_kit_inspected_commit": "38a54f0220024f7394dd07d7e6685688168d64e6",
+    "optional_js_speech_syntax_profiler_runtimes": false,
+    "lockfile": "Cargo.lock"
+  },
   "themes": [
-    "default",
-    "oldschool",
-    "safelight"
+    "Dark (default)",
+    "Oldschool"
   ],
   "checks": {
-    "workspace_check": "passed",
-    "release_build": "passed",
     "workspace_tests": {
-      "passed": 91,
+      "passed": 98,
       "failed": 0,
-      "ignored": 24
+      "ignored": 25,
+      "kit_integration_tests": 7
     },
-    "clippy": "completed; existing warnings remain",
-    "git_diff_check": "passed"
+    "release_build": "passed",
+    "clippy": "completed; existing warnings in legacy editor/core, none in new Kit composition/root/assets/test modules",
+    "new_module_rustfmt": "passed",
+    "native_x11_probe": "passed; native Kit UI events with synthetic image; save verified, original preserved, normal Quit",
+    "windows_typecheck": "CI job added; result tracked on PR",
+    "windows_local_cross_check": "passed: cargo +1.99.0 check --workspace --all-targets --locked --target x86_64-pc-windows-gnu; isolated MinGW-w64 GCC 16.2.0 / headers 14.0.0, compilation only"
   },
   "native_checks": [
-    "Real release windows captured at 1060x760; shell also inspected at 680x480.",
-    "Default, Oldschool and Safelight apply and persist in isolated settings.",
-    "Previously selected appearance restored after restart.",
-    "Theme save failure with read-only config directory rolls back and reports the error.",
-    "Library prefix search, empty results and Escape reset inspected with a synthetic local fixture.",
-    "Library preview and editor opened on the synthetic fixture only.",
-    "Frame annotation exported through Save only: one new 1280x720 PNG; original SHA-256 unchanged.",
-    "Editor cancel restores control focus; Settings shortcut works immediately afterward.",
-    "Final Safelight editor and compact Appearance inspected."
+    "Dark default and English UI.",
+    "Library loads only a bounded page; real Kit menu opens and dismisses.",
+    "Appearance offers exactly Dark and Oldschool; both selected and persisted through background settings save.",
+    "1060x760 and 680x480 workspaces; 1000x760 and 760x500 editor.",
+    "Multiline Unicode label entered through native input and rasterized to a bounded mask.",
+    "Save only writes a new 1280x720 PNG with changed pixels and preserves the original.",
+    "Normal Quit closes the isolated native process."
   ],
-  "privacy": "Only app-owned windows were captured. Isolated XDG config/data/cache and a synthetic PNG fixture under target/ui-preview. No uploads, real desktop captures or user-image inputs.",
-  "limits": [
-    "Native interaction verified on Linux X11 via XWayland only; Windows/macOS interaction, mixed DPI and screen readers not verified.",
-    "Linux window enumeration is unsupported by the existing backend in this session.",
-    "Native file-picker import was not completed in automation; the UI used an isolated fixture database. Existing core import tests pass.",
-    "Clipboard untouched was reported by Save-only UI and covered by existing output fixtures; no user clipboard contents were read for verification.",
-    "Short idle comparison is exploratory, not acceptance against PLAN.md; CPU difference is inconclusive, GPU allocations not measured."
+  "headless_regressions": [
+    "Root content type checks without re-borrowing the application entity.",
+    "Disabled capture and keyboard navigation.",
+    "Search Unicode/512-byte admission, Escape clearing and state release.",
+    "Stale popup command rejection.",
+    "Controlled checkbox selection and disabled behavior.",
+    "Quit waits for active output inside Base Root.",
+    "Transparent overlay surface survives appearance changes; Escape releases overlay without output."
   ],
-  "idle_comparison": {
-    "scenario": "Release, empty visible Recent workspace, 1060x760 logical pixels, X11 via XWayland; one exploratory 5-second idle sample each. Not reference-hardware acceptance or GPU accounting.",
-    "baseline_commit": "f4357f2",
-    "new": {
-      "sample_seconds": 5.001,
-      "cpu_percent_one_core": 0.4,
-      "rss_mib": 146.96,
-      "pss_mib": 134.4,
-      "private_mib": 130.83
-    },
-    "baseline": {
-      "sample_seconds": 5.0,
-      "cpu_percent_one_core": 0.2,
-      "rss_mib": 203.05,
-      "pss_mib": 191.4,
-      "private_mib": 187.61
-    },
-    "new_binary_sha256": "33457c2d6f9ad8406f82a39b91bba78c88594319f07dd04258da972a989c583b",
-    "baseline_binary_sha256": "5d52723e00014cb40e05e4a8186e3e8fe73cd80c10471cb8687a0e6b2e38161b"
-  },
+  "privacy": "Only app-owned windows captured, isolated XDG config/data/cache, synthetic PNG and disposable database. No desktop capture, uploads or clipboard output.",
+  "native_probe_artifact_run": "run-2655250",
   "screenshots": [
-    "target/ui-preview/default-recent.png",
-    "target/ui-preview/default-settings.png",
-    "target/ui-preview/oldschool-recent.png",
-    "target/ui-preview/oldschool-settings.png",
-    "target/ui-preview/safelight-recent.png",
-    "target/ui-preview/safelight-settings.png",
-    "target/ui-preview/safelight-editor.png",
-    "target/ui-preview/safelight-settings-compact.png"
+    "docs/design/dark.png",
+    "docs/design/oldschool.png",
+    "docs/design/library-menu.png",
+    "docs/design/editor.png",
+    "docs/design/compact.png",
+    "docs/design/editor-compact.png"
   ],
-  "release_binary_sha256": "1301f4ca478b3106386329618485c347ff5b4044c927e215f71e25ef518475a3",
-  "default_appearance_followup": {
-    "default": "oldschool",
-    "light_theme_label": "Light table",
-    "compatibility": "Explicit saved values, including the historical default light-theme key, remain unchanged.",
-    "checks": [
-      "Settings tests: fresh config, missing/unknown theme and all explicit selections passed.",
-      "Theme contrast test passed.",
-      "Release build passed.",
-      "Native fresh launch with isolated empty config shows Oldschool; own-window screenshot background asserted."
+  "resources": {
+    "platform": "Linux-7.3.0-5-cachyos-x86_64-with-glibc2.44",
+    "scenario": "visible 1060x760 empty production workspace, isolated XDG paths, Linux X11/XWayland, three interleaved release launches per version",
+    "runs": [
+      {
+        "version": "baseline",
+        "iteration": 0,
+        "pid": 2613294,
+        "warmup_seconds": 4,
+        "sample_seconds": 5.014107593997323,
+        "cpu_percent_one_core": 0.0,
+        "private_kib_median": 221156,
+        "pss_kib_median": 222316,
+        "rss_kib_median": 230528,
+        "idle_read_bytes": 0,
+        "idle_write_bytes": 0
+      },
+      {
+        "version": "kit",
+        "iteration": 0,
+        "pid": 2613860,
+        "warmup_seconds": 4,
+        "sample_seconds": 5.0156328750017565,
+        "cpu_percent_one_core": 0.0,
+        "private_kib_median": 232348,
+        "pss_kib_median": 233522,
+        "rss_kib_median": 241748,
+        "idle_read_bytes": 0,
+        "idle_write_bytes": 0
+      },
+      {
+        "version": "baseline",
+        "iteration": 1,
+        "pid": 2614440,
+        "warmup_seconds": 4,
+        "sample_seconds": 5.018257073999848,
+        "cpu_percent_one_core": 0.19927237390469946,
+        "private_kib_median": 221464,
+        "pss_kib_median": 222617,
+        "rss_kib_median": 230808,
+        "idle_read_bytes": 0,
+        "idle_write_bytes": 0
+      },
+      {
+        "version": "kit",
+        "iteration": 1,
+        "pid": 2615758,
+        "warmup_seconds": 4,
+        "sample_seconds": 5.014769059998798,
+        "cpu_percent_one_core": 0.3988219549237789,
+        "private_kib_median": 231736,
+        "pss_kib_median": 233058,
+        "rss_kib_median": 241140,
+        "idle_read_bytes": 0,
+        "idle_write_bytes": 0
+      },
+      {
+        "version": "baseline",
+        "iteration": 2,
+        "pid": 2616405,
+        "warmup_seconds": 4,
+        "sample_seconds": 5.016221285004576,
+        "cpu_percent_one_core": 0.19935324683330605,
+        "private_kib_median": 221016,
+        "pss_kib_median": 222326,
+        "rss_kib_median": 230316,
+        "idle_read_bytes": 0,
+        "idle_write_bytes": 0
+      },
+      {
+        "version": "kit",
+        "iteration": 2,
+        "pid": 2616906,
+        "warmup_seconds": 4,
+        "sample_seconds": 5.016287525002554,
+        "cpu_percent_one_core": 0.19935061437681284,
+        "private_kib_median": 232128,
+        "pss_kib_median": 233456,
+        "rss_kib_median": 241536,
+        "idle_read_bytes": 0,
+        "idle_write_bytes": 0
+      }
     ],
-    "screenshot": "target/ui-default-check/fresh-default.png"
-  },
-  "oldschool_classic_followup": {
-    "style": "Compact native desktop: charcoal, task sidebar, blue selection and colorful native vector icons.",
-    "checks": [
-      "91 workspace tests passed; 24 opt-in tests ignored.",
-      "Release build passed. Text, focus and all classic icon colors pass contrast fixtures.",
-      "Native 1060x760 and 680x480 control windows inspected, including expanded Capture menu.",
-      "Native editor inspected at 1000x760 and 760x500 with synthetic pixels only.",
-      "Theme save and return to Default verified; startup restores Oldschool.",
-      "Three complete native keyboard-navigation cycles asserted against rendered page headers; final native Quit completed."
-    ],
-    "resources": "One small palette flag and bounded color dispatch on existing vector paths; fewer/lower-density views in the classic workspace. No dependency, cache, thread, timer or polling added.",
-    "limits": "Linux X11/XWayland only. Windows/macOS interactive checks and reference-hardware performance acceptance remain open. Prior idle samples above predate this follow-up.",
-    "screenshots": [
-      "target/ui-preview/classic/home.png",
-      "target/ui-preview/classic/capture-menu.png",
-      "target/ui-preview/classic/compact.png",
-      "target/ui-preview/classic/settings.png",
-      "target/ui-preview/classic/library.png",
-      "target/ui-preview/classic/editor.png",
-      "target/ui-preview/classic/editor-compact.png",
-      "target/ui-preview/classic/restart.png"
+    "medians": {
+      "baseline": {
+        "private_kib_median": 221156,
+        "pss_kib_median": 222326,
+        "rss_kib_median": 230528,
+        "cpu_percent_one_core": 0.19927237390469946
+      },
+      "kit": {
+        "private_kib_median": 232128,
+        "pss_kib_median": 233456,
+        "rss_kib_median": 241536,
+        "cpu_percent_one_core": 0.19935061437681284
+      }
+    },
+    "private_mapping_change_percent": 4.96120385610157,
+    "baseline_commit": "4bbbd2cf90e33e227ce5851d21581df38d70612d",
+    "baseline_sha256": "252bc3f3d77dbc6415c2be69708288adcb106516a432e8dad68babe70b858e94",
+    "kit_sampled_binary_sha256": "9a955c4a59691e36dad561ec65f759fab2c049c5e36c3e39e06352a1288720ec",
+    "sampled_binary_bytes": {
+      "baseline": 60919096,
+      "kit": 78162824
+    },
+    "termination": "SIGTERM of our empty isolated probes; normal Quit independently exercised by native functional probe.",
+    "limits": [
+      "4 s warmup and 5 s idle sample per launch; not the five-minute idle gate or wakeup measurement.",
+      "Process private mappings include driver mappings; app-owned GPU allocations were not isolated.",
+      "Both versions exceed the existing 100 MiB visible-shell private-memory budget on this development host.",
+      "No physical input/presentation latency, reference-hardware or 500-cycle soak acceptance is claimed.",
+      "Sampled Kit binary precedes final lifecycle guards, transparency regression and Oldschool-only font/width refinements."
     ]
   },
-  "review_screenshot": "docs/design/oldschool.png",
-  "repository_cleanup": {
-    "scope": "Current tracked file contents and paths; Git history unchanged.",
-    "checks": [
-      "Current source and docs cleaned; obsolete external reference image removed.",
-      "Local release build and 91 workspace tests passed.",
-      "CI workflow YAML validated; pinned Rust and native Linux build packages configured."
-    ]
+  "release_binary_sha256": "f87a356ce33391b0a4488523c1a80dea82d64029ba04fcd6c6850907403db7f8",
+  "release_binary_bytes": 78168760,
+  "limits": [
+    "Native functional inspection is Linux X11/XWayland only.",
+    "Windows/macOS/Wayland interactive behavior, mixed DPI, IME/screen-reader acceptance and full resource budgets remain open.",
+    "Historical Windows renderer/capture benchmark documents describe older binaries; their timings do not transfer to the rewritten toolkit."
+  ],
+  "windows_compile_followup": {
+    "date": "2026-11-12",
+    "initial_failed_commit": "f98a8944a958ec73a805a650d2b0792e10431ef6",
+    "initial_ci_job": "https://github.com/lejylabs/screenshots/actions/runs/43191928756/job/131093155486",
+    "fixes": [
+      "Match the pinned Windows 0.62.2 SendMessageW signature while preserving synchronous validated teardown.",
+      "Read window identities through AnyWindowHandle in the opt-in Windows overlay-reuse test."
+    ],
+    "local_checks": [
+      "Entire Windows GNU workspace, binaries and opt-in test bodies type-check successfully.",
+      "Linux workspace tests: 98 passed, 25 opt-in/platform diagnostics ignored.",
+      "git diff --check passed."
+    ],
+    "limits": "Native Windows MSVC CI remains authoritative for that target; no interactive Windows runtime result is claimed."
   }
 }

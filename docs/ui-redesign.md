@@ -1,115 +1,92 @@
-# Native UI redesign on feat/newt
+# GPUI Kit workspace rewrite
 
-The project is a Rust/GPUI desktop tool with a substantial capture/editor core.
-Its existing shared palette was static; capture modes lived behind a menu, and
-page hierarchy, focus and compact layouts needed refinement. The implementation
-keeps native windows and existing capture, history, cancellation, export and
-upload boundaries. No additional dependency or service was introduced.
+The full presentation layer now uses GPUI Kit 0.9.1 and its pinned GPUI 0.3.12
+snapshot. Dark remains the minimal default; Oldschool retains compact navigation
+and colorful function icons. The Rust capture/image/storage/upload core and its
+explicit output/cancellation contracts are reused.
 
-## Design and behavior
+## Ownership
 
-- Default is a custom digital light-table palette: bright surfaces, graphite
-  text, deep petrol commands and a four-corner viewfinder for region capture.
-- Oldschool uses a compact native layout: charcoal surfaces, blue selection, colorful
-  function icons and a compact task sidebar. It replaces the large empty capture
-  panel with shortcut help and uses 28px editor tool buttons.
-- Safelight is a custom darkroom palette: deep red-brown, warm paper text and
-  coral controls. UI appearance never changes annotation or export colors.
-- Recent capture, Library, Capture sources, Uploads and Settings are directly
-  reachable. Recent capture has one primary command and a compact capture list.
-- Search has comfortable padding, a native text-input role and a focus-only
-  caret. Source rows now have keyboard focus and accessible names.
-- Theme choices include visible checks and selected accessibility state. A
-  setting change applies immediately, saves off the foreground executor and
-  restores the old theme on failure. Folder changes preserve appearance.
-- Returning from the editor restores control-window keyboard focus. Ctrl+N,
-  Ctrl+1/2/3 and Ctrl+, navigate the workbench (Command on macOS).
-- The shell opens at 1060x760, with a 680x480 floor. Major content sections retain
-  measured height and scroll; theme choices wrap. Standalone editor retains its
-  existing 760x400 minimum.
+- `workspace.rs`: screen composition with Kit Sidebar, Button, Input, Checkbox,
+  RadioGroup, PopupMenu and Kbd. Paged library rows use stable database identities.
+- `window.rs`: every window has a Kit Base Root; native jobs address its typed
+  content without bypassing the Root. Quit still waits for active work.
+- `theme.rs`: product colors/density synchronized through Kit `Theme::update`.
+- `assets.rs`: default Kit assets plus selected capture/editor Lucide icons.
+- `redaction_editor.rs`: Kit controls around the existing in-memory image canvas.
+- `caption.rs`: bounded document-label editing and native alpha-mask rasterization;
+  its 512-byte/four-line admission and pixel geometry remain domain constraints.
+- `app-core`: capture, image operations, SQLite, credentials, exports and uploads.
 
-Tokens and interaction principles live in [DESIGN.md](../DESIGN.md). The native
-implementation uses `theme.rs` rather than adding a CSS/webview theme layer.
+The application has one UI-framework dependency. Optional JavaScript extensions,
+speech, syntax engines, profilers and capture streams are not enabled. Cargo.lock
+freezes the matched dependency family. The previous Windows teardown safety fix
+is ported to the new backend under `vendor/gpui-pre-windows`; its license and
+provenance are retained.
+
+## Behavior and verification
+
+Kit owns keyboard/pointer/disabled/selection behavior, menu placement/dismissal,
+input editing and window-level facilities. Library search is created at page entry
+and released with its subscription at exit; obsolete jobs and popup commands are
+rejected by revision/identity. Theme changes keep the existing background save
+and rollback behavior. UI appearance does not change annotations or exported
+pixels. Linux image-label fonts now resolve independently of the UI theme.
+
+Headless Kit integration tests drive the production workspace: disabled capture,
+keyboard navigation, search Unicode/byte bounds/Escape, scoped menu safety,
+controlled checkbox state, transparent overlay surfaces, Escape cancellation and
+waiting for work during Quit.
+
+The opt-in native X11 probe drives only this application's windows and a synthetic
+PNG. It covers the real menu, both appearances and persistence, compact layout,
+multiline labels with Unicode, Save only, original preservation and normal Quit.
+It never captures the desktop, uploads or copies image output to the clipboard.
+Its native window events bypass OS mouse/keyboard injection.
+
+To rerun it on Linux/X11, set `SCREENSHOTS_NATIVE_PROBE_ROOT` to an absolute path
+and set `XDG_CONFIG_HOME`, `XDG_DATA_HOME` and `XDG_CACHE_HOME` beneath it. Unset
+`WAYLAND_DISPLAY`, install ImageMagick, and run:
+
+```sh
+cargo test --locked -p app-ui native_probe::native_kit_workspace_and_editor -- --ignored --nocapture --test-threads=1
+```
+
+Machine-readable results, optimized observations and exact binary hashes are in
+[ui-redesign-verification.json](ui-redesign-verification.json). Native screenshots
+below are generated from the isolated probe, with metadata removed.
+
+## Optimized resource comparison
+
+Three interleaved launches per version used an empty 1060×760 production window
+with isolated settings on the same Linux X11/XWayland session. Median process
+private mappings were 216.0 MiB before and 226.7 MiB with Kit (+10.7 MiB, +5.0%).
+Median short idle CPU samples were 0.20% of one core for both; 0–0.40% readings
+and a five-second sample are too coarse for the five-minute idle gate. No sampled
+physical disk I/O occurred. The release binary grew from 58.1 to 74.5 MiB.
+
+Both versions exceed the existing 100 MiB visible-shell private-memory target on
+this development host. These figures include private driver mappings; app-owned
+GPU allocations were not isolated. The rewrite adds component/root/input/icon
+facilities while keeping optional Kit runtimes off. This is a relative regression
+check, not reference-hardware or full resource acceptance. Exact samples and the
+compared binary hashes are in the verification JSON.
 
 ## Screenshots
 
-| Oldschool (default) | Light table | Safelight |
-| --- | --- | --- |
-| ![Oldschool workspace](design/oldschool.png) | ![Light table workspace](design/light-table.png) | ![Safelight workspace](design/safelight.png) |
+| Dark | Oldschool |
+| --- | --- |
+| ![Dark workspace](design/dark.png) | ![Oldschool workspace](design/oldschool.png) |
 
-The native editor below uses an isolated synthetic image.
+![Library menu](design/library-menu.png)
 
-![Compact native editor](design/editor.png)
+![Native image editor with synthetic pixels](design/editor.png)
 
-## Verification
+## Limits
 
-`cargo +1.99.0 check --workspace`, the release build and all 91 enabled workspace
-tests pass. Twenty-four opt-in tests remain ignored. Tests cover all theme
-serialization, legacy/missing/unknown values, contrast for text/actions/focus,
-and existing capture/editor/history behavior. Clippy completes with existing
-warnings; this change does not claim a warning-free repository.
-
-Real release windows were inspected on Linux X11 via XWayland, using isolated
-XDG directories and a synthetic image under `target/ui-preview`. All three
-appearances persisted; restart restored the selection; a permission-denied save
-restored the previous appearance and reported the failure. Search, empty results,
-Escape reset, bounded preview, editor entry/cancel, restored shortcuts and compact
-layouts were exercised. A synthetic frame annotation exported through Save only
-created a new 1280x720 PNG while preserving the original hash. The final Safelight
-editor was inspected as well. No real desktop or user image was captured, and no
-upload was performed.
-
-The native picker import was not completed in automation; UI checks used an
-isolated fixture database, alongside the existing passing import unit tests.
-Linux window enumeration remains unsupported by the existing backend in this
-session. Windows/macOS interaction, mixed DPI and screen-reader acceptance remain
-open; the Linux visual checks do not establish those.
-
-## Resource cost and short comparison
-
-One GPUI global stores a small enum; render closures copy a fixed palette. The
-viewfinder paints four native vector corner strokes. Theme choices add three
-small control trees only while Settings is open. There is no new image cache,
-texture, worker pool, dependency, permanent timer, polling loop or idle task.
-Settings use the existing worker executor. The first explicit appearance change
-may create the configured capture directory if it does not yet exist.
-
-An exploratory release comparison against the original `f4357f2` used the same
-1060x760 empty visible workspace and one five-second idle sample per build.
-Observed private mappings were 187.61 MiB before and 130.83 MiB after. CPU was
-0.2% and 0.4% of one core respectively (10 vs 20 ms of process CPU time): the
-short CPU samples are inconclusive. Memory observations are not a causal speedup
-claim. These are not the five-minute/reference-machine acceptance checks in
-PLAN.md; GPU allocations, cold/input latency and percentile regressions were not
-measured. The existing resource targets remain open.
-
-Machine-readable evidence and binary hashes are in
-[ui-redesign-verification.json](ui-redesign-verification.json). Native screenshots
-are local review artifacts under `target/ui-preview`, intentionally outside Git.
-
-## Compact Oldschool follow-up
-
-Oldschool now has its own compact native layout: a 180px task sidebar, 13px
-commands, colorful function icons, blue row selection, square controls and a
-shortcut-based empty workspace. The editor uses 28px tool buttons. Default and
-Safelight retain their existing workspace. Keyboard page actions explicitly
-restore the root focus context before replacing a focused page control, so
-successive shortcuts keep working.
-
-The release build and all 91 enabled workspace tests pass after this follow-up.
-Native control windows were inspected at 1060x760 and 680x480, and the editor at
-1000x760 and 760x500. Theme persistence, return to Default and restart restoration
-were exercised. Three keyboard-navigation cycles were checked by comparing
-rendered page headers, including successful return to Settings. Only app-owned
-windows and the isolated synthetic image were used; no capture/upload or output
-was triggered in these follow-up checks. The earlier idle measurements predate
-this follow-up and are not a performance claim for the classic layout.
-
-## Default appearance
-
-Oldschool is now the default for fresh installs, missing theme fields and unknown
-future theme names. Explicitly saved preferences remain unchanged. The original
-light appearance is labelled Light table and retains its historical `default`
-storage value. Theme choices show Oldschool first and describe it as the default.
-The settings regression covers fresh, missing and unknown theme selections as
-well as round-trips of all three explicit preferences.
+Native functional inspection here is Linux X11/XWayland. The complete Windows
+GNU workspace and opt-in test bodies type-check locally with MinGW-w64. Windows
+MSVC receives a CI compile check of those same paths; interactive Windows,
+macOS, mixed DPI, screen-reader acceptance and the full reference-hardware resource
+budgets remain separate gates. No successful compile or headless test establishes
+physical presentation/input latency or complete platform acceptance.

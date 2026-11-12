@@ -4,7 +4,6 @@ on:
   push:
     branches: [main]
   pull_request:
-    branches: [main]
 
 permissions:
   contents: read
@@ -40,9 +39,26 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-          key: ${{ runner.os }}-cargo-1.99-${{ hashFiles('**/Cargo.toml') }}
+          key: ${{ runner.os }}-cargo-1.99-${{ hashFiles('Cargo.lock') }}
           restore-keys: ${{ runner.os }}-cargo-1.99-
       - name: Build
-        run: cargo +1.99.0 build --workspace
+        run: cargo +1.99.0 build --workspace --locked
       - name: Run tests
-        run: cargo +1.99.0 test --workspace
+        run: cargo +1.99.0 test --workspace --locked
+
+  windows-typecheck:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust
+        run: rustup toolchain install 1.99.0 --profile minimal
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ runner.os }}-cargo-1.99-${{ hashFiles('Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-1.99-
+      - name: Check native Windows paths and opt-in tests
+        run: cargo +1.99.0 check --workspace --all-targets --locked

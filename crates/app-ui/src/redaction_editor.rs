@@ -1,5 +1,9 @@
+use gpui_kit as gpui;
+use gpui::TestSupportExt as _;
+use gpui::component::{ActiveTheme as _, Disableable as _, Selectable as _, Sizable as _,
+    button::{Button, ButtonVariants as _}};
 use crate::caption::{CaptionFonts, CaptionInput, TextAsset};
-use crate::{CloseOverlay, SpikeShell, capture_button};
+use crate::{CloseOverlay, CaptureWorkspace, capture_button};
 use app_core::{ArrowAnnotation, CapturedImage, FrameAnnotation, HighlightAnnotation, PixelRegion};
 use gpui::{
     App, Context, FocusHandle, IntoElement, KeyBinding, Render, Window, actions, div, img,
@@ -1082,186 +1086,20 @@ const TOOLBAR_TOOLS: [(Tool, &str, &str, bool); 14] = [
     (Tool::Blur, "tool-blur", "Blur (B)", false),
 ];
 
-struct ToolTooltip(&'static str);
-impl Render for ToolTooltip {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let theme = crate::theme::current(cx);
-        div()
-            .font_family(crate::theme::font(cx))
-            .px_3()
-            .py_2()
-            .rounded(px(theme.radius))
-            .bg(rgb(theme.hover))
-            .text_sm()
-            .text_color(rgb(theme.text))
-            .child(self.0)
-    }
+fn tool_icon(cx: &App, tool: Tool) -> gpui::component::Icon {
+    let id = TOOLBAR_TOOLS.iter().find(|(candidate, _, _, _)| *candidate == tool)
+        .map(|(_, id, _, _)| *id).unwrap_or("tool-select");
+    crate::workspace::ui_icon(cx, id, 18.)
 }
 
-fn tool_icon(cx: &App, tool: Tool) -> impl IntoElement {
-    let theme = crate::theme::current(cx);
-    let color = theme.icon_color(match tool {
-        Tool::Frame => "tool-frame", Tool::Arrow => "tool-arrow", Tool::Line => "tool-line",
-        Tool::Pen => "tool-pen", Tool::Ellipse => "tool-ellipse", Tool::Highlight => "tool-highlight",
-        Tool::Number => "tool-number", Tool::Redact => "tool-redact", Tool::Select => "tool-select",
-        _ => "tool-other",
-    });
-    gpui::canvas(
-        |_, _, _| (),
-        move |bounds, _, window, _| {
-            let strokes: &[&[[f32; 2]]] = match tool {
-                Tool::Select => &[&[
-                    [4., 3.],
-                    [4., 18.],
-                    [8., 14.],
-                    [12., 21.],
-                    [15., 19.],
-                    [11., 13.],
-                    [18., 13.],
-                    [4., 3.],
-                ]],
-                Tool::Crop => &[
-                    &[[6., 2.], [6., 18.], [22., 18.]],
-                    &[[2., 6.], [18., 6.], [18., 22.]],
-                ],
-                Tool::Frame => &[&[[4., 5.], [20., 5.], [20., 19.], [4., 19.], [4., 5.]]],
-                Tool::Ellipse => &[&[
-                    [12., 3.],
-                    [18., 5.],
-                    [21., 12.],
-                    [18., 19.],
-                    [12., 21.],
-                    [6., 19.],
-                    [3., 12.],
-                    [6., 5.],
-                    [12., 3.],
-                ]],
-                Tool::Line => &[&[[4., 20.], [20., 4.]]],
-                Tool::Arrow => &[&[[4., 20.], [20., 4.], [10., 4.]], &[[20., 4.], [20., 14.]]],
-                Tool::Pen => &[
-                    &[
-                        [4., 20.],
-                        [6., 14.],
-                        [17., 3.],
-                        [21., 7.],
-                        [10., 18.],
-                        [4., 20.],
-                    ],
-                    &[[14., 6.], [18., 10.]],
-                ],
-                Tool::Text => &[
-                    &[[3., 5.], [21., 5.]],
-                    &[[12., 5.], [12., 21.]],
-                    &[[8., 21.], [16., 21.]],
-                ],
-                Tool::Number => &[&[[7., 8.], [12., 4.], [12., 20.]], &[[7., 20.], [17., 20.]]],
-                Tool::Highlight => &[
-                    &[[5., 14.], [13., 4.], [20., 10.], [12., 19.], [5., 14.]],
-                    &[[4., 21.], [18., 21.]],
-                ],
-                Tool::Spotlight => &[
-                    &[[12., 6.], [18., 12.], [12., 18.], [6., 12.], [12., 6.]],
-                    &[[12., 1.], [12., 3.]],
-                    &[[12., 21.], [12., 23.]],
-                    &[[1., 12.], [3., 12.]],
-                    &[[21., 12.], [23., 12.]],
-                ],
-                Tool::Redact => &[&[[5., 9.], [19., 9.]], &[[5., 14.], [19., 14.]]],
-                Tool::Pixelate => &[
-                    &[[3., 3.], [21., 3.], [21., 21.], [3., 21.], [3., 3.]],
-                    &[[9., 3.], [9., 21.]],
-                    &[[15., 3.], [15., 21.]],
-                    &[[3., 9.], [21., 9.]],
-                    &[[3., 15.], [21., 15.]],
-                ],
-                Tool::Blur => &[
-                    &[
-                        [12., 2.],
-                        [5., 12.],
-                        [4., 16.],
-                        [7., 21.],
-                        [17., 21.],
-                        [20., 16.],
-                        [19., 12.],
-                        [12., 2.],
-                    ],
-                    &[[8., 15.], [8., 17.], [11., 19.]],
-                ],
-            };
-            let mut path =
-                gpui::PathBuilder::stroke(px(if tool == Tool::Redact { 4.0 } else { 1.6 }));
-            let map = |p: [f32; 2]| {
-                bounds.origin
-                    + gpui::point(
-                        bounds.size.width * (p[0] / 24.),
-                        bounds.size.height * (p[1] / 24.),
-                    )
-            };
-            for stroke in strokes {
-                path.move_to(map(stroke[0]));
-                for point in &stroke[1..] {
-                    path.line_to(map(*point));
-                }
-            }
-            if let Ok(path) = path.build() {
-                window.paint_path(path, rgb(if theme.classic { color } else { theme.text }));
-            }
-        },
-    )
-    .w(px(if theme.classic { 18. } else { 20. }))
-    .h(px(if theme.classic { 18. } else { 20. }))
-}
-
-fn color_swatch(cx: &App,
-    id: &'static str,
-    label: &'static str,
-    color: u32,
-    selected: bool,
-    disabled: bool,
+fn color_swatch(
+    cx: &App, id: &'static str, label: &'static str, color: u32,
+    selected: bool, disabled: bool,
     on_click: impl Fn(&gpui::ClickEvent, &mut Window, &mut App) + 'static,
-) -> impl IntoElement {
-    let theme = crate::theme::current(cx);
-    div()
-        .id(id)
-        .role(gpui::Role::Button)
-        .aria_label(label)
-        .flex()
-        .items_center()
-        .justify_center()
-        .w(px(32.))
-        .h(px(32.))
-        .rounded(px(theme.radius))
-        .border_2()
-        .border_color(rgb(if selected {
-            theme.accent
-        } else {
-            theme.border
-        }))
-        .bg(rgb(theme.control))
-        .when(!disabled, |button| {
-            button
-                .focusable()
-                .tab_index(0)
-                .cursor_pointer()
-                .focus_visible(|style| style.border_color(rgb(theme.focus)))
-                .hover(|style| style.bg(rgb(theme.hover)))
-        })
-        .tooltip(move |_, cx| cx.new(|_| ToolTooltip(label)).into())
-        .on_click(move |event, window, cx| {
-            if !disabled {
-                on_click(event, window, cx);
-            }
-        })
-        .child(
-            div()
-                .w(px(18.))
-                .h(px(18.))
-                .rounded_sm()
-                .border_1()
-                .border_color(rgb(theme.muted))
-                .bg(rgb(color))
-                .when(disabled, |swatch| swatch.opacity(0.4)),
-        )
+) -> Button {
+    Button::new(id).ghost().small().accessibility_label(label).tooltip(label)
+        .selected(selected).toggled(selected).disabled(disabled).on_click(on_click)
+        .child(div().size_4().rounded_sm().border_1().border_color(cx.theme().border).bg(rgb(color)))
 }
 
 impl Tool {
@@ -1300,7 +1138,7 @@ pub(super) struct RedactionEditor {
     pub source: CapturedImage,
     pub render_image: Arc<gpui::RenderImage>,
     focus: FocusHandle,
-    owner: gpui::WeakEntity<SpikeShell>,
+    owner: gpui::WeakEntity<CaptureWorkspace>,
     direct_capture: bool,
     toolbar_bottom: bool,
     toolbar_height: std::rc::Rc<std::cell::Cell<f32>>,
@@ -1522,7 +1360,7 @@ impl RedactionEditor {
                 text.asset.text.clone()
             })
             .unwrap_or_default();
-        let owner = window.window_handle().downcast::<Self>().unwrap();
+        let owner = crate::window::UiWindow::<Self>::from_window(window);
         let input = cx.new(|cx| CaptionInput::new(content, owner, cx));
         let focus = input.read(cx).focus.clone();
         window.focus(&focus, cx);
@@ -1610,7 +1448,7 @@ impl RedactionEditor {
         self.text_cancel = Some(text_cancel.clone());
         self.text_job = self.text_job.wrapping_add(1);
         let job = self.text_job;
-        let owner = window.window_handle().downcast::<Self>().unwrap();
+        let owner = crate::window::UiWindow::<Self>::from_window(window);
         if let Some(draft) = &self.text_draft {
             draft.input.update(cx, |input, cx| {
                 input.enabled = false;
@@ -1663,7 +1501,7 @@ impl RedactionEditor {
             }).ok();
         }).detach();
     }
-    #[cfg(test)]
+    #[cfg(all(test, target_os = "windows"))]
     pub(super) fn source_effects_probe(
         &mut self,
         window: &mut Window,
@@ -2263,7 +2101,7 @@ impl RedactionEditor {
     pub fn new(
         source: CapturedImage,
         render_image: Arc<gpui::RenderImage>,
-        owner: gpui::WeakEntity<SpikeShell>,
+        owner: gpui::WeakEntity<CaptureWorkspace>,
         direct_capture: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -2700,17 +2538,12 @@ impl Render for RedactionEditor {
                         div().flex().items_center().flex_wrap().gap_1().py_1()
                             .children(TOOLBAR_TOOLS.into_iter().map(|(tool, id, label, separator)| {
                                 div().when(separator, |group| group.ml_2().pl_2().border_l_1().border_color(rgb(theme.border)))
-                                    .child(div().id(id).role(gpui::Role::Button).aria_label(label)
-                                        .focusable().tab_index(0).flex().items_center().justify_center()
-                                        .w(px(if theme.classic { 28. } else { 36. })).h(px(if theme.classic { 28. } else { 36. })).rounded(px(theme.radius)).border_1()
-                                        .border_color(if self.tool == tool {rgb(theme.accent)} else {rgba(0)})
-                                        .bg(if self.tool == tool {rgb(theme.selection)} else {rgba(0)})
-                                        .cursor_pointer().hover(|style| style.bg(rgb(theme.hover)))
-                                        .active(|style| style.bg(rgb(theme.primary_pressed)))
-                                        .focus_visible(|style| style.border_color(rgb(theme.focus)))
-                                        .tooltip(move |_, cx| cx.new(|_| ToolTooltip(label)).into())
-                                        .on_click(cx.listener(move |this, _, _, cx| this.select_tool(tool, cx)))
-                                        .child(tool_icon(cx, tool)))
+                                    .child(Button::new(id).ghost().small()
+                                        .when(!theme.classic, |button| button.with_size(gpui::component::Size::Medium))
+                                        .accessibility_label(label).tooltip(label)
+                                        .selected(self.tool == tool).toggled(self.tool == tool)
+                                        .icon(tool_icon(cx, tool))
+                                        .on_click(cx.listener(move |this, _, _, cx| this.select_tool(tool, cx))))
                             })),
                     )
                     .child(div().text_sm().text_color(rgb(theme.muted)).child(format!(
@@ -3004,6 +2837,7 @@ impl Render for RedactionEditor {
                             .w(px(size[0]))
                             .h(px(size[1]))
                             .overflow_hidden()
+                            .id("editor-image-area").test_support()
                             .on_mouse_down(
                                 gpui::MouseButton::Left,
                                 cx.listener(move |this, event: &gpui::MouseDownEvent, window, cx| {

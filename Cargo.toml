@@ -19,11 +19,8 @@ app-core = { path = "crates/app-core" }
 app-ui = { path = "crates/app-ui" }
 shared = { path = "crates/shared" }
 
-# Pinned GPUI snapshot of Zed v1.27.0. This is upstream GPUI on crates.io,
-# not a tray/hotkey/overlay fork. Do not enable the `screen-capture` feature;
-# capture backends are evaluated separately.
-gpui = { package = "gpui-unofficial", version = "=1.27.0" }
-gpui_platform = { package = "gpui-platform-gpui-unofficial", version = "=1.27.0" }
+# Kit pins a matching GPUI family; optional JS, speech and syntax engines stay disabled.
+gpui-kit = "=0.9.1"
 
 anyhow = "1.0.104"
 base64 = "0.23.1"
@@ -62,4 +59,4 @@ xcap = "=0.9.8"
 opt-level = 1
 
 [patch.crates-io]
-gpui-windows-gpui-unofficial = { path = "vendor/gpui-windows-gpui-unofficial" }
+gpui-pre-windows = { path = "vendor/gpui-pre-windows" }
