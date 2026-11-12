@@ -18,6 +18,25 @@ See [the implementation and verification notes](docs/ui-redesign.md).
 
 ## Capture home
 
+**Settings → Capture output** saves the behavior for quick region, delayed region,
+display and window captures, including their tray/global-shortcut commands:
+
+- **Copy only:** copies pixels without PNG/history output. One last image stays
+  in memory for Edit, Copy or Save As; an older saved path is not reused.
+- **Save only:** writes PNG/history and leaves the clipboard unchanged.
+- **Save and copy (default):** preserves the existing quick-capture workflow.
+- **Annotate first:** opens the captured image in the editor; region capture first
+  asks for a selection. Nothing is copied or saved until an explicit editor output.
+  Cancel preserves the previous capture and clipboard.
+
+Changes apply only after settings save succeeds. Folder, appearance and shortcut
+changes preserve the chosen profile. **New screenshot** always opens the frozen
+editor, and its explicit Copy/Save buttons retain their own behavior. Copy only
+and Annotate first require one image: with multiple monitors, **All displays** is
+unavailable for these profiles. Use a chosen display/window or a single region.
+Save only and Save and copy can still save all displays separately; the latter
+copies the last image as before. Uploads remain a separate explicit action.
+
 On Windows, **Settings → Global shortcuts** configures Primary display, Quick
 region and Capture and annotate. Enter a combination such as `Ctrl+Alt+Q`, leave
 it empty to disable the command, then choose **Save shortcuts**. **Restore defaults**

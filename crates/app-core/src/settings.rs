@@ -95,6 +95,49 @@ pub struct CaptureSettings {
     pub theme: UiTheme,
     #[serde(default)]
     pub hotkeys: CaptureHotkeys,
+    #[serde(default)]
+    pub output_profile: CaptureOutputProfile,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CaptureOutputProfile {
+    CopyOnly,
+    SaveOnly,
+    #[default]
+    SaveAndCopy,
+    AnnotateFirst,
+}
+
+impl CaptureOutputProfile {
+    pub const ALL: [Self; 4] = [
+        Self::CopyOnly,
+        Self::SaveOnly,
+        Self::SaveAndCopy,
+        Self::AnnotateFirst,
+    ];
+    pub const LABELS: [&'static str; 4] = [
+        "Copy only",
+        "Save only",
+        "Save and copy (default)",
+        "Annotate first",
+    ];
+
+    pub fn copies(self) -> bool {
+        matches!(self, Self::CopyOnly | Self::SaveAndCopy)
+    }
+    pub fn saves(self) -> bool {
+        matches!(self, Self::SaveOnly | Self::SaveAndCopy)
+    }
+    pub fn requires_single_image(self) -> bool {
+        matches!(self, Self::CopyOnly | Self::AnnotateFirst)
+    }
+    pub fn label(self) -> &'static str {
+        Self::LABELS[Self::ALL
+            .iter()
+            .position(|profile| *profile == self)
+            .unwrap()]
+    }
 }
 
 impl CaptureSettings {
@@ -108,6 +151,7 @@ impl CaptureSettings {
             output_directory,
             theme: UiTheme::default(),
             hotkeys: CaptureHotkeys::default(),
+            output_profile: CaptureOutputProfile::default(),
         })
     }
 
@@ -119,6 +163,11 @@ impl CaptureSettings {
     pub fn with_hotkeys(mut self, hotkeys: CaptureHotkeys) -> Result<Self> {
         self.hotkeys = hotkeys.validated()?;
         Ok(self)
+    }
+
+    pub fn with_output_profile(mut self, profile: CaptureOutputProfile) -> Self {
+        self.output_profile = profile;
+        self
     }
 
     pub(crate) fn config_path() -> Result<PathBuf> {
@@ -150,9 +199,10 @@ impl CaptureSettings {
         ensure!(bytes.len() <= 65536, "Settings file is too large");
         let settings: Self = serde_json::from_slice(&bytes).context("Could not read settings")?;
         ensure!(settings.version == 1, "Unsupported settings version");
-        Self::for_directory(settings.output_directory)?
+        Ok(Self::for_directory(settings.output_directory)?
             .with_theme(settings.theme)
-            .with_hotkeys(settings.hotkeys)
+            .with_hotkeys(settings.hotkeys)?
+            .with_output_profile(settings.output_profile))
     }
 
     pub fn save(&self) -> Result<()> {
@@ -190,6 +240,53 @@ impl CaptureSettings {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn output_profiles_round_trip_preserve_other_settings_and_reject_unknown_values() -> Result<()>
+    {
+        let dir = std::env::temp_dir().join(format!(
+            "screenshots-output-profiles-{}",
+            uuid::Uuid::new_v4()
+        ));
+        fs::create_dir_all(&dir)?;
+        let path = dir.join("settings.json");
+        let hotkeys = CaptureHotkeys(["Alt+Q".into(), "".into(), "Ctrl+F9".into()]);
+        for profile in CaptureOutputProfile::ALL {
+            CaptureSettings::for_directory(dir.clone())?
+                .with_hotkeys(hotkeys.clone())?
+                .with_theme(UiTheme::Oldschool)
+                .with_output_profile(profile)
+                .save_at(&path)?;
+            let restored = CaptureSettings::load_at(&path, dir.clone())?;
+            assert_eq!(restored.output_profile, profile);
+            assert_eq!(restored.hotkeys, hotkeys);
+            assert_eq!(restored.theme, UiTheme::Oldschool);
+            let mut invalid_folder = restored;
+            invalid_folder.output_directory = dir.join("missing");
+            assert!(invalid_folder.save_at(&path).is_err());
+            assert_eq!(
+                CaptureSettings::load_at(&path, dir.clone())?.output_profile,
+                profile
+            );
+        }
+        fs::write(
+            &path,
+            serde_json::to_vec(&serde_json::json!({"version":1,"output_directory":dir}))?,
+        )?;
+        assert_eq!(
+            CaptureSettings::load_at(&path, dir.clone())?.output_profile,
+            CaptureOutputProfile::SaveAndCopy
+        );
+        fs::write(
+            &path,
+            serde_json::to_vec(
+                &serde_json::json!({"version":1,"output_directory":dir,"output_profile":"upload"}),
+            )?,
+        )?;
+        assert!(CaptureSettings::load_at(&path, dir.clone()).is_err());
+        fs::remove_dir_all(dir)?;
+        Ok(())
+    }
+
     #[test]
     fn shortcuts_validate_normalize_and_reject_duplicates() -> Result<()> {
         let keys = CaptureHotkeys([" shift + ctrl + q ".into(), "PrintScreen".into(), "".into()])

@@ -71,6 +71,37 @@ fn open_workspace(cx: &mut TestAppContext) -> WindowHandle<CaptureWorkspace> {
     })
 }
 
+#[gpui::test]
+fn output_profile_failure_preserves_active_choice_and_rejects_multi_image_output(cx: &mut TestAppContext) {
+    let handle = open_workspace(cx);
+    let blocker = std::env::temp_dir().join(format!("screenshots-profile-blocker-{}", std::process::id()));
+    std::fs::write(&blocker, b"not a directory").unwrap();
+    cx.update(|cx| handle.update(cx, |this, _, _| {
+        this.output_directory = Some(blocker.clone());
+    }).unwrap());
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.press(&shortcut(","), cx);
+        window.render_frame(cx);
+        window.within("capture-output-profile").click(0usize, cx);
+    }).unwrap();
+    cx.run_until_parked();
+    cx.update(|cx| {
+        let view = handle.read(cx).unwrap();
+        assert!(!view.settings_saving);
+        assert_eq!(view.output_profile, CaptureOutputProfile::SaveAndCopy);
+        assert!(view.settings_status.starts_with("Capture output unchanged:"));
+    });
+    cx.update(|cx| handle.update(cx, |this, _, cx| {
+        this.output_profile = CaptureOutputProfile::CopyOnly;
+        this.start_capture(vec![CaptureJob::Display("first".into()), CaptureJob::Display("second".into())], cx);
+        assert!(!this.capturing);
+        assert!(this.capture_status.starts_with("Choose one display"));
+        assert!(this.last_capture.is_none());
+        assert!(!this.copying && !this.saving);
+    }).unwrap());
+    std::fs::remove_file(blocker).unwrap();
+}
+
 #[cfg(target_os = "windows")]
 #[gpui::test]
 fn shortcut_fields_are_named_and_released_with_settings(cx: &mut TestAppContext) {

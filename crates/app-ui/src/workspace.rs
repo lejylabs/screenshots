@@ -204,7 +204,7 @@ impl Render for CaptureWorkspace {
             .when(self.page == ControlPage::Captures && !theme.classic, |view| view
                 .child(div().flex_none().p_2().rounded(px(theme.panel_radius)).border_1().border_color(colors.border)
                     .bg(colors.group_box).flex().flex_col().gap_1()
-                    .child(capture_tile(cx, "select-region", "Quick region", "Copy & save directly", unavailable,
+                    .child(capture_tile(cx, "select-region", "Quick region", self.output_profile.label(), unavailable,
                         cx.listener(|this, _, _, cx| this.open_overlays(OverlayMode::Fullscreen, cx))))
                     .child(capture_tile(cx, "delayed-region", "3-second delay", "Wait before selecting a region", unavailable,
                         cx.listener(|this, _, _, cx| this.start_delayed_region(cx))))
@@ -594,6 +594,17 @@ impl Render for CaptureWorkspace {
                     ))
                     .child(div().text_xs().text_color(colors.muted_foreground).child("Existing files stay where they are.")),
             )
+            .child(div().flex_none().p_5().rounded(px(theme.panel_radius)).bg(colors.group_box).flex().flex_col().gap_3()
+                .child(div().font_weight(gpui::FontWeight::SEMIBOLD).child("Capture output"))
+                .child(div().text_sm().child("Applies to quick region, delayed region, display and window captures, including tray and global shortcuts. New screenshot always opens the editor. Changes are saved automatically."))
+                .child(RadioGroup::new("capture-output-profile").layout(gpui::Axis::Vertical)
+                    .children(CaptureOutputProfile::LABELS)
+                    .selected_index(CaptureOutputProfile::ALL.iter().position(|profile| *profile == self.output_profile))
+                    .disabled(busy || self.preview_active || self.output_directory.is_none())
+                    .on_change(cx.listener(|this, ix, _, cx| {
+                        if let Some(profile) = CaptureOutputProfile::ALL.get(*ix) { this.choose_output_profile(*profile, cx); }
+                    })))
+                .child(div().text_sm().text_color(colors.muted_foreground).child("Copy only keeps one image in memory without saving. Annotate first produces no output until you choose Copy or Save in the editor. With either option, capture one display or window at a time. Uploads always require a separate action.")))
             .child(self.hotkey_settings(cx))
             .child(capture_button(cx,
                 "toggle-diagnostics",
@@ -701,7 +712,7 @@ impl CaptureWorkspace {
                             .on_click(cx.listener(|this, _, _, cx| this.capture_primary(cx))),
                         SidebarMenuItem::new("All displays")
                             .icon(ui_icon(cx, "capture-all", 16.))
-                            .disable(unavailable)
+                            .disable(unavailable || (self.output_profile.requires_single_image() && self.xcap_displays.len() > 1))
                             .on_click(cx.listener(|this, _, _, cx| this.capture_all(cx))),
                     ]),
             )

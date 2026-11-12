@@ -23,7 +23,7 @@ use std::{
 };
 
 use app_core::CaptureRequest as CaptureJob;
-use app_core::{CaptureBackend, CapturedImage, DisplayInfo, WindowInfo, XcapBackend};
+use app_core::{CaptureBackend, CaptureOutputProfile, CapturedImage, DisplayInfo, WindowInfo, XcapBackend};
 use gpui::{
     AnyWindowHandle, App, Bounds, Context, DisplayId, FocusHandle, Focusable, IntoElement,
     KeyBinding, Pixels, TitlebarOptions, Window, WindowBackgroundAppearance, WindowBounds,
@@ -84,10 +84,10 @@ impl RegionLatencyProbe {
     }
 }
 
-#[derive(Clone, Copy)]
 enum UiRequest {
     Control,
     Overlay(OverlayMode),
+    Capture(Vec<CaptureJob>),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -130,6 +130,7 @@ pub struct CaptureWorkspace {
     output_directory: Option<PathBuf>,
     settings_status: String,
     hotkey_bindings: app_core::CaptureHotkeys,
+    output_profile: CaptureOutputProfile,
     #[cfg(target_os = "windows")]
     hotkey_inputs: Option<[gpui::Entity<gpui::component::input::InputState>; 3]>,
     history_database: Option<PathBuf>,
@@ -218,6 +219,7 @@ impl CaptureWorkspace {
                         match request {
                             UiRequest::Control => this.show_control(cx),
                             UiRequest::Overlay(mode) => this.open_overlays(mode, cx),
+                            UiRequest::Capture(jobs) => this.start_capture(jobs, cx),
                         }
                     }
                     Err(error) => {
@@ -513,6 +515,7 @@ impl CaptureWorkspace {
             },
             settings_status: String::new(),
             hotkey_bindings: app_core::CaptureHotkeys::default(),
+            output_profile: CaptureOutputProfile::default(),
             #[cfg(target_os = "windows")]
             hotkey_inputs: None,
             history_database: if cfg!(test) {
@@ -599,6 +602,7 @@ impl CaptureWorkspace {
                             }
                         }
                         this.hotkey_bindings = settings.hotkeys;
+                        this.output_profile = settings.output_profile;
                         theme::apply(settings.theme, cx);
                         this.backend = XcapBackend::new(&settings.output_directory);
                         this.output_directory = Some(settings.output_directory);
@@ -724,6 +728,7 @@ impl CaptureWorkspace {
         self.settings_saving = true;
         let theme = theme::selected(cx);
         let hotkeys = self.hotkey_bindings.clone();
+        let profile = self.output_profile;
         let dialog = cx.prompt_for_paths(gpui::PathPromptOptions {
             files: false,
             directories: true,
@@ -749,7 +754,8 @@ impl CaptureWorkspace {
                 cx.background_spawn(async move {
                     let settings = app_core::CaptureSettings::for_directory(path)
                         .map_err(|error| format!("{error:#}"))?.with_theme(theme)
-                        .with_hotkeys(hotkeys).map_err(|error| format!("{error:#}"))?;
+                        .with_hotkeys(hotkeys).map_err(|error| format!("{error:#}"))?
+                        .with_output_profile(profile);
                     settings.save().map_err(|error| format!("{error:#}"))?;
                     Ok::<_, String>(settings.output_directory)
                 })
@@ -787,6 +793,7 @@ impl CaptureWorkspace {
         let Some(directory) = self.output_directory.clone() else { return; };
         let previous = theme::selected(cx);
         let hotkeys = self.hotkey_bindings.clone();
+        let profile = self.output_profile;
         theme::apply(selected, cx);
         self.settings_saving = true;
         self.settings_status = "Saving appearance…".into();
@@ -794,7 +801,7 @@ impl CaptureWorkspace {
             let result = cx.background_spawn(async move {
                 // The default capture folder may not exist before the first screenshot.
                 std::fs::create_dir_all(&directory)?;
-                app_core::CaptureSettings::for_directory(directory)?.with_theme(selected).with_hotkeys(hotkeys)?.save()
+                app_core::CaptureSettings::for_directory(directory)?.with_theme(selected).with_hotkeys(hotkeys)?.with_output_profile(profile).save()
             }).await;
             this.update(cx, |this, cx| {
                 this.settings_saving = false;
@@ -804,6 +811,38 @@ impl CaptureWorkspace {
                         theme::apply(previous, cx);
                         this.settings_status = format!("Appearance unchanged: {error:#}");
                     }
+                }
+                this.finish_quit_if_idle(cx);
+                cx.notify();
+            }).ok();
+        }).detach();
+        cx.notify();
+    }
+
+    fn choose_output_profile(&mut self, selected: CaptureOutputProfile, cx: &mut Context<Self>) {
+        if self.settings_loading || self.settings_saving || self.quitting || self.capturing
+            || self.copying || self.saving || self.preview_active || self.editor.is_some()
+            || self.editor_closing || self.switching_graphics || self.capture_delay.is_some()
+            || self.output_profile == selected { return; }
+        let Some(directory) = self.output_directory.clone() else { return; };
+        let appearance = theme::selected(cx);
+        let hotkeys = self.hotkey_bindings.clone();
+        self.settings_saving = true;
+        self.settings_status = "Saving capture output…".into();
+        cx.spawn(async move |this, cx| {
+            let result = cx.background_spawn(async move {
+                std::fs::create_dir_all(&directory)?;
+                app_core::CaptureSettings::for_directory(directory)?.with_theme(appearance)
+                    .with_hotkeys(hotkeys)?.with_output_profile(selected).save()
+            }).await;
+            this.update(cx, |this, cx| {
+                this.settings_saving = false;
+                match result {
+                    Ok(()) => {
+                        this.output_profile = selected;
+                        this.settings_status = "Capture output saved".into();
+                    }
+                    Err(error) => this.settings_status = format!("Capture output unchanged: {error:#}"),
                 }
                 this.finish_quit_if_idle(cx);
                 cx.notify();
@@ -857,6 +896,7 @@ impl CaptureWorkspace {
             return;
         }
         let appearance = theme::selected(cx);
+        let profile = self.output_profile;
         self.settings_saving = true;
         self.settings_status = "Saving shortcuts…".into();
         let saved_bindings = bindings.clone();
@@ -864,7 +904,7 @@ impl CaptureWorkspace {
             let result = cx.background_spawn(async move {
                 std::fs::create_dir_all(&directory)?;
                 app_core::CaptureSettings::for_directory(directory)?
-                    .with_theme(appearance).with_hotkeys(saved_bindings)?.save()
+                    .with_theme(appearance).with_hotkeys(saved_bindings)?.with_output_profile(profile).save()
             }).await;
             this.update(cx, |this, cx| {
                 this.settings_saving = false;
@@ -2872,6 +2912,28 @@ impl CaptureWorkspace {
         self.output_captures(saves, true, cx);
     }
 
+    fn finish_quick_capture(&mut self, shots: Vec<CapturedImage>, render: Arc<gpui::RenderImage>, profile: CaptureOutputProfile, cx: &mut Context<Self>) {
+        let Some(shot) = shots.last().cloned() else { return; };
+        if profile.requires_single_image() && shots.len() != 1 {
+            self.capture_status = "Choose one display or window for Copy only or Annotate first.".into();
+            cx.notify();
+            return;
+        }
+        if profile == CaptureOutputProfile::AnnotateFirst {
+            self.show_prepared_editor(shot, render, false, cx);
+            if self.editor.is_none() { self.show_control(cx); }
+            self.finish_quit_if_idle(cx);
+            cx.notify();
+            return;
+        }
+        self.replace_last_render(render, cx);
+        self.last_saved = None;
+        self.last_capture = Some(shot);
+        if !profile.saves() { self.save_status = "Not saved · Image is kept in memory".into(); }
+        if !profile.copies() { self.clipboard_status = "Clipboard unchanged (Save only)".into(); }
+        self.output_captures(if profile.saves() { shots } else { Vec::new() }, profile.copies(), cx);
+    }
+
     fn output_captures(&mut self, saves: Vec<CapturedImage>, copy: bool, cx: &mut Context<Self>) {
         if self.capture_delay.is_some() || self.copying || self.saving || self.quitting {
             return;
@@ -3014,12 +3076,13 @@ impl CaptureWorkspace {
         &mut self,
         source: CapturedImage,
         region: app_core::PixelRegion,
+        profile: CaptureOutputProfile,
         cx: &mut Context<Self>,
     ) {
         if self.capturing || self.copying || self.saving || self.quitting {
             return;
         }
-        let edit_selection = self.edit_selection;
+        let edit_selection = self.edit_selection || profile == CaptureOutputProfile::AnnotateFirst;
         // Keep graphics attached while the selected pixels move into the editor.
         if edit_selection {
             self.preview_active = false;
@@ -3042,11 +3105,9 @@ impl CaptureWorkspace {
                             cx.notify();
                             return;
                         }
-                        this.replace_last_render(render, cx);
                         tracing::info!(width = shot.width, height = shot.height, path = %shot.png_path.display(), "selection prepared");
                         this.capture_status = format!("Selection {}×{}  {}", shot.width, shot.height, shot.png_path.display());
-                        this.last_capture = Some(shot.clone());
-                        this.copy_and_save(vec![shot], cx);
+                        this.finish_quick_capture(vec![shot], render, profile, cx);
                     }
                     Err(error) => {
                         tracing::error!(%error, "selection failed");
@@ -3083,6 +3144,16 @@ impl CaptureWorkspace {
             return;
         }
         if jobs.is_empty() {
+            return;
+        }
+        let profile = self.output_profile;
+        if !preview && profile.requires_single_image() && jobs.len() != 1 {
+            self.capture_status = "Choose one display or window for Copy only or Annotate first.".into();
+            cx.notify();
+            return;
+        }
+        if !preview && profile == CaptureOutputProfile::AnnotateFirst && !self.graphics {
+            self.attach_ui(UiRequest::Capture(jobs), cx);
             return;
         }
         // A new capture replaces the preview; keep the control window hidden.
@@ -3198,7 +3269,7 @@ impl CaptureWorkspace {
 
                         renders.insert(
                             shot.png_path.clone(),
-                            if preview {
+                            if preview || profile == CaptureOutputProfile::AnnotateFirst {
                                 render_frame(&shot)
                             } else {
                                 render_thumbnail(&shot)
@@ -3256,16 +3327,15 @@ impl CaptureWorkspace {
                                 handle
                                     .update(cx, |overlay, _, cx| {
                                         overlay.edit_selection = edit_selection;
+                                        overlay.output_profile = profile;
                                         cx.notify();
                                     })
                                     .ok();
                             }
                         } else {
                             if let Some(render) = renders.get(&shot.png_path).cloned() {
-                                this.replace_last_render(render, cx);
+                                this.finish_quick_capture(shots, render, profile, cx);
                             }
-                            this.last_capture = Some(shot);
-                            this.copy_and_save(shots, cx);
                         }
                     }
                     Err(error) => {
@@ -3310,6 +3380,7 @@ fn render_thumbnail(shot: &CapturedImage) -> Arc<gpui::RenderImage> {
 
 struct Overlay {
     edit_selection: bool,
+    output_profile: CaptureOutputProfile,
     active: bool,
     #[cfg(target_os = "windows")]
     native: Option<app_core::DesktopWindow>,
@@ -3338,6 +3409,7 @@ impl Overlay {
         Self {
             active: true,
             edit_selection: false,
+            output_profile: CaptureOutputProfile::default(),
             #[cfg(target_os = "windows")]
             native: native_window(_window)
                 .map_err(|error| tracing::error!(%error, "could not obtain overlay HWND"))
@@ -3372,9 +3444,10 @@ impl Overlay {
             return;
         };
         let owner = self.owner.clone();
+        let profile = self.output_profile;
         cx.defer(move |cx| {
             owner
-                .update(cx, |this, cx| this.save_selection(snapshot, region, cx))
+                .update(cx, |this, cx| this.save_selection(snapshot, region, profile, cx))
                 .ok();
         });
     }
@@ -3482,7 +3555,7 @@ impl Render for Overlay {
                     ))))
                     .child(
                         div().text_sm().text_color(rgb(theme.muted)).child(
-                            if self.edit_selection { "Drag to capture & annotate. Esc to cancel." } else { "Drag to copy & save. Esc to cancel. One display at a time." },
+                            if self.edit_selection || self.output_profile == CaptureOutputProfile::AnnotateFirst { "Drag to capture & annotate. Esc to cancel." } else if self.output_profile == CaptureOutputProfile::CopyOnly { "Drag to copy only. Esc to cancel. No file is saved." } else if self.output_profile == CaptureOutputProfile::SaveOnly { "Drag to save only. Esc to cancel. Clipboard stays unchanged." } else { "Drag to copy & save. Esc to cancel. One display at a time." },
                         ),
                     ),
             )
@@ -3852,7 +3925,7 @@ mod tests {
 
     #[cfg(target_os = "windows")]
     #[test]
-    #[ignore = "writes a small fixture and replaces clipboard to verify independent output modes"]
+    #[ignore = "uses synthetic images, writes PNG fixtures, replaces clipboard and opens editors to verify capture profiles"]
     fn save_only_and_copy_only_have_separate_side_effects() {
         let errors = track_gui_errors();
         let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(format!(
@@ -3872,14 +3945,17 @@ mod tests {
             let owner = controller.downgrade();
             cx.spawn(async move |cx| {
                 let checked = async {
-                    for copy_only in [false, true] {
+                    for profile in [CaptureOutputProfile::SaveOnly, CaptureOutputProfile::CopyOnly, CaptureOutputProfile::SaveAndCopy] {
                         owner.update(cx, |this, cx| {
                             let shot = CapturedImage { display_id: "fixture".into(), window_id: None, width: 2, height: 2,
                                 pixels: Arc::new(image::RgbaImage::from_pixel(2, 2, image::Rgba([91, 42, 17, 255]))),
-                                png_path: directory.join(if copy_only { "copy-only.png" } else { "save-only.png" }),
+                                png_path: directory.join(match profile { CaptureOutputProfile::CopyOnly => "copy-only.png", CaptureOutputProfile::SaveOnly => "save-only.png", _ => "save-and-copy.png" }),
                                 elapsed_ms: 0, source_format: app_core::PixelFormat::Rgba8UnormSrgb };
-                            this.last_saved = None; this.last_capture = Some(shot.clone());
-                            this.output_captures(if copy_only { Vec::new() } else { vec![shot] }, copy_only, cx);
+                            this.last_saved = Some(directory.join("old.png"));
+                            // The job's captured profile must win over later settings values.
+                            this.output_profile = CaptureOutputProfile::AnnotateFirst;
+                            let render = render_thumbnail(&shot);
+                            this.finish_quick_capture(vec![shot], render, profile, cx);
                         }).map_err(|e| e.to_string())?;
                         let deadline = std::time::Instant::now();
                         loop {
@@ -3888,8 +3964,48 @@ mod tests {
                             if deadline.elapsed().as_secs() > 5 { return Err("output timed out".to_string()); }
                         }
                         let state = owner.update(cx, |this, _| (this.last_saved.is_some(), this.last_capture.is_some())).map_err(|e| e.to_string())?;
-                        if state != (!copy_only, copy_only) { return Err("incorrect output retention state".into()); }
-                        if !copy_only && unsafe { windows_sys::Win32::System::DataExchange::GetClipboardSequenceNumber() } != before { return Err("Save only changed clipboard".into()); }
+                        if state != (profile.saves(), !profile.saves()) { return Err("incorrect output retention state".into()); }
+                        if profile == CaptureOutputProfile::SaveOnly && unsafe { windows_sys::Win32::System::DataExchange::GetClipboardSequenceNumber() } != before { return Err("Save only changed clipboard".into()); }
+                    }
+                    owner.update(cx, |this, cx| this.show_control(cx)).map_err(|e| e.to_string())?;
+                    let started = std::time::Instant::now();
+                    loop {
+                        cx.background_executor().timer(std::time::Duration::from_millis(20)).await;
+                        if owner.update(cx, |this, _| this.control.is_some() && !this.switching_graphics).map_err(|e| e.to_string())? { break; }
+                        if started.elapsed().as_secs() > 8 { return Err("control window timed out".into()); }
+                    }
+                    let before_edit = unsafe { windows_sys::Win32::System::DataExchange::GetClipboardSequenceNumber() };
+                    for region in [false, true] {
+                        owner.update(cx, |this, cx| {
+                            let shot = CapturedImage { display_id: u64::from(cx.primary_display().unwrap().id()).to_string(), window_id: None, width: 2, height: 2,
+                                pixels: Arc::new(image::RgbaImage::from_pixel(2, 2, image::Rgba([91, 42, 17, 255]))),
+                                png_path: directory.join("annotate-first.png"), elapsed_ms: 0, source_format: app_core::PixelFormat::Rgba8UnormSrgb };
+                            if region {
+                                this.save_selection(shot, app_core::PixelRegion { x: 0, y: 0, width: 1, height: 2 }, CaptureOutputProfile::AnnotateFirst, cx);
+                            } else {
+                                let render = render_frame(&shot);
+                                this.finish_quick_capture(vec![shot], render, CaptureOutputProfile::AnnotateFirst, cx);
+                            }
+                        }).map_err(|e| e.to_string())?;
+                        let started = std::time::Instant::now();
+                        loop {
+                            cx.background_executor().timer(std::time::Duration::from_millis(20)).await;
+                            if owner.update(cx, |this, _| this.editor.is_some() && !this.capturing).map_err(|e| e.to_string())? { break; }
+                            if started.elapsed().as_secs() > 8 { return Err("annotate-first editor timed out".into()); }
+                        }
+                        owner.update(cx, |this, cx| {
+                            assert!(!this.copying && !this.saving && this.last_capture.is_none());
+                            assert_eq!(this.last_saved.as_ref(), Some(&directory.join("save-and-copy.png")));
+                            this.close_editor(cx);
+                        }).map_err(|e| e.to_string())?;
+                        let started = std::time::Instant::now();
+                        loop {
+                            cx.background_executor().timer(std::time::Duration::from_millis(20)).await;
+                            if owner.update(cx, |this, _| this.editor.is_none() && !this.editor_closing).map_err(|e| e.to_string())? { break; }
+                            if started.elapsed().as_secs() > 8 { return Err("editor cancel timed out".into()); }
+                        }
+                        if unsafe { windows_sys::Win32::System::DataExchange::GetClipboardSequenceNumber() } != before_edit { return Err("Annotate first changed clipboard".into()); }
+                        if directory.join("annotate-first.png").exists() { return Err("Annotate first saved source pixels".into()); }
                     }
                     Ok(())
                 }.await;
@@ -3908,7 +4024,7 @@ mod tests {
             app_core::capture_history_page(&root.join("history.sqlite3"), None)
                 .unwrap()
                 .len(),
-            1
+            2
         );
         assert_ne!(
             unsafe { windows_sys::Win32::System::DataExchange::GetClipboardSequenceNumber() },

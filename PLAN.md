@@ -88,9 +88,43 @@ limitations explicit; this slice does not establish non-Windows hotkey support.
   tests and optimized native checks; compare resident readiness and idle resources
   for the changed startup path. Record skipped checks separately from results.
 
-The next output-profile slice will add explicit copy-only, save-only and
-annotate-first choices using existing in-memory output paths. Upload remains an
-explicitly authorized action. It does not require a general workflow engine.
+#### Current feature slice: saved quick-capture output profile
+
+Implemented in the working tree (2026-11-12): Settings → Capture output offers
+Copy only, Save only, Save and copy (legacy default) and Annotate first. The saved
+choice applies to quick/delayed region, display and window captures, including
+tray/hotkey commands. New screenshot still opens the frozen editor, whose outputs
+remain explicit. Region sessions snapshot their choice; ordinary jobs snapshot it
+before worker dispatch. Settings changes commit only after persistence succeeds,
+and folder/theme/hotkey saves preserve the profile. No profile starts an upload.
+
+Copy only retains one bounded last image in memory without PNG/history output and
+clears stale saved-path state. Save only preserves the clipboard. Annotate first
+uses the existing editor after capture/region selection, with no source output on
+cancel. Copy only/Annotate first reject multi-image capture before native work;
+All displays is disabled for these profiles when multiple monitors are present.
+Save-capable profiles retain separate per-display files and the existing last-image
+clipboard semantics. Per-hotkey task profiles and arbitrary chains remain future
+work; this is one saved global choice, not a workflow engine.
+
+Resource cost: one profile enum per controller/region surface and a bounded
+single-command deferred graphics request for resident annotate-first. Existing
+workers, in-memory pixels, admission limits and output implementations are reused;
+no dependency, runtime, thread, cache, polling or resident graphics is added.
+Copy-only pixels are a live image consumer, separate from the empty resident base.
+
+Optimized settings and Kit UI checks plus the native synthetic output/editor
+fixture pass. Checks cover profile persistence/legacy defaults, failed saves,
+single-image admission, snapshot routing, independent clipboard/files/history,
+editor cancellation and preservation of the previous capture. Raw verification
+data remains local under ignored target directories. Physical hotkey capture,
+mixed DPI/accessibility, reference-hardware latency and full soak acceptance remain
+open; successful fixtures do not establish those gates.
+
+A short optimized resident comparison against the preceding release build was
+completed without capture/clipboard actions. Its samples and machine details stay
+only under `target/output-profile-verification/`, excluded from version control.
+It is a development regression check, not the five-minute/reference-hardware gate.
 
 ### Code and verification entry points
 
