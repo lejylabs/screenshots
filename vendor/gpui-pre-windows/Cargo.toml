@@ -11,21 +11,28 @@
 
 [package]
 edition = "2024"
-name = "gpui-windows-gpui-unofficial"
-version = "1.27.0"
+name = "gpui-pre-windows"
+version = "0.3.12"
 build = "build.rs"
+publish = true
 autolib = false
 autobins = false
 autoexamples = false
 autotests = false
 autobenches = false
-description = "Unofficial release of Zed's gpui_windows crate"
-readme = "README.md"
+description = "Zed's `gpui_windows` crate (gpui-pre snapshot of zed@d2a4fb6)"
+readme = false
 license = "Apache-2.0"
-repository = "https://github.com/gpui-archipelago/gpui-unofficial"
+repository = "https://github.com/zed-industries/zed"
+resolver = "2"
 
 [package.metadata.cargo-shear]
 ignored = ["scap"]
+
+[package.metadata.gpui-pre]
+zed-crate = "gpui_windows"
+zed-version = "0.1.0"
+zed-rev = "d2a4fb6ded7c470be25d1541281da3882495b65b"
 
 [features]
 default = ["gpui/default"]
@@ -36,13 +43,14 @@ screen-capture = [
 test-support = ["gpui/test-support"]
 
 [lib]
-name = "gpui_windows_gpui_unofficial"
+name = "gpui_windows"
 path = "src/gpui_windows.rs"
 doctest = false
 
 [dependencies.gpui]
-version = "1.27.0"
-package = "gpui-unofficial"
+version = "=0.3.12"
+default-features = false
+package = "gpui-pre"
 
 [target.'cfg(target_os = "windows")'.dependencies.accesskit]
 version = "0.24.0"
@@ -55,8 +63,8 @@ version = "0.34"
 version = "1.0.86"
 
 [target.'cfg(target_os = "windows")'.dependencies.collections]
-version = "1.27.0"
-package = "collections-gpui-unofficial"
+version = "=0.3.12"
+package = "gpui-pre-collections"
 
 [target.'cfg(target_os = "windows")'.dependencies.dunce]
 version = "1.0"
@@ -68,8 +76,8 @@ version = "0.2"
 version = "0.3.34"
 
 [target.'cfg(target_os = "windows")'.dependencies.gpui_util]
-version = "1.27.0"
-package = "gpui-util-gpui-unofficial"
+version = "=0.3.12"
+package = "gpui-pre-util"
 
 [target.'cfg(target_os = "windows")'.dependencies.image]
 version = "0.25.1"
@@ -122,8 +130,8 @@ default-features = false
 package = "zed-scap"
 
 [target.'cfg(target_os = "windows")'.dependencies.scheduler]
-version = "1.27.0"
-package = "scheduler-gpui-unofficial"
+version = "=0.3.12"
+package = "gpui-pre-scheduler"
 
 [target.'cfg(target_os = "windows")'.dependencies.smallvec]
 version = "1.6"
@@ -196,3 +204,24 @@ version = "0.6.0"
 
 [target.'cfg(target_os = "windows")'.build-dependencies.windows-registry]
 version = "0.6.0"
+
+[lints.clippy]
+dbg_macro = "deny"
+declare_interior_mutable_const = "deny"
+disallowed_methods = "deny"
+large_enum_variant = "allow"
+let_underscore_future = "allow"
+nonminimal_bool = "allow"
+redundant_clone = "deny"
+single_range_in_vec_init = "allow"
+todo = "deny"
+too_many_arguments = "allow"
+type_complexity = "allow"
+
+[lints.clippy.style]
+level = "allow"
+priority = -1
+
+[lints.rust.unexpected_cfgs]
+level = "allow"
+priority = 0

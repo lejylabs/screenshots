@@ -1,6 +1,6 @@
 # screenshots design system
 
-A native GPUI workbench with two appearances. The image is the work; the
+A native GPUI Kit workbench with two appearances. The image is the work; the
 interface helps it move from capture to annotation to explicit output.
 
 ## Appearances
@@ -8,7 +8,7 @@ interface helps it move from capture to annotation to explicit output.
 | Appearance | Character | Geometry | UI fonts |
 | --- | --- | --- | --- |
 | Dark (default) | Neutral charcoal, grayscale controls, restrained borders | 6px controls / 8px panels | Segoe UI / system / Cantarell |
-| Oldschool | Compact task menu, blue selection, colorful function icons | Square controls, 28px editor tools | Segoe UI / DejaVu Sans |
+| Oldschool | Compact task menu, blue selection, colorful function icons | Square controls, Kit small tools | Segoe UI / DejaVu Sans |
 
 Dark is the startup and settings fallback. Retired or unknown saved values fall
 back to Dark; an explicit Oldschool choice remains Oldschool. Both options share
@@ -26,17 +26,30 @@ annotation colors, masks or exported pixels.
 - Settings: Appearance, Storage, optional diagnostics.
 - Editor: explicit output choices, grouped tools, contextual controls.
 
-## Tokens and interaction
+## Components, tokens and interaction
 
-`crates/app-ui/src/theme.rs` owns native palette, geometry and font tokens. Active
-appearance is one GPUI global enum; changes invalidate windows once. No webview,
-font downloads, dependency, permanent timer, cache or polling loop is added.
-Settings save on the existing worker executor and roll back on failure.
+GPUI Kit 0.9.1 owns standard control behavior. Use its Sidebar, Button, Input,
+Checkbox, RadioGroup, PopupMenu and Kbd components for application commands and
+forms. Every native window mounts the Kit Base Root. The application retains
+explicit typed access to the content inside that Root for native lifecycle jobs.
 
-Use readable native type, a 4px spacing scale, short command labels, immediate
-keyboard focus and visible selected state. Keep independent copy/save/upload
-outcomes truthful. Navigation and theme changes do not trigger capture, clipboard
-writes or uploads. Preserve existing cancellation, paging and pixel ownership.
+`theme.rs` applies product palettes through `Theme::update`, keeping styled tokens
+and Base projections synchronized. Dark and Oldschool remain app preferences;
+annotation colors are document data. Kit initialization is deferred until a UI
+window is needed, preserving resident startup readiness. Optional script, speech,
+syntax and profiling runtimes are not enabled.
+
+The custom image canvas, annotation metadata and pre-insert-bounded source-label
+editor remain domain code. Label raster fonts are independent of UI appearance.
+Search uses retained Kit Input state, admits at most 512 UTF-8 bytes and releases
+its input/subscription when the page closes. Menus dispatch revision-scoped
+commands so a stale popup cannot affect a newly loaded page.
+
+Use native relative spacing and component sizes, readable type, visible focus
+and selected state. Keep copy/save/upload outcomes independent and truthful.
+Navigation does not trigger capture, clipboard output or uploads. Preserve worker
+ownership, cancellation, paged data and in-memory pixels. No webview, remote asset,
+JavaScript engine, extra worker pool or permanent timer is introduced.
 
 ## Window sizes
 

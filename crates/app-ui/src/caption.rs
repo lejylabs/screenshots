@@ -1,10 +1,13 @@
+use gpui_kit as gpui;
+use gpui::TestSupportExt as _;
+use crate::window::UiWindow as WindowHandle;
 use crate::redaction_editor::{RedactionEditor, RedoRedaction, UndoRedaction};
 use gpui::{
     App, Bounds, ClipboardItem, ContentMask, Context, ElementInputHandler, EntityInputHandler,
     FocusHandle, Font, FontRun, FontStyle, FontWeight, Global, KeyBinding, KeyDownEvent, Keystroke,
     MouseButton, MouseDownEvent, Pixels, PlatformTextSystem, Point, Render, RenderGlyphParams,
     RenderImage, ShapedLine, SharedString, TextAlign, TextRun, UTF16Selection, Window,
-    WindowHandle, actions, canvas, div, fill, point, prelude::*, px, rgb, rgba, size,
+    actions, canvas, div, fill, point, prelude::*, px, rgb, rgba, size,
 };
 use std::{ops::Range, sync::Arc};
 use unicode_segmentation::UnicodeSegmentation;
@@ -69,6 +72,13 @@ impl TextAsset {
     }
 }
 
+fn source_font() -> &'static str {
+    // Image label typography is independent of the current UI appearance.
+    if cfg!(target_os = "windows") { "Segoe UI" }
+    else if cfg!(target_os = "macos") { ".SystemUIFont" }
+    else { "DejaVu Sans" }
+}
+
 pub(super) fn rasterize(
     fonts: &dyn PlatformTextSystem,
     text: String,
@@ -101,6 +111,7 @@ pub(super) fn rasterize(
             } else {
                 FontStyle::Normal
             },
+            family: source_font().into(),
             ..Font::default()
         })
         .map_err(|e| e.to_string())?;
@@ -247,11 +258,7 @@ pub(super) fn rasterize(
     })
 }
 
-enum InputOwner {
-    Caption(WindowHandle<RedactionEditor>),
-    History(gpui::WeakEntity<crate::SpikeShell>),
-}
-
+// Source-label editing keeps pre-insert byte/line bounds and pixel-mask geometry.
 pub(super) struct CaptionInput {
     pub enabled: bool,
     pub focus: FocusHandle,
@@ -266,7 +273,7 @@ pub(super) struct CaptionInput {
     rows: usize,
     bounds: Option<Bounds<Pixels>>,
     offset: Pixels,
-    owner: InputOwner,
+    owner: WindowHandle<RedactionEditor>,
 }
 fn utf8(text: &str, offset: usize) -> usize {
     let mut length = 0;
@@ -282,30 +289,7 @@ fn utf16(text: &str, offset: usize) -> usize {
     text[..offset].encode_utf16().count()
 }
 impl CaptionInput {
-    #[cfg(test)]
-    pub(super) fn verify_search_limits(&mut self) -> Result<(), String> {
-        if !self.replace(0..0, "Grüße 😀")
-            || self.replace(0..0, "\n")
-            || self.replace(0..0, &"x".repeat(513))
-        {
-            return Err("Search input lost its Unicode/single-line/byte limits".into());
-        }
-        for _ in 0..110 {
-            self.replace(0..self.content.len(), "search");
-        }
-        if self.past.len() != 100 || self.content != "search" {
-            return Err("Search input undo is not bounded".into());
-        }
-        self.enabled = false;
-        if self.replace(0..0, "blocked") {
-            return Err("Disabled search input accepted text".into());
-        }
-        self.enabled = true;
-        self.replace(0..self.content.len(), "");
-        Ok(())
-    }
-
-    #[cfg(test)]
+    #[cfg(all(test, target_os = "windows"))]
     pub(super) fn verify_multiline_input(
         &mut self,
         window: &mut Window,
@@ -382,7 +366,7 @@ impl CaptionInput {
         }
         Ok(())
     }
-    #[cfg(test)]
+    #[cfg(all(test, target_os = "windows"))]
     pub(super) fn has_current_layout(&self) -> bool {
         !self.layout.is_empty() && self.layout_text == self.content
     }
@@ -394,12 +378,6 @@ impl CaptionInput {
         owner: WindowHandle<RedactionEditor>,
         cx: &mut Context<Self>,
     ) -> Self {
-        Self::with_owner(content, InputOwner::Caption(owner), cx)
-    }
-    pub fn search(owner: gpui::WeakEntity<crate::SpikeShell>, cx: &mut Context<Self>) -> Self {
-        Self::with_owner(String::new(), InputOwner::History(owner), cx)
-    }
-    fn with_owner(content: String, owner: InputOwner, cx: &mut Context<Self>) -> Self {
         let end = content.len();
         let rows = content.bytes().filter(|byte| *byte == b'\n').count() + 1;
         Self {
@@ -429,29 +407,9 @@ impl CaptionInput {
         if resized {
             self.rows = rows;
         }
-        if let InputOwner::Caption(owner) = self.owner {
-            if resized {
-                cx.defer(move |cx| {
-                    owner.update(cx, |_, _, cx| cx.notify()).ok();
-                });
-            }
-        } else if let InputOwner::History(owner) = &self.owner {
-            let owner = owner.clone();
-            let input = cx.entity_id();
-            let content = self.content.clone();
-            cx.defer(move |cx| {
-                owner
-                    .update(cx, |shell, cx| {
-                        if shell
-                            .history_search_input
-                            .as_ref()
-                            .is_some_and(|field| field.entity_id() == input)
-                        {
-                            shell.set_history_query(content, cx);
-                        }
-                    })
-                    .ok();
-            });
+        if resized {
+            let owner = self.owner;
+            cx.defer(move |cx| { owner.update(cx, |_, _, cx| cx.notify()).ok(); });
         }
         window.notify_text_input_changed(&self.focus);
         cx.notify();
@@ -504,11 +462,7 @@ impl CaptionInput {
             return false;
         }
         let breaks = |text: &str| text.bytes().filter(|byte| *byte == b'\n').count();
-        let max_lines = if matches!(self.owner, InputOwner::History(_)) {
-            1
-        } else {
-            MAX_LINES
-        };
+        let max_lines = MAX_LINES;
         if breaks(&self.content) - breaks(&self.content[range.clone()]) + breaks(text) >= max_lines
         {
             return false;
@@ -554,28 +508,14 @@ impl CaptionInput {
             return;
         }
         if key == "enter" && self.marked.is_none() {
-            if let InputOwner::Caption(owner) = self.owner {
-                if modifiers.shift {
-                    self.replace(self.selection.clone(), "\n");
-                } else {
-                    cx.defer(move |cx| {
-                        owner
-                            .update(cx, |editor, window, cx| editor.commit_text(window, cx))
-                            .ok();
-                    });
-                }
+            if modifiers.shift { self.replace(self.selection.clone(), "\n"); }
+            else {
+                let owner = self.owner;
+                cx.defer(move |cx| { owner.update(cx, |editor, window, cx| editor.commit_text(window, cx)).ok(); });
             }
         } else if key == "escape" {
-            if let InputOwner::Caption(owner) = self.owner {
-                cx.defer(move |cx| {
-                    owner
-                        .update(cx, |editor, window, cx| editor.cancel_text(window, cx))
-                        .ok();
-                });
-            } else {
-                self.replace(0..self.content.len(), "");
-                self.marked = None;
-            }
+            let owner = self.owner;
+            cx.defer(move |cx| { owner.update(cx, |editor, window, cx| editor.cancel_text(window, cx)).ok(); });
         } else if (modifiers.control || modifiers.platform) && !modifiers.alt {
             match key {
                 "home" | "end" => {
@@ -839,15 +779,12 @@ impl Render for CaptionInput {
         let layout_text = text.clone();
         let cursor = self.cursor();
         let marked = self.marked.clone();
-        let placeholder = if matches!(self.owner, InputOwner::History(_)) {
-            "Search images by name, date or source…"
-        } else {
-            "Type a label; Shift+Enter adds a line"
-        };
+        let placeholder = "Type a label; Shift+Enter adds a line";
         div()
             .id("caption-input")
+            .test_support()
             .role(gpui::Role::TextInput)
-            .aria_label(if matches!(self.owner, InputOwner::History(_)) { "Search library" } else { "Annotation text" })
+            .aria_label("Annotation text")
             .aria_value(self.content.clone())
             .flex_none()
             .h(px(self.line_count() as f32 * LINE_HEIGHT + 16.0))

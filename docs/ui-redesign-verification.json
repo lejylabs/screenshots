@@ -1,40 +1,180 @@
 {
-  "date": "2026-11-10",
-  "branch": "feat/minimal-dark-default",
-  "base_commit": "f26b20c",
-  "stack": "Rust 1.99 / GPUI 1.27.0, native desktop",
+  "date": "2026-11-11",
+  "branch": "feat/gpui-kit-rewrite",
+  "base_commit": "4bbbd2cf90e33e227ce5851d21581df38d70612d",
+  "stack": {
+    "rust": "1.99.0",
+    "gpui_kit": "0.9.1",
+    "gpui_pre_family": "0.3.12",
+    "upstream_kit_inspected_commit": "38a54f0220024f7394dd07d7e6685688168d64e6",
+    "optional_js_speech_syntax_profiler_runtimes": false,
+    "lockfile": "Cargo.lock"
+  },
   "themes": [
-    "default",
-    "oldschool"
+    "Dark (default)",
+    "Oldschool"
   ],
-  "default_appearance": "Dark",
   "checks": {
     "workspace_tests": {
-      "passed": 91,
+      "passed": 98,
       "failed": 0,
-      "ignored": 24
+      "ignored": 25,
+      "kit_integration_tests": 7
     },
     "release_build": "passed",
-    "contrast": "text, action, icon and focus fixtures passed",
-    "settings": "fresh/missing/unknown/retired values fall back to Dark; explicit Oldschool and Dark preferences round-trip"
+    "clippy": "completed; existing warnings in legacy editor/core, none in new Kit composition/root/assets/test modules",
+    "new_module_rustfmt": "passed",
+    "native_x11_probe": "passed; native Kit UI events with synthetic image; save verified, original preserved, normal Quit",
+    "windows_typecheck": "CI job added; result tracked on PR",
+    "windows_local_cross_check": "blocked by absent x86_64-w64-mingw32-windres before application type checking"
   },
   "native_checks": [
-    "Missing theme field starts in Dark.",
-    "Appearance offers exactly Dark and Oldschool.",
-    "Both options selected through native UI and persisted to isolated settings.",
-    "Settings inspected at 1060x760 and 680x480.",
-    "Editor inspected at 760x500 with a synthetic image; cancellation did not export or change source data."
+    "Dark default and English UI.",
+    "Library loads only a bounded page; real Kit menu opens and dismisses.",
+    "Appearance offers exactly Dark and Oldschool; both selected and persisted through background settings save.",
+    "1060x760 and 680x480 workspaces; 1000x760 and 760x500 editor.",
+    "Multiline Unicode label entered through native input and rasterized to a bounded mask.",
+    "Save only writes a new 1280x720 PNG with changed pixels and preserves the original.",
+    "Normal Quit closes the isolated native process."
   ],
-  "privacy": "Only app-owned windows captured. Isolated XDG config/data/cache and synthetic PNG inputs. No real desktop capture, upload or clipboard output.",
+  "headless_regressions": [
+    "Root content type checks without re-borrowing the application entity.",
+    "Disabled capture and keyboard navigation.",
+    "Search Unicode/512-byte admission, Escape clearing and state release.",
+    "Stale popup command rejection.",
+    "Controlled checkbox selection and disabled behavior.",
+    "Quit waits for active output inside Base Root.",
+    "Transparent overlay surface survives appearance changes; Escape releases overlay without output."
+  ],
+  "privacy": "Only app-owned windows captured, isolated XDG config/data/cache, synthetic PNG and disposable database. No desktop capture, uploads or clipboard output.",
+  "native_probe_artifact_run": "run-2655250",
   "screenshots": [
     "docs/design/dark.png",
     "docs/design/oldschool.png",
-    "docs/design/editor.png"
+    "docs/design/library-menu.png",
+    "docs/design/editor.png",
+    "docs/design/compact.png",
+    "docs/design/editor-compact.png"
   ],
+  "resources": {
+    "platform": "Linux-7.3.0-5-cachyos-x86_64-with-glibc2.44",
+    "scenario": "visible 1060x760 empty production workspace, isolated XDG paths, Linux X11/XWayland, three interleaved release launches per version",
+    "runs": [
+      {
+        "version": "baseline",
+        "iteration": 0,
+        "pid": 2613294,
+        "warmup_seconds": 4,
+        "sample_seconds": 5.014107593997323,
+        "cpu_percent_one_core": 0.0,
+        "private_kib_median": 221156,
+        "pss_kib_median": 222316,
+        "rss_kib_median": 230528,
+        "idle_read_bytes": 0,
+        "idle_write_bytes": 0
+      },
+      {
+        "version": "kit",
+        "iteration": 0,
+        "pid": 2613860,
+        "warmup_seconds": 4,
+        "sample_seconds": 5.0156328750017565,
+        "cpu_percent_one_core": 0.0,
+        "private_kib_median": 232348,
+        "pss_kib_median": 233522,
+        "rss_kib_median": 241748,
+        "idle_read_bytes": 0,
+        "idle_write_bytes": 0
+      },
+      {
+        "version": "baseline",
+        "iteration": 1,
+        "pid": 2614440,
+        "warmup_seconds": 4,
+        "sample_seconds": 5.018257073999848,
+        "cpu_percent_one_core": 0.19927237390469946,
+        "private_kib_median": 221464,
+        "pss_kib_median": 222617,
+        "rss_kib_median": 230808,
+        "idle_read_bytes": 0,
+        "idle_write_bytes": 0
+      },
+      {
+        "version": "kit",
+        "iteration": 1,
+        "pid": 2615758,
+        "warmup_seconds": 4,
+        "sample_seconds": 5.014769059998798,
+        "cpu_percent_one_core": 0.3988219549237789,
+        "private_kib_median": 231736,
+        "pss_kib_median": 233058,
+        "rss_kib_median": 241140,
+        "idle_read_bytes": 0,
+        "idle_write_bytes": 0
+      },
+      {
+        "version": "baseline",
+        "iteration": 2,
+        "pid": 2616405,
+        "warmup_seconds": 4,
+        "sample_seconds": 5.016221285004576,
+        "cpu_percent_one_core": 0.19935324683330605,
+        "private_kib_median": 221016,
+        "pss_kib_median": 222326,
+        "rss_kib_median": 230316,
+        "idle_read_bytes": 0,
+        "idle_write_bytes": 0
+      },
+      {
+        "version": "kit",
+        "iteration": 2,
+        "pid": 2616906,
+        "warmup_seconds": 4,
+        "sample_seconds": 5.016287525002554,
+        "cpu_percent_one_core": 0.19935061437681284,
+        "private_kib_median": 232128,
+        "pss_kib_median": 233456,
+        "rss_kib_median": 241536,
+        "idle_read_bytes": 0,
+        "idle_write_bytes": 0
+      }
+    ],
+    "medians": {
+      "baseline": {
+        "private_kib_median": 221156,
+        "pss_kib_median": 222326,
+        "rss_kib_median": 230528,
+        "cpu_percent_one_core": 0.19927237390469946
+      },
+      "kit": {
+        "private_kib_median": 232128,
+        "pss_kib_median": 233456,
+        "rss_kib_median": 241536,
+        "cpu_percent_one_core": 0.19935061437681284
+      }
+    },
+    "private_mapping_change_percent": 4.96120385610157,
+    "baseline_commit": "4bbbd2cf90e33e227ce5851d21581df38d70612d",
+    "baseline_sha256": "252bc3f3d77dbc6415c2be69708288adcb106516a432e8dad68babe70b858e94",
+    "kit_sampled_binary_sha256": "9a955c4a59691e36dad561ec65f759fab2c049c5e36c3e39e06352a1288720ec",
+    "sampled_binary_bytes": {
+      "baseline": 60919096,
+      "kit": 78162824
+    },
+    "termination": "SIGTERM of our empty isolated probes; normal Quit independently exercised by native functional probe.",
+    "limits": [
+      "4 s warmup and 5 s idle sample per launch; not the five-minute idle gate or wakeup measurement.",
+      "Process private mappings include driver mappings; app-owned GPU allocations were not isolated.",
+      "Both versions exceed the existing 100 MiB visible-shell private-memory budget on this development host.",
+      "No physical input/presentation latency, reference-hardware or 500-cycle soak acceptance is claimed.",
+      "Sampled Kit binary precedes final lifecycle guards, transparency regression and Oldschool-only font/width refinements."
+    ]
+  },
+  "release_binary_sha256": "f87a356ce33391b0a4488523c1a80dea82d64029ba04fcd6c6850907403db7f8",
+  "release_binary_bytes": 78168760,
   "limits": [
-    "Native interaction checked on Linux X11/XWayland only.",
-    "Windows/macOS, mixed DPI, screen readers and full reference-hardware performance acceptance remain open."
-  ],
-  "resources": "Removes one palette and ornamental vector frame; no new dependency, timer, worker, cache or image pipeline.",
-  "release_binary_sha256": "252bc3f3d77dbc6415c2be69708288adcb106516a432e8dad68babe70b858e94"
+    "Native functional inspection is Linux X11/XWayland only.",
+    "Windows/macOS/Wayland interactive behavior, mixed DPI, IME/screen-reader acceptance and full resource budgets remain open.",
+    "Historical Windows renderer/capture benchmark documents describe older binaries; their timings do not transfer to the rewritten toolkit."
+  ]
 }

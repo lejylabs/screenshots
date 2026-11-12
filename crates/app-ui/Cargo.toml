@@ -8,13 +8,17 @@ rust-version.workspace = true
 description = "GPUI views and windows. No capture or database implementation."
 
 [dependencies]
+anyhow.workspace = true
 app-core.workspace = true
 image.workspace = true
-gpui.workspace = true
-gpui_platform.workspace = true
+gpui-kit.workspace = true
 shared.workspace = true
 tracing.workspace = true
 unicode-segmentation = "1"
+
+[dev-dependencies]
+raw-window-handle = "0.6.2"
+gpui-kit = { workspace = true, features = ["test-support"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 raw-window-handle = "0.6.2"
