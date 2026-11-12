@@ -150,7 +150,8 @@ pub struct CaptureWorkspace {
     output_profile: CaptureOutputProfile,
     jpeg_quality: u8,
     export_format: app_core::ImageExportFormat,
-    export_scale_percent: u8,
+    export_size: app_core::ExportSize,
+    export_width_input: Option<gpui::Entity<gpui::component::input::InputState>>,
     filename_template: String,
     filename_template_input: Option<gpui::Entity<gpui::component::input::InputState>>,
     jpeg_quality_input: Option<gpui::Entity<gpui::component::input::InputState>>,
@@ -370,6 +371,7 @@ impl CaptureWorkspace {
         self.region_preset_name = None;
         self.jpeg_quality_input = None;
         self.filename_template_input = None;
+        self.export_width_input = None;
         self.exact_region_status.clear();
         #[cfg(target_os = "windows")]
         { self.hotkey_inputs = None; }
@@ -554,7 +556,8 @@ impl CaptureWorkspace {
             output_profile: CaptureOutputProfile::default(),
             jpeg_quality: app_core::DEFAULT_JPEG_QUALITY,
             export_format: app_core::ImageExportFormat::default(),
-            export_scale_percent: 100,
+            export_size: app_core::ExportSize::Original,
+            export_width_input: None,
             filename_template: String::new(),
             filename_template_input: None,
             jpeg_quality_input: None,
@@ -1048,6 +1051,7 @@ impl CaptureWorkspace {
         self.hide_history(cx);
         self.hide_upload_history();
         self.page = page;
+        self.export_width_input = None;
         self.jpeg_quality_input = None;
         self.filename_template_input = None;
         self.exact_region_inputs = None;
@@ -3221,7 +3225,6 @@ impl CaptureWorkspace {
     fn save_capture_as(&mut self, cx: &mut Context<Self>) {
         let jpeg_quality = self.jpeg_quality;
         let export_format = self.export_format;
-        let scale_percent = self.export_scale_percent;
         if self.capture_delay.is_some() {
             return;
         }
@@ -3229,7 +3232,26 @@ impl CaptureWorkspace {
             || self.editor.is_some() || self.editor_closing || self.preview_active || self.switching_graphics {
             return;
         }
+        let size = match self.export_size {
+            app_core::ExportSize::Width(_) => {
+                let width = self.export_width_input.as_ref().and_then(|input| input.read(cx).value().parse::<u32>().ok());
+                let Some(width) = width.filter(|width| *width > 0) else {
+                    self.save_status = "Image not saved: enter a positive whole-pixel export width.".into();
+                    cx.notify(); return;
+                };
+                app_core::ExportSize::Width(width)
+            }
+            size => size,
+        };
+        if let Err(error) = size.validate() { self.save_status = format!("Image not saved: {error}"); cx.notify(); return; }
+        self.export_size = size;
         let shot = self.last_capture.clone();
+        if let Some(shot) = &shot {
+            if let Err(error) = size.dimensions(shot.pixels.width(), shot.pixels.height()) {
+                self.save_status = format!("Image not saved: {error}");
+                cx.notify(); return;
+            }
+        }
         let Some(source) = shot
             .as_ref()
             .map(|shot| shot.png_path.clone())
@@ -3266,9 +3288,9 @@ impl CaptureWorkspace {
             };
             if path.extension().is_none_or(|extension| extension.is_empty()) { path.set_extension(export_format.extension()); }
             let result = cx.background_spawn(async move {
-                let result = if let Some(shot) = shot { shot.save_image_as(&path, jpeg_quality, scale_percent) } else { app_core::export_saved_png_as(&source, &path, jpeg_quality, scale_percent) };
+                let result = if let Some(shot) = shot { shot.save_image_as(&path, jpeg_quality, size) } else { app_core::export_saved_png_as(&source, &path, jpeg_quality, size) };
                 result.map(|format| {
-                    let history_error = if format == app_core::ImageExportFormat::Png && scale_percent == 100 {
+                    let history_error = if format == app_core::ImageExportFormat::Png && size == app_core::ExportSize::Original {
                         history_database.as_ref().and_then(|database| app_core::record_saved_capture(database, &path).err())
                             .map(|error| format!("{error:#}"))
                     } else { None };
@@ -3284,17 +3306,17 @@ impl CaptureWorkspace {
                 match result {
                     Ok((path, format, history_error)) => {
                         this.save_status = format!("{} saved: {}", format.label(), path.display());
-                        if format == app_core::ImageExportFormat::Png && scale_percent == 100 {
+                        if format == app_core::ImageExportFormat::Png && size == app_core::ExportSize::Original {
                             this.last_saved = Some(path);
                             this.last_capture = None;
                         } else {
                             this.save_status.push_str(" · Exported a copy; current image and library unchanged");
-                            if scale_percent != 100 { this.save_status.push_str(&format!(" · Size {scale_percent}%")); }
+                            if size != app_core::ExportSize::Original { this.save_status.push_str(&format!(" · Size {}", size.label())); }
                         }
                         if let Some(error) = history_error {
                             this.history_status = format!("PNG saved, but history was not updated: {error}");
                             this.save_status.push_str(" · History update failed");
-                        } else if this.history_visible && format == app_core::ImageExportFormat::Png && scale_percent == 100 { this.refresh_history(None, cx); }
+                        } else if this.history_visible && format == app_core::ImageExportFormat::Png && size == app_core::ExportSize::Original { this.refresh_history(None, cx); }
                     }
                     Err(error) => {
                         this.quitting = false;

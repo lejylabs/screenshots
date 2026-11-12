@@ -72,6 +72,47 @@ fn open_workspace(cx: &mut TestAppContext) -> WindowHandle<CaptureWorkspace> {
 }
 
 #[gpui::test]
+fn custom_export_width_validates_snapshots_and_releases_input(cx: &mut TestAppContext) {
+    let handle = open_workspace(cx);
+    let root = std::env::temp_dir().join(format!("screenshots-width-save-{}", std::process::id()));
+    std::fs::create_dir_all(&root).unwrap();
+    let pixels = Arc::new(image::RgbaImage::from_pixel(5, 3, image::Rgba([12, 34, 56, 78])));
+    handle.update(cx, |this, _, _| {
+        this.output_directory = Some(root.clone());
+        this.last_capture = Some(CapturedImage { width: 5, height: 3, pixels: pixels.clone(),
+            png_path: root.join("unsaved.png"), display_id: "fixture".into(), window_id: None,
+            elapsed_ms: 0, source_format: app_core::PixelFormat::Rgba8UnormSrgb, display_geometry: None });
+    }).unwrap();
+    cx.update_window(handle.into(), |_, window, cx| { window.render_frame(cx); window.within("save-as-size").click(3usize, cx); window.render_frame(cx); }).unwrap();
+    handle.update(cx, |this, window, cx| {
+        let input = this.export_width_input.clone().unwrap();
+        for invalid in ["0", "6"] {
+            input.update(cx, |input, cx| input.set_value(invalid, window, cx));
+            this.save_capture_as(cx);
+            assert!(!this.saving);
+        }
+        input.update(cx, |input, cx| input.set_value("2", window, cx));
+        this.save_capture_as(cx);
+    }).unwrap();
+    assert!(cx.did_prompt_for_new_path());
+    handle.update(cx, |this, window, cx| this.export_width_input.as_ref().unwrap().update(cx, |input, cx| input.set_value("1", window, cx))).unwrap();
+    cx.simulate_new_path_selection(|_| Some(root.join("custom.webp")));
+    cx.run_until_parked();
+    let output = image::open(root.join("custom.webp")).unwrap().into_rgba8();
+    assert_eq!(output.dimensions(), (2, 2));
+    assert!(output.pixels().all(|pixel| pixel.0 == [12, 34, 56, 78]));
+    handle.update(cx, |this, _, _| {
+        assert!(!this.saving && this.last_saved.is_none());
+        assert!(Arc::ptr_eq(&this.last_capture.as_ref().unwrap().pixels, &pixels));
+        assert!(this.save_status.contains("Width 2 px"));
+    }).unwrap();
+    cx.update_window(handle.into(), |_, window, cx| window.press(&shortcut("3"), cx)).unwrap();
+    handle.update(cx, |this, _, _| assert!(this.export_width_input.is_none())).unwrap();
+    assert_eq!(std::fs::read_dir(&root).unwrap().count(), 1);
+    std::fs::remove_file(root.join("custom.webp")).unwrap(); std::fs::remove_dir(root).unwrap();
+}
+
+#[gpui::test]
 fn scaled_save_as_snapshots_size_and_keeps_finalized_source_and_history(cx: &mut TestAppContext) {
     let handle = open_workspace(cx);
     let root = std::env::temp_dir().join(format!("screenshots-scaled-save-{}", std::process::id()));
@@ -93,7 +134,7 @@ fn scaled_save_as_snapshots_size_and_keeps_finalized_source_and_history(cx: &mut
         window.click("save-capture-as", cx);
     }).unwrap();
     assert!(cx.did_prompt_for_new_path());
-    handle.update(cx, |this, _, _| this.export_scale_percent = 25).unwrap();
+    handle.update(cx, |this, _, _| this.export_size = app_core::ExportSize::Quarter).unwrap();
     cx.simulate_new_path_selection(|_| Some(root.join("small")));
     cx.run_until_parked();
     handle.update(cx, |this, _, _| {

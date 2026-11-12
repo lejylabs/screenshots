@@ -451,8 +451,27 @@ PNG samples observed median resize/encode/durable-save times of 27.50 ms Origina
 fixture prevent general speed claims; these are observations, not native
 presentation/process/GPU/reference-hardware
 acceptance. Native UI/picker/accessibility, slow/full storage, interruption/recovery,
-peak memory and full platform/resource gates remain open. Arbitrary dimensions,
+peak memory and full platform/resource gates remain open. Independent width/height,
 upscaling, canvas resize and higher-quality filter choices remain separate work.
+
+Follow-up (2026-11-12): Custom width accepts positive physical-pixel widths no
+larger than the source; height is the aspect-preserving ratio rounded up. This
+session-only choice uses one lazy, ten-digit input and the same pre-dialog
+snapshot/copy semantics. Live-image bounds are checked before the dialog; saved
+PNG bounds are checked on the worker. Equal dimensions encode without an extra
+resampling allocation. Selecting or editing the width starts no image work.
+
+Custom widths partition the entire source into non-overlapping integer boxes.
+Alpha-weighted sums use fixed u64 accumulators for large reductions, with bounded
+u32 division for blocks of at most 65,535 samples. The fixed percentage geometry
+is unchanged. Memory remains one output RGBA image plus existing encoder scratch,
+under the same 256 MiB admission limit; no new thread, cache, timer or dependency.
+Optimized fixtures cover uneven ratios, full coverage, very large reduction sums,
+alpha, invalid/upscale widths, all formats, input lifetime and modal snapshotting.
+Three warm synthetic 4K samples measured median resize/encode/durable PNG save at
+27.75 ms Original, 25.87 ms Half, 13.65 ms Quarter and 12.49 ms Width(640).
+These small development observations exclude dialog, presentation and process/GPU
+memory; the native interaction, recovery and resource acceptance gates above remain open.
 
 #### Current feature slice: configurable Windows global hotkeys
 

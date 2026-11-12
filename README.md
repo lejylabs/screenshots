@@ -128,7 +128,9 @@ Existing files are never replaced, including after native overwrite confirmation
 Cancel/error preserves the source, clipboard and default folder; Quit waits for
 active export. The editor's direct Save actions still use PNG.
 
-Under the latest capture, **Save as size** offers **Original**, **50%** or **25%**.
+Under the latest capture, **Save as size** offers **Original**, **50%**, **25%** or
+**Custom width**. Custom width accepts physical pixels up to the source width;
+the height follows the aspect ratio, rounded up. Upscaling is rejected.
 Smaller sizes reduce both dimensions, rounding up to whole pixels, and are always
 export copies — including PNG. The current image, PNG library and clipboard stay
 unchanged. Choose Original for the usual full-size save behavior. This choice is

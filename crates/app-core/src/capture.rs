@@ -12,6 +12,7 @@ use std::{
 };
 
 use image::RgbaImage;
+use crate::ExportSize;
 use thiserror::Error;
 use xcap::{Monitor, Window};
 
@@ -627,12 +628,16 @@ mod tests {
         for extension in ["png", "jpg", "webp"] {
             let target = root.join(format!("half.{extension}"));
             let saved = root.join(format!("quarter.{extension}"));
-            shot.save_image_as(&target, 73, 50)?;
-            export_saved_png_as(&shot.png_path, &saved, 73, 25)?;
+            shot.save_image_as(&target, 73, ExportSize::Half)?;
+            export_saved_png_as(&shot.png_path, &saved, 73, ExportSize::Quarter)?;
             let bytes = fs::read(&target)?;
             assert_eq!(image::open(&target)?.into_rgba8().dimensions(), (2, 2));
             assert_eq!(image::open(&saved)?.into_rgba8().dimensions(), (1, 1));
-            assert!(shot.save_image_as(&target, 73, 50).is_err());
+            let custom = root.join(format!("custom.{extension}"));
+            export_saved_png_as(&shot.png_path, &custom, 73, ExportSize::Width(3))?;
+            assert_eq!(image::open(&custom)?.into_rgba8().dimensions(), (3, 3));
+            fs::remove_file(custom)?;
+            assert!(shot.save_image_as(&target, 73, ExportSize::Half).is_err());
             assert_eq!(fs::read(&target)?, bytes);
             fs::remove_file(target)?; fs::remove_file(saved)?;
         }
@@ -640,9 +645,9 @@ mod tests {
         pixels.put_pixel(0, 0, image::Rgba([12, 34, 56, 254]));
         let transparent = CapturedImage { pixels: Arc::new(pixels), ..shot.clone() };
         let rejected = root.join("transparent.jpg");
-        assert!(transparent.save_image_as(&rejected, 73, 25).is_err());
+        assert!(transparent.save_image_as(&rejected, 73, ExportSize::Quarter).is_err());
         assert!(!rejected.exists());
-        assert!(shot.save_image_as(&rejected, 73, 75).is_err());
+        assert!(shot.save_image_as(&rejected, 73, ExportSize::Width(0)).is_err());
         assert_eq!(fs::read(&shot.png_path)?, before);
         assert_eq!(fs::read_dir(&root)?.count(), 1);
         fs::remove_file(shot.png_path)?; fs::remove_dir(root)?;
@@ -663,8 +668,8 @@ mod tests {
         for quality in [10, 100] {
             let memory = root.join(format!("memory-{quality}.jpg"));
             let saved = root.join(format!("saved-{quality}.jpg"));
-            shot.save_image_as(&memory, quality, 100)?;
-            export_saved_png_as(&shot.png_path, &saved, quality, 100)?;
+            shot.save_image_as(&memory, quality, ExportSize::Original)?;
+            export_saved_png_as(&shot.png_path, &saved, quality, ExportSize::Original)?;
             assert_eq!(fs::read(&memory)?, fs::read(&saved)?);
             let decoded = image::open(&memory)?.into_rgba8();
             assert_eq!(decoded.dimensions(), (64, 64));
@@ -674,8 +679,8 @@ mod tests {
         assert!(errors[1] < errors[0], "{errors:?}");
         for quality in [0, 101, 255] {
             let destination = root.join("invalid.jpg");
-            assert!(shot.save_image_as(&destination, quality, 100).is_err());
-            assert!(export_saved_png_as(&shot.png_path, &destination, quality, 100).is_err());
+            assert!(shot.save_image_as(&destination, quality, ExportSize::Original).is_err());
+            assert!(export_saved_png_as(&shot.png_path, &destination, quality, ExportSize::Original).is_err());
             assert!(!destination.exists());
         }
         assert_eq!(fs::read_dir(&root)?.count(), 1);
@@ -695,7 +700,7 @@ mod tests {
         let original = fs::read(&shot.png_path)?;
         for extension in ["png", "JPG", "jpeg", "webp"] {
             let destination = root.join(format!("copy.{extension}"));
-            let format = shot.save_image_as(&destination, 90, 100)?;
+            let format = shot.save_image_as(&destination, 90, ExportSize::Original)?;
             let bytes = fs::read(&destination)?;
             assert_eq!(image::guess_format(&bytes)?, match format {
                 ImageExportFormat::Png => image::ImageFormat::Png,
@@ -705,30 +710,30 @@ mod tests {
             let decoded = image::load_from_memory(&bytes)?.into_rgba8();
             assert_eq!(decoded.dimensions(), (3, 2));
             if format != ImageExportFormat::Jpeg { assert_eq!(decoded, *shot.pixels); }
-            assert!(shot.save_image_as(&destination, 90, 100).is_err());
+            assert!(shot.save_image_as(&destination, 90, ExportSize::Original).is_err());
             assert_eq!(fs::read(&destination)?, bytes);
             let from_png = root.join(format!("from-png.{extension}"));
-            assert_eq!(export_saved_png_as(&shot.png_path, &from_png, 90, 100)?, format);
+            assert_eq!(export_saved_png_as(&shot.png_path, &from_png, 90, ExportSize::Original)?, format);
             assert_eq!(image::open(&from_png)?.dimensions(), (3, 2));
             fs::remove_file(destination)?;
             fs::remove_file(from_png)?;
         }
         for extension in ["gif", "bmp", ""] {
             let destination = root.join(format!("unsupported.{extension}"));
-            assert!(shot.save_image_as(&destination, 90, 100).is_err());
+            assert!(shot.save_image_as(&destination, 90, ExportSize::Original).is_err());
             assert!(!destination.exists());
         }
         shot.pixels = Arc::new(RgbaImage::from_fn(3, 2, |x, _| image::Rgba([12, 34, 56, if x == 0 { 0 } else { 78 }])));
         let transparent = root.join("transparent.webp");
-        shot.save_image_as(&transparent, 90, 100)?;
+        shot.save_image_as(&transparent, 90, ExportSize::Original)?;
         assert_eq!(image::open(&transparent)?.into_rgba8(), *shot.pixels);
         let rejected = root.join("transparent.jpg");
-        assert!(shot.save_image_as(&rejected, 90, 100).unwrap_err().to_string().contains("transparency"));
+        assert!(shot.save_image_as(&rejected, 90, ExportSize::Original).unwrap_err().to_string().contains("transparency"));
         assert!(!rejected.exists());
         let wide = CapturedImage { width: 65536, height: 1,
             pixels: Arc::new(RgbaImage::from_pixel(65536, 1, image::Rgba([12, 34, 56, 255]))), ..shot.clone() };
         let failed = root.join("encoder-failure.jpg");
-        assert!(wide.save_image_as(&failed, 90, 100).is_err());
+        assert!(wide.save_image_as(&failed, 90, ExportSize::Original).is_err());
         assert!(!failed.exists());
         assert_eq!(fs::read(&shot.png_path)?, original);
         assert_eq!(fs::read_dir(&root)?.count(), 2);
@@ -748,8 +753,9 @@ mod tests {
                 (x % 251) as u8, (y % 251) as u8, ((x + y) % 251) as u8, 255]))),
             png_path: root.join("unused.png"), display_id: "fixture".into(), window_id: None,
             elapsed_ms: 0, source_format: PixelFormat::Rgba8UnormSrgb, display_geometry: None };
-        for (extension, quality, scale) in [("png", 90, 100), ("png", 90, 50), ("png", 90, 25),
-            ("jpg", 50, 100), ("jpg", 90, 100), ("jpg", 100, 100), ("webp", 90, 100)] {
+        for (extension, quality, scale) in [("png", 90, ExportSize::Original), ("png", 90, ExportSize::Half), ("png", 90, ExportSize::Quarter),
+            ("jpg", 50, ExportSize::Original), ("jpg", 90, ExportSize::Original), ("jpg", 100, ExportSize::Original), ("webp", 90, ExportSize::Original),
+            ("png", 90, ExportSize::Width(640))] {
             let path = root.join(format!("export.{extension}"));
             let mut timings = Vec::new();
             let mut length = 0;
@@ -761,7 +767,7 @@ mod tests {
                 fs::remove_file(&path)?;
             }
             timings.sort_unstable();
-            eprintln!("4K {extension} (JPEG quality {quality}, scale {scale}%) resize/encode + durable publication median={:?}; output={length} bytes; 3 synthetic warm samples; excludes dialog/presentation/process memory", timings[1]);
+            eprintln!("4K {extension} (JPEG quality {quality}, size {scale:?}) resize/encode + durable publication median={:?}; output={length} bytes; 3 synthetic warm samples; excludes dialog/presentation/process memory", timings[1]);
         }
         fs::remove_dir(root)?;
         Ok(())
@@ -1186,11 +1192,11 @@ mod tests {
 }
 
 impl CapturedImage {
-    pub fn save_image_as(&self, destination: &Path, jpeg_quality: u8, scale_percent: u8) -> Result<ImageExportFormat, CaptureError> {
+    pub fn save_image_as(&self, destination: &Path, jpeg_quality: u8, size: ExportSize) -> Result<ImageExportFormat, CaptureError> {
         validate_image_size(self.pixels.width(), self.pixels.height())?;
         let format = ImageExportFormat::from_path(destination)?;
-        crate::resample::validate_export_scale(scale_percent)?;
-        if scale_percent != 100 { write_scaled_export(&self.pixels, destination, format, jpeg_quality, scale_percent)?; }
+        size.validate()?;
+        if size != ExportSize::Original { write_scaled_export(&self.pixels, destination, format, jpeg_quality, size)?; }
         else if format == ImageExportFormat::Png { self.save_png_as(destination)?; }
         else { write_image_export(&self.pixels, destination, format, jpeg_quality)?; }
         Ok(format)
@@ -1263,24 +1269,27 @@ fn write_image_export(pixels: &RgbaImage, destination: &Path, format: ImageExpor
     })
 }
 
-fn write_scaled_export(pixels: &RgbaImage, destination: &Path, format: ImageExportFormat, jpeg_quality: u8, scale_percent: u8) -> Result<(), CaptureError> {
+fn write_scaled_export(pixels: &RgbaImage, destination: &Path, format: ImageExportFormat, jpeg_quality: u8, size: ExportSize) -> Result<(), CaptureError> {
     format.validate_quality(jpeg_quality)?;
     if format == ImageExportFormat::Jpeg && pixels.pixels().any(|pixel| pixel.0[3] != 255) {
         return Err(CaptureError::Backend("JPEG cannot preserve transparency. Choose PNG or WebP.".into()));
     }
-    let scaled = crate::resample::downscale_export(pixels, scale_percent)?;
+    if size.dimensions(pixels.width(), pixels.height())? == pixels.dimensions() {
+        return write_image_export(pixels, destination, format, jpeg_quality);
+    }
+    let scaled = crate::resample::downscale_export(pixels, size)?;
     write_image_export(&scaled, destination, format, jpeg_quality)
 }
 
 /// Explicit JPEG/WebP export of an existing PNG; PNG keeps the streaming copy path.
-pub fn export_saved_png_as(source: &Path, destination: &Path, jpeg_quality: u8, scale_percent: u8) -> Result<ImageExportFormat, CaptureError> {
+pub fn export_saved_png_as(source: &Path, destination: &Path, jpeg_quality: u8, size: ExportSize) -> Result<ImageExportFormat, CaptureError> {
     let format = ImageExportFormat::from_path(destination)?;
     format.validate_quality(jpeg_quality)?;
-    crate::resample::validate_export_scale(scale_percent)?;
-    if format == ImageExportFormat::Png && scale_percent == 100 { export_saved_png(source, destination)?; }
+    size.validate()?;
+    if format == ImageExportFormat::Png && size == ExportSize::Original { export_saved_png(source, destination)?; }
     else {
         let pixels = crate::load_saved_png(source).map_err(|error| CaptureError::Backend(format!("Could not load source PNG: {error:#}")))?;
-        if scale_percent != 100 { write_scaled_export(&pixels, destination, format, jpeg_quality, scale_percent)?; }
+        if size != ExportSize::Original { write_scaled_export(&pixels, destination, format, jpeg_quality, size)?; }
         else { write_image_export(&pixels, destination, format, jpeg_quality)?; }
     }
     Ok(format)

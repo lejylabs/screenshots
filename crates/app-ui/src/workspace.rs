@@ -33,6 +33,14 @@ pub(super) fn exact_region_request(display: &DisplayInfo, values: &[String; 4]) 
 
 impl Render for CaptureWorkspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if self.page == ControlPage::Captures && (self.last_capture.is_some() || self.last_saved.is_some()) {
+            if let app_core::ExportSize::Width(width) = self.export_size {
+                if self.export_width_input.is_none() {
+                    self.export_width_input = Some(cx.new(|cx| gpui::component::input::InputState::new(window, cx)
+                        .default_value(width.to_string()).validate(|value, _| value.len() <= 10 && value.bytes().all(|byte| byte.is_ascii_digit()))));
+                }
+            } else { self.export_width_input = None; }
+        } else { self.export_width_input = None; }
         if self.page == ControlPage::Settings && !self.settings_loading && self.jpeg_quality_input.is_none() {
             self.jpeg_quality_input = Some(cx.new(|cx| gpui::component::input::InputState::new(window, cx)
                 .default_value(self.jpeg_quality.to_string())
@@ -252,12 +260,18 @@ impl Render for CaptureWorkspace {
                     )
                     .child(div().text_sm().child("Save as size · aspect ratio kept, rounded to whole pixels. Smaller outputs are copies; the current image and library stay unchanged."))
                     .child(RadioGroup::new("save-as-size")
-                        .children(["Original", "50%", "25%"])
-                        .selected_index([100, 50, 25].iter().position(|percent| *percent == self.export_scale_percent))
+                        .children(["Original", "50%", "25%", "Custom width"])
+                        .selected_index(Some(match self.export_size { app_core::ExportSize::Original => 0,
+                            app_core::ExportSize::Half => 1, app_core::ExportSize::Quarter => 2, app_core::ExportSize::Width(_) => 3 }))
                         .disabled(busy || self.preview_active)
                         .on_change(cx.listener(|this, index, _, cx| {
-                            if let Some(percent) = [100, 50, 25].get(*index) { this.export_scale_percent = *percent; cx.notify(); }
+                            if let Some(size) = [app_core::ExportSize::Original, app_core::ExportSize::Half, app_core::ExportSize::Quarter, app_core::ExportSize::Width(640)].get(*index) {
+                                this.export_size = *size; cx.notify();
+                            }
                         })))
+                    .children(self.export_width_input.iter().map(|input| div().flex().flex_col().gap_1()
+                        .child("Export width in physical pixels · height follows the aspect ratio; no upscaling")
+                        .child(gpui::component::input::Input::new(input).id("export-width").aria_label("Export width in pixels").disabled(busy || self.preview_active))))
                     .child(div().text_sm().child(self.clipboard_status.clone()))
                     .child(div().text_sm().child(self.save_status.clone())),
             )
