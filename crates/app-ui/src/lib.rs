@@ -41,6 +41,7 @@ actions!(
         CaptureAll,
         CaptureCenterRegion,
         NewScreenshot,
+        OpenImage,
         ShowRecent,
         ShowLibrary,
         ShowSources,
@@ -53,6 +54,12 @@ actions!(
 enum OverlayMode {
     Probe,
     Fullscreen,
+}
+
+enum EditorImage {
+    Captured(CapturedImage),
+    SavedPng(PathBuf),
+    File(PathBuf),
 }
 
 #[derive(Clone, Copy)]
@@ -482,6 +489,7 @@ impl CaptureWorkspace {
         let mac = cfg!(target_os = "macos");
         cx.bind_keys([
             KeyBinding::new(if mac { "cmd-n" } else { "ctrl-n" }, NewScreenshot, Some("CaptureWorkspace")),
+            KeyBinding::new(if mac { "cmd-o" } else { "ctrl-o" }, OpenImage, Some("CaptureWorkspace")),
             KeyBinding::new(if mac { "cmd-1" } else { "ctrl-1" }, ShowRecent, Some("CaptureWorkspace")),
             KeyBinding::new(if mac { "cmd-2" } else { "ctrl-2" }, ShowLibrary, Some("CaptureWorkspace")),
             KeyBinding::new(if mac { "cmd-3" } else { "ctrl-3" }, ShowSources, Some("CaptureWorkspace")),
@@ -1667,17 +1675,55 @@ impl CaptureWorkspace {
     }
 
     fn open_redaction_editor(&mut self, cx: &mut Context<Self>) {
-        self.open_redaction_source(self.last_capture.clone(), self.last_saved.clone(), cx);
+        let source = self.last_capture.clone().map(EditorImage::Captured)
+            .or_else(|| self.last_saved.clone().map(EditorImage::SavedPng));
+        if let Some(source) = source { self.open_redaction_source(source, cx); }
     }
 
     fn open_history_editor(&mut self, path: PathBuf, cx: &mut Context<Self>) {
-        self.open_redaction_source(None, Some(path), cx);
+        self.open_redaction_source(EditorImage::SavedPng(path), cx);
+    }
+
+    fn open_image(&mut self, cx: &mut Context<Self>) {
+        if self.editor.is_some() || self.editor_closing || self.capturing || self.copying
+            || self.saving || self.quitting || self.capture_delay.is_some()
+            || self.settings_loading || self.settings_saving || self.history_mutating
+            || self.switching_graphics || self.preview_active || self.output_directory.is_none()
+        { return; }
+        self.show_page(ControlPage::Captures, cx);
+        self.capturing = true;
+        self.capture_status = "Choosing an image…".into();
+        let dialog = cx.prompt_for_paths(gpui::PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: false,
+            prompt: Some("Open a PNG, JPEG or WebP image to edit a copy".into()),
+        });
+        cx.spawn(async move |this, cx| {
+            let selected = dialog.await;
+            this.update(cx, |this, cx| {
+                this.capturing = false;
+                if this.quitting {
+                    this.finish_quit_if_idle(cx);
+                    return;
+                }
+                match selected {
+                    Ok(Ok(Some(paths))) if paths.len() == 1 => {
+                        this.open_redaction_source(EditorImage::File(paths.into_iter().next().unwrap()), cx);
+                    }
+                    Ok(Ok(None)) => this.capture_status = "Image selection canceled.".into(),
+                    Ok(Ok(Some(_))) => this.capture_status = "Choose exactly one PNG, JPEG or WebP image.".into(),
+                    Err(_) | Ok(Err(_)) => this.capture_status = "Could not select an image.".into(),
+                }
+                cx.notify();
+            }).ok();
+        }).detach();
+        cx.notify();
     }
 
     fn open_redaction_source(
         &mut self,
-        source: Option<CapturedImage>,
-        path: Option<PathBuf>,
+        source: EditorImage,
         cx: &mut Context<Self>,
     ) {
         if self.editor.is_some()
@@ -1692,9 +1738,6 @@ impl CaptureWorkspace {
         {
             return;
         }
-        if source.is_none() && path.is_none() {
-            return;
-        }
         let Some(directory) = self.output_directory.clone() else {
             return;
         };
@@ -1704,10 +1747,13 @@ impl CaptureWorkspace {
             let result = cx
                 .background_spawn(async move {
                     let mut source = match source {
-                        Some(source) => source,
-                        None => {
-                            let pixels = app_core::load_saved_png(&path.unwrap())
-                                .map_err(|e| format!("{e:#}"))?;
+                        EditorImage::Captured(source) => source,
+                        file => {
+                            let pixels = match file {
+                                EditorImage::SavedPng(path) => app_core::load_saved_png(&path),
+                                EditorImage::File(path) => app_core::load_editor_image(&path),
+                                EditorImage::Captured(_) => unreachable!(),
+                            }.map_err(|e| format!("{e:#}"))?;
                             CapturedImage {
                                 width: pixels.width(),
                                 height: pixels.height(),

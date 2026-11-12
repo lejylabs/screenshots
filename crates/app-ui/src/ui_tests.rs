@@ -72,6 +72,80 @@ fn open_workspace(cx: &mut TestAppContext) -> WindowHandle<CaptureWorkspace> {
 }
 
 #[gpui::test]
+fn open_image_cancel_and_invalid_input_release_admission(cx: &mut TestAppContext) {
+    let handle = open_workspace(cx);
+    handle.update(cx, |this, _, _| this.output_directory = Some(std::env::temp_dir())).unwrap();
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.click("open-image", cx);
+    }).unwrap();
+    assert!(cx.did_prompt_for_paths());
+    handle.update(cx, |this, _, cx| {
+        this.open_image(cx);
+        assert!(this.capturing);
+    }).unwrap();
+    cx.simulate_path_prompt_response(|options| {
+        assert!(options.files && !options.directories && !options.multiple);
+        None
+    });
+    cx.run_until_parked();
+    cx.update(|cx| {
+        let state = handle.read(cx).unwrap();
+        assert!(!state.capturing);
+        assert_eq!(state.capture_status, "Image selection canceled.");
+        assert!(state.editor.is_none() && state.last_capture.is_none() && state.last_saved.is_none());
+    });
+    cx.update_window(handle.into(), |_, window, cx| window.press(&shortcut("o"), cx)).unwrap();
+    assert!(cx.did_prompt_for_paths());
+    cx.simulate_path_prompt_response(|_| Some(vec![PathBuf::from("missing-image.png")]));
+    cx.run_until_parked();
+    cx.update(|cx| {
+        let state = handle.read(cx).unwrap();
+        assert!(!state.capturing);
+        assert!(state.capture_status.starts_with("Could not load image:"));
+        assert!(state.editor.is_none() && state.last_capture.is_none() && state.last_saved.is_none());
+    });
+    handle.update(cx, |this, _, cx| this.open_image(cx)).unwrap();
+    handle.update(cx, |this, _, _| this.quitting = true).unwrap();
+    cx.simulate_path_prompt_response(|_| Some(vec![PathBuf::from("must-not-load.png")]));
+    cx.run_until_parked();
+    cx.update(|cx| {
+        let state = handle.read(cx).unwrap();
+        assert!(!state.capturing && state.editor.is_none());
+        assert_eq!(state.capture_status, "Choosing an image…");
+    });
+}
+
+#[gpui::test]
+fn open_image_preserves_source_and_opens_without_output(cx: &mut TestAppContext) {
+    let handle = open_workspace(cx);
+    let root = std::env::temp_dir().join(format!("screenshots-open-image-{}", std::process::id()));
+    std::fs::create_dir_all(&root).unwrap();
+    let path = root.join("original.png");
+    image::RgbImage::from_pixel(3, 2, image::Rgb([12, 34, 56]))
+        .save_with_format(&path, image::ImageFormat::Jpeg).unwrap();
+    let original = std::fs::read(&path).unwrap();
+    handle.update(cx, |this, _, cx| {
+        this.output_directory = Some(root.clone());
+        this.open_image(cx);
+    }).unwrap();
+    cx.simulate_path_prompt_response(|_| Some(vec![path.clone()]));
+    cx.run_until_parked();
+    cx.update(|cx| {
+        let state = handle.read(cx).unwrap();
+        assert!(!state.capturing);
+        assert!(state.editor.is_some(), "{}", state.capture_status);
+        assert!(state.last_capture.is_none() && state.last_saved.is_none());
+        let editor = state.editor.unwrap().read(cx).unwrap();
+        assert_eq!(editor.source.pixels.dimensions(), (3, 2));
+    });
+    assert_eq!(std::fs::read(&path).unwrap(), original);
+    assert_eq!(std::fs::read_dir(&root).unwrap().count(), 1);
+    std::fs::remove_file(&path).unwrap();
+    std::fs::remove_dir(&root).unwrap();
+}
+
+#[gpui::test]
 fn output_profile_failure_preserves_active_choice_and_rejects_multi_image_output(cx: &mut TestAppContext) {
     let handle = open_workspace(cx);
     let blocker = std::env::temp_dir().join(format!("screenshots-profile-blocker-{}", std::process::id()));

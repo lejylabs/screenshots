@@ -92,6 +92,7 @@ impl Render for CaptureWorkspace {
                 cx.listener(|this, _: &CaptureCenterRegion, _, cx| this.capture_center_region(cx)),
             )
             .on_action(cx.listener(|this, _: &NewScreenshot, _, cx| this.select_region_to_edit(cx)))
+            .on_action(cx.listener(|this, _: &OpenImage, _, cx| this.open_image(cx)))
             .on_action(cx.listener(|this, _: &ShowRecent, window, cx| { window.focus(&this.focus_handle, cx); this.show_page(ControlPage::Captures, cx); }))
             .on_action(cx.listener(|this, _: &ShowLibrary, window, cx| { window.focus(&this.focus_handle, cx); this.show_page(ControlPage::History, cx); }))
             .on_action(cx.listener(|this, _: &ShowSources, window, cx| { window.focus(&this.focus_handle, cx); this.show_page(ControlPage::Sources, cx); }))
@@ -131,7 +132,9 @@ impl Render for CaptureWorkspace {
                     .child(capture_button(cx, "cancel-delayed-capture", "Cancel countdown", false,
                         cx.listener(|this, _, _, cx| this.cancel_capture_delay(cx))))))
             .when(self.page == ControlPage::Captures, |view| {
-                view.when(self.capture_status != "Ready", |view| view.child(div().text_sm().child(self.capture_status.clone())))
+                view.child(capture_button(cx, "open-image", "Open image…", unavailable || self.preview_active,
+                    cx.listener(|this, _, _, cx| this.open_image(cx))))
+                .when(self.capture_status != "Ready", |view| view.child(div().text_sm().child(self.capture_status.clone())))
             .when(theme.classic && self.last_capture.is_none() && self.last_saved.is_none(), |view| view.child(classic_capture_home(cx)))
             .when(!theme.classic && self.last_capture.is_none() && self.last_saved.is_none(), |view| view.child(
                 div().flex_none().p_5().rounded(px(theme.panel_radius))

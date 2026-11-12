@@ -56,6 +56,49 @@ priorities do not establish implementation or runtime acceptance.
    compatibility, providers, workflows/CLI/actions and remaining utility families.
    Verify the capability matrix before claiming ShareX parity.
 
+#### Current feature slice: open PNG, JPEG and WebP directly in the editor
+
+Implemented (2026-11-12): Recent capture offers Open image, also available
+with Ctrl+O (Cmd+O on macOS). The native single-file picker opens a copy through
+worker-side bounded PNG/JPEG/WebP decoding and the shared standalone editor, without
+importing history, changing the last capture, writing a source copy or copying to
+the clipboard. Final outputs remain explicit; the original file stays unchanged.
+Cancellation and selection/load errors release admission; Quit discards late picker
+results. Existing capture admission covers selection and decoding, preventing
+queued pickers/decodes. The existing close-during-load behavior waits for work;
+interactive picker/close behavior remains a native acceptance check.
+
+Resource cost: one action/key binding, one button and one operation-scoped picker
+future with at most one selected path. Existing workers, image limits and pixel
+ownership are reused. No dependency, runtime, thread, cache, timer or idle action
+is added. Optimized UI tests cover button/key routing, cancellation, duplicate
+admission, missing input, Quit during selection and synthetic image opening with
+unchanged source bytes and no output files. Native dialog latency, physical
+presentation, CPU/GPU memory and idle budgets were not measured for this entry
+point; native keyboard/accessibility acceptance remains open.
+
+Input format is detected from file contents, independent of extension. Direct
+opening admits at most 32 MiB of encoded input; a seekable extent-limited file
+reader prevents concurrent file growth from bypassing that bound. This is needed
+because the installed JPEG decoder retains the complete encoded input before
+applying decode limits. The decoded representation and final RGBA size are each
+checked against the existing 256 MiB admission limit before pixel decoding.
+EXIF orientation is applied on the worker; only RGBA pixels enter the editor, not
+source metadata. PNG/WebP alpha is preserved. Animated inputs use the decoder's
+default still frame; animation editing, color-managed import and metadata retention
+are outside this slice. Existing last-capture/history PNG loaders keep their
+previous limits and behavior. No dependencies or idle infrastructure are added.
+
+Optimized fixtures cover all three formats, misleading extensions, JPEG EXIF
+rotation, exact lossless pixels/alpha, original-file preservation, malformed and
+unsupported data, oversized dimensions and encoded files, bounded seeks and file
+growth. The UI fixture opens a JPEG with a misleading PNG extension without output.
+A five-sample warm synthetic 4K PNG development comparison observed median decode
+times of 60.30 ms for the existing PNG loader and 60.39 ms for direct editor input.
+This short worker-only observation is inconclusive for performance differences;
+it excludes presentation, dialog time and process/GPU memory and establishes no
+hardware acceptance. Paste/Drop/Open With and exact-region entry remain pending.
+
 #### Current feature slice: configurable Windows global hotkeys
 
 Implemented in the working tree (2026-11-12): three editable/disableable bindings

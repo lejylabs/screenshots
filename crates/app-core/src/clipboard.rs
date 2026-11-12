@@ -3,6 +3,66 @@
 use std::borrow::Cow;
 
 use anyhow::{Context, Result};
+use image::ImageDecoder as _;
+
+const MAX_EDITOR_FILE_BYTES: u64 = 32 * 1024 * 1024;
+
+// JPEG reads its input in full before applying decoder limits. Freeze the readable
+// extent so a growing file cannot bypass the encoded-byte admission check.
+struct EditorFile {
+    file: std::fs::File,
+    length: u64,
+    position: u64,
+}
+
+impl std::io::Read for EditorFile {
+    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        let available = self.length.saturating_sub(self.position).min(buffer.len() as u64) as usize;
+        let read = self.file.read(&mut buffer[..available])?;
+        self.position += read as u64;
+        Ok(read)
+    }
+}
+
+impl std::io::Seek for EditorFile {
+    fn seek(&mut self, from: std::io::SeekFrom) -> std::io::Result<u64> {
+        let from = match from {
+            std::io::SeekFrom::End(offset) => {
+                let position = i128::from(self.length) + i128::from(offset);
+                std::io::SeekFrom::Start(u64::try_from(position).map_err(|_| {
+                    std::io::Error::new(std::io::ErrorKind::InvalidInput, "Invalid image seek")
+                })?)
+            }
+            other => other,
+        };
+        self.position = self.file.seek(from)?;
+        Ok(self.position)
+    }
+}
+
+/// Explicit editor input only; run decoding and orientation on a worker.
+pub fn load_editor_image(path: &std::path::Path) -> Result<image::RgbaImage> {
+    let file = std::fs::File::open(path)?;
+    let length = file.metadata()?.len();
+    anyhow::ensure!(length <= MAX_EDITOR_FILE_BYTES, "Image file exceeds the 32 MiB input limit");
+    let mut reader = image::ImageReader::new(std::io::BufReader::new(EditorFile { file, length, position: 0 }))
+        .with_guessed_format()?;
+    anyhow::ensure!(
+        matches!(reader.format(), Some(image::ImageFormat::Png | image::ImageFormat::Jpeg | image::ImageFormat::WebP)),
+        "Choose a PNG, JPEG or WebP image"
+    );
+    let mut limits = image::Limits::default();
+    limits.max_alloc = Some(crate::MAX_CAPTURE_BYTES);
+    reader.limits(limits);
+    let mut decoder = reader.into_decoder()?;
+    let (width, height) = decoder.dimensions();
+    crate::validate_image_size(width, height)?;
+    anyhow::ensure!(decoder.total_bytes() <= crate::MAX_CAPTURE_BYTES, "Decoded image exceeds the memory limit");
+    let orientation = decoder.orientation()?;
+    let mut decoded = image::DynamicImage::from_decoder(decoder)?;
+    decoded.apply_orientation(orientation);
+    Ok(decoded.into_rgba8())
+}
 
 pub fn load_saved_png(path: &std::path::Path) -> Result<image::RgbaImage> {
     let mut reader = image::ImageReader::with_format(
@@ -66,6 +126,95 @@ mod tests {
     use super::*;
 
     #[test]
+    fn editor_input_extent_is_bounded_even_when_the_file_grows() -> Result<()> {
+        use std::io::{Read as _, Seek as _, Write as _};
+        let path = std::env::temp_dir().join(format!("screenshots-editor-extent-{}", uuid::Uuid::new_v4()));
+        std::fs::write(&path, b"abcd")?;
+        let mut input = EditorFile { file: std::fs::File::open(&path)?, length: 4, position: 0 };
+        std::fs::OpenOptions::new().append(true).open(&path)?.write_all(b"private trailing data")?;
+        let mut bytes = Vec::new();
+        input.read_to_end(&mut bytes)?;
+        assert_eq!(bytes, b"abcd");
+        assert_eq!(input.seek(std::io::SeekFrom::End(-2))?, 2);
+        bytes.clear();
+        input.read_to_end(&mut bytes)?;
+        assert_eq!(bytes, b"cd");
+        assert!(input.seek(std::io::SeekFrom::End(-5)).is_err());
+        input.seek(std::io::SeekFrom::Start(1))?;
+        assert_eq!(input.seek(std::io::SeekFrom::Current(1))?, 2);
+        input.seek(std::io::SeekFrom::Start(100))?;
+        assert_eq!(input.read(&mut [0; 1])?, 0);
+        drop(input);
+        let file = std::fs::OpenOptions::new().write(true).open(&path)?;
+        file.set_len(MAX_EDITOR_FILE_BYTES + 1)?;
+        drop(file);
+        assert!(load_editor_image(&path).unwrap_err().to_string().contains("32 MiB"));
+        std::fs::remove_file(path)?;
+        Ok(())
+    }
+
+    #[test]
+    fn editor_images_detect_content_preserve_files_and_apply_orientation() -> Result<()> {
+        use image::ImageEncoder as _;
+        let root = std::env::temp_dir().join(format!("screenshots-editor-input-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root)?;
+        let path = root.join("misleading.extension");
+        let source = image::RgbaImage::from_pixel(3, 2, image::Rgba([12, 34, 56, 78]));
+        for format in [image::ImageFormat::Png, image::ImageFormat::Jpeg, image::ImageFormat::WebP] {
+            let mut encoded = std::io::Cursor::new(Vec::new());
+            let image = image::DynamicImage::ImageRgba8(source.clone());
+            if format == image::ImageFormat::Jpeg {
+                image.to_rgb8().write_to(&mut encoded, format)?;
+            } else {
+                image.write_to(&mut encoded, format)?;
+            }
+            let bytes = encoded.into_inner();
+            std::fs::write(&path, &bytes)?;
+            let loaded = load_editor_image(&path)?;
+            assert_eq!(loaded.dimensions(), (3, 2));
+            if format != image::ImageFormat::Jpeg { assert_eq!(loaded, source); }
+            assert_eq!(std::fs::read(&path)?, bytes);
+        }
+        let mut jpeg = Vec::new();
+        let mut encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut jpeg, 100);
+        // TIFF orientation 6: rotate 90 degrees clockwise.
+        encoder.set_exif_metadata(vec![73,73,42,0,8,0,0,0,1,0,18,1,3,0,1,0,0,0,6,0,0,0,0,0,0,0])?;
+        let rgb = image::RgbImage::from_fn(3, 2, |x, y| image::Rgb([(x * 80) as u8, (y * 120) as u8, 40]));
+        encoder.write_image(rgb.as_raw(), 3, 2, image::ExtendedColorType::Rgb8)?;
+        std::fs::write(&path, &jpeg)?;
+        let unrotated = image::load_from_memory(&jpeg)?.into_rgba8();
+        assert_eq!(load_editor_image(&path)?, image::imageops::rotate90(&unrotated));
+        assert_eq!(std::fs::read(&path)?, jpeg);
+        for bytes in [b"not an image".as_slice(), b"\x89PNG\r\n\x1a\n", b"GIF89a"] {
+            std::fs::write(&path, bytes)?;
+            assert!(load_editor_image(&path).is_err());
+        }
+        std::fs::remove_file(path)?;
+        std::fs::remove_dir(root)?;
+        Ok(())
+    }
+
+    #[test]
+    fn editor_image_rejects_oversized_header_before_pixel_decode() -> Result<()> {
+        let path = std::env::temp_dir().join(format!("screenshots-editor-limit-{}.png", uuid::Uuid::new_v4()));
+        image::RgbaImage::new(1, 1).save(&path)?;
+        let mut bytes = std::fs::read(&path)?;
+        bytes[16..20].copy_from_slice(&100_000_u32.to_be_bytes());
+        bytes[20..24].copy_from_slice(&100_000_u32.to_be_bytes());
+        let mut crc = u32::MAX;
+        for byte in &bytes[12..29] {
+            crc ^= u32::from(*byte);
+            for _ in 0..8 { crc = (crc >> 1) ^ (0xedb88320 & (0_u32.wrapping_sub(crc & 1))); }
+        }
+        bytes[29..33].copy_from_slice(&(!crc).to_be_bytes());
+        std::fs::write(&path, bytes)?;
+        let error = load_editor_image(&path).unwrap_err().to_string();
+        assert!(error.contains("limit"), "{error}");
+        std::fs::remove_file(path)?;
+        Ok(())
+    }
+
+    #[test]
     fn thumbnails_are_bounded_cancellable_and_keep_pngs_unchanged() -> Result<()> {
         let root =
             std::env::temp_dir().join(format!("screenshots-preview-{}", uuid::Uuid::new_v4()));
@@ -123,6 +272,7 @@ mod tests {
         .save(&path)?;
         let mut decode = Vec::new();
         let mut previews = Vec::new();
+        let mut editor = Vec::new();
         for _ in 0..5 {
             let start = std::time::Instant::now();
             std::hint::black_box(load_saved_png(&path)?);
@@ -132,9 +282,14 @@ mod tests {
             previews.push(start.elapsed());
             assert_eq!(preview.dimensions(), (400, 225));
             assert_eq!(preview.as_raw().len(), 360_000);
+            let start = std::time::Instant::now();
+            std::hint::black_box(load_editor_image(&path)?);
+            editor.push(start.elapsed());
         }
         decode.sort_unstable();
         previews.sort_unstable();
+        editor.sort_unstable();
+        eprintln!("4K editor image decode median={:?}; 5 synthetic warm samples", editor[2]);
         eprintln!(
             "4K PNG decode median={:?}; decode+thumbnail median={:?}; retained=360000 bytes; source RGBA=33177600 bytes; 5 synthetic warm samples",
             decode[2], previews[2]
