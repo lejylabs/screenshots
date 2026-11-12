@@ -33,6 +33,13 @@ pub(super) fn exact_region_request(display: &DisplayInfo, values: &[String; 4]) 
 
 impl Render for CaptureWorkspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if self.page == ControlPage::Captures {
+            if self.capture_delay_input.is_none() {
+                self.capture_delay_input = Some(cx.new(|cx| gpui::component::input::InputState::new(window, cx)
+                    .default_value(self.capture_delay_seconds.to_string())
+                    .validate(|value, _| value.len() <= 2 && value.bytes().all(|byte| byte.is_ascii_digit()))));
+            }
+        } else { self.capture_delay_input = None; }
         if self.page == ControlPage::Captures && (self.last_capture.is_some() || self.last_saved.is_some()) {
             if let app_core::ExportSize::Width(value) | app_core::ExportSize::Height(value) | app_core::ExportSize::Exact(value, _) = self.export_size {
                 if self.export_dimension_input.is_none() {
@@ -188,11 +195,16 @@ impl Render for CaptureWorkspace {
                     .child(quiet_button(cx, "appearance-shortcut", theme::name(theme::selected(cx)), false, false,
                         cx.listener(|this, _, _, cx| this.show_page(ControlPage::Settings, cx)))))
                 .when(self.capture_delay.is_some(), |view| view.child(div().p_3().rounded(px(theme.radius)).bg(colors.button).flex().flex_wrap().items_center().gap_3()
-                    .child("Screenshot scheduled · 3 second delay")
+                    .child("Screenshot scheduled · countdown active")
                     .child(capture_button(cx, "cancel-delayed-capture", "Cancel countdown", false,
                         cx.listener(|this, _, _, cx| this.cancel_capture_delay(cx))))))
             .when(self.page == ControlPage::Captures, |view| {
-                view.child(capture_button(cx, "open-image", "Open image…", unavailable || self.preview_active,
+                view.children(self.capture_delay_input.iter().map(|input| div().flex().flex_wrap().items_center().gap_2()
+                    .child(format!("Capture delay · active: {} s · this app session only", self.capture_delay_seconds))
+                    .child(div().w(px(64.)).child(gpui::component::input::Input::new(input).id("capture-delay-seconds").aria_label("Capture delay in seconds, 1 to 60").disabled(unavailable || self.preview_active)))
+                    .child(capture_button(cx, "apply-capture-delay", "Apply delay (1–60 s)", unavailable || self.preview_active,
+                        cx.listener(|this, _, _, cx| this.apply_capture_delay(cx))))))
+                .child(capture_button(cx, "open-image", "Open image…", unavailable || self.preview_active,
                     cx.listener(|this, _, _, cx| this.open_image(cx))))
                 .when(cfg!(target_os = "windows"), |view| view.child(capture_button(cx,
                     "paste-image", "Paste image (Ctrl+Shift+V)", unavailable || self.preview_active,
@@ -306,7 +318,7 @@ impl Render for CaptureWorkspace {
                         cx.listener(|this, _, _, cx| this.open_overlays(OverlayMode::Fullscreen, cx))))
                     .when(cfg!(target_os = "windows"), |view| view.child(capture_tile(cx, "repeat-region", "Repeat last region", "Current session · unchanged display geometry required", unavailable || self.preview_active || self.last_region.is_none(),
                         cx.listener(|this, _, _, cx| this.repeat_last_region(cx)))))
-                    .child(capture_tile(cx, "delayed-region", "3-second delay", "Wait before selecting a region", unavailable,
+                    .child(capture_tile(cx, "delayed-region", "Delayed region", "Uses the applied capture delay", unavailable,
                         cx.listener(|this, _, _, cx| this.start_delayed_region(cx))))
                     .child(capture_tile(cx, "nav-sources", "Display or window", "Choose a capture source", unavailable,
                         cx.listener(|this, _, _, cx| this.show_page(ControlPage::Sources, cx))))))
@@ -864,7 +876,7 @@ impl CaptureWorkspace {
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.open_overlays(OverlayMode::Fullscreen, cx)
                             })),
-                        SidebarMenuItem::new("3 second delay")
+                        SidebarMenuItem::new(format!("Region in {} s", self.capture_delay_seconds))
                             .icon(ui_icon(cx, "delayed-region", 16.))
                             .disable(unavailable)
                             .on_click(cx.listener(|this, _, _, cx| this.start_delayed_region(cx))),
@@ -878,7 +890,7 @@ impl CaptureWorkspace {
                             .disable(unavailable || self.preview_active || self.last_region.is_none())
                             .on_click(cx.listener(|this, _, _, cx| this.repeat_last_region(cx))),
                         #[cfg(target_os = "windows")]
-                        SidebarMenuItem::new("Active window in 3 seconds")
+                        SidebarMenuItem::new(format!("Active window in {} s", self.capture_delay_seconds))
                             .icon(ui_icon(cx, "capture-primary", 16.))
                             .disable(unavailable)
                             .on_click(cx.listener(|this, _, _, cx| this.start_delayed_capture(DelayedCapture::ActiveWindow, cx))),

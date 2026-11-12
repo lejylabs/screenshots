@@ -634,7 +634,7 @@ rejects own windows, desktop/taskbar surfaces, minimized, stale or changed-proce
 targets without capturing a fallback desktop.
 Source pixels remain in memory and use the selected output profile/editor.
 
-Capture menu and tray expose an explicitly labeled three-second active-window
+Capture menu and tray expose a configurable (default three-second) active-window
 countdown so the user can focus the intended application. It reuses the existing
 cancellable delay task; close/Quit cancels it. No foreground tracking hook, polling,
 resident timer, thread, runtime, cache or dependency is introduced. Resource cost
@@ -996,7 +996,26 @@ It should be designed around a common API with platform-specific implementations
 
 ### Required capture functionality
 
-Implemented convenience workflow: a three-second delayed region selection with a cancel button/Escape in the control window. Closing the UI or quitting discards the countdown task; it adds no resident polling. The existing capture/selection/copy/save pipeline is reused after the delay.
+Implemented convenience workflow: a configurable delayed region selection (default three seconds) with a cancel button/Escape in the control window. Closing the UI or quitting discards the countdown task; it adds no resident polling. The existing capture/selection/copy/save pipeline is reused after the delay.
+
+Follow-up (2026-11-12): Recent capture offers an explicit Apply delay action for
+whole seconds 1–60, default 3. The active delay is labeled as session-only; invalid
+input retains it. The same scalar controls region and Windows active-window
+countdowns from the control/sidebar/tray. Quick capture and global immediate
+commands are unchanged. The running countdown snapshots the duration, blocks
+preference changes and retains existing cancellation/Quit behavior. UI and tray
+labels no longer promise a fixed three seconds.
+
+Resource cost is one resident byte, one two-digit page-local Kit input and one
+countdown snapshot. The input is released on page exit/UI close. The existing
+operation-scoped once-per-second timer now runs at most 60 ticks, with no timer
+when idle; no new worker, runtime, queue, cache, image buffer or dependency is added.
+Optimized headless checks cover range boundaries, invalid/empty values, explicit
+button routing, active-window duration, snapshotting, blocked changes, cancellation
+beyond the original deadline and input release. Native tray/keyboard/accessibility,
+timing under suspend/load and resource acceptance remain open. No new latency or
+process/GPU measurement is claimed for this bounded preference. Persistence and
+subsecond/longer delays remain outside this slice.
 
 
 - Fullscreen capture.

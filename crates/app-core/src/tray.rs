@@ -33,7 +33,7 @@ impl SpikeTray {
         let capture = MenuItem::new("Capture primary", true, None);
         let region = MenuItem::new("Select region", true, None);
         let edit_region = MenuItem::new("Capture and annotate", true, None);
-        let active_window = MenuItem::new("Active window in 3 seconds…", true, None);
+        let active_window = MenuItem::new("Active window (configured delay)…", true, None);
         let repeat_region = MenuItem::new("Repeat last region (current session)", false, None);
         let show = MenuItem::new("Show control window", true, None);
         let quit = MenuItem::new("Quit", true, None);

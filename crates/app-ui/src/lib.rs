@@ -206,6 +206,8 @@ pub struct CaptureWorkspace {
     last_render: Option<Arc<gpui::RenderImage>>,
     capturing: bool,
     capture_delay: Option<gpui::Task<()>>,
+    capture_delay_seconds: u8,
+    capture_delay_input: Option<gpui::Entity<gpui::component::input::InputState>>,
     clipboard: Arc<Mutex<app_core::ImageClipboard>>,
     copying: bool,
     saving: bool,
@@ -375,6 +377,7 @@ impl CaptureWorkspace {
         self.filename_template_input = None;
         self.export_dimension_input = None;
         self.export_height_input = None;
+        self.capture_delay_input = None;
         self.exact_region_status.clear();
         #[cfg(target_os = "windows")]
         { self.hotkey_inputs = None; }
@@ -618,6 +621,8 @@ impl CaptureWorkspace {
             last_render: None,
             capturing: false,
             capture_delay: None,
+            capture_delay_seconds: 3,
+            capture_delay_input: None,
             clipboard: Arc::new(Mutex::new(app_core::ImageClipboard::default())),
             copying: false,
             saving: false,
@@ -1055,6 +1060,7 @@ impl CaptureWorkspace {
         self.hide_history(cx);
         self.hide_upload_history();
         self.page = page;
+        self.capture_delay_input = None;
         self.export_dimension_input = None;
         self.export_height_input = None;
         self.jpeg_quality_input = None;
@@ -1490,6 +1496,18 @@ impl CaptureWorkspace {
         self.start_delayed_capture(DelayedCapture::Region, cx);
     }
 
+    fn apply_capture_delay(&mut self, cx: &mut Context<Self>) {
+        if self.page != ControlPage::Captures || self.image_input_busy() { return; }
+        let seconds = self.capture_delay_input.as_ref().and_then(|input| input.read(cx).value().parse::<u8>().ok());
+        let Some(seconds) = seconds.filter(|seconds| (1..=60).contains(seconds)) else {
+            self.capture_status = "Delay unchanged: enter whole seconds from 1 to 60.".into();
+            cx.notify(); return;
+        };
+        self.capture_delay_seconds = seconds;
+        self.capture_status = format!("Capture delay set to {seconds} s for this app session.");
+        cx.notify();
+    }
+
     fn start_delayed_capture(&mut self, target: DelayedCapture, cx: &mut Context<Self>) {
         if self.editor.is_some() || self.editor_closing {
             return;
@@ -1509,9 +1527,10 @@ impl CaptureWorkspace {
         }
         let label = match target { DelayedCapture::Region => "Region", #[cfg(target_os = "windows")] DelayedCapture::ActiveWindow => "Active window" };
         let instruction = match target { DelayedCapture::Region => "Press Escape to cancel.", #[cfg(target_os = "windows")] DelayedCapture::ActiveWindow => "Focus the target window. Escape in this app cancels." };
-        self.capture_status = format!("{label} capture in 3 seconds… {instruction}");
+        let seconds = self.capture_delay_seconds;
+        self.capture_status = format!("{label} capture in {seconds} s… {instruction}");
         self.capture_delay = Some(cx.spawn(async move |this, cx| {
-            for remaining in (0..3).rev() {
+            for remaining in (0..seconds).rev() {
                 cx.background_executor()
                     .timer(std::time::Duration::from_secs(1))
                     .await;

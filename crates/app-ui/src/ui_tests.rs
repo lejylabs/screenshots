@@ -739,12 +739,14 @@ fn active_window_countdown_can_cancel_without_starting_capture(cx: &mut TestAppC
     let handle = open_workspace(cx);
     cx.update(|cx| handle.update(cx, |this, _, cx| {
         this.output_directory = Some(std::env::temp_dir());
+        this.capture_delay_seconds = 10;
         this.start_delayed_capture(DelayedCapture::ActiveWindow, cx);
         assert!(this.capture_delay.is_some());
+        assert!(this.capture_status.contains("in 10 s"));
         assert!(this.capture_status.contains("Focus the target window"));
         this.cancel_capture_delay(cx);
     }).unwrap());
-    cx.executor().advance_clock(std::time::Duration::from_secs(4));
+    cx.executor().advance_clock(std::time::Duration::from_secs(11));
     cx.run_until_parked();
     cx.update(|cx| {
         let view = handle.read(cx).unwrap();
@@ -753,6 +755,58 @@ fn active_window_countdown_can_cancel_without_starting_capture(cx: &mut TestAppC
         assert!(view.last_capture.is_none() && view.editor.is_none());
         assert_eq!(view.capture_status, "Delayed capture canceled");
     });
+}
+
+#[gpui::test]
+fn capture_delay_validates_applies_snapshots_and_releases_input(cx: &mut TestAppContext) {
+    let handle = open_workspace(cx);
+    handle.update(cx, |this, _, _| this.output_directory = Some(std::env::temp_dir())).unwrap();
+    cx.update_window(handle.into(), |_, window, cx| window.render_frame(cx)).unwrap();
+    handle.update(cx, |this, window, cx| {
+        assert_eq!(this.capture_delay_seconds, 3);
+        let input = this.capture_delay_input.clone().unwrap();
+        for value in ["", "0", "61", "99"] {
+            input.update(cx, |input, cx| input.set_value(value, window, cx));
+            this.apply_capture_delay(cx);
+            assert_eq!(this.capture_delay_seconds, 3);
+            assert!(this.capture_delay.is_none());
+        }
+        for value in ["1", "60", "5"] {
+            input.update(cx, |input, cx| input.set_value(value, window, cx));
+            this.apply_capture_delay(cx);
+            assert_eq!(this.capture_delay_seconds, value.parse::<u8>().unwrap());
+        }
+    }).unwrap();
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.click("apply-capture-delay", cx);
+    }).unwrap();
+    handle.update(cx, |this, window, cx| {
+        this.start_delayed_region(cx);
+        assert!(this.capture_status.contains("in 5 s"));
+        this.capture_delay_input.as_ref().unwrap().update(cx, |input, cx| input.set_value("1", window, cx));
+        this.apply_capture_delay(cx);
+        assert_eq!(this.capture_delay_seconds, 5);
+        // Changing a later preference cannot alter the duration captured by the running job.
+        this.capture_delay_seconds = 1;
+    }).unwrap();
+    cx.run_until_parked();
+    cx.executor().advance_clock(std::time::Duration::from_secs(1));
+    cx.run_until_parked();
+    handle.update(cx, |this, _, cx| {
+        assert!(this.capture_delay.is_some());
+        assert!(this.capture_status.contains("in 4 seconds"));
+        this.cancel_capture_delay(cx);
+    }).unwrap();
+    cx.executor().advance_clock(std::time::Duration::from_secs(60));
+    cx.run_until_parked();
+    handle.update(cx, |this, _, cx| {
+        assert!(this.capture_delay.is_none());
+        assert!(!this.capturing && this.last_capture.is_none());
+        assert_eq!(this.capture_status, "Delayed capture canceled");
+        this.show_page(ControlPage::Sources, cx);
+        assert!(this.capture_delay_input.is_none());
+    }).unwrap();
 }
 
 #[cfg(target_os = "windows")]

@@ -11,7 +11,7 @@ Per-shortcut task profiles/chains remain missing. See PLAN.md's output-profile
 slice for scope, multi-image restrictions and verification limits.
 
 Active-window follow-up (2026-11-12): Windows now exposes a configurable active-
-window shortcut (disabled by default) and cancellable three-second menu/tray
+window shortcut (disabled by default) and cancellable configurable menu/tray
 commands. Native foreground-focus acceptance remains open; see PLAN.md.
 
 Last-region follow-up (2026-11-12): Windows can repeat one session-only selected
@@ -156,7 +156,8 @@ enumeration of every ShareX preference.
 ## What already exists
 
 - Primary/chosen display, enumerated window and rectangular-region capture;
-  all displays as separate images; a cancellable three-second delayed region.
+  all displays as separate images; a cancellable delayed region (1–60 seconds,
+  session-only, default three seconds).
 - Frozen in-memory editing and a standalone editor with 14 tools: selection,
   crop, rectangle, ellipse, line, arrow, pen, text, numbering, highlight,
   spotlight, opaque redaction, pixelation and blur. Movement/resizing,
@@ -192,7 +193,7 @@ selection adjustment and configurable after-capture tasks in its capture flow.
 | Active-window/active-monitor command | Partial: a Windows foreground-window command now has a configurable shortcut and a menu/tray countdown; foreground-focus acceptance remains open. Enumerated windows/displays and cursor-based monitor targeting for Windows annotation exist. A general active-monitor command remains missing. | A |
 | Last region and exact region | Partial: session-only repeat, geometry-checked numeric display-local X/Y/Width/Height and up to 16 saved named rectangles exist. Templates require explicit display choice; automatic cross-session monitor binding and per-template task/hotkey profiles remain missing. Native acceptance remains open. | A |
 | Precision selection | Partial: crop and transforms exist; no equivalent complete magnifier, window/control snapping or keyboard-driven region-selection workflow. | A |
-| Capture preferences | Missing configurable cursor inclusion, arbitrary delay, window-frame/shadow/transparency options and persistent capture defaults. Current delay is fixed to three seconds. | A/B |
+| Capture preferences | Partial: region and Windows active-window countdowns share an applied session-only delay of 1–60 whole seconds, default three. Missing configurable cursor inclusion, subsecond/longer delays, window-frame/shadow/transparency options and persistent capture defaults. Native countdown/resource acceptance remains open. | A/B |
 | Multiple outputs | Partial: all displays are captured separately. No stitched desktop output, cross-monitor drag selection or multiple independent regions in one capture session. | B |
 | Repeated capture | Missing operation-scoped interval capture, scheduled runs and saved repeat settings. Any implementation needs explicit activation and cancellation. | B |
 | HDR/color correctness | Unverified/limited: XCap returns 8-bit RGBA; color metadata is not reported and code currently treats it as sRGB. No validated HDR conversion or wide-gamut workflow. | A for truthful limitations; B for support |
