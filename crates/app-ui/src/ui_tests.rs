@@ -84,6 +84,11 @@ fn open_image_cancel_and_invalid_input_release_admission(cx: &mut TestAppContext
         this.open_image(cx);
         assert!(this.capturing);
     }).unwrap();
+    #[cfg(target_os = "windows")]
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.press("ctrl-shift-v", cx);
+    }).unwrap();
+    cx.update(|cx| assert_eq!(handle.read(cx).unwrap().capture_status, "Choosing an image…"));
     cx.simulate_path_prompt_response(|options| {
         assert!(options.files && !options.directories && !options.multiple);
         None
@@ -138,6 +143,75 @@ fn open_image_preserves_source_and_opens_without_output(cx: &mut TestAppContext)
         assert!(state.last_capture.is_none() && state.last_saved.is_none());
         let editor = state.editor.unwrap().read(cx).unwrap();
         assert_eq!(editor.source.pixels.dimensions(), (3, 2));
+    });
+    assert_eq!(std::fs::read(&path).unwrap(), original);
+    assert_eq!(std::fs::read_dir(&root).unwrap().count(), 1);
+    std::fs::remove_file(&path).unwrap();
+    std::fs::remove_dir(&root).unwrap();
+}
+
+fn drop_paths(handle: WindowHandle<CaptureWorkspace>, paths: &[PathBuf], cx: &mut TestAppContext) {
+    use gpui::InputEvent as _;
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        let position = point(px(600.), px(350.));
+        for event in [
+            gpui::FileDropEvent::Entered {
+                position,
+                paths: gpui::ExternalPaths(paths.iter().cloned().collect()),
+            },
+            gpui::FileDropEvent::Pending { position },
+            gpui::FileDropEvent::Submit { position },
+            gpui::FileDropEvent::Ended,
+        ] {
+            window.dispatch_event(event.to_platform_input(), cx);
+        }
+    }).unwrap();
+    cx.run_until_parked();
+}
+
+#[gpui::test]
+fn file_drop_validates_admission_and_opens_one_image_without_output(cx: &mut TestAppContext) {
+    let handle = open_workspace(cx);
+    let root = std::env::temp_dir().join(format!("screenshots-drop-image-{}", std::process::id()));
+    std::fs::create_dir_all(&root).unwrap();
+    let path = root.join("original.webp");
+    image::RgbaImage::from_pixel(3, 2, image::Rgba([12, 34, 56, 78])).save(&path).unwrap();
+    let original = std::fs::read(&path).unwrap();
+    handle.update(cx, |this, _, _| {
+        this.output_directory = Some(root.clone());
+        this.capturing = true;
+        this.capture_status = "Existing capture".into();
+    }).unwrap();
+    drop_paths(handle, std::slice::from_ref(&path), cx);
+    handle.update(cx, |this, _, _| {
+        assert_eq!(this.capture_status, "Existing capture");
+        assert!(this.editor.is_none());
+        this.capturing = false;
+    }).unwrap();
+    drop_paths(handle, &[path.clone(), path.clone()], cx);
+    handle.update(cx, |this, _, _| {
+        assert!(this.capture_status.starts_with("Drop exactly one"));
+        assert!(!this.capturing && this.editor.is_none());
+    }).unwrap();
+    drop_paths(handle, &[root.join("missing.png")], cx);
+    handle.update(cx, |this, _, _| {
+        assert!(this.capture_status.starts_with("Could not load image:"));
+        assert!(!this.capturing && this.editor.is_none());
+    }).unwrap();
+    drop_paths(handle, std::slice::from_ref(&root), cx);
+    handle.update(cx, |this, _, _| {
+        assert!(this.capture_status.starts_with("Could not load image:"));
+        assert!(!this.capturing && this.editor.is_none());
+    }).unwrap();
+    drop_paths(handle, std::slice::from_ref(&path), cx);
+    cx.update(|cx| {
+        let state = handle.read(cx).unwrap();
+        assert!(state.editor.is_some(), "{}", state.capture_status);
+        assert!(!state.capturing && state.last_capture.is_none() && state.last_saved.is_none());
+        let editor = state.editor.unwrap().read(cx).unwrap();
+        assert_eq!(editor.source.pixels.dimensions(), (3, 2));
+        assert_eq!(editor.source.pixels.get_pixel(0, 0).0, [12, 34, 56, 78]);
     });
     assert_eq!(std::fs::read(&path).unwrap(), original);
     assert_eq!(std::fs::read_dir(&root).unwrap().count(), 1);

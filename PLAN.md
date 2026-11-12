@@ -97,7 +97,74 @@ A five-sample warm synthetic 4K PNG development comparison observed median decod
 times of 60.30 ms for the existing PNG loader and 60.39 ms for direct editor input.
 This short worker-only observation is inconclusive for performance differences;
 it excludes presentation, dialog time and process/GPU memory and establishes no
-hardware acceptance. Paste/Drop/Open With and exact-region entry remain pending.
+hardware acceptance. Open With and exact-region entry remain pending;
+Windows clipboard image paste is implemented in the slice below.
+
+#### Current feature slice: paste a Windows clipboard image into the editor
+
+Implemented (2026-11-12): Recent capture offers Paste image (Ctrl+Shift+V) on
+Windows. It opens the shared standalone editor with explicit final outputs and
+leaves the clipboard, last capture, history and files unchanged. The dedicated
+shortcut avoids replacing normal text paste. Other platforms do not advertise
+image paste yet; their clipboard/session integration remains pending.
+
+The existing single capture admission and worker prepare the image/render. Only
+this explicit action opens/reads the native clipboard; no watcher, retry timer,
+eager initialization, dependency or thread is added. A busy/missing/invalid image
+reports failure, and Quit suppresses a late editor result. PNG is preferred, with
+24/32-bit RGB/bitfield DIB/DIBV5 fallback. Indexed/compressed DIBs and DIBs with
+embedded profiles are rejected with guidance to use PNG. Dimensions and decoder
+allocations retain the 256 MiB image limit. PNG payloads are capped at 32 MiB;
+DIB payloads at 256 MiB plus 64 KiB of header allowance, checked before copying.
+
+Native clipboard access is held only through the bounded payload copy; decoding
+and render preparation happen after it closes. The DIB path temporarily creates
+one additional bounded BMP byte vector with an explicit pixel offset to avoid a
+V4/V5 offset defect in the pinned decoder. That wrapper and the clipboard payload
+are released before render preparation; they count toward active-image memory.
+PNG/DIB decoding reuses the installed image library and shared size/orientation
+validation. There is no disk/PNG round trip for DIB pixels or clipboard read-back
+after output. Native delayed-rendering stalls remain an OS integration acceptance
+case; no hard clipboard-access deadline is claimed.
+
+Optimized synthetic tests verify PNG alpha, 24-bit padded rows, V5 bitfields/alpha,
+bottom-up and top-down rows, invalid/truncated/oversized input and byte-admission
+boundaries. UI checks verify that the paste shortcut cannot bypass active image
+admission; the existing editor/output-free fixtures remain in use. No test in
+this slice reads or replaces the user's real clipboard. Five warm synthetic 4K
+solid-color samples observed median decode of 4.18 ms for PNG and 19.19 ms for DIB,
+including the DIB wrapper copy, excluding native clipboard access/presentation.
+This is a development observation, not a latency distribution or resource gate.
+Real cross-application paste, clipboard contention/delayed rendering, keyboard and
+accessibility interaction, process/GPU memory and other-platform acceptance remain
+open. Open With is still separate work.
+
+#### Current feature slice: drop one image into the control window
+
+Implemented (2026-11-12): the control window accepts one external file drop and
+opens PNG/JPEG/WebP pixels in the shared standalone editor. A visible hint in
+Recent capture explains the action. All control pages route the accepted drop to
+Recent capture; the existing editor is never replaced. Multiple paths are rejected
+with an explanation, and active capture/edit/output/settings/teardown work prevents
+drop admission. Missing files, directories and invalid formats report load failure.
+
+The foreground callbacks inspect the payload type/count and clone only the single
+selected path. No filesystem access, format sniffing or image decoding occurs
+during drag movement or in the drop callback. Worker loading, the 32 MiB encoded
+and 256 MiB decoded limits, EXIF orientation, explicit outputs and Quit handling
+reuse direct Open image. There is no new dependency, thread, timer, runtime, image
+buffer, cache or queue; resource cost is a weak controller reference in the drop
+predicate and one transient path at dispatch. GPUI owns the native drag payload
+for the duration of the drag; the application does not retain the full path list.
+
+An optimized headless UI test dispatches Entered/Pending/Submit/Ended file-drop
+events, verifies busy and multi-file rejection, failure for missing files and
+directories, exact WebP pixels/alpha in the editor and unchanged original bytes
+with no output files. Existing Open/Paste and Kit UI tests remain in use. The
+decode path is unchanged; no new latency/process/GPU memory measurement is claimed.
+Real Explorer/Finder/Linux file-manager drag negotiation, keyboard/accessibility,
+mixed DPI and reference-hardware input/resource acceptance remain open. Raw bitmap
+or URL drops, multiple editors and Explorer Open With are outside this slice.
 
 #### Current feature slice: configurable Windows global hotkeys
 

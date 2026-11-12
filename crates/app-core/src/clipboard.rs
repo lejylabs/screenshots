@@ -3,7 +3,6 @@
 use std::borrow::Cow;
 
 use anyhow::{Context, Result};
-use image::ImageDecoder as _;
 
 const MAX_EDITOR_FILE_BYTES: u64 = 32 * 1024 * 1024;
 
@@ -54,7 +53,13 @@ pub fn load_editor_image(path: &std::path::Path) -> Result<image::RgbaImage> {
     let mut limits = image::Limits::default();
     limits.max_alloc = Some(crate::MAX_CAPTURE_BYTES);
     reader.limits(limits);
-    let mut decoder = reader.into_decoder()?;
+    decode_editor_pixels(reader.into_decoder()?)
+}
+
+pub(crate) fn decode_editor_pixels(mut decoder: impl image::ImageDecoder) -> Result<image::RgbaImage> {
+    let mut limits = image::Limits::default();
+    limits.max_alloc = Some(crate::MAX_CAPTURE_BYTES);
+    decoder.set_limits(limits)?;
     let (width, height) = decoder.dimensions();
     crate::validate_image_size(width, height)?;
     anyhow::ensure!(decoder.total_bytes() <= crate::MAX_CAPTURE_BYTES, "Decoded image exceeds the memory limit");

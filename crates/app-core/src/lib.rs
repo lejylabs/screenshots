@@ -8,6 +8,10 @@ pub use pen::{MAX_DOCUMENT_PEN_POINTS, MAX_PEN_POINTS, PenAnnotation};
 mod capture;
 pub use arrows::ArrowAnnotation;
 mod clipboard;
+#[cfg(target_os = "windows")]
+mod clipboard_windows;
+#[cfg(target_os = "windows")]
+pub use clipboard_windows::read_clipboard_image;
 mod export;
 pub use export::{ExportReport, export_saved_pngs};
 #[cfg(target_os = "windows")]

@@ -23,7 +23,21 @@ the shared editor through a single-file native picker or Ctrl+O (Cmd+O on macOS)
 Originals remain unchanged and output stays explicit. Optimized headless UI checks
 pass; direct inputs have a 32 MiB encoded-file limit, predecode size checks and
 worker-side EXIF orientation. Native dialog/accessibility and resource acceptance
-remain open. Other formats, Paste/Drop and Explorer Open With remain missing.
+remain open. Other formats and Explorer Open With remain missing.
+
+Clipboard follow-up (2026-11-12): Windows now offers explicit Paste image through
+Recent capture and Ctrl+Shift+V, using bounded PNG or 24/32-bit DIB input on a
+worker. Outputs remain explicit. Synthetic format/size/alpha/row-order and UI
+admission checks pass without accessing the real clipboard. Native cross-app
+paste, delayed rendering/contention, resource and accessibility acceptance remain
+open; non-Windows image paste remains missing. See PLAN.md for format limits.
+
+File-drop follow-up (2026-11-12): the control window now accepts one external
+PNG/JPEG/WebP file into the shared editor, using the existing worker/input limits.
+Busy/multiple-file rejection and output-free synthetic WebP opening are verified
+through GPUI file-drop events. Native file-manager integration, accessibility,
+mixed DPI and resource acceptance remain open; URL/raw-image drops and Explorer
+Open With remain missing.
 
 Assessment date: 2026-11-12. Local baseline: `ed53567f5112818781b55af63fc6931f12d0cd36`
 on `main`, including the GPUI Kit rewrite. Static inspection of production code,
@@ -123,7 +137,7 @@ cut-out/background editing and output actions integrated into tasks.
 
 | Capability | Current status and gap | Priority |
 | --- | --- | --- |
-| Open/Paste/Drop into editor | Partial: direct Open image / Ctrl+O supports PNG/JPEG/WebP; last capture and PNG history editing exist. Other formats, image paste, drag-and-drop and Explorer Open With remain missing. See the implementation follow-up for verification limits. | A |
+| Open/Paste/Drop into editor | Partial: direct Open image / Ctrl+O and a single external file drop support PNG/JPEG/WebP; Windows Paste image / Ctrl+Shift+V supports PNG and common DIB layouts. Last capture and PNG history editing exist. Other formats/platform paste, URL/raw-image drops and Explorer Open With remain missing. See the implementation follow-ups for verification limits. | A |
 | Image formats | Partial: app workflows decode/export PNG. Add JPEG/WebP import/export with explicit format, quality and transparency behavior; other formats follow actual demand/parity scope. | A/B |
 | Resize and basic transforms | Missing output resampling, aspect-locked dimensions, rotate and flip. View zoom is implemented but does not resize the exported file. | A |
 | Colors and typography | Partial: four drawing color swatches, discrete widths and text sizes; labels have four-line/512-byte limits. No general color/font selection, richer text/background/outline styling or reusable tool presets. | A/B |

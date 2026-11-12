@@ -42,6 +42,7 @@ actions!(
         CaptureCenterRegion,
         NewScreenshot,
         OpenImage,
+        PasteImage,
         ShowRecent,
         ShowLibrary,
         ShowSources,
@@ -60,6 +61,8 @@ enum EditorImage {
     Captured(CapturedImage),
     SavedPng(PathBuf),
     File(PathBuf),
+    #[cfg(target_os = "windows")]
+    Clipboard,
 }
 
 #[derive(Clone, Copy)]
@@ -490,6 +493,8 @@ impl CaptureWorkspace {
         cx.bind_keys([
             KeyBinding::new(if mac { "cmd-n" } else { "ctrl-n" }, NewScreenshot, Some("CaptureWorkspace")),
             KeyBinding::new(if mac { "cmd-o" } else { "ctrl-o" }, OpenImage, Some("CaptureWorkspace")),
+            #[cfg(target_os = "windows")]
+            KeyBinding::new("ctrl-shift-v", PasteImage, Some("CaptureWorkspace")),
             KeyBinding::new(if mac { "cmd-1" } else { "ctrl-1" }, ShowRecent, Some("CaptureWorkspace")),
             KeyBinding::new(if mac { "cmd-2" } else { "ctrl-2" }, ShowLibrary, Some("CaptureWorkspace")),
             KeyBinding::new(if mac { "cmd-3" } else { "ctrl-3" }, ShowSources, Some("CaptureWorkspace")),
@@ -1684,12 +1689,25 @@ impl CaptureWorkspace {
         self.open_redaction_source(EditorImage::SavedPng(path), cx);
     }
 
-    fn open_image(&mut self, cx: &mut Context<Self>) {
-        if self.editor.is_some() || self.editor_closing || self.capturing || self.copying
+    fn image_input_busy(&self) -> bool {
+        self.editor.is_some() || self.editor_closing || self.capturing || self.copying
             || self.saving || self.quitting || self.capture_delay.is_some()
             || self.settings_loading || self.settings_saving || self.history_mutating
             || self.switching_graphics || self.preview_active || self.output_directory.is_none()
-        { return; }
+    }
+
+    fn paste_image(&mut self, cx: &mut Context<Self>) {
+        #[cfg(target_os = "windows")]
+        if !self.image_input_busy() {
+            self.show_page(ControlPage::Captures, cx);
+            self.open_redaction_source(EditorImage::Clipboard, cx);
+        }
+        #[cfg(not(target_os = "windows"))]
+        let _ = cx;
+    }
+
+    fn open_image(&mut self, cx: &mut Context<Self>) {
+        if self.image_input_busy() { return; }
         self.show_page(ControlPage::Captures, cx);
         self.capturing = true;
         self.capture_status = "Choosing an image…".into();
@@ -1721,21 +1739,23 @@ impl CaptureWorkspace {
         cx.notify();
     }
 
+    fn open_dropped_image(&mut self, paths: &[PathBuf], cx: &mut Context<Self>) {
+        if self.image_input_busy() { return; }
+        self.show_page(ControlPage::Captures, cx);
+        let [path] = paths else {
+            self.capture_status = "Drop exactly one PNG, JPEG or WebP image to edit a copy.".into();
+            cx.notify();
+            return;
+        };
+        self.open_redaction_source(EditorImage::File(path.clone()), cx);
+    }
+
     fn open_redaction_source(
         &mut self,
         source: EditorImage,
         cx: &mut Context<Self>,
     ) {
-        if self.editor.is_some()
-            || self.editor_closing
-            || self.capturing
-            || self.copying
-            || self.saving
-            || self.quitting
-            || self.capture_delay.is_some()
-            || self.settings_saving
-            || self.history_mutating
-        {
+        if self.image_input_busy() {
             return;
         }
         let Some(directory) = self.output_directory.clone() else {
@@ -1752,6 +1772,8 @@ impl CaptureWorkspace {
                             let pixels = match file {
                                 EditorImage::SavedPng(path) => app_core::load_saved_png(&path),
                                 EditorImage::File(path) => app_core::load_editor_image(&path),
+                                #[cfg(target_os = "windows")]
+                                EditorImage::Clipboard => app_core::read_clipboard_image(),
                                 EditorImage::Captured(_) => unreachable!(),
                             }.map_err(|e| format!("{e:#}"))?;
                             CapturedImage {
