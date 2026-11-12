@@ -9,15 +9,17 @@ use std::{
 
 pub const DEFAULT_JPEG_QUALITY: u8 = 90;
 fn default_jpeg_quality() -> u8 { DEFAULT_JPEG_QUALITY }
+fn default_capture_delay() -> u8 { 3 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(from = "StoredCaptureHotkeys")]
-pub struct CaptureHotkeys(pub [String; 5]);
+pub struct CaptureHotkeys(pub [String; 6]);
 
 #[derive(Deserialize)]
 #[serde(untagged)]
 enum StoredCaptureHotkeys {
-    Current([String; 5]),
+    Current([String; 6]),
+    FiveCommands([String; 5]),
     FourCommands([String; 4]),
     Legacy([String; 3]),
 }
@@ -26,11 +28,14 @@ impl From<StoredCaptureHotkeys> for CaptureHotkeys {
     fn from(stored: StoredCaptureHotkeys) -> Self {
         match stored {
             StoredCaptureHotkeys::Current(keys) => Self(keys),
+            StoredCaptureHotkeys::FiveCommands([primary, region, edit, active, repeat]) => {
+                Self([primary, region, edit, active, repeat, String::new()])
+            }
             StoredCaptureHotkeys::FourCommands([primary, region, edit, active]) => {
-                Self([primary, region, edit, active, String::new()])
+                Self([primary, region, edit, active, String::new(), String::new()])
             }
             StoredCaptureHotkeys::Legacy([primary, region, edit]) => {
-                Self([primary, region, edit, String::new(), String::new()])
+                Self([primary, region, edit, String::new(), String::new(), String::new()])
             }
         }
     }
@@ -44,17 +49,19 @@ impl Default for CaptureHotkeys {
             "Ctrl+Shift+E".into(),
             String::new(),
             String::new(),
+            String::new(),
         ])
     }
 }
 
 impl CaptureHotkeys {
-    pub const LABELS: [&'static str; 5] = [
+    pub const LABELS: [&'static str; 6] = [
         "Primary display",
         "Quick region",
         "Capture and annotate",
         "Active window",
         "Repeat last region",
+        "Active display",
     ];
 
     pub fn validated(&self) -> Result<Self> {
@@ -138,6 +145,8 @@ pub struct CaptureSettings {
     pub export_format: crate::ImageExportFormat,
     #[serde(default)]
     pub filename_template: String,
+    #[serde(default = "default_capture_delay")]
+    pub capture_delay_seconds: u8,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -233,12 +242,19 @@ impl CaptureSettings {
             jpeg_quality: DEFAULT_JPEG_QUALITY,
             export_format: crate::ImageExportFormat::default(),
             filename_template: String::new(),
+            capture_delay_seconds: default_capture_delay(),
         })
     }
 
     pub fn with_theme(mut self, theme: UiTheme) -> Self {
         self.theme = theme;
         self
+    }
+
+    pub fn with_capture_delay(mut self, seconds: u8) -> Result<Self> {
+        ensure!((1..=60).contains(&seconds), "Capture delay must be between 1 and 60 seconds");
+        self.capture_delay_seconds = seconds;
+        Ok(self)
     }
 
     pub fn with_hotkeys(mut self, hotkeys: CaptureHotkeys) -> Result<Self> {
@@ -310,7 +326,8 @@ impl CaptureSettings {
             .with_region_presets(settings.region_presets)?
             .with_jpeg_quality(settings.jpeg_quality)?
             .with_export_format(settings.export_format)
-            .with_filename_template(settings.filename_template)?)
+            .with_filename_template(settings.filename_template)?
+            .with_capture_delay(settings.capture_delay_seconds)?)
     }
 
     pub fn save(&self) -> Result<()> {
@@ -318,6 +335,7 @@ impl CaptureSettings {
     }
 
     fn save_at(&self, path: &Path) -> Result<()> {
+        ensure!((1..=60).contains(&self.capture_delay_seconds), "Capture delay must be between 1 and 60 seconds");
         self.hotkeys.validated()?;
         validate_region_presets(&self.region_presets)?;
         crate::validate_capture_name_template(&self.filename_template)?;
@@ -351,6 +369,49 @@ impl CaptureSettings {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn capture_delay_persists_preserves_preferences_and_rejects_invalid_settings() -> Result<()> {
+        let root = std::env::temp_dir().join(format!("screenshots-delay-settings-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&root)?;
+        let path = root.join("settings.json");
+        let preset = RegionPreset::new("Small", crate::PixelRegion { x: 1, y: 2, width: 3, height: 4 })?;
+        for seconds in [1, 5, 60] {
+            CaptureSettings::for_directory(root.clone())?.with_theme(UiTheme::Oldschool)
+                .with_output_profile(CaptureOutputProfile::CopyOnly).with_region_presets(vec![preset.clone()])?
+                .with_jpeg_quality(73)?.with_export_format(crate::ImageExportFormat::WebP)
+                .with_filename_template("Shot-{date}".into())?.with_capture_delay(seconds)?.save_at(&path)?;
+            let loaded = CaptureSettings::load_at(&path, root.clone())?;
+            assert_eq!(loaded.capture_delay_seconds, seconds);
+            assert_eq!(loaded.theme, UiTheme::Oldschool);
+            assert_eq!(loaded.output_profile, CaptureOutputProfile::CopyOnly);
+            assert_eq!(loaded.region_presets, vec![preset.clone()]);
+            assert_eq!(loaded.jpeg_quality, 73);
+            assert_eq!(loaded.export_format, crate::ImageExportFormat::WebP);
+            assert_eq!(loaded.filename_template, "Shot-{date}");
+            loaded.with_theme(UiTheme::Default).save_at(&path)?;
+            assert_eq!(CaptureSettings::load_at(&path, root.clone())?.capture_delay_seconds, seconds);
+        }
+        let before = fs::read(&path)?;
+        for seconds in [0, 61, 255] {
+            assert!(CaptureSettings::for_directory(root.clone())?.with_capture_delay(seconds).is_err());
+            let mut invalid = CaptureSettings::for_directory(root.clone())?;
+            invalid.capture_delay_seconds = seconds;
+            assert!(invalid.save_at(&path).is_err());
+            assert_eq!(fs::read(&path)?, before);
+            let mut stored: serde_json::Value = serde_json::from_slice(&before)?;
+            stored["capture_delay_seconds"] = seconds.into();
+            fs::write(&path, serde_json::to_vec(&stored)?)?;
+            assert!(CaptureSettings::load_at(&path, root.clone()).is_err());
+            fs::write(&path, &before)?;
+        }
+        let mut legacy: serde_json::Value = serde_json::from_slice(&before)?;
+        legacy.as_object_mut().unwrap().remove("capture_delay_seconds");
+        fs::write(&path, serde_json::to_vec(&legacy)?)?;
+        assert_eq!(CaptureSettings::load_at(&path, root.clone())?.capture_delay_seconds, 3);
+        fs::remove_file(path)?; fs::remove_dir(root)?;
+        Ok(())
+    }
 
     #[test]
     fn filename_templates_persist_validate_and_default_for_legacy_settings() -> Result<()> {
@@ -497,18 +558,25 @@ mod tests {
     #[test]
     fn legacy_hotkeys_keep_bindings_and_active_window_starts_disabled() -> Result<()> {
         let legacy: CaptureHotkeys = serde_json::from_str(r#"["Alt+Q","","Ctrl+F9"]"#)?;
-        assert_eq!(legacy.0, ["Alt+Q", "", "Ctrl+F9", "", ""]);
+        assert_eq!(legacy.0, ["Alt+Q", "", "Ctrl+F9", "", "", ""]);
         let four: CaptureHotkeys = serde_json::from_str(r#"["Alt+Q","","Ctrl+F9","Alt+W"]"#)?;
-        assert_eq!(four.0, ["Alt+Q", "", "Ctrl+F9", "Alt+W", ""]);
+        assert_eq!(four.0, ["Alt+Q", "", "Ctrl+F9", "Alt+W", "", ""]);
+        let five: CaptureHotkeys = serde_json::from_str(r#"["Alt+Q","","Ctrl+F9","Alt+W","Alt+R"]"#)?;
+        assert_eq!(five.0, ["Alt+Q", "", "Ctrl+F9", "Alt+W", "Alt+R", ""]);
         assert!(CaptureHotkeys::default().0[4].is_empty());
         assert!(CaptureHotkeys::default().0[3].is_empty());
+        assert!(CaptureHotkeys::default().0[5].is_empty());
         let mut current = legacy.clone();
         current.0[3] = "Ctrl+Alt+W".into();
         current.0[4] = "Alt+R".into();
+        current.0[5] = "Alt+D".into();
         assert_eq!(
             serde_json::from_slice::<CaptureHotkeys>(&serde_json::to_vec(&current)?)?,
             current
         );
+        current.0[5] = current.0[0].clone();
+        assert!(current.validated().is_err());
+        current.0[5] = "Alt+D".into();
         current.0[3] = "alt+q".into();
         assert!(current.validated().is_err());
         assert!(serde_json::from_str::<CaptureHotkeys>(r#"["Q","R"]"#).is_err());
@@ -529,6 +597,7 @@ mod tests {
             "Ctrl+F9".into(),
             "".into(),
             "".into(),
+            String::new(),
         ]);
         for profile in CaptureOutputProfile::ALL {
             CaptureSettings::for_directory(dir.clone())?
@@ -575,9 +644,10 @@ mod tests {
             "".into(),
             "".into(),
             "".into(),
+            String::new(),
         ])
         .validated()?;
-        assert_eq!(keys.0, ["Ctrl+Shift+Q", "PrintScreen", "", "", ""]);
+        assert_eq!(keys.0, ["Ctrl+Shift+Q", "PrintScreen", "", "", "", ""]);
         for invalid in [
             "Q",
             "Shift+Q",
@@ -590,7 +660,7 @@ mod tests {
             "Ctrl+Enter",
         ] {
             assert!(
-                CaptureHotkeys([invalid.into(), "".into(), "".into(), "".into(), "".into()])
+                CaptureHotkeys([invalid.into(), "".into(), "".into(), "".into(), "".into(), String::new()])
                     .validated()
                     .is_err(),
                 "{invalid}"
@@ -602,18 +672,19 @@ mod tests {
                 "Shift+Ctrl+Q".into(),
                 "".into(),
                 "".into(),
-                "".into()
+                "".into(),
+                String::new(),
             ])
             .validated()
             .is_err()
         );
         assert!(
-            CaptureHotkeys([" ".repeat(65), "".into(), "".into(), "".into(), "".into()])
+            CaptureHotkeys([" ".repeat(65), "".into(), "".into(), "".into(), "".into(), String::new()])
                 .validated()
                 .is_err()
         );
         assert!(
-            CaptureHotkeys(["".into(), "".into(), "".into(), "".into(), "".into()])
+            CaptureHotkeys(["".into(), "".into(), "".into(), "".into(), "".into(), String::new()])
                 .validated()
                 .is_ok()
         );
@@ -632,6 +703,7 @@ mod tests {
             "".into(),
             "".into(),
             "".into(),
+            "Alt+D".into(),
         ]);
         CaptureSettings::for_directory(dir.clone())?
             .with_hotkeys(hotkeys.clone())?

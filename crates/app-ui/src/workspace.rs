@@ -200,9 +200,9 @@ impl Render for CaptureWorkspace {
                         cx.listener(|this, _, _, cx| this.cancel_capture_delay(cx))))))
             .when(self.page == ControlPage::Captures, |view| {
                 view.children(self.capture_delay_input.iter().map(|input| div().flex().flex_wrap().items_center().gap_2()
-                    .child(format!("Capture delay · active: {} s · this app session only", self.capture_delay_seconds))
+                    .child(format!("Capture delay · active: {} s", self.capture_delay_seconds))
                     .child(div().w(px(64.)).child(gpui::component::input::Input::new(input).id("capture-delay-seconds").aria_label("Capture delay in seconds, 1 to 60").disabled(unavailable || self.preview_active)))
-                    .child(capture_button(cx, "apply-capture-delay", "Apply delay (1–60 s)", unavailable || self.preview_active,
+                    .child(capture_button(cx, "apply-capture-delay", "Save delay (1–60 s)", unavailable || self.preview_active,
                         cx.listener(|this, _, _, cx| this.apply_capture_delay(cx))))))
                 .child(capture_button(cx, "open-image", "Open image…", unavailable || self.preview_active,
                     cx.listener(|this, _, _, cx| this.open_image(cx))))
@@ -271,6 +271,14 @@ impl Render for CaptureWorkspace {
                                 busy || self.preview_active || self.last_saved.is_none(),
                                 cx.listener(|this, _, _, cx| this.copy_last_file_path(cx)),
                             ))
+                            .when(cfg!(target_os = "windows"), |view| view.child(capture_button(cx,
+                                "copy-last-file", "Copy file", busy || self.preview_active || self.last_saved.is_none(),
+                                cx.listener(|this, _, _, cx| {
+                                    #[cfg(target_os = "windows")]
+                                    this.copy_last_file(cx);
+                                    #[cfg(not(target_os = "windows"))]
+                                    let _ = (this, cx);
+                                }))))
                             .child(capture_button(cx,
                                 "reveal-last-capture",
                                 "Show file",
@@ -894,6 +902,11 @@ impl CaptureWorkspace {
                             .icon(ui_icon(cx, "capture-primary", 16.))
                             .disable(unavailable)
                             .on_click(cx.listener(|this, _, _, cx| this.start_delayed_capture(DelayedCapture::ActiveWindow, cx))),
+                        #[cfg(target_os = "windows")]
+                        SidebarMenuItem::new(format!("Active display in {} s", self.capture_delay_seconds))
+                            .icon(ui_icon(cx, "capture-primary", 16.))
+                            .disable(unavailable)
+                            .on_click(cx.listener(|this, _, _, cx| this.start_delayed_capture(DelayedCapture::ActiveDisplay, cx))),
                         SidebarMenuItem::new("All displays")
                             .icon(ui_icon(cx, "capture-all", 16.))
                             .disable(unavailable || (self.output_profile.requires_single_image() && self.xcap_displays.len() > 1))
@@ -1026,6 +1039,8 @@ impl CaptureWorkspace {
                     ("Open", HistoryCommand::Open, false),
                     ("Show in folder", HistoryCommand::Reveal, false),
                     ("Copy file path", HistoryCommand::CopyPath, !available.0),
+                    #[cfg(target_os = "windows")]
+                    ("Copy file", HistoryCommand::CopyFile, !available.0),
                     (
                         "Upload PNG",
                         HistoryCommand::Upload,

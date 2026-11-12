@@ -11,6 +11,7 @@ pub enum TrayCommand {
     Region,
     EditRegion,
     ActiveWindow,
+    ActiveDisplay,
     RepeatRegion,
     Show,
     Quit,
@@ -22,6 +23,7 @@ pub struct SpikeTray {
     region: MenuItem,
     edit_region: MenuItem,
     active_window: MenuItem,
+    active_display: MenuItem,
     repeat_region: MenuItem,
     show: MenuItem,
     quit: MenuItem,
@@ -34,6 +36,7 @@ impl SpikeTray {
         let region = MenuItem::new("Select region", true, None);
         let edit_region = MenuItem::new("Capture and annotate", true, None);
         let active_window = MenuItem::new("Active window (configured delay)…", true, None);
+        let active_display = MenuItem::new("Active display (configured delay)…", true, None);
         let repeat_region = MenuItem::new("Repeat last region (current session)", false, None);
         let show = MenuItem::new("Show control window", true, None);
         let quit = MenuItem::new("Quit", true, None);
@@ -42,6 +45,7 @@ impl SpikeTray {
             &region,
             &capture,
             &active_window,
+            &active_display,
             &repeat_region,
             &show,
             &quit,
@@ -70,6 +74,7 @@ impl SpikeTray {
             region,
             edit_region,
             active_window,
+            active_display,
             repeat_region,
             show,
             quit,
@@ -88,6 +93,8 @@ impl SpikeTray {
                     Some(TrayCommand::EditRegion)
                 } else if event.id == *self.active_window.id() {
                     Some(TrayCommand::ActiveWindow)
+                } else if event.id == *self.active_display.id() {
+                    Some(TrayCommand::ActiveDisplay)
                 } else if event.id == *self.repeat_region.id() {
                     Some(TrayCommand::RepeatRegion)
                 } else if event.id == *self.show.id() {
@@ -114,6 +121,8 @@ impl SpikeTray {
             Some(TrayCommand::EditRegion)
         } else if event.id == *self.active_window.id() {
             Some(TrayCommand::ActiveWindow)
+        } else if event.id == *self.active_display.id() {
+            Some(TrayCommand::ActiveDisplay)
         } else if event.id == *self.repeat_region.id() {
             Some(TrayCommand::RepeatRegion)
         } else if event.id == *self.show.id() {
@@ -151,6 +160,10 @@ mod tests {
                 id: tray.active_window.id().clone()
             }),
             Some(TrayCommand::ActiveWindow)
+        );
+        assert_eq!(
+            tray.command(MenuEvent { id: tray.active_display.id().clone() }),
+            Some(TrayCommand::ActiveDisplay)
         );
         drop(tray);
         Ok(())

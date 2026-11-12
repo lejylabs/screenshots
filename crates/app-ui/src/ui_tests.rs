@@ -122,6 +122,52 @@ fn copy_file_path_requires_a_saved_capture_and_reports_worker_failure(cx: &mut T
     }).unwrap();
 }
 
+#[cfg(target_os = "windows")]
+#[gpui::test]
+fn copy_file_rejects_missing_source_without_changing_clipboard_or_capture(cx: &mut TestAppContext) {
+    let handle = open_workspace(cx);
+    let missing = std::env::temp_dir().join(format!("missing-file-copy-{}.png", std::process::id()));
+    assert!(!missing.exists());
+    handle.update(cx, |this, _, cx| {
+        this.copy_last_file(cx);
+        assert!(!this.copying);
+        this.last_saved = Some(missing.clone());
+    }).unwrap();
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.click("copy-last-file", cx);
+    }).unwrap();
+    cx.run_until_parked();
+    handle.update(cx, |this, _, cx| {
+        assert!(!this.copying);
+        assert!(this.clipboard_status.starts_with("Could not copy file: Saved file is unavailable"));
+        assert_eq!(this.last_saved.as_ref(), Some(&missing));
+        assert!(this.last_capture.is_none());
+        this.show_page(ControlPage::History, cx);
+    }).unwrap();
+    cx.run_until_parked();
+    handle.update(cx, |this, _, cx| {
+        this.history_entries = vec![app_core::HistoryEntry { id: 42, path: missing,
+            width: 1, height: 1, created_at: "2026-11-12".into() }];
+        this.run_history_command(42, this.history_revision.wrapping_add(1), HistoryCommand::CopyFile, cx);
+        assert!(!this.copying);
+    }).unwrap();
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.click("history-more-actions", cx);
+        let bounds = window.find_by_label("Copy file").bounds();
+        use gpui::test::TestEventExt;
+        window.pointer_down(bounds.center(), gpui::MouseButton::Left, cx);
+        window.pointer_up(bounds.center(), gpui::MouseButton::Left, cx);
+    }).unwrap();
+    cx.run_until_parked();
+    handle.update(cx, |this, _, _| {
+        assert!(!this.copying);
+        assert!(this.history_action_status.starts_with("Could not copy file: Saved file is unavailable"));
+        assert_eq!(this.history_entries.len(), 1);
+    }).unwrap();
+}
+
 #[gpui::test]
 fn custom_export_dimensions_validate_snapshot_and_release_input(cx: &mut TestAppContext) {
     for (index, axis, too_large, dimensions) in [(3, "Width", "6", (2, 2)), (4, "Height", "4", (4, 2)), (5, "Exact", "6", (2, 1))] {
@@ -736,31 +782,35 @@ fn repeat_without_a_region_shows_capture_guidance_without_output(cx: &mut TestAp
 #[cfg(target_os = "windows")]
 #[gpui::test]
 fn active_window_countdown_can_cancel_without_starting_capture(cx: &mut TestAppContext) {
-    let handle = open_workspace(cx);
-    cx.update(|cx| handle.update(cx, |this, _, cx| {
-        this.output_directory = Some(std::env::temp_dir());
-        this.capture_delay_seconds = 10;
-        this.start_delayed_capture(DelayedCapture::ActiveWindow, cx);
-        assert!(this.capture_delay.is_some());
-        assert!(this.capture_status.contains("in 10 s"));
-        assert!(this.capture_status.contains("Focus the target window"));
-        this.cancel_capture_delay(cx);
-    }).unwrap());
-    cx.executor().advance_clock(std::time::Duration::from_secs(11));
-    cx.run_until_parked();
-    cx.update(|cx| {
-        let view = handle.read(cx).unwrap();
-        assert!(view.capture_delay.is_none());
-        assert!(!view.capturing && !view.copying && !view.saving);
-        assert!(view.last_capture.is_none() && view.editor.is_none());
-        assert_eq!(view.capture_status, "Delayed capture canceled");
-    });
+    for target in [DelayedCapture::ActiveWindow, DelayedCapture::ActiveDisplay] {
+        let handle = open_workspace(cx);
+        cx.update(|cx| handle.update(cx, |this, _, cx| {
+            this.output_directory = Some(std::env::temp_dir());
+            this.capture_delay_seconds = 10;
+            this.start_delayed_capture(target, cx);
+            assert!(this.capture_delay.is_some());
+            assert!(this.capture_status.contains("in 10 s"));
+            assert!(this.capture_status.contains("Focus the target window"));
+            this.cancel_capture_delay(cx);
+        }).unwrap());
+        cx.executor().advance_clock(std::time::Duration::from_secs(11));
+        cx.run_until_parked();
+        cx.update(|cx| {
+            let view = handle.read(cx).unwrap();
+            assert!(view.capture_delay.is_none());
+            assert!(!view.capturing && !view.copying && !view.saving);
+            assert!(view.last_capture.is_none() && view.editor.is_none());
+            assert_eq!(view.capture_status, "Delayed capture canceled");
+        });
+    }
 }
 
 #[gpui::test]
 fn capture_delay_validates_applies_snapshots_and_releases_input(cx: &mut TestAppContext) {
     let handle = open_workspace(cx);
-    handle.update(cx, |this, _, _| this.output_directory = Some(std::env::temp_dir())).unwrap();
+    let blocker = std::env::temp_dir().join(format!("screenshots-delay-blocker-{}", std::process::id()));
+    std::fs::write(&blocker, b"not a folder").unwrap();
+    handle.update(cx, |this, _, _| this.output_directory = Some(blocker.clone())).unwrap();
     cx.update_window(handle.into(), |_, window, cx| window.render_frame(cx)).unwrap();
     handle.update(cx, |this, window, cx| {
         assert_eq!(this.capture_delay_seconds, 3);
@@ -771,15 +821,23 @@ fn capture_delay_validates_applies_snapshots_and_releases_input(cx: &mut TestApp
             assert_eq!(this.capture_delay_seconds, 3);
             assert!(this.capture_delay.is_none());
         }
-        for value in ["1", "60", "5"] {
-            input.update(cx, |input, cx| input.set_value(value, window, cx));
-            this.apply_capture_delay(cx);
-            assert_eq!(this.capture_delay_seconds, value.parse::<u8>().unwrap());
-        }
+        input.update(cx, |input, cx| input.set_value("5", window, cx));
     }).unwrap();
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
         window.click("apply-capture-delay", cx);
+    }).unwrap();
+    handle.update(cx, |this, _, _| {
+        assert!(this.settings_saving);
+        assert_eq!(this.capture_delay_seconds, 3);
+    }).unwrap();
+    cx.run_until_parked();
+    handle.update(cx, |this, _, _| {
+        assert!(!this.settings_saving);
+        assert_eq!(this.capture_delay_seconds, 3);
+        assert!(this.capture_status.starts_with("Capture delay unchanged:"));
+        this.capture_delay_seconds = 5;
+        this.output_directory = Some(std::env::temp_dir());
     }).unwrap();
     handle.update(cx, |this, window, cx| {
         this.start_delayed_region(cx);
@@ -807,6 +865,7 @@ fn capture_delay_validates_applies_snapshots_and_releases_input(cx: &mut TestApp
         this.show_page(ControlPage::Sources, cx);
         assert!(this.capture_delay_input.is_none());
     }).unwrap();
+    std::fs::remove_file(blocker).unwrap();
 }
 
 #[cfg(target_os = "windows")]

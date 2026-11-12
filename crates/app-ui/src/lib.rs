@@ -70,6 +70,8 @@ enum DelayedCapture {
     Region,
     #[cfg(target_os = "windows")]
     ActiveWindow,
+    #[cfg(target_os = "windows")]
+    ActiveDisplay,
 }
 
 struct ResidentController(gpui::Entity<CaptureWorkspace>);
@@ -119,11 +121,20 @@ enum ControlPage {
 #[derive(Clone, Copy)]
 enum HistoryCommand {
     CopyPath,
+    #[cfg(target_os = "windows")]
+    CopyFile,
     Open,
     Reveal,
     Upload,
     Relink,
     Remove,
+}
+
+#[derive(Clone, Copy)]
+enum FileClipboardKind {
+    Path,
+    #[cfg(target_os = "windows")]
+    File,
 }
 
 pub struct CaptureWorkspace {
@@ -163,7 +174,7 @@ pub struct CaptureWorkspace {
     region_presets: Vec<app_core::RegionPreset>,
     region_preset_name: Option<gpui::Entity<gpui::component::input::InputState>>,
     #[cfg(target_os = "windows")]
-    hotkey_inputs: Option<[gpui::Entity<gpui::component::input::InputState>; 5]>,
+    hotkey_inputs: Option<[gpui::Entity<gpui::component::input::InputState>; 6]>,
     history_database: Option<PathBuf>,
     history_visible: bool,
     history_filter: app_core::HistoryFilter,
@@ -663,6 +674,8 @@ impl CaptureWorkspace {
                         this.hotkey_bindings = settings.hotkeys;
                         this.output_profile = settings.output_profile;
                         this.jpeg_quality = settings.jpeg_quality;
+                        this.capture_delay_seconds = settings.capture_delay_seconds;
+                        this.capture_delay_input = None;
                         this.export_format = settings.export_format;
                         this.filename_template = settings.filename_template;
                         this.region_presets = settings.region_presets;
@@ -743,6 +756,7 @@ impl CaptureWorkspace {
                                         }
                                         Some(app_core::CaptureCommand::ActiveWindow) => this.capture_active_window(cx),
                                         Some(app_core::CaptureCommand::RepeatRegion) => this.repeat_last_region(cx),
+                                        Some(app_core::CaptureCommand::ActiveDisplay) => this.capture_active_display(cx),
                                         None => {}
                                     }
                                 }
@@ -758,6 +772,7 @@ impl CaptureWorkspace {
                                             this.select_region_to_edit(cx)
                                         }
                                         Some(app_core::TrayCommand::ActiveWindow) => this.start_delayed_capture(DelayedCapture::ActiveWindow, cx),
+                                        Some(app_core::TrayCommand::ActiveDisplay) => this.start_delayed_capture(DelayedCapture::ActiveDisplay, cx),
                                         Some(app_core::TrayCommand::RepeatRegion) => this.repeat_last_region(cx),
                                         Some(app_core::TrayCommand::Show) => this.show_control(cx),
                                         Some(app_core::TrayCommand::Quit) => {
@@ -780,6 +795,7 @@ impl CaptureWorkspace {
     }
 
     fn choose_output_directory(&mut self, cx: &mut Context<Self>) {
+        let capture_delay_seconds = self.capture_delay_seconds;
         if self.capture_delay.is_some() {
             return;
         }
@@ -829,7 +845,7 @@ impl CaptureWorkspace {
                         .with_output_profile(profile).with_region_presets(presets)
                         .and_then(|settings| settings.with_jpeg_quality(jpeg_quality))
                         .map(|settings| settings.with_export_format(export_format))
-                        .and_then(|settings| settings.with_filename_template(filename_template))
+                        .and_then(|settings| settings.with_filename_template(filename_template)).and_then(|settings| settings.with_capture_delay(capture_delay_seconds))
                         .map_err(|error| format!("{error:#}"))?;
                     settings.save().map_err(|error| format!("{error:#}"))?;
                     Ok::<_, String>(settings.output_directory)
@@ -862,6 +878,7 @@ impl CaptureWorkspace {
     }
 
     fn choose_theme(&mut self, selected: app_core::UiTheme, cx: &mut Context<Self>) {
+        let capture_delay_seconds = self.capture_delay_seconds;
         if self.settings_loading || self.settings_saving || self.quitting || theme::selected(cx) == selected {
             return;
         }
@@ -880,7 +897,7 @@ impl CaptureWorkspace {
             let result = cx.background_spawn(async move {
                 // The default capture folder may not exist before the first screenshot.
                 std::fs::create_dir_all(&directory)?;
-                app_core::CaptureSettings::for_directory(directory)?.with_theme(selected).with_hotkeys(hotkeys)?.with_output_profile(profile).with_region_presets(presets)?.with_jpeg_quality(jpeg_quality)?.with_export_format(export_format).with_filename_template(filename_template)?.save()
+                app_core::CaptureSettings::for_directory(directory)?.with_theme(selected).with_hotkeys(hotkeys)?.with_output_profile(profile).with_region_presets(presets)?.with_jpeg_quality(jpeg_quality)?.with_export_format(export_format).with_filename_template(filename_template)?.with_capture_delay(capture_delay_seconds)?.save()
             }).await;
             this.update(cx, |this, cx| {
                 this.settings_saving = false;
@@ -899,6 +916,7 @@ impl CaptureWorkspace {
     }
 
     fn choose_output_profile(&mut self, selected: CaptureOutputProfile, cx: &mut Context<Self>) {
+        let capture_delay_seconds = self.capture_delay_seconds;
         let jpeg_quality = self.jpeg_quality;
         let export_format = self.export_format;
         let filename_template = self.filename_template.clone();
@@ -916,7 +934,7 @@ impl CaptureWorkspace {
             let result = cx.background_spawn(async move {
                 std::fs::create_dir_all(&directory)?;
                 app_core::CaptureSettings::for_directory(directory)?.with_theme(appearance)
-                    .with_hotkeys(hotkeys)?.with_output_profile(selected).with_region_presets(presets)?.with_jpeg_quality(jpeg_quality)?.with_export_format(export_format).with_filename_template(filename_template)?.save()
+                    .with_hotkeys(hotkeys)?.with_output_profile(selected).with_region_presets(presets)?.with_jpeg_quality(jpeg_quality)?.with_export_format(export_format).with_filename_template(filename_template)?.with_capture_delay(capture_delay_seconds)?.save()
             }).await;
             this.update(cx, |this, cx| {
                 this.settings_saving = false;
@@ -935,6 +953,7 @@ impl CaptureWorkspace {
     }
 
     fn save_jpeg_quality(&mut self, cx: &mut Context<Self>) {
+        let capture_delay_seconds = self.capture_delay_seconds;
         let export_format = self.export_format;
         let filename_template = self.filename_template.clone();
         if self.page != ControlPage::Settings || self.image_input_busy() { return; }
@@ -961,7 +980,7 @@ impl CaptureWorkspace {
             let result = cx.background_spawn(async move {
                 let settings = app_core::CaptureSettings::for_directory(directory)?.with_theme(appearance)
                     .with_hotkeys(hotkeys)?.with_output_profile(profile).with_region_presets(presets)?
-                    .with_jpeg_quality(quality)?.with_export_format(export_format).with_filename_template(filename_template)?;
+                    .with_jpeg_quality(quality)?.with_export_format(export_format).with_filename_template(filename_template)?.with_capture_delay(capture_delay_seconds)?;
                 std::fs::create_dir_all(&settings.output_directory)?;
                 settings.save()
             }).await;
@@ -979,6 +998,7 @@ impl CaptureWorkspace {
     }
 
     fn choose_export_format(&mut self, format: app_core::ImageExportFormat, cx: &mut Context<Self>) {
+        let capture_delay_seconds = self.capture_delay_seconds;
         let filename_template = self.filename_template.clone();
         if self.page != ControlPage::Settings || self.image_input_busy() || self.export_format == format { return; }
         let Some(directory) = self.output_directory.clone() else { return; };
@@ -993,7 +1013,7 @@ impl CaptureWorkspace {
             let result = cx.background_spawn(async move {
                 let settings = app_core::CaptureSettings::for_directory(directory)?.with_theme(appearance)
                     .with_hotkeys(hotkeys)?.with_output_profile(profile).with_region_presets(presets)?
-                    .with_jpeg_quality(quality)?.with_export_format(format).with_filename_template(filename_template)?;
+                    .with_jpeg_quality(quality)?.with_export_format(format).with_filename_template(filename_template)?.with_capture_delay(capture_delay_seconds)?;
                 std::fs::create_dir_all(&settings.output_directory)?;
                 settings.save()
             }).await;
@@ -1011,6 +1031,7 @@ impl CaptureWorkspace {
     }
 
     fn save_filename_template(&mut self, cx: &mut Context<Self>) {
+        let capture_delay_seconds = self.capture_delay_seconds;
         if self.page != ControlPage::Settings || self.image_input_busy() { return; }
         let Some(input) = &self.filename_template_input else { return; };
         let template = input.read(cx).value().trim().to_owned();
@@ -1035,7 +1056,7 @@ impl CaptureWorkspace {
             let result = cx.background_spawn(async move {
                 let settings = app_core::CaptureSettings::for_directory(directory)?.with_theme(appearance)
                     .with_hotkeys(hotkeys)?.with_output_profile(profile).with_region_presets(presets)?
-                    .with_jpeg_quality(quality)?.with_export_format(format).with_filename_template(template)?;
+                    .with_jpeg_quality(quality)?.with_export_format(format).with_filename_template(template)?.with_capture_delay(capture_delay_seconds)?;
                 std::fs::create_dir_all(&settings.output_directory)?;
                 settings.save()?;
                 Ok::<_, anyhow::Error>(settings.filename_template)
@@ -1086,6 +1107,7 @@ impl CaptureWorkspace {
     }
     #[cfg(target_os = "windows")]
     fn save_hotkeys(&mut self, bindings: app_core::CaptureHotkeys, cx: &mut Context<Self>) {
+        let capture_delay_seconds = self.capture_delay_seconds;
         let jpeg_quality = self.jpeg_quality;
         let export_format = self.export_format;
         let filename_template = self.filename_template.clone();
@@ -1118,7 +1140,7 @@ impl CaptureWorkspace {
             let result = cx.background_spawn(async move {
                 std::fs::create_dir_all(&directory)?;
                 app_core::CaptureSettings::for_directory(directory)?
-                    .with_theme(appearance).with_hotkeys(saved_bindings)?.with_output_profile(profile).with_region_presets(presets)?.with_jpeg_quality(jpeg_quality)?.with_export_format(export_format).with_filename_template(filename_template)?.save()
+                    .with_theme(appearance).with_hotkeys(saved_bindings)?.with_output_profile(profile).with_region_presets(presets)?.with_jpeg_quality(jpeg_quality)?.with_export_format(export_format).with_filename_template(filename_template)?.with_capture_delay(capture_delay_seconds)?.save()
             }).await;
             this.update(cx, |this, cx| {
                 this.settings_saving = false;
@@ -1206,7 +1228,11 @@ impl CaptureWorkspace {
             HistoryCommand::Open => cx.open_with_system(&path),
             HistoryCommand::Reveal => cx.reveal_path(&path),
             HistoryCommand::CopyPath => {
-                if !self.history_loading { self.copy_file_path(path, Some(revision), cx); }
+                if !self.history_loading { self.copy_file_reference(path, Some(revision), FileClipboardKind::Path, cx); }
+            }
+            #[cfg(target_os = "windows")]
+            HistoryCommand::CopyFile => {
+                if !self.history_loading { self.copy_file_reference(path, Some(revision), FileClipboardKind::File, cx); }
             }
             HistoryCommand::Upload => self.upload_history_image(id, revision, cx),
             HistoryCommand::Relink => self.relink_history_image(id, revision, cx),
@@ -1503,8 +1529,36 @@ impl CaptureWorkspace {
             self.capture_status = "Delay unchanged: enter whole seconds from 1 to 60.".into();
             cx.notify(); return;
         };
-        self.capture_delay_seconds = seconds;
-        self.capture_status = format!("Capture delay set to {seconds} s for this app session.");
+        if seconds == self.capture_delay_seconds { return; }
+        let Some(directory) = self.output_directory.clone() else { return; };
+        let appearance = theme::selected(cx);
+        let hotkeys = self.hotkey_bindings.clone();
+        let profile = self.output_profile;
+        let presets = self.region_presets.clone();
+        let quality = self.jpeg_quality;
+        let format = self.export_format;
+        let template = self.filename_template.clone();
+        self.settings_saving = true;
+        self.capture_status = "Saving capture delay…".into();
+        cx.spawn(async move |this, cx| {
+            let result = cx.background_spawn(async move {
+                let settings = app_core::CaptureSettings::for_directory(directory)?.with_theme(appearance)
+                    .with_hotkeys(hotkeys)?.with_output_profile(profile).with_region_presets(presets)?
+                    .with_jpeg_quality(quality)?.with_export_format(format).with_filename_template(template)?
+                    .with_capture_delay(seconds)?;
+                std::fs::create_dir_all(&settings.output_directory)?;
+                settings.save()
+            }).await;
+            this.update(cx, |this, cx| {
+                this.settings_saving = false;
+                this.capture_status = match result {
+                    Ok(()) => { this.capture_delay_seconds = seconds; format!("Capture delay saved: {seconds} s.") }
+                    Err(error) => format!("Capture delay unchanged: {error:#}"),
+                };
+                this.finish_quit_if_idle(cx);
+                cx.notify();
+            }).ok();
+        }).detach();
         cx.notify();
     }
 
@@ -1525,8 +1579,8 @@ impl CaptureWorkspace {
         {
             return;
         }
-        let label = match target { DelayedCapture::Region => "Region", #[cfg(target_os = "windows")] DelayedCapture::ActiveWindow => "Active window" };
-        let instruction = match target { DelayedCapture::Region => "Press Escape to cancel.", #[cfg(target_os = "windows")] DelayedCapture::ActiveWindow => "Focus the target window. Escape in this app cancels." };
+        let label = match target { DelayedCapture::Region => "Region", #[cfg(target_os = "windows")] DelayedCapture::ActiveWindow => "Active window", #[cfg(target_os = "windows")] DelayedCapture::ActiveDisplay => "Active display" };
+        let instruction = match target { DelayedCapture::Region => "Press Escape to cancel.", #[cfg(target_os = "windows")] DelayedCapture::ActiveWindow | DelayedCapture::ActiveDisplay => "Focus the target window. Escape in this app cancels." };
         let seconds = self.capture_delay_seconds;
         self.capture_status = format!("{label} capture in {seconds} s… {instruction}");
         self.capture_delay = Some(cx.spawn(async move |this, cx| {
@@ -1546,6 +1600,8 @@ impl CaptureWorkspace {
                                 DelayedCapture::Region => this.open_overlays(OverlayMode::Fullscreen, cx),
                                 #[cfg(target_os = "windows")]
                                 DelayedCapture::ActiveWindow => this.capture_active_window(cx),
+                                #[cfg(target_os = "windows")]
+                                DelayedCapture::ActiveDisplay => this.capture_active_display(cx),
                             }
                         } else {
                             this.capture_status = format!(
@@ -1765,6 +1821,19 @@ impl CaptureWorkspace {
         }
     }
 
+    #[cfg(target_os = "windows")]
+    fn capture_active_display(&mut self, cx: &mut Context<Self>) {
+        if self.image_input_busy() { return; }
+        match app_core::foreground_display_capture() {
+            Ok(request) => self.start_capture(vec![request], cx),
+            Err(error) => {
+                self.capture_status = format!("Active display not captured: {error}");
+                self.show_control(cx);
+                cx.notify();
+            }
+        }
+    }
+
     fn set_last_region(&mut self, region: Option<app_core::RememberedRegion>) {
         self.last_region = region;
         #[cfg(target_os = "windows")]
@@ -1882,6 +1951,7 @@ impl CaptureWorkspace {
     }
 
     fn persist_region_presets(&mut self, presets: Vec<app_core::RegionPreset>, cx: &mut Context<Self>) {
+        let capture_delay_seconds = self.capture_delay_seconds;
         let jpeg_quality = self.jpeg_quality;
         let export_format = self.export_format;
         let filename_template = self.filename_template.clone();
@@ -1894,7 +1964,7 @@ impl CaptureWorkspace {
         cx.spawn(async move |this, cx| {
             let result = cx.background_spawn(async move {
                 let settings = app_core::CaptureSettings::for_directory(directory)?.with_theme(appearance)
-                    .with_hotkeys(hotkeys)?.with_output_profile(profile).with_region_presets(presets)?.with_jpeg_quality(jpeg_quality)?.with_export_format(export_format).with_filename_template(filename_template)?;
+                    .with_hotkeys(hotkeys)?.with_output_profile(profile).with_region_presets(presets)?.with_jpeg_quality(jpeg_quality)?.with_export_format(export_format).with_filename_template(filename_template)?.with_capture_delay(capture_delay_seconds)?;
                 std::fs::create_dir_all(&settings.output_directory)?;
                 settings.save()?;
                 Ok::<_, anyhow::Error>(settings.region_presets)
@@ -2422,34 +2492,47 @@ impl CaptureWorkspace {
 
     fn copy_last_file_path(&mut self, cx: &mut Context<Self>) {
         if let Some(path) = self.last_saved.clone() {
-            self.copy_file_path(path, None, cx);
+            self.copy_file_reference(path, None, FileClipboardKind::Path, cx);
         }
     }
 
-    fn copy_file_path(&mut self, path: PathBuf, history_revision: Option<u64>, cx: &mut Context<Self>) {
+    #[cfg(target_os = "windows")]
+    fn copy_last_file(&mut self, cx: &mut Context<Self>) {
+        if let Some(path) = self.last_saved.clone() {
+            self.copy_file_reference(path, None, FileClipboardKind::File, cx);
+        }
+    }
+
+    fn copy_file_reference(&mut self, path: PathBuf, history_revision: Option<u64>, kind: FileClipboardKind, cx: &mut Context<Self>) {
         if self.capturing || self.capture_delay.is_some() || self.copying || self.saving
             || self.quitting || self.settings_loading || self.settings_saving || self.history_mutating
             || self.switching_graphics || self.preview_active || self.editor.is_some() || self.editor_closing { return; }
-        let Some(text) = path.to_str() else {
-            self.clipboard_status = "Could not copy file path: the path cannot be represented as Unicode text.".into();
-            if history_revision.is_some() { self.history_action_status = self.clipboard_status.clone(); }
-            cx.notify(); return;
+        let (label, success) = match kind {
+            FileClipboardKind::Path => ("file path", "File path copied to clipboard"),
+            #[cfg(target_os = "windows")]
+            FileClipboardKind::File => ("file", "File copied to clipboard"),
         };
-        let text = text.to_owned();
         let clipboard = self.clipboard.clone();
         self.copying = true;
-        self.clipboard_status = "Copying file path…".into();
+        self.clipboard_status = format!("Copying {label}…");
         if history_revision.is_some() { self.history_action_status = self.clipboard_status.clone(); }
         cx.spawn(async move |this, cx| {
             let result = cx.background_spawn(async move {
-                clipboard.lock().map_err(|_| "Clipboard state is unavailable".to_string())?
-                    .copy_text(text).map_err(|error| format!("{error:#}"))
+                let mut clipboard = clipboard.lock().map_err(|_| anyhow::anyhow!("Clipboard state is unavailable"))?;
+                match kind {
+                    FileClipboardKind::Path => {
+                        let text = path.to_str().ok_or_else(|| anyhow::anyhow!("The path cannot be represented as Unicode text"))?;
+                        clipboard.copy_text(text.to_owned())
+                    }
+                    #[cfg(target_os = "windows")]
+                    FileClipboardKind::File => clipboard.copy_file(&path),
+                }
             }).await;
             this.update(cx, |this, cx| {
                 this.copying = false;
                 this.clipboard_status = match result {
-                    Ok(()) => "File path copied to clipboard".into(),
-                    Err(error) => format!("Could not copy file path: {error}"),
+                    Ok(()) => success.into(),
+                    Err(error) => format!("Could not copy {label}: {error:#}"),
                 };
                 if history_revision.is_some_and(|revision| this.history_visible && this.history_revision == revision) {
                     this.history_action_status = this.clipboard_status.clone();

@@ -104,6 +104,16 @@ pub struct ImageClipboard {
 }
 
 impl ImageClipboard {
+    #[cfg(target_os = "windows")]
+    pub fn copy_file(&mut self, path: &std::path::Path) -> Result<()> {
+        anyhow::ensure!(path.is_absolute(), "Saved file path must be absolute");
+        anyhow::ensure!(std::fs::metadata(path).context("Saved file is unavailable")?.is_file(), "Saved path is not a file");
+        if self.clipboard.is_none() {
+            self.clipboard = Some(arboard::Clipboard::new().context("open clipboard")?);
+        }
+        self.clipboard.as_mut().unwrap().set().file_list(&[path]).context("copy file to clipboard")
+    }
+
     /// Explicit text output; retain ownership using the same native clipboard instance.
     pub fn copy_text(&mut self, text: String) -> Result<()> {
         if self.clipboard.is_none() {
@@ -137,6 +147,39 @@ impl ImageClipboard {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn file_copy_rejects_invalid_sources_before_opening_the_clipboard() -> Result<()> {
+        let mut clipboard = ImageClipboard::default();
+        let missing = std::env::temp_dir().join(format!("missing-{}.png", uuid::Uuid::new_v4()));
+        for path in [std::path::Path::new("relative.png"), missing.as_path(), std::env::temp_dir().as_path()] {
+            assert!(clipboard.copy_file(path).is_err());
+            assert!(clipboard.clipboard.is_none());
+        }
+        Ok(())
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    #[ignore = "uses the system clipboard and replaces its contents with a synthetic file reference"]
+    fn copied_file_list_round_trip() -> Result<()> {
+        let root = std::env::temp_dir().join(format!("screenshots-file-clipboard-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root)?;
+        let path = root.join("Grüße image.png");
+        std::fs::write(&path, b"synthetic file reference, not decoded")?;
+        let mut clipboard = ImageClipboard::default();
+        let result = (|| -> Result<()> {
+            clipboard.copy_file(&path)?;
+            let paths = clipboard.clipboard.as_mut().unwrap().get().file_list()?;
+            assert_eq!(paths.len(), 1);
+            assert_eq!(std::fs::canonicalize(&paths[0])?, std::fs::canonicalize(&path)?);
+            assert_eq!(std::fs::read(&path)?, b"synthetic file reference, not decoded");
+            Ok(())
+        })();
+        std::fs::remove_file(path)?; std::fs::remove_dir(root)?;
+        result
+    }
 
     #[test]
     #[ignore = "uses the system clipboard and replaces its contents with a synthetic path"]

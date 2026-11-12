@@ -157,7 +157,7 @@ enumeration of every ShareX preference.
 
 - Primary/chosen display, enumerated window and rectangular-region capture;
   all displays as separate images; a cancellable delayed region (1–60 seconds,
-  session-only, default three seconds).
+  saved preference, default three seconds).
 - Frozen in-memory editing and a standalone editor with 14 tools: selection,
   crop, rectangle, ellipse, line, arrow, pen, text, numbering, highlight,
   spotlight, opaque redaction, pixelation and blur. Movement/resizing,
@@ -190,10 +190,10 @@ selection adjustment and configurable after-capture tasks in its capture flow.
 | --- | --- | --- |
 | User-defined global hotkeys | Partial: Windows settings now assign/disable/restore bindings for primary display, quick region, capture-and-annotate, active window and repeat-last-region. Arbitrary command assignment and per-shortcut task profiles remain missing; see the implementation follow-ups above for verification limits. | A |
 | Configurable output workflow | Partial: one saved global choice provides copy-only, save-only, save-and-copy or annotate-first for quick captures. Editor outputs stay explicit. Per-shortcut saved task profiles, after-capture chains and sharing profiles remain missing. | A |
-| Active-window/active-monitor command | Partial: a Windows foreground-window command now has a configurable shortcut and a menu/tray countdown; foreground-focus acceptance remains open. Enumerated windows/displays and cursor-based monitor targeting for Windows annotation exist. A general active-monitor command remains missing. | A |
+| Active-window/active-monitor command | Partial: Windows foreground-window and active-display capture each have an optional configurable immediate shortcut and menu/tray countdown. Active display selects the foreground window's largest-intersection monitor. Both reject own/invalid targets; native focus/topology/DPI acceptance and other-platform integration remain open. Cursor-based monitor targeting for Windows annotation also exists. | A |
 | Last region and exact region | Partial: session-only repeat, geometry-checked numeric display-local X/Y/Width/Height and up to 16 saved named rectangles exist. Templates require explicit display choice; automatic cross-session monitor binding and per-template task/hotkey profiles remain missing. Native acceptance remains open. | A |
 | Precision selection | Partial: crop and transforms exist; no equivalent complete magnifier, window/control snapping or keyboard-driven region-selection workflow. | A |
-| Capture preferences | Partial: region and Windows active-window countdowns share an applied session-only delay of 1–60 whole seconds, default three. Missing configurable cursor inclusion, subsecond/longer delays, window-frame/shadow/transparency options and persistent capture defaults. Native countdown/resource acceptance remains open. | A/B |
+| Capture preferences | Partial: region and Windows active-window countdowns share a saved delay of 1–60 whole seconds, default three. Failed saves preserve the active value; legacy settings default to three. Missing configurable cursor inclusion, subsecond/longer delays, window-frame/shadow/transparency options and other persistent capture defaults. Native restart/countdown/resource acceptance remains open. | A/B |
 | Multiple outputs | Partial: all displays are captured separately. No stitched desktop output, cross-monitor drag selection or multiple independent regions in one capture session. | B |
 | Repeated capture | Missing operation-scoped interval capture, scheduled runs and saved repeat settings. Any implementation needs explicit activation and cancellation. | B |
 | HDR/color correctness | Unverified/limited: XCap returns 8-bit RGBA; color metadata is not reported and code currently treats it as sRGB. No validated HDR conversion or wide-gamut workflow. | A for truthful limitations; B for support |
@@ -220,7 +220,7 @@ cut-out/background editing and output actions integrated into tasks.
 | Advanced annotations | Missing speech balloons, inserted image/logo/clipboard objects, cursor stamps, emoji, magnify, clone/smart eraser, annotation rotation and richer arrow/shape options. | B/C |
 | Canvas and presentation | Missing canvas expansion, cut-out strips, padding/background/shadow composition, watermark and reusable effect/export presets. | B |
 | Editor sharing | Partial: final pixels can be copied/saved, but no direct finalized-document upload or pin action. Upload currently requires a saved PNG. | A/B |
-| Other outputs | Partial: Recent capture can explicitly copy its confirmed saved path as plain text; Library More can copy an entry's recorded path. Unsaved captures and stale library actions are rejected; failures are reported. Native clipboard acceptance remains open. Print, copy-file transfer data and drag-out of a prepared image/file representation remain missing. | B |
+| Other outputs | Partial: Recent capture and Library More can explicitly copy saved paths as text; Windows also offers Copy file as a single native file reference after worker-side source validation. Unsaved captures and stale library actions are rejected; failures are reported. Native Explorer/attachment/clipboard acceptance remains open. Print, other-platform file transfer and drag-out remain missing. | B |
 | Editable projects | No persistent document/session format. Useful for longer edits, but not asserted here as a prerequisite merely because in-memory undo exists. | Product decision |
 
 Evidence: [PNG decode and clipboard output](../crates/app-core/src/clipboard.rs),

@@ -14,6 +14,31 @@ pub fn foreground_window_capture() -> Result<crate::CaptureRequest> {
 fn window_capture_request(
     handle: windows_sys::Win32::Foundation::HWND,
 ) -> Result<crate::CaptureRequest> {
+    let process_id = capture_window_process(handle)?;
+    // XCap's Windows window ID is the low 32 bits of HWND.
+    Ok(crate::CaptureRequest::ForegroundWindow {
+        window_id: (handle as usize as u32).to_string(),
+        process_id,
+    })
+}
+
+/// Snapshot the active application's display before hiding UI or attaching graphics.
+pub fn foreground_display_capture() -> Result<crate::CaptureRequest> {
+    display_capture_request(unsafe {
+        windows_sys::Win32::UI::WindowsAndMessaging::GetForegroundWindow()
+    })
+}
+
+fn display_capture_request(handle: windows_sys::Win32::Foundation::HWND) -> Result<crate::CaptureRequest> {
+    capture_window_process(handle)?;
+    use windows_sys::Win32::Graphics::Gdi::{MonitorFromWindow, MONITOR_DEFAULTTONULL};
+    let monitor = unsafe { MonitorFromWindow(handle, MONITOR_DEFAULTTONULL) };
+    ensure!(!monitor.is_null(), "The active window does not intersect an available display");
+    // XCap's Windows monitor ID is the low 32 bits of HMONITOR.
+    Ok(crate::CaptureRequest::Display((monitor as usize as u32).to_string()))
+}
+
+fn capture_window_process(handle: windows_sys::Win32::Foundation::HWND) -> Result<u32> {
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         GetClassNameW, GetDesktopWindow, GetShellWindow, GetWindowThreadProcessId, IsIconic,
     };
@@ -53,11 +78,7 @@ fn window_capture_request(
         process_id != std::process::id(),
         "Focus another application's window before capturing"
     );
-    // XCap's Windows window ID is the low 32 bits of HWND.
-    Ok(crate::CaptureRequest::ForegroundWindow {
-        window_id: (handle as usize as u32).to_string(),
-        process_id,
-    })
+    Ok(process_id)
 }
 
 #[derive(Clone, Copy)]
@@ -367,11 +388,27 @@ mod tests {
         assert!(window_capture_request(std::ptr::null_mut()).is_err());
         assert!(window_capture_request(unsafe { GetDesktopWindow() }).is_err());
         assert!(window_capture_request(unsafe { GetShellWindow() }).is_err());
+        assert!(display_capture_request(std::ptr::null_mut()).is_err());
+        assert!(display_capture_request(unsafe { GetDesktopWindow() }).is_err());
+        assert!(display_capture_request(unsafe { GetShellWindow() }).is_err());
         let window = DesktopWindow::from_handle(0);
         assert!(window.request_visible(false).is_err());
         assert!(window.request_visible(true).is_err());
         assert!(window.wait_until_hidden().is_err());
         assert!(window.wait_until_destroyed().is_ok());
+    }
+
+    #[test]
+    #[ignore = "requires an explicitly supplied external foreground-window fixture and expected monitor ID; metadata only"]
+    fn foreground_display_resolves_only_the_explicit_fixture_monitor() -> Result<()> {
+        let handle = std::env::var("SCREENSHOTS_ACTIVE_WINDOW_FIXTURE_HANDLE")?.parse::<isize>()? as HWND;
+        let expected_monitor = std::env::var("SCREENSHOTS_ACTIVE_DISPLAY_FIXTURE_MONITOR_ID")?;
+        ensure!(unsafe { GetForegroundWindow() } == handle, "Explicit fixture is not foreground");
+        let crate::CaptureRequest::Display(id) = foreground_display_capture()? else {
+            anyhow::bail!("Unexpected capture request");
+        };
+        ensure!(id == expected_monitor, "Unexpected display; no pixels captured");
+        Ok(())
     }
 
     #[test]

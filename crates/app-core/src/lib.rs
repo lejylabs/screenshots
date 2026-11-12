@@ -70,7 +70,7 @@ pub use tray::{SpikeTray, TrayCommand};
 #[cfg(target_os = "windows")]
 mod desktop_window;
 #[cfg(target_os = "windows")]
-pub use desktop_window::{DesktopWindow, cursor_position, foreground_window_capture, wait_for_desktop_compositor};
+pub use desktop_window::{DesktopWindow, cursor_position, foreground_window_capture, foreground_display_capture, wait_for_desktop_compositor};
 
 pub use capture::{
     CaptureBackend, CaptureCapabilities, CaptureError, CaptureRequest, CapturedImage, DisplayInfo, DisplayGeometry, RememberedRegion,

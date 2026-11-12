@@ -21,6 +21,7 @@ pub enum CaptureCommand {
     EditRegion,
     ActiveWindow,
     RepeatRegion,
+    ActiveDisplay,
 }
 
 impl CaptureCommand {
@@ -31,6 +32,7 @@ impl CaptureCommand {
             Self::EditRegion => 2,
             Self::ActiveWindow => 3,
             Self::RepeatRegion => 4,
+            Self::ActiveDisplay => 5,
         }]
     }
 }
@@ -86,6 +88,7 @@ impl CaptureHotkey {
             CaptureCommand::EditRegion,
             CaptureCommand::ActiveWindow,
             CaptureCommand::RepeatRegion,
+            CaptureCommand::ActiveDisplay,
         ]
         .into_iter()
         .enumerate()
@@ -122,6 +125,7 @@ impl CaptureHotkey {
             CaptureCommand::EditRegion,
             CaptureCommand::ActiveWindow,
             CaptureCommand::RepeatRegion,
+            CaptureCommand::ActiveDisplay,
         ]) {
             if !value.is_empty() {
                 desired.push((value.parse::<HotKey>()?, command));
@@ -261,6 +265,7 @@ mod tests {
                     "".into(),
                     "".into(),
                     "".into(),
+                    String::new(),
                 ])
                 .validated()?;
                 assert!(bindings.0[0].parse::<HotKey>().is_ok(), "{}", bindings.0[0]);
@@ -288,6 +293,7 @@ mod tests {
             "".into(),
             "".into(),
             "".into(),
+            String::new(),
         ]);
         let second = crate::CaptureHotkeys([
             "Ctrl+Alt+F21".into(),
@@ -295,6 +301,7 @@ mod tests {
             "".into(),
             "".into(),
             "".into(),
+            String::new(),
         ]);
         hotkeys.prepare(&first)?;
         assert!(hotkeys.keys.is_empty());
@@ -323,6 +330,7 @@ mod tests {
             "".into(),
             "".into(),
             "".into(),
+            String::new(),
         ]);
         assert!(hotkeys.prepare(&desired).is_err());
         assert_eq!(hotkeys.keys, original);
@@ -338,6 +346,7 @@ mod tests {
             "".into(),
             "".into(),
             "".into(),
+            String::new(),
         ]);
         hotkeys.prepare(&swapped)?;
         assert!(hotkeys.is_registered(&second.0[0], CaptureCommand::Primary));
@@ -349,6 +358,7 @@ mod tests {
             "".into(),
             second.0[0].clone(),
             "".into(),
+            String::new(),
         ]);
         hotkeys.prepare(&active)?;
         hotkeys.finish(true)?;
@@ -359,16 +369,24 @@ mod tests {
             "".into(),
             "".into(),
             second.0[0].clone(),
+            String::new(),
         ]);
         hotkeys.prepare(&repeat)?;
         hotkeys.finish(true)?;
         assert!(hotkeys.is_registered(&second.0[0], CaptureCommand::RepeatRegion));
+        let mut display = crate::CaptureHotkeys(std::array::from_fn(|_| String::new()));
+        display.0[5] = second.0[0].clone();
+        hotkeys.prepare(&display)?;
+        assert!(hotkeys.is_registered(&second.0[0], CaptureCommand::RepeatRegion));
+        hotkeys.finish(true)?;
+        assert!(hotkeys.is_registered(&second.0[0], CaptureCommand::ActiveDisplay));
         hotkeys.prepare(&crate::CaptureHotkeys([
             "".into(),
             "".into(),
             "".into(),
             "".into(),
             "".into(),
+            String::new(),
         ]))?;
         hotkeys.finish(true)?;
         assert!(hotkeys.keys.is_empty());
@@ -384,10 +402,12 @@ mod tests {
             "Ctrl+Alt+F23".into(),
             "".into(),
             "Ctrl+Alt+F24".into(),
+            "Ctrl+Alt+F19".into(),
         ]))?;
-        assert_eq!(startup.keys.len(), 2);
+        assert_eq!(startup.keys.len(), 3);
         assert!(startup.is_registered("Ctrl+Alt+F23", CaptureCommand::EditRegion));
         assert!(startup.is_registered("Ctrl+Alt+F24", CaptureCommand::RepeatRegion));
+        assert!(startup.is_registered("Ctrl+Alt+F19", CaptureCommand::ActiveDisplay));
         assert!(!startup.is_registered("Ctrl+Shift+S", CaptureCommand::Primary));
         assert!(startup.status().contains("unavailable"));
         drop(startup);
@@ -402,12 +422,14 @@ mod tests {
         let edit = HotKey::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), Code::KeyE);
         let active = HotKey::new(Some(Modifiers::CONTROL | Modifiers::ALT), Code::KeyW);
         let repeat = HotKey::new(Some(Modifiers::CONTROL | Modifiers::ALT), Code::KeyR);
+        let display = HotKey::new(Some(Modifiers::CONTROL | Modifiers::ALT), Code::KeyD);
         let keys = [
             (primary, CaptureCommand::Primary),
             (region, CaptureCommand::Region),
             (edit, CaptureCommand::EditRegion),
             (active, CaptureCommand::ActiveWindow),
             (repeat, CaptureCommand::RepeatRegion),
+            (display, CaptureCommand::ActiveDisplay),
         ];
         for (key, command) in keys {
             assert_eq!(

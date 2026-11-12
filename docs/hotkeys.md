@@ -13,11 +13,27 @@ Three- and four-binding files retain their values and gain disabled slots.
 Current resource/runtime verification is tracked in PLAN.md; original measurements
 below are historical and do not measure the five-command build.
 
+Active display is a sixth command, disabled by default. Three-, four- and
+five-binding files preserve their values and gain empty slots. Its hotkey captures
+immediately from the foreground application's monitor, while menu/tray keep the
+saved countdown. Resource cost adds one at-most-64-byte binding and one page-local
+Kit input; staged native ownership is now bounded to twelve keys. No new worker,
+runtime, timer, watcher or image allocation is added. Original measurements below
+do not measure this six-command build. Native focus/topology/DPI/presentation and
+reference-hardware resource gates remain open.
+
+Six-command verification: optimized regular core/UI suites pass (152 tests).
+The native registration/remapping/rollback/startup-conflict fixture also passes,
+including moving an existing key to Active display and registering its independent
+startup binding. It injects no key events, captures no pixels and leaves the
+clipboard untouched. This establishes registration behavior, not end-to-end
+physical hotkey/focus/display capture or resource acceptance.
+
 ## Behavior and ownership
 
-Settings exposes five named Kit inputs for Primary display, Quick region,
-Capture and annotate, Active window and Repeat last region. Save shortcuts applies all five; an empty value disables
-that command. Restore defaults saves Ctrl+Shift+S/R/E and disables Active window and Repeat last region. Input supports Ctrl, Alt,
+Settings exposes six named Kit inputs for Primary display, Quick region,
+Capture and annotate, Active window, Repeat last region and Active display. Save shortcuts applies all six; an empty value disables
+that command. Restore defaults saves Ctrl+Shift+S/R/E and disables Active window, Repeat last region and Active display. Input supports Ctrl, Alt,
 Shift and Super with letters, digits, F1–F24 or PrintScreen. Letters/digits need
 Ctrl, Alt or Super. Each string is limited to 64 bytes; normalization precedes
 duplicate detection. Arbitrary command assignment/task profiles remain future work.
@@ -38,11 +54,11 @@ already owned key to another command requires no duplicate OS registration.
 Native registration/unregistration stays on the foreground event-loop thread.
 Callbacks use the existing bounded event bridge. A native cleanup failure retains
 ownership/routing information, reports remaining bindings and blocks further edits
-until restart, bounding ownership to at most ten keys. Drop retries release.
+until restart, bounding ownership to at most twelve keys. Drop retries release.
 
 There is no new dependency, runtime, thread, polling timer, cache or startup UI.
-Retained configuration is five strings of at most 64 bytes plus small native
-registration metadata. Five Kit inputs exist only on Settings and release on
+Retained configuration is six strings of at most 64 bytes plus small native
+registration metadata. Six Kit inputs exist only on Settings and release on
 page exit/window close. Their text is bounded before insertion; Kit's existing
 bounded input undo engine is reused. Capture, source pixels and output choices
 are unchanged. Non-Windows settings explain that this integration is unavailable.

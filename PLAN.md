@@ -548,6 +548,35 @@ rejection, native-state failure, source preservation and stale completion status
 without touching the real clipboard. Native clipboard/resource acceptance remains
 open; no additional performance measurement is claimed for this shared metadata path.
 
+#### Current feature slice: Windows file clipboard output
+
+Recent capture offers Copy file for its confirmed saved capture; Library More
+offers it for the selected row. This explicit action replaces clipboard content
+with a single native file reference through the installed arboard file_list API
+([Windows CF_HDROP](https://learn.microsoft.com/en-us/windows/win32/shell/clipboard)).
+It does not read/encode image pixels or copy file contents into application memory.
+The existing shared worker/admission/clipboard instance and history-revision checks
+serve path text and file references. Source files and current capture/library state
+are unchanged by publication. Export copies retain their existing separate semantics.
+
+Worker-side validation requires an absolute path to an existing regular file
+before opening the native clipboard. Missing files/directories/relative paths fail;
+a deletion/replacement after validation can still make a later paste fail. The
+file must remain available until the receiving application consumes it. Native
+publication failures are reported; a native failure after clearing may have changed
+clipboard content, so failure does not promise clipboard preservation. Success
+means the file reference was published, not that another application accepted it.
+
+Resource cost is one path and a single native file-list payload with path encoding
+limited by OS path bounds, with no file-content buffer, image, new dependency, runtime, worker,
+queue, watcher or timer. The native arboard instance remains lazy and shared.
+Optimized synthetic core/UI tests reject invalid/missing sources before native
+clipboard creation, cover recent/menu routing, stale commands and failure status,
+without touching the real clipboard. An ignored native Unicode/space file-list
+round-trip fixture is available separately. Explorer/attachment paste, clipboard
+contention/ownership, native latency, peak memory and other-platform acceptance
+remain open; no native performance result is claimed for this metadata-only path.
+
 #### Current feature slice: configurable Windows global hotkeys
 
 Implemented in the working tree (2026-11-12): three editable/disableable bindings
@@ -617,6 +646,54 @@ A short optimized resident comparison against the preceding release build was
 completed without capture/clipboard actions. Its samples and machine details stay
 only under `target/output-profile-verification/`, excluded from version control.
 It is a development regression check, not the five-minute/reference-hardware gate.
+
+#### Current feature slice: Windows active-display capture
+
+The Capture sidebar and Windows tray offer Active display with the saved countdown
+delay. After the user focuses an external application, the countdown snapshots
+its foreground HWND and resolves the monitor before hiding UI/attaching graphics.
+[MonitorFromWindow](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-monitorfromwindow)
+chooses the display with the largest window intersection; MONITOR_DEFAULTTONULL
+rejects off-display windows rather than selecting an unrelated primary/nearest
+display. Shared validation rejects missing, hidden/minimized, desktop/taskbar and
+own application windows. The XCap monitor ID is derived using the pinned Windows
+backend's HMONITOR representation, without monitor enumeration on the foreground.
+
+The existing Display request resolves/captures on the worker using existing image
+admission, output profiles, cancellation and publication. The request refers to
+the display chosen at countdown expiry, even if the window moves afterward.
+Native topology/handle reuse races retain the existing display-capture acceptance
+limits; mixed DPI, spanning windows, monitor disconnect/replacement and real
+foreground-focus/presentation acceptance remain open. The active-display hotkey
+is implemented in the follow-up below; non-Windows integration remains open.
+
+Resource cost is one menu item/command and a transient monitor-ID string; there
+is no new worker, dependency, runtime, queue, cache, polling or resident timer.
+The installed windows-sys dependency enables GDI API bindings for one native
+MonitorFromWindow call; the shared short window validation is unchanged. Capture
+buffers and worker behavior are reused, so no new capture-latency/process/GPU
+measurement is claimed. Optimized tests reject invalid native handles and verify
+both active-target countdown cancellations without capture. Separate ignored
+native tray-routing and explicit external-window/monitor metadata fixtures remain
+available for interactive acceptance; no test here captures the user's desktop.
+
+Hotkey follow-up (2026-11-12): Settings adds a sixth, initially empty Active display
+binding. Its command snapshots the foreground application's monitor immediately;
+menu/tray retain the saved countdown. Three-/four-/five-binding settings preserve
+their exact command order and gain disabled slots; six bindings serialize/reload
+and validate with the existing 64-byte, normalization and duplicate rules.
+Existing staged registration/persistence/rollback, startup conflict reporting and
+native event delivery are reused. Resource cost adds one bounded string, one
+Settings-only input and native metadata; concurrent old/new reservations are now
+bounded to twelve keys. No worker, runtime, queue, timer, watcher, image allocation
+or dependency is added, and all idle/active-image budgets remain unchanged.
+Optimized fixtures cover migration, disabled defaults, sixth-slot persistence/
+duplicates, event routing and six named UI fields with release on page exit.
+Native registration/remapping/startup-conflict checks are extended to Active
+display and pass without injecting input, reading pixels or changing the clipboard.
+Reference-hardware CPU/memory/latency, native keyboard/focus, topology/DPI and
+presentation acceptance remain open; historical hotkey measurements do not
+establish a six-command resource result.
 
 #### Current feature slice: Windows active-window capture
 
@@ -998,7 +1075,7 @@ It should be designed around a common API with platform-specific implementations
 
 Implemented convenience workflow: a configurable delayed region selection (default three seconds) with a cancel button/Escape in the control window. Closing the UI or quitting discards the countdown task; it adds no resident polling. The existing capture/selection/copy/save pipeline is reused after the delay.
 
-Follow-up (2026-11-12): Recent capture offers an explicit Apply delay action for
+Initial implementation (2026-11-12, persistence superseded below): Recent capture offers an explicit Apply delay action for
 whole seconds 1–60, default 3. The active delay is labeled as session-only; invalid
 input retains it. The same scalar controls region and Windows active-window
 countdowns from the control/sidebar/tray. Quick capture and global immediate
@@ -1016,6 +1093,24 @@ beyond the original deadline and input release. Native tray/keyboard/accessibili
 timing under suspend/load and resource acceptance remain open. No new latency or
 process/GPU measurement is claimed for this bounded preference. Persistence and
 subsecond/longer delays remain outside this slice.
+
+Persistence follow-up (2026-11-12): Save delay now persists the 1–60-second choice
+through the existing single-admission settings worker and commits the active
+value only after successful durable publication. Validation/write failure keeps
+the old active value. Legacy settings default to three seconds; invalid stored
+values are rejected. Startup restores the scalar and refreshes the page-local
+input. Folder/theme/hotkey/output-profile/region-template/JPEG-quality/export-format/
+filename-template saves preserve delay, and delay saves preserve those preferences.
+No capture starts while persistence is pending; the running countdown still uses
+its original snapshot. Resource cost remains the scalar/input plus a small
+settings-job snapshot and the existing bounded settings serialization/temporary
+file; there is no new worker, runtime, timer, watcher, image or cache. Optimized
+settings fixtures verify bounds, reload, legacy fallback, preference preservation
+and rejected-write preservation. The headless UI test verifies pending/failure
+rollback, button routing and countdown behavior using a blocked temporary folder,
+without writing the user's configuration. Native packaged restart, recovery,
+keyboard/accessibility and resource acceptance remain open; no new native latency
+or process/GPU measurement is claimed for this settings-only follow-up.
 
 
 - Fullscreen capture.
