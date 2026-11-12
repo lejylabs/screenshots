@@ -162,6 +162,46 @@ The optimized release build and a short resident CPU/private-memory comparison
 were completed. Raw reports stay in that ignored directory; they do not establish
 five-minute idle, physical presentation or reference-hardware acceptance.
 
+#### Current feature slice: repeat the last selected region
+
+Implemented in the working tree (2026-11-12): Windows exposes Repeat last region
+in Recent capture, Capture menu, tray and a fifth configurable shortcut, initially
+disabled. Three- and four-binding settings preserve existing values and gain the
+disabled slot. Before a reusable selection exists, UI/tray entries are disabled.
+
+The controller retains one session-only display ID, physical pixel rectangle and
+geometry (origin, dimensions, scale, rotation), never an image/texture. A successful
+quick-region crop commits the rectangle before optional editing; canceling that
+editor produces no pixels but retains the chosen rectangle. An incomplete/canceled
+selection preserves the previous rectangle. Explicit output of a crop from a fresh
+full-display editor source also updates it. Imported and derived images cannot
+create display-coordinate templates; crop/render outputs clear their source geometry.
+Closing the control window preserves the session template; Quit forgets it.
+
+Windows full-display workers read geometry before/after capture and tag the source
+only when both readings and returned dimensions agree. Other platforms incur no
+new geometry reads for this Windows feature. Repeats resolve the display afresh,
+validate geometry/bounds and the existing pixel budget before capture, then recheck
+geometry/dimensions before publication. Missing/changed displays invalidate the
+template without clipboard/file/history output or fallback to another display.
+Same-ID replacement with identical geometry is not distinguishable through the
+current session-scoped backend IDs; physical topology/reconnect acceptance remains open.
+
+Resource cost: one bounded ID string (at most 64 bytes) and scalar template,
+optional scalar geometry on live source frames, one optional shortcut, one menu
+item and two worker geometry readings for full-display sources. There is no new
+pixel cache, persisted desktop preview, thread, dependency, timer, polling or undo
+snapshot. Shortcut registration staging remains bounded to ten keys. The existing
+capture/output/editor pipeline and selected output profile are reused.
+
+Optimized core/UI checks cover legacy settings, geometry/overflow rejection,
+absence of retained source pixels, derived-source exclusion and selection cancel.
+The explicit native fixture compares direct and repeated 2×2 captures within an
+owned opaque test window and rejects a mismatching scale. Native hotkey/tray checks
+pass. Raw verification stays under ignored `target/repeat-region-verification/`.
+Full physical hotkey, monitor hotplug/mixed-DPI, presentation and reference-machine
+soak acceptance remain separate gates; fixture timings are not release acceptance.
+
 ### Code and verification entry points
 
 - `crates/app-ui/src/workspace.rs`: Kit screen composition. `window.rs`: Base Root and typed content access. `lib.rs`: native controller/jobs. `redaction_editor.rs`: image interactions and Kit toolbar. `caption.rs`: bounded source-label input/rasterization. `theme.rs` / `assets.rs`: shared presentation.

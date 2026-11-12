@@ -48,6 +48,7 @@ pub enum CaptureRequest {
         window_id: String,
         process_id: u32,
     },
+    RepeatRegion(RememberedRegion),
     Region {
         display_id: String,
         x: i32,
@@ -60,7 +61,7 @@ pub enum CaptureRequest {
 enum PreparedCapture {
     Display(Monitor, String),
     Window(Window, String, String, Option<u32>),
-    Region(Monitor, String, u32, u32, u32, u32),
+    Region(Monitor, String, u32, u32, u32, u32, Option<DisplayGeometry>),
 }
 
 impl PreparedCapture {
@@ -74,7 +75,7 @@ impl PreparedCapture {
                 window.width().map_err(backend_error)?,
                 window.height().map_err(backend_error)?,
             )),
-            Self::Region(_, _, _, _, width, height) => Ok((*width, *height)),
+            Self::Region(_, _, _, _, width, height, _) => Ok((*width, *height)),
         }
     }
 }
@@ -99,6 +100,86 @@ pub struct DisplayInfo {
     pub scale_factor: f32,
     pub rotation: f32,
     pub is_primary: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct DisplayGeometry {
+    pub x: i32,
+    pub y: i32,
+    pub width: u32,
+    pub height: u32,
+    pub scale_factor: f32,
+    pub rotation: f32,
+}
+
+impl DisplayGeometry {
+    fn valid(self) -> bool {
+        self.width > 0
+            && self.height > 0
+            && self.scale_factor.is_finite()
+            && self.scale_factor > 0.0
+            && self.rotation.is_finite()
+    }
+}
+
+/// Session metadata only: never retains the source frame or a texture.
+#[derive(Debug, Clone)]
+pub struct RememberedRegion {
+    display_id: String,
+    geometry: DisplayGeometry,
+    area: crate::PixelRegion,
+}
+
+impl RememberedRegion {
+    pub fn from_snapshot(
+        source: &CapturedImage,
+        area: crate::PixelRegion,
+    ) -> Result<Self, CaptureError> {
+        let geometry = source.display_geometry.ok_or(CaptureError::StaleRegion)?;
+        if !geometry.valid()
+            || source.window_id.is_some()
+            || source.display_id.is_empty()
+            || source.display_id.len() > 64
+            || (source.width, source.height) != (geometry.width, geometry.height)
+            || source.pixels.dimensions() != (source.width, source.height)
+        {
+            return Err(CaptureError::StaleRegion);
+        }
+        validate_image_size(source.width, source.height)?;
+        let remembered = Self {
+            display_id: source.display_id.clone(),
+            geometry,
+            area,
+        };
+        remembered.validate_geometry(geometry)?;
+        Ok(remembered)
+    }
+
+    pub fn area(&self) -> crate::PixelRegion {
+        self.area
+    }
+
+    fn validate_geometry(&self, current: DisplayGeometry) -> Result<(), CaptureError> {
+        if !current.valid() || current != self.geometry {
+            return Err(CaptureError::StaleRegion);
+        }
+        if self.area.width == 0
+            || self.area.height == 0
+            || self
+                .area
+                .x
+                .checked_add(self.area.width)
+                .is_none_or(|x| x > current.width)
+            || self
+                .area
+                .y
+                .checked_add(self.area.height)
+                .is_none_or(|y| y > current.height)
+        {
+            return Err(CaptureError::InvalidRegion);
+        }
+        validate_image_size(self.area.width, self.area.height)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -132,6 +213,8 @@ pub struct CapturedImage {
     pub pixels: Arc<RgbaImage>,
     pub elapsed_ms: u128,
     pub source_format: PixelFormat,
+    /// Present only for an unmodified full-display snapshot with stable native geometry.
+    pub display_geometry: Option<DisplayGeometry>,
 }
 
 #[derive(Debug, Error)]
@@ -148,6 +231,8 @@ pub enum CaptureError {
     MemoryLimit,
     #[error("region is outside the display")]
     InvalidRegion,
+    #[error("The display geometry changed or is unavailable. Select a new region.")]
+    StaleRegion,
     #[error("Export canceled")]
     Canceled,
     #[error("{0}")]
@@ -208,13 +293,23 @@ impl XcapBackend {
                 let (width, height) = prepared.dimensions()?;
                 CaptureBudget(actual.0).admit(width, height)?;
                 let started = Instant::now();
+                let mut display_geometry = None;
                 let (display_id, window_id, image, label) = match prepared {
-                    PreparedCapture::Display(monitor, id) => (
-                        id,
-                        None,
-                        monitor.capture_image().map_err(backend_error)?,
-                        "display".to_owned(),
-                    ),
+                    PreparedCapture::Display(monitor, id) => {
+                        let before = if cfg!(target_os = "windows") {
+                            monitor_geometry(&monitor)
+                                .ok()
+                                .filter(|geometry| geometry.valid())
+                        } else {
+                            None
+                        };
+                        let image = monitor.capture_image().map_err(backend_error)?;
+                        display_geometry = before.filter(|geometry| {
+                            (geometry.width, geometry.height) == image.dimensions()
+                                && monitor_geometry(&monitor).ok() == Some(*geometry)
+                        });
+                        (id, None, image, "display".to_owned())
+                    }
                     PreparedCapture::Window(window, display, id, expected_process) => {
                         if expected_process
                             .is_some_and(|expected| window.pid().ok() != Some(expected))
@@ -224,20 +319,31 @@ impl XcapBackend {
                         let image = window.capture_image().map_err(backend_error)?;
                         (display, Some(id.clone()), image, format!("window-{id}"))
                     }
-                    PreparedCapture::Region(monitor, id, x, y, width, height) => (
-                        id,
-                        None,
-                        monitor
+                    PreparedCapture::Region(monitor, id, x, y, width, height, expected) => {
+                        if let Some(expected) = expected {
+                            if monitor_geometry(&monitor)? != expected {
+                                return Err(CaptureError::StaleRegion);
+                            }
+                        }
+                        let image = monitor
                             .capture_region(x, y, width, height)
-                            .map_err(backend_error)?,
-                        "region".to_owned(),
-                    ),
+                            .map_err(backend_error)?;
+                        if let Some(expected) = expected {
+                            if monitor_geometry(&monitor)? != expected
+                                || image.dimensions() != (width, height)
+                            {
+                                return Err(CaptureError::StaleRegion);
+                            }
+                        }
+                        (id, None, image, "region".to_owned())
+                    }
                 };
                 // shortcut: XCap allocates before returning; isolate/cap the backend for a hard native allocation bound.
                 actual.admit(image.width(), image.height())?;
                 let mut shot =
                     self.frame(&display_id, image, started.elapsed().as_millis(), &label)?;
                 shot.window_id = window_id;
+                shot.display_geometry = display_geometry;
                 Ok(shot)
             })
             .collect()
@@ -247,6 +353,20 @@ impl XcapBackend {
         match request {
             CaptureRequest::Display(id) => {
                 Ok(PreparedCapture::Display(self.find_monitor(&id)?, id))
+            }
+            CaptureRequest::RepeatRegion(remembered) => {
+                let monitor = self.find_monitor(&remembered.display_id)?;
+                remembered.validate_geometry(monitor_geometry(&monitor)?)?;
+                let area = remembered.area;
+                Ok(PreparedCapture::Region(
+                    monitor,
+                    remembered.display_id,
+                    area.x,
+                    area.y,
+                    area.width,
+                    area.height,
+                    Some(remembered.geometry),
+                ))
             }
             CaptureRequest::Region {
                 display_id,
@@ -268,7 +388,7 @@ impl XcapBackend {
                     return Err(CaptureError::InvalidRegion);
                 }
                 Ok(PreparedCapture::Region(
-                    monitor, display_id, x, y, width, height,
+                    monitor, display_id, x, y, width, height, None,
                 ))
             }
             CaptureRequest::Window(id) => self.prepare_window(id, None),
@@ -352,6 +472,7 @@ impl XcapBackend {
             png_path,
             elapsed_ms,
             source_format: PixelFormat::Rgba8UnormSrgb,
+            display_geometry: None,
         })
     }
 }
@@ -427,6 +548,17 @@ fn monitor_id(monitor: &Monitor) -> Result<String, CaptureError> {
     Ok(monitor.id().map_err(backend_error)?.to_string())
 }
 
+fn monitor_geometry(monitor: &Monitor) -> Result<DisplayGeometry, CaptureError> {
+    Ok(DisplayGeometry {
+        x: monitor.x().map_err(backend_error)?,
+        y: monitor.y().map_err(backend_error)?,
+        width: monitor.width().map_err(backend_error)?,
+        height: monitor.height().map_err(backend_error)?,
+        scale_factor: monitor.scale_factor().map_err(backend_error)?,
+        rotation: monitor.rotation().map_err(backend_error)?,
+    })
+}
+
 fn display_info(monitor: &Monitor) -> Result<DisplayInfo, CaptureError> {
     Ok(DisplayInfo {
         id: monitor_id(monitor)?,
@@ -472,6 +604,222 @@ mod tests {
     use image::Rgba;
 
     #[test]
+    fn remembered_region_is_metadata_only_and_rejects_geometry_changes() {
+        let geometry = DisplayGeometry {
+            x: -8,
+            y: 12,
+            width: 8,
+            height: 6,
+            scale_factor: 1.25,
+            rotation: 90.0,
+        };
+        let source = CapturedImage {
+            display_id: "fixture".into(),
+            window_id: None,
+            width: 8,
+            height: 6,
+            pixels: Arc::new(RgbaImage::from_pixel(8, 6, Rgba([12, 34, 56, 255]))),
+            png_path: std::env::temp_dir().join("unused-repeat-source.png"),
+            elapsed_ms: 0,
+            source_format: PixelFormat::Rgba8UnormSrgb,
+            display_geometry: Some(geometry),
+        };
+        let area = crate::PixelRegion {
+            x: 1,
+            y: 2,
+            width: 3,
+            height: 2,
+        };
+        let pixels = Arc::downgrade(&source.pixels);
+        let remembered = RememberedRegion::from_snapshot(&source, area).unwrap();
+        assert_eq!(Arc::strong_count(&source.pixels), 1);
+        assert_eq!(remembered.area(), area);
+        remembered.validate_geometry(geometry).unwrap();
+        for changed in [
+            DisplayGeometry { x: -7, ..geometry },
+            DisplayGeometry { y: 0, ..geometry },
+            DisplayGeometry {
+                width: 7,
+                ..geometry
+            },
+            DisplayGeometry {
+                height: 7,
+                ..geometry
+            },
+            DisplayGeometry {
+                scale_factor: 1.5,
+                ..geometry
+            },
+            DisplayGeometry {
+                rotation: 0.0,
+                ..geometry
+            },
+            DisplayGeometry {
+                scale_factor: f32::NAN,
+                ..geometry
+            },
+            DisplayGeometry {
+                scale_factor: 0.0,
+                ..geometry
+            },
+        ] {
+            assert!(matches!(
+                remembered.validate_geometry(changed),
+                Err(CaptureError::StaleRegion)
+            ));
+        }
+        for invalid in [
+            crate::PixelRegion { width: 0, ..area },
+            crate::PixelRegion {
+                x: u32::MAX,
+                ..area
+            },
+            crate::PixelRegion { x: 7, ..area },
+            crate::PixelRegion { y: 5, ..area },
+        ] {
+            assert!(RememberedRegion::from_snapshot(&source, invalid).is_err());
+        }
+        let cropped = crate::crop_snapshot(&source, area).unwrap();
+        assert!(cropped.display_geometry.is_none());
+        assert!(RememberedRegion::from_snapshot(&cropped, area).is_err());
+        let edited = crate::redact_snapshot(&source, &[area]).unwrap();
+        assert!(edited.display_geometry.is_none());
+        let mut unrelated = source.clone();
+        unrelated.window_id = Some("window".into());
+        assert!(RememberedRegion::from_snapshot(&unrelated, area).is_err());
+        unrelated.window_id = None;
+        unrelated.display_geometry = None;
+        assert!(RememberedRegion::from_snapshot(&unrelated, area).is_err());
+        drop(unrelated);
+        drop(source);
+        assert!(
+            pixels.upgrade().is_none(),
+            "Remembered metadata retained the desktop pixels"
+        );
+        remembered.validate_geometry(geometry).unwrap();
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    #[ignore = "requires an explicit opaque external window fixture; captures only a 2x2 rectangle inside it into RAM"]
+    fn repeats_only_the_explicit_fixture_region() -> anyhow::Result<()> {
+        use anyhow::ensure;
+        use windows_sys::Win32::{
+            Foundation::RECT,
+            UI::WindowsAndMessaging::{GetWindowRect, GetWindowThreadProcessId, IsWindowVisible},
+        };
+        #[link(name = "user32")]
+        unsafe extern "system" {
+            fn SetThreadDpiAwarenessContext(
+                context: *mut std::ffi::c_void,
+            ) -> *mut std::ffi::c_void;
+        }
+        let previous = unsafe { SetThreadDpiAwarenessContext((-4isize) as *mut _) };
+        ensure!(!previous.is_null(), "Per-monitor DPI context unavailable");
+        struct RestoreDpi(*mut std::ffi::c_void);
+        impl Drop for RestoreDpi {
+            fn drop(&mut self) {
+                unsafe {
+                    SetThreadDpiAwarenessContext(self.0);
+                }
+            }
+        }
+        let _restore = RestoreDpi(previous);
+        let expected: u32 = std::env::var("SCREENSHOTS_ACTIVE_WINDOW_FIXTURE_PID")?.parse()?;
+        let handle = std::env::var("SCREENSHOTS_ACTIVE_WINDOW_FIXTURE_HANDLE")?.parse::<isize>()?
+            as windows_sys::Win32::Foundation::HWND;
+        let mut owner = 0;
+        ensure!(
+            unsafe { GetWindowThreadProcessId(handle, &mut owner) } != 0
+                && owner == expected
+                && owner != std::process::id(),
+            "Unexpected fixture process; no capture attempted"
+        );
+        ensure!(
+            unsafe { IsWindowVisible(handle) } != 0,
+            "Fixture is not visible"
+        );
+        let mut bounds = RECT {
+            left: 0,
+            top: 0,
+            right: 0,
+            bottom: 0,
+        };
+        ensure!(
+            unsafe { GetWindowRect(handle, &mut bounds) } != 0,
+            "Fixture bounds unavailable"
+        );
+        ensure!(
+            (100..1024).contains(&(bounds.right - bounds.left))
+                && (100..1024).contains(&(bounds.bottom - bounds.top)),
+            "Unexpected fixture size"
+        );
+        let window = Window::all()?
+            .into_iter()
+            .find(|window| window.id().ok() == Some(handle as usize as u32))
+            .ok_or_else(|| anyhow::anyhow!("Fixture not listed"))?;
+        let monitor = window.current_monitor()?;
+        let geometry = monitor_geometry(&monitor)?;
+        validate_image_size(geometry.width, geometry.height)?;
+        let area = crate::PixelRegion {
+            x: u32::try_from(
+                i64::from(bounds.left) + i64::from(bounds.right - bounds.left) / 2
+                    - i64::from(geometry.x),
+            )?,
+            y: u32::try_from(
+                i64::from(bounds.top) + i64::from(bounds.bottom - bounds.top) / 2
+                    - i64::from(geometry.y),
+            )?,
+            width: 2,
+            height: 2,
+        };
+        // The source is synthetic: no full-desktop pixels are captured to remember geometry.
+        let source = CapturedImage {
+            display_id: monitor_id(&monitor)?,
+            window_id: None,
+            width: geometry.width,
+            height: geometry.height,
+            pixels: Arc::new(RgbaImage::new(geometry.width, geometry.height)),
+            png_path: std::env::temp_dir().join("unused-repeat-fixture.png"),
+            elapsed_ms: 0,
+            source_format: PixelFormat::Rgba8UnormSrgb,
+            display_geometry: Some(geometry),
+        };
+        let remembered = RememberedRegion::from_snapshot(&source, area)?;
+        let id = source.display_id.clone();
+        drop(source);
+        crate::wait_for_desktop_compositor()?;
+        let backend = XcapBackend::new(std::env::temp_dir().join("unused-repeat-output"));
+        let baseline_started = Instant::now();
+        let baseline = backend.capture_batch(vec![CaptureRequest::Region {
+            display_id: id,
+            x: i32::try_from(area.x)?,
+            y: i32::try_from(area.y)?,
+            width: 2,
+            height: 2,
+        }])?;
+        let baseline_elapsed = baseline_started.elapsed();
+        let repeat_started = Instant::now();
+        let repeated =
+            backend.capture_batch(vec![CaptureRequest::RepeatRegion(remembered.clone())])?;
+        let repeat_elapsed = repeat_started.elapsed();
+        assert_eq!(baseline[0].pixels, repeated[0].pixels);
+        assert_eq!(repeated[0].pixels.dimensions(), (2, 2));
+        assert!(repeated[0].display_geometry.is_none());
+        assert!(!baseline[0].png_path.exists() && !repeated[0].png_path.exists());
+        let mut changed = remembered;
+        changed.geometry.scale_factor += 0.25;
+        assert!(matches!(
+            backend.capture_batch(vec![CaptureRequest::RepeatRegion(changed)]),
+            Err(CaptureError::StaleRegion)
+        ));
+        eprintln!(
+            "Native 2x2 region baseline: {baseline_elapsed:?}; repeat: {repeat_elapsed:?}. Single observations, not a latency acceptance result."
+        );
+        Ok(())
+    }
+
+    #[test]
     fn capture_admission_bounds_total_without_allocating_pixels() {
         let mut budget = CaptureBudget::default();
         // Two 8192x4096 images fit exactly; another must fail before capture.
@@ -510,6 +858,7 @@ mod tests {
             png_path: dir.join("capture.png"),
             elapsed_ms: 0,
             source_format: PixelFormat::Rgba8UnormSrgb,
+            display_geometry: None,
         };
         shot.save_png().expect("publish PNG");
         assert_eq!(

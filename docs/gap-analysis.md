@@ -14,6 +14,10 @@ Active-window follow-up (2026-11-12): Windows now exposes a configurable active-
 window shortcut (disabled by default) and cancellable three-second menu/tray
 commands. Native foreground-focus acceptance remains open; see PLAN.md.
 
+Last-region follow-up (2026-11-12): Windows can repeat one session-only selected
+region through UI/tray/configurable shortcut, with worker-side geometry checks.
+Exact numeric/preset region entry and cross-session persistence remain absent.
+
 Assessment date: 2026-11-12. Local baseline: `ed53567f5112818781b55af63fc6931f12d0cd36`
 on `main`, including the GPUI Kit rewrite. Static inspection of production code,
 UI entry points, configuration and existing verification evidence; no new build,
@@ -88,10 +92,10 @@ selection adjustment and configurable after-capture tasks in its capture flow.
 
 | Capability | Current status and gap | Priority |
 | --- | --- | --- |
-| User-defined global hotkeys | Partial: Windows settings now assign/disable/restore bindings for primary display, quick region, capture-and-annotate and active window. Arbitrary command assignment and per-shortcut task profiles remain missing; see the implementation follow-ups above for verification limits. | A |
+| User-defined global hotkeys | Partial: Windows settings now assign/disable/restore bindings for primary display, quick region, capture-and-annotate, active window and repeat-last-region. Arbitrary command assignment and per-shortcut task profiles remain missing; see the implementation follow-ups above for verification limits. | A |
 | Configurable output workflow | Partial: one saved global choice provides copy-only, save-only, save-and-copy or annotate-first for quick captures. Editor outputs stay explicit. Per-shortcut saved task profiles, after-capture chains and sharing profiles remain missing. | A |
 | Active-window/active-monitor command | Partial: a Windows foreground-window command now has a configurable shortcut and a menu/tray countdown; foreground-focus acceptance remains open. Enumerated windows/displays and cursor-based monitor targeting for Windows annotation exist. A general active-monitor command remains missing. | A |
-| Last region and exact region | Missing: reusable last-region geometry and user-entered/preset physical pixel dimensions/coordinates. | A |
+| Last region and exact region | Partial: Windows repeats one session-only selected region with display identity/geometry checks. Numeric/preset physical pixel dimensions/coordinates and persisted region presets remain missing. | A |
 | Precision selection | Partial: crop and transforms exist; no equivalent complete magnifier, window/control snapping or keyboard-driven region-selection workflow. | A |
 | Capture preferences | Missing configurable cursor inclusion, arbitrary delay, window-frame/shadow/transparency options and persistent capture defaults. Current delay is fixed to three seconds. | A/B |
 | Multiple outputs | Partial: all displays are captured separately. No stitched desktop output, cross-monitor drag selection or multiple independent regions in one capture session. | B |

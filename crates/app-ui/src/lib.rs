@@ -138,8 +138,9 @@ pub struct CaptureWorkspace {
     settings_status: String,
     hotkey_bindings: app_core::CaptureHotkeys,
     output_profile: CaptureOutputProfile,
+    last_region: Option<app_core::RememberedRegion>,
     #[cfg(target_os = "windows")]
-    hotkey_inputs: Option<[gpui::Entity<gpui::component::input::InputState>; 4]>,
+    hotkey_inputs: Option<[gpui::Entity<gpui::component::input::InputState>; 5]>,
     history_database: Option<PathBuf>,
     history_visible: bool,
     history_filter: app_core::HistoryFilter,
@@ -523,6 +524,7 @@ impl CaptureWorkspace {
             settings_status: String::new(),
             hotkey_bindings: app_core::CaptureHotkeys::default(),
             output_profile: CaptureOutputProfile::default(),
+            last_region: None,
             #[cfg(target_os = "windows")]
             hotkey_inputs: None,
             history_database: if cfg!(test) {
@@ -686,6 +688,7 @@ impl CaptureWorkspace {
                                             this.select_region_to_edit(cx)
                                         }
                                         Some(app_core::CaptureCommand::ActiveWindow) => this.capture_active_window(cx),
+                                        Some(app_core::CaptureCommand::RepeatRegion) => this.repeat_last_region(cx),
                                         None => {}
                                     }
                                 }
@@ -701,6 +704,7 @@ impl CaptureWorkspace {
                                             this.select_region_to_edit(cx)
                                         }
                                         Some(app_core::TrayCommand::ActiveWindow) => this.start_delayed_capture(DelayedCapture::ActiveWindow, cx),
+                                        Some(app_core::TrayCommand::RepeatRegion) => this.repeat_last_region(cx),
                                         Some(app_core::TrayCommand::Show) => this.show_control(cx),
                                         Some(app_core::TrayCommand::Quit) => {
                                             cx.defer(close_application)
@@ -1544,6 +1548,27 @@ impl CaptureWorkspace {
         }
     }
 
+    fn set_last_region(&mut self, region: Option<app_core::RememberedRegion>) {
+        self.last_region = region;
+        #[cfg(target_os = "windows")]
+        if let Some(tray) = &self.tray { tray.set_repeat_region_available(self.last_region.is_some()); }
+    }
+
+    fn repeat_last_region(&mut self, cx: &mut Context<Self>) {
+        if self.capturing || self.copying || self.saving || self.quitting || self.settings_loading
+            || self.settings_saving || self.switching_graphics || self.preview_active
+            || self.editor.is_some() || self.editor_closing || self.capture_delay.is_some()
+            || self.output_directory.is_none() { return; }
+        let Some(region) = self.last_region.clone() else {
+            self.capture_status = "Select a region on a stable display before repeating it. Regions are remembered for this app session only.".into();
+            self.show_page(ControlPage::Captures, cx);
+            self.show_control(cx);
+            cx.notify();
+            return;
+        };
+        self.start_capture(vec![CaptureJob::RepeatRegion(region)], cx);
+    }
+
     fn capture_all(&mut self, cx: &mut Context<Self>) {
         let jobs: Vec<CaptureJob> = self
             .xcap_displays
@@ -1692,6 +1717,7 @@ impl CaptureWorkspace {
                                 png_path: directory.join("source.png"),
                                 elapsed_ms: 0,
                                 source_format: app_core::PixelFormat::Rgba8UnormSrgb,
+                                display_geometry: None,
                             }
                         }
                     };
@@ -1880,6 +1906,7 @@ impl CaptureWorkspace {
         if self.capturing || self.copying || self.saving || self.quitting {
             return;
         }
+        let remembered = crop.and_then(|area| app_core::RememberedRegion::from_snapshot(&source, area).ok());
         self.close_editor(cx);
         self.capturing = true;
         self.capture_status = "Applying image edits…".into();
@@ -1909,6 +1936,7 @@ impl CaptureWorkspace {
                 }
                 match result {
                     Ok((shot, thumbnail)) => {
+                        if let Some(region) = remembered { this.set_last_region(Some(region)); }
                         this.replace_last_render(thumbnail, cx);
                         this.last_saved = None;
                         this.last_capture = Some(shot.clone());
@@ -3118,6 +3146,7 @@ impl CaptureWorkspace {
             return;
         }
         let edit_selection = self.edit_selection || profile == CaptureOutputProfile::AnnotateFirst;
+        let remembered = app_core::RememberedRegion::from_snapshot(&source, region).ok();
         // Keep graphics attached while the selected pixels move into the editor.
         if edit_selection {
             self.preview_active = false;
@@ -3133,6 +3162,7 @@ impl CaptureWorkspace {
                 if this.quitting { this.finish_quit_if_idle(cx); return; }
                 match result {
                     Ok((shot, render)) => {
+                        this.set_last_region(remembered);
                         if edit_selection {
                             this.show_prepared_editor(shot, render, true, cx);
                             if this.editor.is_none() { this.show_control(cx); }
@@ -3182,6 +3212,7 @@ impl CaptureWorkspace {
             return;
         }
         let profile = self.output_profile;
+        let repeating_region = jobs.iter().any(|job| matches!(job, CaptureJob::RepeatRegion(_)));
         if !preview && profile.requires_single_image() && jobs.len() != 1 {
             self.capture_status = "Choose one display or window for Copy only or Annotate first.".into();
             cx.notify();
@@ -3374,6 +3405,10 @@ impl CaptureWorkspace {
                         }
                     }
                     Err(error) => {
+                        if repeating_region { this.show_page(ControlPage::Captures, cx); }
+                        if repeating_region && matches!(&error, app_core::CaptureError::StaleRegion | app_core::CaptureError::DisplayNotFound(_)) {
+                            this.set_last_region(None);
+                        }
                         tracing::error!(%error, "capture failed");
                         this.capture_status = format!("capture failed: {error}");
                         if this.resident && this.control.is_none() {
@@ -3985,7 +4020,7 @@ mod tests {
                             let shot = CapturedImage { display_id: "fixture".into(), window_id: None, width: 2, height: 2,
                                 pixels: Arc::new(image::RgbaImage::from_pixel(2, 2, image::Rgba([91, 42, 17, 255]))),
                                 png_path: directory.join(match profile { CaptureOutputProfile::CopyOnly => "copy-only.png", CaptureOutputProfile::SaveOnly => "save-only.png", _ => "save-and-copy.png" }),
-                                elapsed_ms: 0, source_format: app_core::PixelFormat::Rgba8UnormSrgb };
+                                elapsed_ms: 0, source_format: app_core::PixelFormat::Rgba8UnormSrgb, display_geometry: None };
                             this.last_saved = Some(directory.join("old.png"));
                             // The job's captured profile must win over later settings values.
                             this.output_profile = CaptureOutputProfile::AnnotateFirst;
@@ -4014,7 +4049,7 @@ mod tests {
                         owner.update(cx, |this, cx| {
                             let shot = CapturedImage { display_id: u64::from(cx.primary_display().unwrap().id()).to_string(), window_id: None, width: 2, height: 2,
                                 pixels: Arc::new(image::RgbaImage::from_pixel(2, 2, image::Rgba([91, 42, 17, 255]))),
-                                png_path: directory.join("annotate-first.png"), elapsed_ms: 0, source_format: app_core::PixelFormat::Rgba8UnormSrgb };
+                                png_path: directory.join("annotate-first.png"), elapsed_ms: 0, source_format: app_core::PixelFormat::Rgba8UnormSrgb, display_geometry: None };
                             if region {
                                 this.save_selection(shot, app_core::PixelRegion { x: 0, y: 0, width: 1, height: 2 }, CaptureOutputProfile::AnnotateFirst, cx);
                             } else {
@@ -4827,6 +4862,7 @@ mod tests {
                         png_path: output.join("source.png"),
                         elapsed_ms: 0,
                         source_format: app_core::PixelFormat::Rgba8UnormSrgb,
+                        display_geometry: None,
                     });
                     this.show_control(cx);
                 });
@@ -5293,6 +5329,7 @@ try {
             pixels: Arc::new(pixels),
             elapsed_ms: 0,
             source_format: app_core::PixelFormat::Rgba8UnormSrgb,
+            display_geometry: None,
         };
         let result = Arc::new(Mutex::new(None));
         let report = result.clone();
@@ -5884,6 +5921,7 @@ try {
                         png_path: output,
                         elapsed_ms: 0,
                         source_format: app_core::PixelFormat::Rgba8UnormSrgb,
+                        display_geometry: None,
                     };
                     this.last_capture = Some(shot.clone());
                     this.copy_and_save(vec![shot], cx);
@@ -5956,6 +5994,7 @@ try {
             png_path: PathBuf::from("unused.png"),
             elapsed_ms: 0,
             source_format: app_core::PixelFormat::Rgba8UnormSrgb,
+            display_geometry: None,
         };
         let render = render_thumbnail(&source);
         let bytes = render.as_bytes(0).unwrap();
@@ -5999,6 +6038,7 @@ try {
                         )),
                         elapsed_ms: 0,
                         source_format: app_core::PixelFormat::Rgba8UnormSrgb,
+                        display_geometry: None,
                     };
                     this.last_capture = Some(shot.clone());
                     this.copy_and_save(vec![shot], cx);

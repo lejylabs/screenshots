@@ -104,6 +104,21 @@ fn output_profile_failure_preserves_active_choice_and_rejects_multi_image_output
 
 #[cfg(target_os = "windows")]
 #[gpui::test]
+fn repeat_without_a_region_shows_capture_guidance_without_output(cx: &mut TestAppContext) {
+    let handle = open_workspace(cx);
+    handle.update(cx, |state, _, cx| {
+        state.output_directory = Some(std::env::temp_dir());
+        state.show_page(ControlPage::Settings, cx);
+        state.repeat_last_region(cx);
+        assert_eq!(state.page, ControlPage::Captures);
+        assert!(state.capture_status.starts_with("Select a region"));
+        assert!(state.last_region.is_none() && state.last_capture.is_none());
+        assert!(!state.capturing && !state.copying && !state.saving);
+    }).unwrap();
+}
+
+#[cfg(target_os = "windows")]
+#[gpui::test]
 fn active_window_countdown_can_cancel_without_starting_capture(cx: &mut TestAppContext) {
     let handle = open_workspace(cx);
     cx.update(|cx| handle.update(cx, |this, _, cx| {
@@ -293,6 +308,13 @@ fn escape_releases_an_overlay_inside_its_kit_root(cx: &mut TestAppContext) {
     cx.update(|cx| cx.bind_keys([KeyBinding::new("escape", CloseOverlay, Some("Overlay"))]));
     handle
         .update(cx, |state, _, cx| {
+            let source = CapturedImage {
+                display_id: "fixture".into(), window_id: None, width: 4, height: 3,
+                pixels: Arc::new(image::RgbaImage::new(4, 3)), png_path: PathBuf::from("unused-source.png"),
+                elapsed_ms: 0, source_format: app_core::PixelFormat::Rgba8UnormSrgb,
+                display_geometry: Some(app_core::DisplayGeometry { x: -4, y: 0, width: 4, height: 3, scale_factor: 1.25, rotation: 0.0 }),
+            };
+            state.set_last_region(Some(app_core::RememberedRegion::from_snapshot(&source, app_core::PixelRegion { x: 1, y: 1, width: 2, height: 2 }).unwrap()));
             state.show_overlays(OverlayMode::Probe, &[], &HashMap::new(), cx);
         })
         .unwrap();
@@ -313,6 +335,7 @@ fn escape_releases_an_overlay_inside_its_kit_root(cx: &mut TestAppContext) {
         assert!(state.overlays.is_empty());
         assert!(state.last_saved.is_none());
         assert!(state.last_capture.is_none());
+        assert_eq!(state.last_region.as_ref().unwrap().area(), app_core::PixelRegion { x: 1, y: 1, width: 2, height: 2 });
     });
 }
 

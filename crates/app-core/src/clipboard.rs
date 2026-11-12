@@ -166,6 +166,7 @@ mod tests {
             png_path: blocked_parent.join("capture.png"),
             elapsed_ms: 0,
             source_format: crate::PixelFormat::Rgba8UnormSrgb,
+            display_geometry: None,
         };
         assert!(shot.save_png().is_err());
         std::fs::remove_file(blocked_parent)?;

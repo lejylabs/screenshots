@@ -129,6 +129,7 @@ mod tests {
             png_path: "never-written.png".into(),
             elapsed_ms: 0,
             source_format: crate::PixelFormat::Rgba8UnormSrgb,
+            display_geometry: None,
         }
     }
     #[test]

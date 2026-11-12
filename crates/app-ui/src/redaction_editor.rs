@@ -3313,6 +3313,7 @@ mod tests {
             )),
             elapsed_ms: 0,
             source_format: app_core::PixelFormat::Rgba8UnormSrgb,
+            display_geometry: None,
         };
         let annotations = [app_core::DrawAnnotation::Pen(line.clone())];
         let output =

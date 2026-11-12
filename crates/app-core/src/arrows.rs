@@ -345,6 +345,7 @@ mod tests {
             png_path: "fixture.png".into(),
             elapsed_ms: 0,
             source_format: crate::PixelFormat::Rgba8UnormSrgb,
+            display_geometry: None,
         };
         let ellipse = crate::FrameAnnotation {
             filled: false,
@@ -425,6 +426,7 @@ mod tests {
             png_path: "fixture.png".into(),
             elapsed_ms: 0,
             source_format: crate::PixelFormat::Rgba8UnormSrgb,
+            display_geometry: None,
         };
         let arrow = ArrowAnnotation {
             width: 3,

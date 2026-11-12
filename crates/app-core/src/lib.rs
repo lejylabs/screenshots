@@ -65,7 +65,7 @@ mod desktop_window;
 pub use desktop_window::{DesktopWindow, cursor_position, foreground_window_capture, wait_for_desktop_compositor};
 
 pub use capture::{
-    CaptureBackend, CaptureCapabilities, CaptureError, CaptureRequest, CapturedImage, DisplayInfo,
+    CaptureBackend, CaptureCapabilities, CaptureError, CaptureRequest, CapturedImage, DisplayInfo, DisplayGeometry, RememberedRegion,
     MAX_CAPTURE_BYTES, PixelFormat, WindowInfo, XcapBackend, capture_output_dir, export_saved_png,
     validate_image_size,
 };

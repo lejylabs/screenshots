@@ -38,9 +38,9 @@ Save only and Save and copy can still save all displays separately; the latter
 copies the last image as before. Uploads remain a separate explicit action.
 
 On Windows, **Settings → Global shortcuts** configures Primary display, Quick
-region, Capture and annotate, and Active window. Enter a combination such as `Ctrl+Alt+Q`, leave
+region, Capture and annotate, Active window and Repeat last region. Enter a combination such as `Ctrl+Alt+Q`, leave
 it empty to disable the command, then choose **Save shortcuts**. **Restore defaults**
-saves the original Ctrl+Shift+S/R/E bindings and disables Active window. Supported keys are letters, digits,
+saves the original Ctrl+Shift+S/R/E bindings and disables Active window and Repeat last region. Supported keys are letters, digits,
 F1–F24 and PrintScreen; modifiers are Ctrl, Alt, Shift and Super (Windows key).
 Letters/digits require Ctrl, Alt or Super. Duplicate bindings and OS conflicts
 leave the previous working bindings in place. New keys are reserved until settings
@@ -62,6 +62,22 @@ you time to focus the target window. Cancel countdown/Escape in the control wind
 closing that window, or Quit cancels the countdown. A missing, minimized, closed
 or changed-process target fails without falling back to the desktop. Foreground
 focus/hotkey interaction and DPI acceptance remain separate manual checks.
+
+**Repeat last region** is available on Windows in Recent capture, the Capture menu
+and the tray after selecting a reusable region. Its optional shortcut starts
+disabled. The app remembers one monitor-local pixel rectangle for the current app
+session only, without retaining desktop pixels or writing coordinates to settings.
+Quick-region selection remembers the area after a successful crop, including when
+Annotate first opens the editor. Cropping a fresh full-display snapshot in the
+editor also remembers the area when you explicitly output the edited image.
+Imported, already cropped or rendered images are not treated as display coordinates.
+
+Repeat uses the current output profile and checks the selected display's position,
+resolution, DPI scale and rotation on the worker before and after capture. A changed
+or missing display requires selecting a new region; it never falls back to another
+display. Canceling before completing a selection preserves the previous area.
+Canceling an editor opened after quick-region selection keeps that already chosen
+rectangle, while producing no image output. Quitting forgets the rectangle.
 
 The native GPUI workspace has two appearances: **Dark**, the default (neutral charcoal surfaces, grayscale controls and minimal decoration), and **Oldschool** (compact task navigation, blue selection, colorful function icons and square controls). Choose one under **Settings → Appearance**, or use the theme button in the workspace header. Changes apply immediately across the control window, editor, text inputs and region guide. Appearance saves on a worker alongside the capture folder; failures restore the previous theme and show an error. New installations, settings without a theme, and retired or unknown theme values use Dark. An explicit Oldschool choice is preserved. Annotation colors and exported image pixels are independent of the UI theme.
 

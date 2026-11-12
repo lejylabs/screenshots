@@ -206,6 +206,8 @@ impl Render for CaptureWorkspace {
                     .bg(colors.group_box).flex().flex_col().gap_1()
                     .child(capture_tile(cx, "select-region", "Quick region", self.output_profile.label(), unavailable,
                         cx.listener(|this, _, _, cx| this.open_overlays(OverlayMode::Fullscreen, cx))))
+                    .when(cfg!(target_os = "windows"), |view| view.child(capture_tile(cx, "repeat-region", "Repeat last region", "Current session · unchanged display geometry required", unavailable || self.preview_active || self.last_region.is_none(),
+                        cx.listener(|this, _, _, cx| this.repeat_last_region(cx)))))
                     .child(capture_tile(cx, "delayed-region", "3-second delay", "Wait before selecting a region", unavailable,
                         cx.listener(|this, _, _, cx| this.start_delayed_region(cx))))
                     .child(capture_tile(cx, "nav-sources", "Display or window", "Choose a capture source", unavailable,
@@ -711,6 +713,11 @@ impl CaptureWorkspace {
                             .disable(unavailable)
                             .on_click(cx.listener(|this, _, _, cx| this.capture_primary(cx))),
                         #[cfg(target_os = "windows")]
+                        SidebarMenuItem::new("Repeat last region")
+                            .icon(ui_icon(cx, "select-region", 16.))
+                            .disable(unavailable || self.preview_active || self.last_region.is_none())
+                            .on_click(cx.listener(|this, _, _, cx| this.repeat_last_region(cx))),
+                        #[cfg(target_os = "windows")]
                         SidebarMenuItem::new("Active window in 3 seconds")
                             .icon(ui_icon(cx, "capture-primary", 16.))
                             .disable(unavailable)
@@ -984,7 +991,7 @@ fn capture_tile(
 pub(super) fn ui_icon(cx: &App, id: &'static str, edge: f32) -> Icon {
     use gpui::assets::IconName as Glyph;
     let glyph = match id {
-        "select-region" | "workspace-annotate" => Glyph::Crop,
+        "select-region" | "repeat-region" | "workspace-annotate" => Glyph::Crop,
         "select-region-to-edit" | "capture-options" => Glyph::Camera,
         "delayed-region" => Glyph::Timer,
         "nav-captures" | "preview-history-file" => Glyph::Image,

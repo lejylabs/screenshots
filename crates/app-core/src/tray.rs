@@ -11,6 +11,7 @@ pub enum TrayCommand {
     Region,
     EditRegion,
     ActiveWindow,
+    RepeatRegion,
     Show,
     Quit,
 }
@@ -21,6 +22,7 @@ pub struct SpikeTray {
     region: MenuItem,
     edit_region: MenuItem,
     active_window: MenuItem,
+    repeat_region: MenuItem,
     show: MenuItem,
     quit: MenuItem,
 }
@@ -32,6 +34,7 @@ impl SpikeTray {
         let region = MenuItem::new("Select region", true, None);
         let edit_region = MenuItem::new("Capture and annotate", true, None);
         let active_window = MenuItem::new("Active window in 3 seconds…", true, None);
+        let repeat_region = MenuItem::new("Repeat last region (current session)", false, None);
         let show = MenuItem::new("Show control window", true, None);
         let quit = MenuItem::new("Quit", true, None);
         menu.append_items(&[
@@ -39,6 +42,7 @@ impl SpikeTray {
             &region,
             &capture,
             &active_window,
+            &repeat_region,
             &show,
             &quit,
         ])?;
@@ -66,6 +70,7 @@ impl SpikeTray {
             region,
             edit_region,
             active_window,
+            repeat_region,
             show,
             quit,
         })
@@ -83,6 +88,8 @@ impl SpikeTray {
                     Some(TrayCommand::EditRegion)
                 } else if event.id == *self.active_window.id() {
                     Some(TrayCommand::ActiveWindow)
+                } else if event.id == *self.repeat_region.id() {
+                    Some(TrayCommand::RepeatRegion)
                 } else if event.id == *self.show.id() {
                     Some(TrayCommand::Show)
                 } else if event.id == *self.quit.id() {
@@ -94,6 +101,10 @@ impl SpikeTray {
             .collect()
     }
 
+    pub fn set_repeat_region_available(&self, available: bool) {
+        self.repeat_region.set_enabled(available);
+    }
+
     pub fn command(&self, event: MenuEvent) -> Option<TrayCommand> {
         if event.id == *self.capture.id() {
             Some(TrayCommand::Capture)
@@ -103,6 +114,8 @@ impl SpikeTray {
             Some(TrayCommand::EditRegion)
         } else if event.id == *self.active_window.id() {
             Some(TrayCommand::ActiveWindow)
+        } else if event.id == *self.repeat_region.id() {
+            Some(TrayCommand::RepeatRegion)
         } else if event.id == *self.show.id() {
             Some(TrayCommand::Show)
         } else if event.id == *self.quit.id() {
@@ -122,6 +135,17 @@ mod tests {
     fn tray_creation_and_cleanup() -> Result<()> {
         let tray = SpikeTray::new()?;
         assert!(tray.take_commands().is_empty());
+        assert!(!tray.repeat_region.is_enabled());
+        tray.set_repeat_region_available(true);
+        assert!(tray.repeat_region.is_enabled());
+        assert_eq!(
+            tray.command(MenuEvent {
+                id: tray.repeat_region.id().clone()
+            }),
+            Some(TrayCommand::RepeatRegion)
+        );
+        tray.set_repeat_region_available(false);
+        assert!(!tray.repeat_region.is_enabled());
         assert_eq!(
             tray.command(MenuEvent {
                 id: tray.active_window.id().clone()

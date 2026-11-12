@@ -8,11 +8,16 @@ three-binding settings retain all values and gain the disabled slot. See PLAN.md
 for active-window scope and current checks. The original measurements below
 describe the earlier three-command build, not a fresh four-command benchmark.
 
+Further follow-up: Repeat last region is a fifth, initially disabled command.
+Three- and four-binding files retain their values and gain disabled slots.
+Current resource/runtime verification is tracked in PLAN.md; original measurements
+below are historical and do not measure the five-command build.
+
 ## Behavior and ownership
 
-Settings exposes four named Kit inputs for Primary display, Quick region,
-Capture and annotate, and Active window. Save shortcuts applies all four; an empty value disables
-that command. Restore defaults saves Ctrl+Shift+S/R/E and disables Active window. Input supports Ctrl, Alt,
+Settings exposes five named Kit inputs for Primary display, Quick region,
+Capture and annotate, Active window and Repeat last region. Save shortcuts applies all five; an empty value disables
+that command. Restore defaults saves Ctrl+Shift+S/R/E and disables Active window and Repeat last region. Input supports Ctrl, Alt,
 Shift and Super with letters, digits, F1–F24 or PrintScreen. Letters/digits need
 Ctrl, Alt or Super. Each string is limited to 64 bytes; normalization precedes
 duplicate detection. Arbitrary command assignment/task profiles remain future work.
@@ -33,11 +38,11 @@ already owned key to another command requires no duplicate OS registration.
 Native registration/unregistration stays on the foreground event-loop thread.
 Callbacks use the existing bounded event bridge. A native cleanup failure retains
 ownership/routing information, reports remaining bindings and blocks further edits
-until restart, bounding ownership to at most eight keys. Drop retries release.
+until restart, bounding ownership to at most ten keys. Drop retries release.
 
 There is no new dependency, runtime, thread, polling timer, cache or startup UI.
-Retained configuration is four strings of at most 64 bytes plus small native
-registration metadata. Four Kit inputs exist only on Settings and release on
+Retained configuration is five strings of at most 64 bytes plus small native
+registration metadata. Five Kit inputs exist only on Settings and release on
 page exit/window close. Their text is bounded before insertion; Kit's existing
 bounded input undo engine is reused. Capture, source pixels and output choices
 are unchanged. Non-Windows settings explain that this integration is unavailable.

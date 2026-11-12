@@ -494,6 +494,7 @@ pub fn render_ordered_snapshot(
     }
     Ok(CapturedImage {
         pixels: std::sync::Arc::new(pixels),
+        display_geometry: None,
         width: area.width,
         height: area.height,
         png_path: source.png_path.with_file_name(format!(
@@ -552,6 +553,7 @@ pub fn crop_snapshot(source: &CapturedImage, region: PixelRegion) -> Result<Capt
     );
     Ok(CapturedImage {
         png_path: path,
+        display_geometry: None,
         pixels,
         width: region.width,
         height: region.height,
@@ -709,6 +711,7 @@ mod tests {
             png_path: "source.png".into(),
             elapsed_ms: 0,
             source_format: crate::PixelFormat::Rgba8UnormSrgb,
+            display_geometry: None,
         };
         let frame = FrameAnnotation {
             filled: false,
@@ -788,6 +791,7 @@ mod tests {
             png_path: "source.png".into(),
             elapsed_ms: 0,
             source_format: crate::PixelFormat::Rgba8UnormSrgb,
+            display_geometry: None,
         };
         let crop = PixelRegion {
             x: 2,
@@ -846,6 +850,7 @@ mod tests {
             png_path: root.join("original.png"),
             elapsed_ms: 0,
             source_format: crate::PixelFormat::Rgba8UnormSrgb,
+            display_geometry: None,
         };
         source.save_png()?;
         let original_file = std::fs::read(&source.png_path)?;
@@ -934,6 +939,7 @@ mod tests {
             pixels: std::sync::Arc::new(image.clone()),
             elapsed_ms: 0,
             source_format: crate::PixelFormat::Rgba8UnormSrgb,
+            display_geometry: None,
         };
         let result = crop_snapshot(
             &source,
