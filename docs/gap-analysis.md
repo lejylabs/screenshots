@@ -96,6 +96,14 @@ distinct synthetic outputs and matching last-saved/history paths. Native IME/
 accessibility, path/recovery and full resource acceptance remain open. Rich macros,
 folder templates and renaming existing files remain absent.
 
+Resize-export follow-up (2026-11-12): Save as offers session-only Original/50%/25%
+size. Reduced PNG/JPEG/WebP files are copies that preserve the current source and
+PNG library. Worker-side box resampling weights RGB by alpha, keeps rounded pixel
+bounds and uses one RGBA output without full-size float scratch. Optimized tests
+cover pixel/alpha/dimension behavior, format/source preservation and UI snapshot/
+history behavior. Native interaction/recovery/memory acceptance remains open;
+arbitrary dimensions, upscaling and canvas resize remain absent.
+
 Assessment date: 2026-11-12. Local baseline: `ed53567f5112818781b55af63fc6931f12d0cd36`
 on `main`, including the GPUI Kit rewrite. Static inspection of production code,
 UI entry points, configuration and existing verification evidence; no new build,
@@ -196,7 +204,7 @@ cut-out/background editing and output actions integrated into tasks.
 | --- | --- | --- |
 | Open/Paste/Drop into editor | Partial: direct Open image / Ctrl+O and a single external file drop support PNG/JPEG/WebP; Windows Paste image / Ctrl+Shift+V supports PNG and common DIB layouts. Last capture and PNG history editing exist. Other formats/platform paste, URL/raw-image drops and Explorer Open With remain missing. See the implementation follow-ups for verification limits. | A |
 | Image formats | Partial: direct Open/Drop accepts PNG/JPEG/WebP; Save as has a saved default format, opaque JPEG quality 1–100 (default 90) and lossless RGBA WebP. The library and direct editor/quick saves remain PNG; capture/editor format preferences, lossy WebP and other formats remain pending. | A/B |
-| Resize and basic transforms | Partial: lossless 90-degree rotation and horizontal/vertical flip before crop/annotations, with metadata Undo/Redo. Transforming existing annotations, output resampling and aspect-locked dimensions remain missing. View zoom does not resize the exported file. | A |
+| Resize and basic transforms | Partial: Save as exports smaller 50%/25% copies; lossless 90-degree rotation and horizontal/vertical flip are available before crop/annotations with metadata Undo/Redo. Arbitrary dimensions/upscaling, canvas resize and transforming existing annotations remain missing. View zoom does not resize the exported file. | A |
 | Colors and typography | Partial: four drawing color swatches, discrete widths and text sizes; labels have four-line/512-byte limits. No general color/font selection, richer text/background/outline styling or reusable tool presets. | A/B |
 | Effect order | Partial: drawing annotations reorder; blur/pixelation are source-effect stages and opaque redaction is last. Arbitrary effect/drawing order is unavailable. Make restrictions clear or implement a consistent ordered document model. Keep opaque-redaction safety explicit. | A/B |
 | Advanced annotations | Missing speech balloons, inserted image/logo/clipboard objects, cursor stamps, emoji, magnify, clone/smart eraser, annotation rotation and richer arrow/shape options. | B/C |

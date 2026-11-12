@@ -414,6 +414,46 @@ or hardware acceptance. Native Settings/IME/accessibility, filesystem/path/recov
 and full process/GPU/latency/soak gates remain open. Rich naming macros, directory
 templates and renaming existing captures are outside this slice.
 
+#### Current feature slice: smaller Save as export copies
+
+Implemented (2026-11-12): Recent capture's Save as size offers Original (default),
+50% and 25%. The session-only choice is snapshotted before the native save dialog.
+Smaller outputs round each dimension up to whole pixels, at least one pixel, with
+no upscaling. All smaller outputs are copies, including PNG: current source, PNG
+library and clipboard remain unchanged. Original PNG retains its usual save/
+history transition and saved-PNG streaming path. Formats/default suffix/JPEG quality,
+transparency rejection and no-overwrite publication reuse the existing export path.
+
+The worker averages non-overlapping 2x2 or 4x4 source blocks, with smaller edge
+blocks. RGB is weighted by alpha before averaging/unpremultiplication, and pixels
+whose rounded alpha is zero have zero RGB. JPEG checks original source alpha
+before shrinking, so near-opaque input cannot bypass its transparency restriction.
+Resampling uses stored color values, without color-managed/gamma-correct filtering.
+Finalized/redacted pixels are the input; no unedited source is fetched. Shared PNG
+encoding remains Fast/Adaptive and now serves direct and resized output alike.
+
+Resource cost: one session percentage, three page-local radio choices, one job
+snapshot and one tightly packed RGBA output E, plus the existing encoder scratch.
+The kernel uses fixed stack accumulators (at most 16 source samples per output),
+no full-size float intermediate, extra source copy, GPU texture, undo snapshot,
+dependency, runtime, thread, cache or queue. Source/output admission retains the
+256 MiB image limit, and outputs can only shrink. Existing single-save admission,
+dialog cancellation and confirmed-save/Quit lifecycle apply; no background resize
+starts when selecting a percentage. Active-image/platform resource budgets remain.
+
+Optimized core/UI fixtures cover dimensions/edge rounding/skinny images, exact box
+values, alpha weighting and transparent RGB, invalid sizes, both in-memory/saved-PNG
+sources, all formats, source/target preservation and JPEG source-alpha rejection.
+A headless UI fixture verifies size snapshotting, redaction preservation and no
+PNG history/source/clipboard change for a smaller copy. Three warm structured 4K
+PNG samples observed median resize/encode/durable-save times of 27.50 ms Original,
+23.31 ms at 50% and 13.07 ms at 25%. Different output dimensions and the small
+fixture prevent general speed claims; these are observations, not native
+presentation/process/GPU/reference-hardware
+acceptance. Native UI/picker/accessibility, slow/full storage, interruption/recovery,
+peak memory and full platform/resource gates remain open. Arbitrary dimensions,
+upscaling, canvas resize and higher-quality filter choices remain separate work.
+
 #### Current feature slice: configurable Windows global hotkeys
 
 Implemented in the working tree (2026-11-12): three editable/disableable bindings

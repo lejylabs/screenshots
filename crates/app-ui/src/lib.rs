@@ -150,6 +150,7 @@ pub struct CaptureWorkspace {
     output_profile: CaptureOutputProfile,
     jpeg_quality: u8,
     export_format: app_core::ImageExportFormat,
+    export_scale_percent: u8,
     filename_template: String,
     filename_template_input: Option<gpui::Entity<gpui::component::input::InputState>>,
     jpeg_quality_input: Option<gpui::Entity<gpui::component::input::InputState>>,
@@ -553,6 +554,7 @@ impl CaptureWorkspace {
             output_profile: CaptureOutputProfile::default(),
             jpeg_quality: app_core::DEFAULT_JPEG_QUALITY,
             export_format: app_core::ImageExportFormat::default(),
+            export_scale_percent: 100,
             filename_template: String::new(),
             filename_template_input: None,
             jpeg_quality_input: None,
@@ -3219,6 +3221,7 @@ impl CaptureWorkspace {
     fn save_capture_as(&mut self, cx: &mut Context<Self>) {
         let jpeg_quality = self.jpeg_quality;
         let export_format = self.export_format;
+        let scale_percent = self.export_scale_percent;
         if self.capture_delay.is_some() {
             return;
         }
@@ -3263,9 +3266,9 @@ impl CaptureWorkspace {
             };
             if path.extension().is_none_or(|extension| extension.is_empty()) { path.set_extension(export_format.extension()); }
             let result = cx.background_spawn(async move {
-                let result = if let Some(shot) = shot { shot.save_image_as(&path, jpeg_quality) } else { app_core::export_saved_png_as(&source, &path, jpeg_quality) };
+                let result = if let Some(shot) = shot { shot.save_image_as(&path, jpeg_quality, scale_percent) } else { app_core::export_saved_png_as(&source, &path, jpeg_quality, scale_percent) };
                 result.map(|format| {
-                    let history_error = if format == app_core::ImageExportFormat::Png {
+                    let history_error = if format == app_core::ImageExportFormat::Png && scale_percent == 100 {
                         history_database.as_ref().and_then(|database| app_core::record_saved_capture(database, &path).err())
                             .map(|error| format!("{error:#}"))
                     } else { None };
@@ -3281,16 +3284,17 @@ impl CaptureWorkspace {
                 match result {
                     Ok((path, format, history_error)) => {
                         this.save_status = format!("{} saved: {}", format.label(), path.display());
-                        if format == app_core::ImageExportFormat::Png {
+                        if format == app_core::ImageExportFormat::Png && scale_percent == 100 {
                             this.last_saved = Some(path);
                             this.last_capture = None;
                         } else {
                             this.save_status.push_str(" · Exported a copy; current image and library unchanged");
+                            if scale_percent != 100 { this.save_status.push_str(&format!(" · Size {scale_percent}%")); }
                         }
                         if let Some(error) = history_error {
                             this.history_status = format!("PNG saved, but history was not updated: {error}");
                             this.save_status.push_str(" · History update failed");
-                        } else if this.history_visible && format == app_core::ImageExportFormat::Png { this.refresh_history(None, cx); }
+                        } else if this.history_visible && format == app_core::ImageExportFormat::Png && scale_percent == 100 { this.refresh_history(None, cx); }
                     }
                     Err(error) => {
                         this.quitting = false;

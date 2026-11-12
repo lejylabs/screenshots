@@ -250,6 +250,14 @@ impl Render for CaptureWorkspace {
                                 },
                             )),
                     )
+                    .child(div().text_sm().child("Save as size · aspect ratio kept, rounded to whole pixels. Smaller outputs are copies; the current image and library stay unchanged."))
+                    .child(RadioGroup::new("save-as-size")
+                        .children(["Original", "50%", "25%"])
+                        .selected_index([100, 50, 25].iter().position(|percent| *percent == self.export_scale_percent))
+                        .disabled(busy || self.preview_active)
+                        .on_change(cx.listener(|this, index, _, cx| {
+                            if let Some(percent) = [100, 50, 25].get(*index) { this.export_scale_percent = *percent; cx.notify(); }
+                        })))
                     .child(div().text_sm().child(self.clipboard_status.clone()))
                     .child(div().text_sm().child(self.save_status.clone())),
             )

@@ -6,6 +6,7 @@ mod pen;
 pub use layers::{DrawAnnotation, HighlightAnnotation};
 pub use pen::{MAX_DOCUMENT_PEN_POINTS, MAX_PEN_POINTS, PenAnnotation};
 mod capture;
+mod resample;
 mod filenames;
 pub use filenames::{capture_file_name, validate_capture_name_template};
 pub use arrows::ArrowAnnotation;
