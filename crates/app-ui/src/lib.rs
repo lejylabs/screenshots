@@ -129,6 +129,9 @@ pub struct CaptureWorkspace {
     settings_saving: bool,
     output_directory: Option<PathBuf>,
     settings_status: String,
+    hotkey_bindings: app_core::CaptureHotkeys,
+    #[cfg(target_os = "windows")]
+    hotkey_inputs: Option<[gpui::Entity<gpui::component::input::InputState>; 3]>,
     history_database: Option<PathBuf>,
     history_visible: bool,
     history_filter: app_core::HistoryFilter,
@@ -333,6 +336,8 @@ impl CaptureWorkspace {
             return;
         }
         self.preview_active = false;
+        #[cfg(target_os = "windows")]
+        { self.hotkey_inputs = None; }
         self.hide_history(cx);
         self.hide_upload_history();
         if self.page == ControlPage::History {
@@ -507,6 +512,9 @@ impl CaptureWorkspace {
                 None
             },
             settings_status: String::new(),
+            hotkey_bindings: app_core::CaptureHotkeys::default(),
+            #[cfg(target_os = "windows")]
+            hotkey_inputs: None,
             history_database: if cfg!(test) {
                 None
             } else {
@@ -581,13 +589,23 @@ impl CaptureWorkspace {
                 this.settings_loading = false;
                 match settings {
                     Ok(settings) => {
+                        #[cfg(target_os = "windows")]
+                        if let Some(hotkey) = this.hotkey.as_mut() {
+                            let result = hotkey.register_settings(&settings.hotkeys);
+                            this.hotkey_status = hotkey.status().to_string();
+                            tracing::info!(status = %this.hotkey_status, "configured global shortcuts ready");
+                            if let Err(error) = result {
+                                this.settings_status = format!("Saved shortcuts could not be applied: {error:#}. Active: {}", this.hotkey_status);
+                            }
+                        }
+                        this.hotkey_bindings = settings.hotkeys;
                         theme::apply(settings.theme, cx);
                         this.backend = XcapBackend::new(&settings.output_directory);
                         this.output_directory = Some(settings.output_directory);
                     }
                     Err(error) => {
                         this.settings_status = format!(
-                            "Could not load the save folder: {error:#}. Please choose a folder."
+                            "Could not load settings: {error:#}. Please choose a folder."
                         );
                         this.show_control(cx);
                     }
@@ -612,10 +630,15 @@ impl CaptureWorkspace {
                 }
             }
             {
-                match app_core::CaptureHotkey::register() {
+                let registration = if cfg!(test) {
+                    app_core::CaptureHotkey::register()
+                } else {
+                    app_core::CaptureHotkey::unregistered()
+                };
+                match registration {
                     Ok(hotkey) => {
                         shell.hotkey_status = hotkey.status().to_string();
-                        tracing::info!(status = %shell.hotkey_status, "global hotkey registration complete");
+                        tracing::info!(status = %shell.hotkey_status, "global hotkey manager ready");
                         shell.hotkey = Some(hotkey);
                     }
                     Err(error) => {
@@ -700,6 +723,7 @@ impl CaptureWorkspace {
         }
         self.settings_saving = true;
         let theme = theme::selected(cx);
+        let hotkeys = self.hotkey_bindings.clone();
         let dialog = cx.prompt_for_paths(gpui::PathPromptOptions {
             files: false,
             directories: true,
@@ -724,7 +748,8 @@ impl CaptureWorkspace {
             let result = if let Some(path) = chosen {
                 cx.background_spawn(async move {
                     let settings = app_core::CaptureSettings::for_directory(path)
-                        .map_err(|error| format!("{error:#}"))?.with_theme(theme);
+                        .map_err(|error| format!("{error:#}"))?.with_theme(theme)
+                        .with_hotkeys(hotkeys).map_err(|error| format!("{error:#}"))?;
                     settings.save().map_err(|error| format!("{error:#}"))?;
                     Ok::<_, String>(settings.output_directory)
                 })
@@ -761,6 +786,7 @@ impl CaptureWorkspace {
         }
         let Some(directory) = self.output_directory.clone() else { return; };
         let previous = theme::selected(cx);
+        let hotkeys = self.hotkey_bindings.clone();
         theme::apply(selected, cx);
         self.settings_saving = true;
         self.settings_status = "Saving appearance…".into();
@@ -768,7 +794,7 @@ impl CaptureWorkspace {
             let result = cx.background_spawn(async move {
                 // The default capture folder may not exist before the first screenshot.
                 std::fs::create_dir_all(&directory)?;
-                app_core::CaptureSettings::for_directory(directory)?.with_theme(selected).save()
+                app_core::CaptureSettings::for_directory(directory)?.with_theme(selected).with_hotkeys(hotkeys)?.save()
             }).await;
             this.update(cx, |this, cx| {
                 this.settings_saving = false;
@@ -793,6 +819,8 @@ impl CaptureWorkspace {
         self.hide_history(cx);
         self.hide_upload_history();
         self.page = page;
+        #[cfg(target_os = "windows")]
+        { self.hotkey_inputs = None; }
         if page == ControlPage::History {
             self.history_visible = true;
             self.refresh_history(None, cx);
@@ -807,6 +835,56 @@ impl CaptureWorkspace {
         }
         cx.notify();
     }
+    #[cfg(target_os = "windows")]
+    fn save_hotkeys(&mut self, bindings: app_core::CaptureHotkeys, cx: &mut Context<Self>) {
+        if self.page != ControlPage::Settings || self.settings_loading || self.settings_saving || self.quitting {
+            return;
+        }
+        let Some(directory) = self.output_directory.clone() else { return; };
+        let bindings = match bindings.validated() {
+            Ok(bindings) => bindings,
+            Err(error) => {
+                self.settings_status = format!("Shortcuts unchanged: {error:#}");
+                cx.notify();
+                return;
+            }
+        };
+        let Some(hotkey) = self.hotkey.as_mut() else { return; };
+        if let Err(error) = hotkey.prepare(&bindings) {
+            self.hotkey_status = hotkey.status().to_string();
+            self.settings_status = format!("Shortcuts unchanged: {error:#}");
+            cx.notify();
+            return;
+        }
+        let appearance = theme::selected(cx);
+        self.settings_saving = true;
+        self.settings_status = "Saving shortcuts…".into();
+        let saved_bindings = bindings.clone();
+        cx.spawn(async move |this, cx| {
+            let result = cx.background_spawn(async move {
+                std::fs::create_dir_all(&directory)?;
+                app_core::CaptureSettings::for_directory(directory)?
+                    .with_theme(appearance).with_hotkeys(saved_bindings)?.save()
+            }).await;
+            this.update(cx, |this, cx| {
+                this.settings_saving = false;
+                if result.is_ok() { this.hotkey_bindings = bindings; }
+                let cleanup = this.hotkey.as_mut().unwrap().finish(result.is_ok());
+                this.hotkey_status = this.hotkey.as_ref().unwrap().status().to_string();
+                this.settings_status = match (result, cleanup) {
+                    (Ok(()), Ok(())) => "Shortcuts saved and active".into(),
+                    (Err(error), Ok(())) => format!("Shortcuts unchanged; settings were not saved: {error:#}"),
+                    (save, Err(error)) => format!("Shortcut cleanup failed: {error:#}. Settings saved: {}. Active bindings are listed below; restart to retry cleanup.", save.is_ok()),
+                };
+                // Rebuild drafts only if the settings page is still mounted.
+                this.hotkey_inputs = None;
+                this.finish_quit_if_idle(cx);
+                cx.notify();
+            }).ok();
+        }).detach();
+        cx.notify();
+    }
+
     fn init_history_input(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         use gpui::component::input::{InputEvent, InputState};
         if !self.history_visible || self.history_search_input.is_some() {
@@ -4818,7 +4896,7 @@ mod tests {
                     for cycle in 0..101 {
                         let probe = RegionLatencyProbe { started: std::time::Instant::now(), events: Arc::new(Mutex::new(Vec::new())) };
                         owner.update(cx, |this, cx| {
-                            if !this.hotkey.as_ref().is_some_and(|key| key.status().split('|').any(|part| part.trim() == "Ctrl+Shift+R: region")) {
+                            if !this.hotkey.as_ref().is_some_and(|key| key.is_registered("Ctrl+Shift+R", app_core::CaptureCommand::Region)) {
                                 return Err("region hotkey is unavailable; no input injected".to_string());
                             }
                             cx.set_global(probe.clone());

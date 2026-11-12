@@ -7,6 +7,77 @@ use std::{
     path::{Path, PathBuf},
 };
 
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CaptureHotkeys(pub [String; 3]);
+
+impl Default for CaptureHotkeys {
+    fn default() -> Self {
+        Self([
+            "Ctrl+Shift+S".into(),
+            "Ctrl+Shift+R".into(),
+            "Ctrl+Shift+E".into(),
+        ])
+    }
+}
+
+impl CaptureHotkeys {
+    pub const LABELS: [&'static str; 3] =
+        ["Primary display", "Quick region", "Capture and annotate"];
+
+    pub fn validated(&self) -> Result<Self> {
+        let mut result = Self(std::array::from_fn(|_| String::new()));
+        for (index, value) in self.0.iter().enumerate() {
+            ensure!(value.len() <= 64, "Shortcut is too long");
+            if value.trim().is_empty() {
+                continue;
+            }
+            let tokens: Vec<_> = value.split('+').map(str::trim).collect();
+            let mut modifiers = [false; 4];
+            for token in &tokens[..tokens.len() - 1] {
+                let position = match token.to_ascii_lowercase().as_str() {
+                    "ctrl" => 0,
+                    "alt" => 1,
+                    "shift" => 2,
+                    "super" => 3,
+                    _ => anyhow::bail!("Use Ctrl, Alt, Shift or Super before the key"),
+                };
+                ensure!(!modifiers[position], "Repeated shortcut modifier");
+                modifiers[position] = true;
+            }
+            let key = tokens.last().unwrap().to_ascii_uppercase();
+            let function = key
+                .strip_prefix('F')
+                .and_then(|n| n.parse::<u8>().ok())
+                .filter(|n| (1..=24).contains(n) && key == format!("F{n}"));
+            let character = key.len() == 1 && key.as_bytes()[0].is_ascii_alphanumeric();
+            ensure!(
+                character || function.is_some() || key == "PRINTSCREEN",
+                "Use a letter, digit, F1–F24 or PrintScreen"
+            );
+            ensure!(
+                !character || modifiers[0] || modifiers[1] || modifiers[3],
+                "Letters and digits need Ctrl, Alt or Super"
+            );
+            let mut parts: Vec<&str> = ["Ctrl", "Alt", "Shift", "Super"]
+                .into_iter()
+                .zip(modifiers)
+                .filter_map(|(name, enabled)| enabled.then_some(name))
+                .collect();
+            parts.push(if key == "PRINTSCREEN" {
+                "PrintScreen"
+            } else {
+                &key
+            });
+            result.0[index] = parts.join("+");
+            ensure!(
+                !result.0[..index].contains(&result.0[index]),
+                "Two commands cannot use the same shortcut"
+            );
+        }
+        Ok(result)
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum UiTheme {
@@ -22,6 +93,8 @@ pub struct CaptureSettings {
     pub output_directory: PathBuf,
     #[serde(default)]
     pub theme: UiTheme,
+    #[serde(default)]
+    pub hotkeys: CaptureHotkeys,
 }
 
 impl CaptureSettings {
@@ -34,12 +107,18 @@ impl CaptureSettings {
             version: 1,
             output_directory,
             theme: UiTheme::default(),
+            hotkeys: CaptureHotkeys::default(),
         })
     }
 
     pub fn with_theme(mut self, theme: UiTheme) -> Self {
         self.theme = theme;
         self
+    }
+
+    pub fn with_hotkeys(mut self, hotkeys: CaptureHotkeys) -> Result<Self> {
+        self.hotkeys = hotkeys.validated()?;
+        Ok(self)
     }
 
     pub(crate) fn config_path() -> Result<PathBuf> {
@@ -71,7 +150,9 @@ impl CaptureSettings {
         ensure!(bytes.len() <= 65536, "Settings file is too large");
         let settings: Self = serde_json::from_slice(&bytes).context("Could not read settings")?;
         ensure!(settings.version == 1, "Unsupported settings version");
-        Ok(Self::for_directory(settings.output_directory)?.with_theme(settings.theme))
+        Self::for_directory(settings.output_directory)?
+            .with_theme(settings.theme)
+            .with_hotkeys(settings.hotkeys)
     }
 
     pub fn save(&self) -> Result<()> {
@@ -79,6 +160,7 @@ impl CaptureSettings {
     }
 
     fn save_at(&self, path: &Path) -> Result<()> {
+        self.hotkeys.validated()?;
         ensure!(self.output_directory.is_absolute(), "Invalid save folder");
         ensure!(
             self.output_directory.is_dir(),
@@ -108,6 +190,87 @@ impl CaptureSettings {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn shortcuts_validate_normalize_and_reject_duplicates() -> Result<()> {
+        let keys = CaptureHotkeys([" shift + ctrl + q ".into(), "PrintScreen".into(), "".into()])
+            .validated()?;
+        assert_eq!(keys.0, ["Ctrl+Shift+Q", "PrintScreen", ""]);
+        for invalid in [
+            "Q",
+            "Shift+Q",
+            "Ctrl+Ctrl+Q",
+            "Ctrl++Q",
+            "Ctrl+Q+Alt",
+            "Ctrl+F25",
+            "Ctrl+F01",
+            "Ctrl+é",
+            "Ctrl+Enter",
+        ] {
+            assert!(
+                CaptureHotkeys([invalid.into(), "".into(), "".into()])
+                    .validated()
+                    .is_err(),
+                "{invalid}"
+            );
+        }
+        assert!(
+            CaptureHotkeys(["ctrl+shift+q".into(), "Shift+Ctrl+Q".into(), "".into()])
+                .validated()
+                .is_err()
+        );
+        assert!(
+            CaptureHotkeys([" ".repeat(65), "".into(), "".into()])
+                .validated()
+                .is_err()
+        );
+        assert!(
+            CaptureHotkeys(["".into(), "".into(), "".into()])
+                .validated()
+                .is_ok()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn shortcut_settings_survive_other_preferences_and_failed_save() -> Result<()> {
+        let dir =
+            std::env::temp_dir().join(format!("screenshots-hotkeys-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&dir)?;
+        let path = dir.join("settings.json");
+        let hotkeys = CaptureHotkeys(["Ctrl+Alt+Q".into(), "F12".into(), "".into()]);
+        CaptureSettings::for_directory(dir.clone())?
+            .with_hotkeys(hotkeys.clone())?
+            .save_at(&path)?;
+        let mut restored = CaptureSettings::load_at(&path, dir.clone())?;
+        restored.theme = UiTheme::Oldschool;
+        restored.save_at(&path)?;
+        let bytes = fs::read(&path)?;
+        assert_eq!(
+            CaptureSettings::load_at(&path, dir.clone())?.hotkeys,
+            hotkeys
+        );
+        restored.hotkeys.0[0] = "F12".into();
+        assert!(restored.save_at(&path).is_err());
+        assert_eq!(fs::read(&path)?, bytes);
+        restored.hotkeys = hotkeys.clone();
+        restored.output_directory = dir.join("missing");
+        assert!(restored.save_at(&path).is_err());
+        assert_eq!(
+            CaptureSettings::load_at(&path, dir.clone())?.hotkeys,
+            hotkeys
+        );
+        fs::write(
+            &path,
+            serde_json::to_vec(&serde_json::json!({"version":1,"output_directory":dir}))?,
+        )?;
+        assert_eq!(
+            CaptureSettings::load_at(&path, dir.clone())?.hotkeys,
+            CaptureHotkeys::default()
+        );
+        fs::remove_dir_all(dir)?;
+        Ok(())
+    }
+
     #[test]
     fn folder_settings_survive_restart_and_replacement() -> Result<()> {
         let dir =

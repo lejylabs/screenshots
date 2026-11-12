@@ -16,6 +16,17 @@ pub(super) fn valid_search(value: &str) -> bool {
 
 impl Render for CaptureWorkspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        #[cfg(target_os = "windows")]
+        if self.page == ControlPage::Settings && !self.settings_loading && self.hotkey_inputs.is_none() {
+            self.hotkey_inputs = Some(std::array::from_fn(|index| {
+                cx.new(|cx| gpui::component::input::InputState::new(window, cx)
+                    .default_value(self.hotkey_bindings.0[index].clone())
+                    .placeholder("Disabled")
+                    .validate(|value, _| value.len() <= 64 && value.is_ascii() && !value.chars().any(char::is_control)))
+            }));
+        }
+        #[cfg(target_os = "windows")]
+        if self.page != ControlPage::Settings { self.hotkey_inputs = None; }
         let theme = crate::theme::current(cx);
         let colors = cx.theme().colors;
         let compact = window.viewport_size().width < px(820.);
@@ -583,6 +594,7 @@ impl Render for CaptureWorkspace {
                     ))
                     .child(div().text_xs().text_color(colors.muted_foreground).child("Existing files stay where they are.")),
             )
+            .child(self.hotkey_settings(cx))
             .child(capture_button(cx,
                 "toggle-diagnostics",
                 if self.diagnostics {
@@ -628,6 +640,38 @@ impl Render for CaptureWorkspace {
     }
 }
 impl CaptureWorkspace {
+    fn hotkey_settings(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
+        let panel = div().flex_none().p_5().flex().flex_col().gap_3()
+            .child(div().font_weight(gpui::FontWeight::SEMIBOLD).child("Global shortcuts"));
+        #[cfg(not(target_os = "windows"))]
+        { panel.child("Global shortcut configuration is currently available on Windows only. Use your desktop's shortcut settings where supported.").into_any_element() }
+        #[cfg(target_os = "windows")]
+        {
+            let disabled = self.settings_loading || self.settings_saving || self.quitting || self.hotkey.is_none() || self.output_directory.is_none();
+            panel.child(div().text_sm().child("Use Ctrl, Alt, Shift or Super (Windows key) + a letter, digit, F1–F24 or PrintScreen. Letters/digits need Ctrl, Alt or Super. Leave empty to disable."))
+                .children(self.hotkey_inputs.iter().flat_map(|inputs| inputs.iter().enumerate()).map(|(index, input)| {
+                    div().flex().flex_col().gap_1()
+                        .child(app_core::CaptureHotkeys::LABELS[index])
+                        .child(gpui::component::input::Input::new(input)
+                            .id(("capture-hotkey", index))
+                            .aria_label(app_core::CaptureHotkeys::LABELS[index])
+                            .disabled(disabled))
+                }))
+                .child(div().flex().flex_wrap().gap_2()
+                    .child(capture_button(cx, "save-hotkeys", "Save shortcuts", disabled,
+                        cx.listener(|this, _, _, cx| {
+                            if let Some(inputs) = &this.hotkey_inputs {
+                                let bindings = app_core::CaptureHotkeys(std::array::from_fn(|i| inputs[i].read(cx).value().to_string()));
+                                this.save_hotkeys(bindings, cx);
+                            }
+                        })))
+                    .child(capture_button(cx, "restore-hotkeys", "Restore defaults", disabled,
+                        cx.listener(|this, _, _, cx| this.save_hotkeys(app_core::CaptureHotkeys::default(), cx)))))
+                .child(div().text_sm().child(format!("Active: {}", self.hotkey_status)))
+                .into_any_element()
+        }
+    }
+
     fn render_sidebar(
         &self,
         unavailable: bool,

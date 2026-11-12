@@ -18,6 +18,19 @@ See [the implementation and verification notes](docs/ui-redesign.md).
 
 ## Capture home
 
+On Windows, **Settings → Global shortcuts** configures Primary display, Quick
+region and Capture and annotate. Enter a combination such as `Ctrl+Alt+Q`, leave
+it empty to disable the command, then choose **Save shortcuts**. **Restore defaults**
+saves the original Ctrl+Shift+S/R/E bindings. Supported keys are letters, digits,
+F1–F24 and PrintScreen; modifiers are Ctrl, Alt, Shift and Super (Windows key).
+Letters/digits require Ctrl, Alt or Super. Duplicate bindings and OS conflicts
+leave the previous working bindings in place. New keys are reserved until settings
+save succeeds; a failed save keeps the previous keys. Active bindings are listed
+separately from the editable fields. If native cleanup fails, the app reports the
+remaining bindings and requires a restart before another change. Settings persist
+across restarts and folder/theme changes. Non-Windows shortcut configuration is
+not implemented. These settings do not change the existing capture output behavior.
+
 The native GPUI workspace has two appearances: **Dark**, the default (neutral charcoal surfaces, grayscale controls and minimal decoration), and **Oldschool** (compact task navigation, blue selection, colorful function icons and square controls). Choose one under **Settings → Appearance**, or use the theme button in the workspace header. Changes apply immediately across the control window, editor, text inputs and region guide. Appearance saves on a worker alongside the capture folder; failures restore the previous theme and show an error. New installations, settings without a theme, and retired or unknown theme values use Dark. An explicit Oldschool choice is preserved. Annotation colors and exported image pixels are independent of the UI theme.
 
 **New screenshot** starts capture with annotation. **Capture menu** expands quick region, a three-second delay, and primary/all displays. **Recent capture**, **Library**, **Displays & windows**, **Uploads**, and **Settings** are directly accessible in the sidebar. Recent capture has a primary region command and a compact quick-capture list; the latest image keeps Edit, Copy, Save As and Show File together. Library loads one bounded metadata page on entry; filters, prefix search, PNG import and multi-selection remain available. Click an image name for its on-demand bounded preview. **More** groups Open, Show in folder, Upload PNG, Relink PNG and Remove from library; removing a reference keeps the PNG. Switching pages cancels stale history/preview requests and releases their data; active uploads continue.

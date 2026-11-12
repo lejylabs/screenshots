@@ -56,7 +56,17 @@ priorities do not establish implementation or runtime acceptance.
    compatibility, providers, workflows/CLI/actions and remaining utility families.
    Verify the capability matrix before claiming ShareX parity.
 
-#### Next feature: configurable Windows global hotkeys
+#### Current feature slice: configurable Windows global hotkeys
+
+Implemented in the working tree (2026-11-12): three editable/disableable bindings
+under Settings, defaults restoration, bounded validation/persistence and staged
+native registration. Existing keys remain active until settings save succeeds;
+conflict/save failure rolls back reservations. Native cleanup errors report actual
+remaining bindings and block further changes until restart. Folder/theme saves
+preserve bindings. No dependency, thread, cache, polling or eager UI is added;
+retained configuration is three strings of at most 64 bytes. Settings alone owns
+three Kit inputs with bounded text/undo state; page exit/window close releases them.
+Checks and remaining acceptance limits are recorded in [hotkey verification](docs/hotkeys.md).
 
 Start with the three existing commands: primary display, quick region and
 capture-and-annotate. Add native Kit settings to assign, disable and restore their
@@ -78,7 +88,7 @@ limitations explicit; this slice does not establish non-Windows hotkey support.
   tests and optimized native checks; compare resident readiness and idle resources
   for the changed startup path. Record skipped checks separately from results.
 
-The following output-profile slice will add explicit copy-only, save-only and
+The next output-profile slice will add explicit copy-only, save-only and
 annotate-first choices using existing in-memory output paths. Upload remains an
 explicitly authorized action. It does not require a general workflow engine.
 

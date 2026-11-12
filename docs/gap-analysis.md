@@ -1,5 +1,10 @@
 # Functional gap analysis: screenshots and ShareX
 
+Implementation follow-up (2026-11-12, working tree): configurable Windows bindings
+for the three existing capture commands are now implemented. See [scope and
+verification](hotkeys.md). The original static assessment baseline below remains
+historical; this follow-up does not establish complete platform/runtime acceptance.
+
 Assessment date: 2026-11-12. Local baseline: `ed53567f5112818781b55af63fc6931f12d0cd36`
 on `main`, including the GPUI Kit rewrite. Static inspection of production code,
 UI entry points, configuration and existing verification evidence; no new build,
@@ -74,7 +79,7 @@ selection adjustment and configurable after-capture tasks in its capture flow.
 
 | Capability | Current status and gap | Priority |
 | --- | --- | --- |
-| User-defined global hotkeys | Partial: three hard-coded Ctrl+Shift shortcuts. No shortcut settings, arbitrary command assignment or per-shortcut task profiles. | A |
+| User-defined global hotkeys | Partial: Windows settings now assign/disable/restore bindings for the three existing capture commands. Arbitrary command assignment, additional commands and per-shortcut task profiles remain missing; see the implementation follow-up above for verification limits. | A |
 | Configurable output workflow | Missing: no saved task profiles/after-capture chain. Quick capture uses fixed output behavior; editor outputs are manual. Need user-selected copy-only, save-only, annotate-first and explicit sharing profiles. | A |
 | Active-window/active-monitor command | Partial: enumerated windows/displays can be selected, and annotated region capture has Windows cursor-based monitor targeting. A dedicated foreground-window hotkey/task and general active-monitor command are missing. | A |
 | Last region and exact region | Missing: reusable last-region geometry and user-entered/preset physical pixel dimensions/coordinates. | A |

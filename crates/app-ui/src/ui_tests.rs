@@ -71,6 +71,25 @@ fn open_workspace(cx: &mut TestAppContext) -> WindowHandle<CaptureWorkspace> {
     })
 }
 
+#[cfg(target_os = "windows")]
+#[gpui::test]
+fn shortcut_fields_are_named_and_released_with_settings(cx: &mut TestAppContext) {
+    let handle = open_workspace(cx);
+    let window: AnyWindowHandle = handle.into();
+    cx.update_window(window, |_, window, cx| {
+        window.press(&shortcut(","), cx);
+        window.render_frame(cx);
+        for (index, expected) in app_core::CaptureHotkeys::default().0.iter().enumerate() {
+            assert_eq!(window.find(("capture-hotkey", index)).value(), Some(expected.as_str()));
+        }
+        // Isolated UI tests own no native hotkey manager or settings destination.
+        assert_eq!(window.find("save-hotkeys").disabled(), Some(true));
+        window.press(&shortcut("1"), cx);
+        window.render_frame(cx);
+    }).unwrap();
+    cx.update(|cx| assert!(handle.read(cx).unwrap().hotkey_inputs.is_none()));
+}
+
 #[gpui::test]
 fn kit_root_preserves_native_window_content_and_navigation(cx: &mut TestAppContext) {
     let handle = open_workspace(cx);
