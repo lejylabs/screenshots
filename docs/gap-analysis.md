@@ -1,0 +1,253 @@
+# Functional gap analysis: screenshots and ShareX
+
+Assessment date: 2026-11-12. Local baseline: `ed53567f5112818781b55af63fc6931f12d0cd36`
+on `main`, including the GPUI Kit rewrite. Static inspection of production code,
+UI entry points, configuration and existing verification evidence; no new build,
+capture, upload, hardware benchmark or interactive acceptance run was performed.
+Existing test results are historical evidence, not newly reproduced results.
+
+The official ShareX changelog currently lists 22.4.0 (2026-11-08) as its newest
+release. Its recent additions include thumbnail/list layouts, canvas expansion
+and recording improvements. This assessment compares feature families against
+the current documented product, not an older screenshot of ShareX.
+[ShareX changelog](https://getsharex.com/changelog)
+
+## Conclusion and scope
+
+The app has a substantial still-capture/editor foundation. It is not yet a
+ShareX replacement across everyday workflows, and is much further from complete
+feature parity. Adopting GPUI Kit improves presentation and standard interaction;
+it does not supply recording, OCR, capture backends, upload integrations or a
+workflow engine.
+
+Two milestones must remain distinct:
+
+- **Everyday screenshot replacement:** dependable capture, configurable shortcuts
+  and outputs, useful image import/export, convenient sharing and a distributable
+  desktop application. This is an intermediate milestone, not full ShareX parity.
+- **At least ShareX functional scope:** also includes advanced capture, recording,
+  OCR, pinning, workflow/custom-uploader breadth and the additional tool families
+  listed below. Calling those optional does not satisfy that scope.
+
+Windows is the direct comparison baseline for ShareX's established desktop
+workflow. Our Linux/macOS targets remain additional obligations; this comparison
+does not drop platforms or lower the repository's release/performance targets.
+
+Status terminology: **implemented** means a production code path exists;
+**partial** means important user-facing scope is missing; **missing** means no
+corresponding implementation was found in the inspected application; **unverified**
+means the relevant runtime/release evidence remains open. Missing and unverified
+are not interchangeable. This is a feature-family inventory, not an exhaustive
+enumeration of every ShareX preference.
+
+## What already exists
+
+- Primary/chosen display, enumerated window and rectangular-region capture;
+  all displays as separate images; a cancellable three-second delayed region.
+- Frozen in-memory editing and a standalone editor with 14 tools: selection,
+  crop, rectangle, ellipse, line, arrow, pen, text, numbering, highlight,
+  spotlight, opaque redaction, pixelation and blur. Movement/resizing,
+  duplication, drawing-layer reordering, zoom/pan and bounded metadata undo/redo.
+- Explicit editor Copy, Save and Save & copy; PNG Save As and existing-file
+  preservation. Several quick-capture paths use a fixed save-and-copy workflow.
+- Windows resident tray, three global capture shortcuts, single-instance
+  reopening and on-demand graphics attachment/detachment.
+- Persistent SQLite capture/upload metadata, indexed prefix search, filters,
+  bounded paging, PNG reference import/relink, on-demand preview and page-local
+  multi-selection/export/removal.
+- One configurable/remembered HTTP destination, POST multipart or raw PUT,
+  JSON/text/header/request-URL results, cancellation and progress. Windows
+  Credential Manager supports Bearer, fixed X-API-Key and Basic authentication.
+
+Evidence: [capture backend](../crates/app-core/src/capture.rs),
+[UI commands/jobs](../crates/app-ui/src/lib.rs),
+[workspace](../crates/app-ui/src/workspace.rs),
+[editor](../crates/app-ui/src/redaction_editor.rs),
+[history](../crates/app-core/src/history.rs),
+[uploader](../crates/app-core/src/upload.rs).
+
+## 1. Everyday capture and task configuration
+
+ShareX exposes repeat-region, custom-region, window/control selection, precise
+selection adjustment and configurable after-capture tasks in its capture flow.
+[Region capture reference](https://getsharex.com/docs/region-capture)
+
+| Capability | Current status and gap | Priority |
+| --- | --- | --- |
+| User-defined global hotkeys | Partial: three hard-coded Ctrl+Shift shortcuts. No shortcut settings, arbitrary command assignment or per-shortcut task profiles. | A |
+| Configurable output workflow | Missing: no saved task profiles/after-capture chain. Quick capture uses fixed output behavior; editor outputs are manual. Need user-selected copy-only, save-only, annotate-first and explicit sharing profiles. | A |
+| Active-window/active-monitor command | Partial: enumerated windows/displays can be selected, and annotated region capture has Windows cursor-based monitor targeting. A dedicated foreground-window hotkey/task and general active-monitor command are missing. | A |
+| Last region and exact region | Missing: reusable last-region geometry and user-entered/preset physical pixel dimensions/coordinates. | A |
+| Precision selection | Partial: crop and transforms exist; no equivalent complete magnifier, window/control snapping or keyboard-driven region-selection workflow. | A |
+| Capture preferences | Missing configurable cursor inclusion, arbitrary delay, window-frame/shadow/transparency options and persistent capture defaults. Current delay is fixed to three seconds. | A/B |
+| Multiple outputs | Partial: all displays are captured separately. No stitched desktop output, cross-monitor drag selection or multiple independent regions in one capture session. | B |
+| Repeated capture | Missing operation-scoped interval capture, scheduled runs and saved repeat settings. Any implementation needs explicit activation and cancellation. | B |
+| HDR/color correctness | Unverified/limited: XCap returns 8-bit RGBA; color metadata is not reported and code currently treats it as sRGB. No validated HDR conversion or wide-gamut workflow. | A for truthful limitations; B for support |
+
+Evidence: [hard-coded hotkeys](../crates/app-core/src/hotkey.rs),
+[settings schema](../crates/app-core/src/settings.rs),
+[capture command and overlay routing](../crates/app-ui/src/lib.rs),
+[pixel format/capabilities](../crates/app-core/src/capture.rs).
+Do not bypass editing or upload without the user's configured, explicit consent.
+
+## 2. Existing images, editing and output
+
+ShareX's editor accepts files and clipboard images, exposes richer annotations,
+cut-out/background editing and output actions integrated into tasks.
+[Image editor reference](https://getsharex.com/docs/image-editor)
+
+| Capability | Current status and gap | Priority |
+| --- | --- | --- |
+| Open/Paste/Drop into editor | Partial: last capture and PNG history entries can be edited. No general Open Image entry point, image paste, drag-and-drop or Explorer Open With route. PNG import is an indirect workaround. | A |
+| Image formats | Partial: app workflows decode/export PNG. Add JPEG/WebP import/export with explicit format, quality and transparency behavior; other formats follow actual demand/parity scope. | A/B |
+| Resize and basic transforms | Missing output resampling, aspect-locked dimensions, rotate and flip. View zoom is implemented but does not resize the exported file. | A |
+| Colors and typography | Partial: four drawing color swatches, discrete widths and text sizes; labels have four-line/512-byte limits. No general color/font selection, richer text/background/outline styling or reusable tool presets. | A/B |
+| Effect order | Partial: drawing annotations reorder; blur/pixelation are source-effect stages and opaque redaction is last. Arbitrary effect/drawing order is unavailable. Make restrictions clear or implement a consistent ordered document model. Keep opaque-redaction safety explicit. | A/B |
+| Advanced annotations | Missing speech balloons, inserted image/logo/clipboard objects, cursor stamps, emoji, magnify, clone/smart eraser, annotation rotation and richer arrow/shape options. | B/C |
+| Canvas and presentation | Missing canvas expansion, cut-out strips, padding/background/shadow composition, watermark and reusable effect/export presets. | B |
+| Editor sharing | Partial: final pixels can be copied/saved, but no direct finalized-document upload or pin action. Upload currently requires a saved PNG. | A/B |
+| Other outputs | Missing print, copy-file/copy-path choices and drag-out of a prepared image/file representation. | B |
+| Editable projects | No persistent document/session format. Useful for longer edits, but not asserted here as a prerequisite merely because in-memory undo exists. | Product decision |
+
+Evidence: [PNG decode and clipboard output](../crates/app-core/src/clipboard.rs),
+[editor controls/tool set](../crates/app-ui/src/redaction_editor.rs),
+[label input](../crates/app-ui/src/caption.rs),
+[fixed effect/export stages](../crates/app-core/src/selection.rs).
+Resource bounds are intentional safeguards, not defects; improve useful editing
+within measured byte/item limits rather than replacing them with unbounded state.
+
+## 3. Sharing and uploader compatibility
+
+ShareX supports custom uploader import/export, several HTTP methods/body types,
+parameters/headers and response expressions. Its command interface also accepts
+files/URLs and configured tasks.
+[Custom uploader](https://getsharex.com/docs/custom-uploader),
+[command-line interface](https://getsharex.com/docs/command-line-arguments)
+
+| Capability | Current status and gap | Priority |
+| --- | --- | --- |
+| Destination setup | Partial: JSON file plus external Windows credential entry. Missing native destination/auth editor, validation/test flow and clear configuration export/import. | A |
+| Multiple destinations | Missing saved named destination list, destination switching and per-task defaults. Only one profile is remembered. | A/B |
+| Existing ShareX profiles | Missing `.sxcu` import/export or a documented compatibility subset. Our profile JSON is not the ShareX format. | B |
+| Generic HTTP breadth | Partial: POST multipart/PUT PNG; no custom request headers/arguments/query templates, JSON/form bodies, richer response expressions or deletion/thumbnail result URLs. Compatibility must preserve origin-scoped secrets and response bounds. | B |
+| Service integrations | No dedicated S3/R2, SFTP/FTP, OAuth/provider integrations or remote file management. Some simple services can already work through our generic POST/PUT path; test service by service. | B/C |
+| Accepted input | PNG files only. No arbitrary file/folder/text/clipboard/URL uploads, batch upload UI, watched-folder workflow or capture-to-link chain. | B |
+| Post-upload behavior | Explicit Copy link exists. Missing optional user-configured automatic copy, link templates/shortening/QR and follow-up tasks. No implicit network/browser action should be added. | A/B |
+| Metadata handling | Edited exports flatten pixels. Existing imported PNG uploads and bulk exports preserve source bytes/metadata; no explicit metadata-inspection/sanitization option. | A before privacy claims; B for full tooling |
+| Secret stores | Windows support exists; macOS Keychain/Linux Secret Service and native secret-entry/rotation UX are missing. | A for relevant platform releases |
+
+Evidence: [profile/method/response schema and validation](../crates/app-core/src/upload.rs),
+[credential implementation](../crates/app-core/src/upload_credentials.rs),
+[upload UI](../crates/app-ui/src/workspace.rs).
+A built-in provider catalog is not required to support one chosen service, but
+one successful generic upload is not provider/ShareX compatibility.
+
+## 4. Missing major ShareX capabilities
+
+These are necessary for a broad parity claim, even if the first usable screenshot
+release precedes them. The present roadmap defers several of them beyond MVP;
+the requested parity target therefore requires a larger scope than that MVP.
+
+- **Scrolling capture:** capture/stitch long content, handle fixed headers and
+  report imperfect matches; needs bounded image admission and cancellation.
+  [ShareX scrolling capture](https://getsharex.com/docs/scrolling-screenshot)
+- **OCR and QR:** no region/image text recognition, language handling, text
+  result/copy workflow or QR scanning/generation.
+  [ShareX OCR](https://getsharex.com/docs/ocr)
+- **Recording:** no screen-video/GIF recorder, start/stop controls, audio capture,
+  device/settings selection, encoding or recording history/export. Further
+  parity includes camera/cursor/click overlays and media conversion/trimming.
+  Current ShareX has native recording as well as FFmpeg-related workflows;
+  FFmpeg is not inherently the only possible backend. Our integration still
+  requires explicit codec/license/resource decisions.
+  [ShareX recording changes](https://getsharex.com/changelog)
+- **Pin to screen:** no floating reference-image windows, scale/opacity controls
+  or pin-from-capture/clipboard/file workflows. A fullscreen capture overlay is
+  a different feature.
+  [ShareX pinning](https://getsharex.com/docs/pin-to-screen)
+- **Workflow/actions:** no reusable after-capture/after-upload task graph,
+  external-tool actions or real task CLI/IPC. Current launch arguments are Show
+  and diagnostics, and secondary-instance forwarding only requests Show.
+  [ShareX actions](https://getsharex.com/actions),
+  [ShareX task CLI](https://getsharex.com/docs/command-line-arguments)
+- **Utility families:** color picker, ruler/measure, image combine/compare/split,
+  conversion/resizing/watermark/beautification/background removal, media helpers,
+  metadata tools, hash checks, URL utilities, remote storage browser, clipboard
+  viewer and system inspection tools have no equivalent exposed app workflows.
+  Source-image blur and annotation labels are not substitutes for OCR or image
+  conversion tools. These can follow the everyday capture priorities, but remain
+  gaps for full product breadth.
+  [ShareX feature inventory](https://getsharex.com/)
+
+## 5. Library, desktop integration and release readiness
+
+These gaps determine whether implemented features are convenient and dependable:
+
+- Library has bounded metadata lists and an explicit single preview, not a
+  thumbnail gallery. Add bounded visible-thumbnail decoding/cache, useful date
+  filtering/sorting and missing-file handling. Search is metadata word-prefix
+  search, not arbitrary substring, OCR content or integrated upload-link search.
+- Current selection/export/removal is limited to one page. Cross-page batch
+  workflows, rename/move and deliberate file deletion/retention are missing.
+  Metadata-only removal correctly preserves user files and should remain explicit.
+- No app-owned Windows autostart setting, actionable completion notifications,
+  Explorer context/file associations, full settings backup/export or useful
+  task CLI. The current tray is a small fixed command set.
+- No installer/portable distribution pipeline, upgrade/uninstall verification,
+  published release artifacts/signing workflow or app update mechanism was found
+  in the inspected repository. A documented manual update path is sufficient
+  for an intermediate release; full updater behavior needs a separate decision.
+- After the Kit rewrite, evidence includes Linux native synthetic UI inspection
+  and Windows compilation checks. Fresh interactive Windows capture/editor,
+  clipboard, hotkey/tray, mixed DPI, topology changes, sleep/resume and device-loss
+  acceptance remain open. Do not mark these implemented paths as absent, or mark
+  them validated from compilation.
+- Atomic PNG publication, transactions, rollback and selected failure fixtures
+  already exist. Complete crash reconciliation across files/history, migration
+  backup/recovery, disk-full and unavailable-drive acceptance remain incomplete.
+- Existing optimized observations do not meet/prove all resident/shell memory,
+  idle/wakeup, physical presentation and soak budgets. No new measurements were
+  taken for this assessment. Historical comparisons belong to their exact build.
+
+Evidence: [library implementation](../crates/app-core/src/history.rs),
+[desktop launch/IPC routing](../crates/app-ui/src/lib.rs),
+[settings](../crates/app-core/src/settings.rs),
+[CI](../.github/workflows/rust.yml),
+[current verification limits](ui-redesign.md),
+[recorded measurements](ui-redesign-verification.json).
+
+Our additional cross-platform gaps: non-Windows startup remains the windowed
+spike; resident integration/hotkeys/single-instance modules are Windows-only.
+Window listing/capture is disabled on Linux, including X11. Capabilities are
+currently largely static OS flags rather than session/permission discovery.
+A validated Wayland portal/selection fallback and signed macOS permission flow
+are not implemented/accepted. Native Linux UI tests do not validate Linux capture.
+English-only app UI is deliberate project scope; multilingual UI would be an
+additional parity gap if the goal includes ShareX's localization breadth.
+
+## Recommended implementation order and acceptance
+
+1. **Dependable desktop baseline:** run post-Kit Windows native acceptance;
+   stabilize DPI/topology/clipboard/cancellation/recovery and ship a reproducible
+   installable or portable build. Keep explicit unsupported-mode explanations.
+2. **Everyday capture package (A):** configurable global shortcuts and saved
+   output profiles; active-window and last/exact region; Open/Paste/Drop;
+   resize/rotate; PNG/JPEG/WebP; configurable names/folders and completion actions.
+   Acceptance: configure a shortcut, capture in another application, annotate,
+   produce only the requested outputs, and reopen/reuse a previous image without
+   developer configuration or unintended source persistence.
+3. **Sharing/library package (A/B):** destination/auth UI, named profiles,
+   finalized-document sharing, explicit metadata policy and bounded gallery.
+   Acceptance: configure and test a real HTTPS destination, share an edited image,
+   copy its result and find it later; cancellation/failure must remain truthful.
+4. **Distinctive capabilities (B):** scrolling capture, OCR/QR, pinning and
+   video/GIF recording. These are separate substantial work items, not toolbar
+   buttons. Each needs native fixtures, failure handling and active-work budgets.
+5. **Advanced parity (B/C):** complete capture customization, richer editor and
+   effect model, custom-uploader compatibility/providers, workflows/CLI/actions,
+   media and utility families. Confirm a capability matrix against ShareX before
+   claiming parity. A functioning prototype or matching menu layout is insufficient.
+
+These priorities are recommendations, not changes to PLAN.md or its acceptance
+targets. No percentages or calendar estimates are assigned: there is no measured
+feature weighting or implementation estimate that would justify them.

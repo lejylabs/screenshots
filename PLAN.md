@@ -4,7 +4,7 @@
 
 **Status (2026-11-09):** This is a production delivery plan, not a claim that the current application is production-ready. Phase 0 remains open; see [the measured spike evidence](docs/phase-0.md). The performance contract below applies to the entire application and every future feature. Budgets are acceptance targets, not measurements of the current prototype.
 
-## Session handoff — start here (2026-11-09)
+## Session handoff — start here (2026-11-12)
 
 This section is the current continuation brief. The numbered sections below contain architecture, release requirements and detailed implementation evidence; their original bootstrap sequence is historical. Development has progressed through functional slices of Phases 1–5 while the cross-platform/performance release gates remain open. Do not restart the spike or treat implemented features as production acceptance.
 
@@ -31,7 +31,56 @@ This section is the current continuation brief. The numbered sections below cont
 
 1. Keep the Kit component/theme/root contracts when adding UI. Use existing history/capture operations and bounded paging; do not introduce eager full-history decoding.
 2. Complete platform acceptance: interactive Windows/macOS/Wayland, manual keyboard/IME/accessibility, mixed DPI/multi-monitor/topology, failure/recovery and packaging. CI checks compilation; it does not establish native runtime acceptance.
-3. Continue the documented release backlog with the current UI direction. Arbitrary effect/layer-order agreement, thumbnail gallery and full reference-hardware resource acceptance remain open; Recording/OCR/plugins/cloud are later roadmap items.
+3. Follow the delivery sequence below and the [functional gap analysis](docs/gap-analysis.md). Arbitrary effect/layer-order agreement, thumbnail gallery and full reference-hardware resource acceptance remain open. Recording, OCR, scrolling capture, pinning and workflows are required for the ShareX functional-scope goal, even when delivered after the everyday screenshot milestone. Plugins and cloud remain separate later product decisions.
+
+### Delivery sequence toward ShareX functional scope (2026-11-12)
+
+The everyday screenshot release is an intermediate milestone. The original MVP
+and version headings below describe staged delivery, not the full parity scope.
+The gap analysis inventories missing, partial and unverified capabilities; its
+priorities do not establish implementation or runtime acceptance.
+
+1. **Dependable desktop baseline:** complete post-Kit Windows capture/editor,
+   clipboard, tray/hotkey, DPI/topology, cancellation and recovery acceptance;
+   produce a reproducible portable or installable artifact. Track this alongside
+   feature work. Linux/macOS obligations and all performance budgets remain.
+2. **Everyday capture:** configurable hotkeys, then saved output profiles;
+   active-window/monitor and last/exact-region commands; Open/Paste/Drop;
+   resize/rotate/flip, JPEG/WebP and naming/folder preferences.
+3. **Sharing and library:** native destination/auth setup, named destinations,
+   sharing finalized editor pixels, explicit metadata policy and a bounded
+   thumbnail gallery. Preserve truthful outcomes and explicit network consent.
+4. **Major capabilities:** scrolling capture, OCR/QR, pinning and video/GIF
+   recording, each with its own resource budget, cancellation and native checks.
+5. **Advanced parity:** richer capture/editor/effect behavior, custom-uploader
+   compatibility, providers, workflows/CLI/actions and remaining utility families.
+   Verify the capability matrix before claiming ShareX parity.
+
+#### Next feature: configurable Windows global hotkeys
+
+Start with the three existing commands: primary display, quick region and
+capture-and-annotate. Add native Kit settings to assign, disable and restore their
+bindings, preserving current defaults for existing installations. Keep platform
+limitations explicit; this slice does not establish non-Windows hotkey support.
+
+- Validate supported key combinations and duplicate assignments before applying.
+  Report OS registration conflicts per command and retain usable bindings after
+  a failed change; never report an inactive shortcut as active.
+- Persist bounded settings on the existing worker path. Folder/theme changes must
+  preserve bindings; failed persistence must leave an explained, recoverable state.
+  Perform registration/unregistration on the native event-loop thread. Settings
+  loading must not create an idle watcher, polling timer or eager graphics setup.
+- Keep UI labels, status, event routing and shortcut diagnostics consistent with
+  the applied bindings. Update fixtures that assume the hard-coded shortcuts.
+- Acceptance: change a binding, capture while another app has focus, disable and
+  restore it, restart and confirm persistence; exercise duplicate/OS conflicts,
+  save failure and shutdown cleanup. Add focused validation/routing/persistence
+  tests and optimized native checks; compare resident readiness and idle resources
+  for the changed startup path. Record skipped checks separately from results.
+
+The following output-profile slice will add explicit copy-only, save-only and
+annotate-first choices using existing in-memory output paths. Upload remains an
+explicitly authorized action. It does not require a general workflow engine.
 
 ### Code and verification entry points
 
