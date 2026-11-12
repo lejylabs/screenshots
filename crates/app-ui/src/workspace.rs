@@ -33,6 +33,15 @@ pub(super) fn exact_region_request(display: &DisplayInfo, values: &[String; 4]) 
 
 impl Render for CaptureWorkspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if self.page == ControlPage::Uploads && self.upload_form_open {
+            if self.upload_form_inputs.is_none() {
+                self.upload_form_inputs = Some(std::array::from_fn(|index| cx.new(|cx|
+                    gpui::component::input::InputState::new(window, cx)
+                        .default_value(["", "file", "/url"][index])
+                        .placeholder(["https://host.example/upload", "file", "/url"][index])
+                        .validate(move |value, _| value.len() <= [2048, 64, 256][index] && !value.chars().any(char::is_control)))));
+            }
+        } else { self.upload_form_inputs = None; }
         if self.page == ControlPage::Captures {
             if self.capture_delay_input.is_none() {
                 self.capture_delay_input = Some(cx.new(|cx| gpui::component::input::InputState::new(window, cx)
@@ -347,8 +356,18 @@ impl Render for CaptureWorkspace {
                         .child(div().flex().flex_col().gap_1()
                             .child(div().font_weight(gpui::FontWeight::SEMIBOLD).child("Destination"))
                             .child(div().text_sm().text_color(colors.muted_foreground).child(if self.upload_destination.is_some() { "Ready for an explicit upload" } else { "Connect your own image hosting service" }))))
-                    .child(div().text_sm().text_color(colors.muted_foreground).child("Load a destination JSON profile. Uploads only start when you choose an image and confirm."))
+                    .child(div().text_sm().text_color(colors.muted_foreground).child("Set up a destination or load a profile. Uploads only start when you choose an image and confirm."))
                     .child(div().flex().flex_wrap().gap_2()
+                        .child(capture_button(cx, "setup-upload-destination", if self.upload_form_open { "Cancel setup" } else { "Set up destination" },
+                            self.upload_config_loading || self.upload_cancel.is_some(), cx.listener(|this, _, _, cx| {
+                                if this.upload_config_loading || this.upload_cancel.is_some() || this.quitting { return; }
+                                this.upload_form_open = !this.upload_form_open;
+                                this.upload_form_inputs = None;
+                                this.upload_form_method = app_core::UploadMethod::Post;
+                                this.upload_form_json = false;
+                                this.upload_form_allow_http = false;
+                                cx.notify();
+                            })))
                         .child(capture_button(cx, "load-upload-destination", if self.upload_destination.is_some() { "Change destination…" } else { "Choose destination…" },
                             self.upload_config_loading || self.upload_cancel.is_some(), cx.listener(|this, _, _, cx| this.load_upload_destination(cx))))
                         .when(self.upload_destination.is_some(), |row| row
@@ -356,6 +375,28 @@ impl Render for CaptureWorkspace {
                                 cx.listener(|this, _, _, cx| this.persist_upload_destination(false, cx)))))
                         .child(quiet_button(cx, "forget-upload-destination", "Forget destination", self.upload_config_loading || self.upload_cancel.is_some(), false,
                             cx.listener(|this, _, _, cx| this.persist_upload_destination(true, cx)))))
+                    .children(self.upload_form_inputs.as_ref().map(|inputs| {
+                        let disabled = self.upload_config_loading || self.upload_cancel.is_some();
+                        div().flex().flex_col().gap_2()
+                            .child("Manual destination · no authentication · use a profile for advanced settings")
+                            .child("Endpoint URL")
+                            .child(gpui::component::input::Input::new(&inputs[0]).id("upload-setup-url").aria_label("Upload endpoint URL").disabled(disabled))
+                            .child(RadioGroup::new("upload-setup-method").children(["POST multipart", "PUT PNG body"])
+                                .selected_index(Some(if self.upload_form_method == app_core::UploadMethod::Post { 0 } else { 1 })).disabled(disabled)
+                                .on_change(cx.listener(|this, index, _, cx| { this.upload_form_method = if *index == 0 { app_core::UploadMethod::Post } else { app_core::UploadMethod::Put }; cx.notify(); })))
+                            .child("POST file field")
+                            .child(gpui::component::input::Input::new(&inputs[1]).id("upload-setup-field").aria_label("Multipart file field").disabled(disabled || self.upload_form_method == app_core::UploadMethod::Put))
+                            .child(RadioGroup::new("upload-setup-response").children(["Plain-text URL", "JSON link"])
+                                .selected_index(Some(usize::from(self.upload_form_json))).disabled(disabled)
+                                .on_change(cx.listener(|this, index, _, cx| { this.upload_form_json = *index == 1; cx.notify(); })))
+                            .when(self.upload_form_json, |view| view.child(gpui::component::input::Input::new(&inputs[2]).id("upload-setup-pointer").aria_label("JSON pointer to link, for example /url").disabled(disabled)))
+                            .child(gpui::component::checkbox::Checkbox::new("upload-setup-http").label("Allow unencrypted HTTP for this destination")
+                                .checked(self.upload_form_allow_http).disabled(disabled)
+                                .on_change(cx.listener(|this, checked, _, cx| { this.upload_form_allow_http = *checked; cx.notify(); })))
+                            .child(capture_button(cx, "use-upload-setup", "Use destination (session only)", disabled,
+                                cx.listener(|this, _, _, cx| this.use_upload_form(cx))))
+                            .child(div().text_sm().child(self.upload_status.clone()))
+                    }))
                     .children(self.upload_destination.as_ref().and_then(|value| value.credential_target()).map(|target| {
                         div().pt_3().border_t_1().border_color(colors.border).flex().flex_col().gap_2()
                             .child(div().text_xs().text_color(colors.muted_foreground).child(format!("Credential Manager target: {target}")))

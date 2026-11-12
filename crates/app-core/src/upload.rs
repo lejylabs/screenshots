@@ -105,9 +105,9 @@ fn default_field() -> String {
     "file".into()
 }
 
-#[derive(Clone, Copy, Default, Deserialize, Serialize)]
+#[derive(Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "UPPERCASE")]
-enum UploadMethod {
+pub enum UploadMethod {
     #[default]
     Post,
     Put,
@@ -122,6 +122,17 @@ enum UploadResponse {
 }
 
 impl UploadDestination {
+    /// Build a credential-free manual destination without performing IO or networking.
+    pub fn manual(url: String, method: UploadMethod, field: String, json_pointer: Option<String>, allow_http: bool) -> Result<Self> {
+        let response = json_pointer.is_none().then_some(UploadResponse::Text);
+        let field = if method == UploadMethod::Post { field.trim().into() } else { default_field() };
+        let destination = Self { url: url.trim().into(), method, field,
+            json_pointer: json_pointer.unwrap_or_default().trim().into(), response, allow_http,
+            credential: None, authentication: None };
+        destination.validate()?;
+        Ok(destination)
+    }
+
     pub fn credential_target(&self) -> Option<String> {
         let name = self.credential.as_ref()?;
         let origin = self.validate().ok()?.origin().ascii_serialization();
@@ -519,6 +530,38 @@ mod tests {
     };
 
     #[test]
+    fn manual_destinations_validate_and_reuse_saved_profile_policy() -> Result<()> {
+        for method in [UploadMethod::Post, UploadMethod::Put] {
+            for pointer in [None, Some("/result/url".to_string()), Some(String::new())] {
+                let config = UploadDestination::manual(" https://example.invalid/upload ".into(), method,
+                    " file ".into(), pointer.clone(), false)?;
+                assert_eq!(config.url, "https://example.invalid/upload");
+                assert_eq!(config.field, "file");
+                assert!(config.credential_target().is_none() && config.authentication.is_none());
+                assert_eq!(config.request_method(), if method == UploadMethod::Post { "POST" } else { "PUT" });
+                assert_eq!(config.json_pointer, pointer.clone().unwrap_or_default());
+                assert_eq!(matches!(config.response, Some(UploadResponse::Text)), pointer.is_none());
+                let root = std::env::temp_dir().join(format!("manual-destination-{}", uuid::Uuid::new_v4()));
+                std::fs::create_dir_all(&root)?;
+                let path = root.join("destination.json");
+                config.save_at(&path)?;
+                let loaded = UploadDestination::load(&path)?;
+                assert_eq!(loaded.request_method(), config.request_method());
+                assert_eq!(loaded.json_pointer, config.json_pointer);
+                assert!(loaded.credential_target().is_none());
+                std::fs::remove_file(path)?; std::fs::remove_dir(root)?;
+            }
+        }
+        for url in ["", "file:///tmp/image", "http://localhost/upload", "https://user:pass@example.invalid/", "https://example.invalid/?token=x", "https://example.invalid/#fragment"] {
+            assert!(UploadDestination::manual(url.into(), UploadMethod::Post, "file".into(), None, false).is_err());
+        }
+        assert!(UploadDestination::manual("http://localhost/upload".into(), UploadMethod::Put, "file".into(), None, true).is_ok());
+        assert!(UploadDestination::manual("https://example.invalid/".into(), UploadMethod::Post, "bad field".into(), None, false).is_err());
+        assert!(UploadDestination::manual("https://example.invalid/".into(), UploadMethod::Post, "file".into(), Some("/bad~2".into()), false).is_err());
+        Ok(())
+    }
+
+    #[test]
     fn progress_coalesces_closes_and_counts_only_consumed_png_bytes() {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -578,18 +621,11 @@ mod tests {
         (root, path)
     }
     fn destination(url: String) -> UploadDestination {
-        UploadDestination {
-            url,
-            method: UploadMethod::Post,
-            field: "file".into(),
-            json_pointer: "/result/url".into(),
-            response: None,
-            allow_http: true,
-            credential: None,
-            authentication: None,
-        }
+        UploadDestination::manual(url, UploadMethod::Post, "file".into(), Some("/result/url".into()), true).unwrap()
     }
     fn read_request(stream: &mut TcpStream) -> Vec<u8> {
+        // Accepted sockets can inherit the listener's nonblocking mode on Windows.
+        stream.set_nonblocking(false).unwrap();
         stream
             .set_read_timeout(Some(Duration::from_secs(3)))
             .unwrap();

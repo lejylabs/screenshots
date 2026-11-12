@@ -577,6 +577,39 @@ round-trip fixture is available separately. Explorer/attachment paste, clipboard
 contention/ownership, native latency, peak memory and other-platform acceptance
 remain open; no native performance result is claimed for this metadata-only path.
 
+#### Current feature slice: native manual upload destination setup
+
+Uploads offers Set up destination without a JSON file for credential-free POST
+multipart or PUT PNG-body endpoints. The bounded form accepts an endpoint URL,
+POST file field and either a plain-text URL response or a JSON link pointer.
+HTTPS is required unless the user explicitly checks Allow unencrypted HTTP.
+The shared destination validator rejects embedded credentials, query/fragment
+tokens, invalid fields/pointers and oversized values. Imported profiles retain
+advanced authentication/response configuration; native credential management and
+connection testing are separate work.
+
+Use destination validates on the existing worker and applies to this session only;
+the existing Remember action persists it explicitly. Invalid input keeps the
+previous destination/link. Closing the form/page/window suppresses its pending
+result, and Quit discards it. No connection, upload, runtime initialization, image
+decode or file write occurs during setup. Final uploads remain separate explicit
+actions using the existing bounded streaming/auth/redirect/cancellation policy.
+
+Resource cost is three lazy Kit inputs limited to 2048/64/256 UTF-8 bytes plus
+existing bounded input undo, three small choices and one admitted metadata future.
+Inputs release on cancel, successful use, page exit or UI close; there is no new
+dependency, worker, runtime, queue, image, cache, watcher or idle timer. Constructor
+and headless UI fixtures verify URL/HTTP/security rules, response choices, POST/PUT,
+profile serialization, failed validation preservation, duplicate admission, modal
+button routing and stale-result suppression without networking or user settings
+writes. Four optimized synthetic loopback upload fixtures also pass through the
+manual constructor, checking POST/PUT bytes, response parsing, redirect blocking
+and cancellation without external connections. The Windows test server explicitly
+restores blocking mode on accepted sockets before bounded reads.
+Native keyboard/IME/accessibility, real hosting-service interoperability
+and latency/process/GPU/resource acceptance remain open; no new performance
+measurement is claimed for this bounded metadata entry point.
+
 #### Current feature slice: configurable Windows global hotkeys
 
 Implemented in the working tree (2026-11-12): three editable/disableable bindings

@@ -1013,6 +1013,69 @@ fn stale_library_menu_cannot_mutate_a_new_page(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn upload_setup_validates_without_network_and_discards_closed_form_results(cx: &mut TestAppContext) {
+    let handle = open_workspace(cx);
+    handle.update(cx, |this, _, cx| {
+        this.upload_destination = Some(app_core::UploadDestination::manual("https://old.invalid/upload".into(),
+            app_core::UploadMethod::Post, "file".into(), None, false).unwrap());
+        this.show_page(ControlPage::Uploads, cx);
+    }).unwrap();
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.click("setup-upload-destination", cx);
+        window.render_frame(cx);
+        assert_eq!(window.find("upload-setup-url").value(), Some(""));
+    }).unwrap();
+    handle.update(cx, |this, window, cx| {
+        assert!(!this.upload_form_allow_http);
+        let inputs = this.upload_form_inputs.clone().unwrap();
+        inputs[0].update(cx, |input, cx| input.set_value("http://127.0.0.1:12345/upload", window, cx));
+        this.use_upload_form(cx);
+        assert!(this.upload_config_loading);
+        assert_eq!(this.upload_destination.as_ref().unwrap().origin(), "https://old.invalid");
+        this.use_upload_form(cx);
+    }).unwrap();
+    cx.run_until_parked();
+    handle.update(cx, |this, _, _| {
+        assert!(!this.upload_config_loading);
+        assert!(this.upload_status.starts_with("Destination unchanged:"));
+        assert_eq!(this.upload_destination.as_ref().unwrap().origin(), "https://old.invalid");
+        this.upload_form_allow_http = true;
+        this.upload_form_method = app_core::UploadMethod::Put;
+        this.upload_form_json = true;
+    }).unwrap();
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.scroll("setup-upload-destination", gpui::ScrollDelta::Pixels(point(px(0.), px(-450.))), cx);
+        window.render_frame(cx);
+        window.click("use-upload-setup", cx);
+    }).unwrap();
+    cx.run_until_parked();
+    handle.update(cx, |this, _, _| {
+        let destination = this.upload_destination.as_ref().unwrap();
+        assert_eq!(destination.origin(), "http://127.0.0.1:12345");
+        assert_eq!(destination.request_method(), "PUT");
+        assert!(!this.upload_form_open && this.upload_form_inputs.is_none());
+        assert!(this.upload_cancel.is_none() && this.upload_generation == 0);
+        assert!(this.last_saved.is_none() && this.last_capture.is_none());
+        this.upload_form_open = true;
+    }).unwrap();
+    cx.update_window(handle.into(), |_, window, cx| window.render_frame(cx)).unwrap();
+    handle.update(cx, |this, window, cx| {
+        this.upload_form_inputs.as_ref().unwrap()[0].update(cx, |input, cx| input.set_value("https://new.invalid/upload", window, cx));
+        this.use_upload_form(cx);
+        this.show_page(ControlPage::Sources, cx);
+        assert!(this.upload_form_inputs.is_none() && !this.upload_form_open);
+    }).unwrap();
+    cx.run_until_parked();
+    handle.update(cx, |this, _, _| {
+        assert!(!this.upload_config_loading);
+        assert_eq!(this.upload_destination.as_ref().unwrap().origin(), "http://127.0.0.1:12345");
+        assert!(this.upload_cancel.is_none() && this.upload_generation == 0);
+    }).unwrap();
+}
+
+#[gpui::test]
 fn library_copy_path_routes_menu_and_discards_stale_status(cx: &mut TestAppContext) {
     let handle = open_workspace(cx);
     cx.update_window(handle.into(), |_, window, cx| window.press(&shortcut("2"), cx)).unwrap();

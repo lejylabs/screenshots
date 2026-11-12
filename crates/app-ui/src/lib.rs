@@ -195,6 +195,11 @@ pub struct CaptureWorkspace {
     history_preview_status: String,
     history_export_cancel: Option<Arc<std::sync::atomic::AtomicBool>>,
     upload_destination: Option<app_core::UploadDestination>,
+    upload_form_open: bool,
+    upload_form_inputs: Option<[gpui::Entity<gpui::component::input::InputState>; 3]>,
+    upload_form_method: app_core::UploadMethod,
+    upload_form_json: bool,
+    upload_form_allow_http: bool,
     upload_config_loading: bool,
     upload_profile_checked: bool,
     upload_cancel: Option<app_core::UploadCancellation>,
@@ -389,6 +394,8 @@ impl CaptureWorkspace {
         self.export_dimension_input = None;
         self.export_height_input = None;
         self.capture_delay_input = None;
+        self.upload_form_open = false;
+        self.upload_form_inputs = None;
         self.exact_region_status.clear();
         #[cfg(target_os = "windows")]
         { self.hotkey_inputs = None; }
@@ -610,6 +617,11 @@ impl CaptureWorkspace {
             history_preview_status: String::new(),
             history_export_cancel: None,
             upload_destination: None,
+            upload_form_open: false,
+            upload_form_inputs: None,
+            upload_form_method: app_core::UploadMethod::Post,
+            upload_form_json: false,
+            upload_form_allow_http: false,
             upload_config_loading: false,
             upload_profile_checked: cfg!(test),
             upload_cancel: None,
@@ -1081,6 +1093,8 @@ impl CaptureWorkspace {
         self.hide_history(cx);
         self.hide_upload_history();
         self.page = page;
+        self.upload_form_open = false;
+        self.upload_form_inputs = None;
         self.capture_delay_input = None;
         self.export_dimension_input = None;
         self.export_height_input = None;
@@ -3041,6 +3055,42 @@ impl CaptureWorkspace {
                     (false,Err(error)) => format!("Destination remains session only · Could not remember it: {error}"),
                 };
                 this.finish_quit_if_idle(cx); cx.notify();
+            }).ok();
+        }).detach();
+        cx.notify();
+    }
+
+    fn use_upload_form(&mut self, cx: &mut Context<Self>) {
+        if self.page != ControlPage::Uploads || !self.upload_form_open || self.quitting
+            || self.upload_config_loading || self.upload_cancel.is_some() { return; }
+        let Some(inputs) = &self.upload_form_inputs else { return; };
+        let [url, field, pointer] = std::array::from_fn(|index| inputs[index].read(cx).value().to_string());
+        let method = self.upload_form_method;
+        let pointer = self.upload_form_json.then_some(pointer);
+        let allow_http = self.upload_form_allow_http;
+        self.upload_config_loading = true;
+        self.upload_profile_checked = true;
+        self.upload_status = "Checking destination settings…".into();
+        cx.spawn(async move |this, cx| {
+            let result = cx.background_spawn(async move {
+                app_core::UploadDestination::manual(url, method, field, pointer, allow_http)
+            }).await;
+            this.update(cx, |this, cx| {
+                this.upload_config_loading = false;
+                if !this.quitting && this.page == ControlPage::Uploads && this.upload_form_open {
+                    match result {
+                        Ok(destination) => {
+                            this.upload_status = format!("Destination: {} · Session only · Manual upload", destination.origin());
+                            this.upload_destination = Some(destination);
+                            this.upload_url = None;
+                            this.upload_form_open = false;
+                            this.upload_form_inputs = None;
+                        }
+                        Err(error) => this.upload_status = format!("Destination unchanged: {error:#}"),
+                    }
+                }
+                this.finish_quit_if_idle(cx);
+                cx.notify();
             }).ok();
         }).detach();
         cx.notify();

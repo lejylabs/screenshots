@@ -240,7 +240,7 @@ files/URLs and configured tasks.
 
 | Capability | Current status and gap | Priority |
 | --- | --- | --- |
-| Destination setup | Partial: JSON file plus external Windows credential entry. Missing native destination/auth editor, validation/test flow and clear configuration export/import. | A |
+| Destination setup | Partial: Uploads offers native credential-free POST/PUT setup with plain-text/JSON link responses, bounded validation and explicit HTTP opt-in; Use is session-only and Remember persists it. JSON profiles retain advanced settings and external Windows credentials. Native authentication/credential editing, connection tests, named destinations and configuration export remain missing. | A |
 | Multiple destinations | Missing saved named destination list, destination switching and per-task defaults. Only one profile is remembered. | A/B |
 | Existing ShareX profiles | Missing `.sxcu` import/export or a documented compatibility subset. Our profile JSON is not the ShareX format. | B |
 | Generic HTTP breadth | Partial: POST multipart/PUT PNG; no custom request headers/arguments/query templates, JSON/form bodies, richer response expressions or deletion/thumbnail result URLs. Compatibility must preserve origin-scoped secrets and response bounds. | B |
