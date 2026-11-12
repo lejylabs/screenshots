@@ -135,6 +135,7 @@ pub(super) fn bind_keys(cx: &mut App) {
 
 #[derive(Clone, Default)]
 struct EditState {
+    orientation: BaseOrientation,
     regions: Vec<PixelRegion>,
     frames: Vec<FrameAnnotation>,
     highlights: Vec<HighlightAnnotation>,
@@ -147,6 +148,56 @@ struct EditState {
     order: Vec<Selected>,
     crop: Option<PixelRegion>,
     last_number: u16,
+}
+
+#[derive(Clone, Copy, Default, Debug, PartialEq, Eq)]
+struct BaseOrientation { turns: u8, mirrored: bool }
+
+impl BaseOrientation {
+    fn rotate(self) -> Self {
+        Self { turns: (self.turns + if self.mirrored { 3 } else { 1 }) % 4, ..self }
+    }
+    fn flip(self, vertical: bool) -> Self {
+        Self { turns: (self.turns + if vertical { 2 } else { 0 }) % 4, mirrored: !self.mirrored }
+    }
+    fn relative_to(self, current: Self) -> Self {
+        let turns = if current.mirrored { current.turns + 4 - self.turns } else { self.turns + 4 - current.turns };
+        Self { turns: turns % 4, mirrored: self.mirrored != current.mirrored }
+    }
+}
+
+fn oriented_source(
+    original: &CapturedImage,
+    orientation: BaseOrientation,
+    cancelled: impl Fn() -> bool,
+) -> Result<CapturedImage, String> {
+    if cancelled() { return Err("Image transformation canceled".into()); }
+    if orientation == BaseOrientation::default() { return Ok(original.clone()); }
+    let (width, height) = original.pixels.dimensions();
+    app_core::validate_image_size(width, height).map_err(|e| e.to_string())?;
+    let (out_width, out_height) = if orientation.turns % 2 == 0 { (width, height) } else { (height, width) };
+    let mut output = image::RgbaImage::new(out_width, out_height);
+    for (y, row) in output.rows_mut().enumerate() {
+        if cancelled() { return Err("Image transformation canceled".into()); }
+        let y = y as u32;
+        for (x, pixel) in row.enumerate() {
+            let x = if orientation.mirrored { out_width - 1 - x as u32 } else { x as u32 };
+            let (sx, sy) = match orientation.turns {
+                0 => (x, y),
+                1 => (y, height - 1 - x),
+                2 => (width - 1 - x, height - 1 - y),
+                3 => (width - 1 - y, x),
+                _ => unreachable!(),
+            };
+            *pixel = *original.pixels.get_pixel(sx, sy);
+        }
+    }
+    let mut result = original.clone();
+    result.width = out_width;
+    result.height = out_height;
+    result.pixels = Arc::new(output);
+    result.display_geometry = None;
+    Ok(result)
 }
 #[derive(Default)]
 struct RectEdits {
@@ -1034,6 +1085,7 @@ impl RectEdits {
         }
     }
     fn reset(&mut self) {
+        self.orientation = BaseOrientation::default();
         self.regions.clear();
         self.frames.clear();
         self.highlights.clear();
@@ -1136,6 +1188,10 @@ fn nudge_delta(key: &str, shift: bool) -> Option<[f32; 2]> {
 
 pub(super) struct RedactionEditor {
     pub source: CapturedImage,
+    original_geometry: Option<app_core::DisplayGeometry>,
+    prepared_orientation: BaseOrientation,
+    orientation_loading: bool,
+    orientation_error: Option<String>,
     pub render_image: Arc<gpui::RenderImage>,
     focus: FocusHandle,
     owner: gpui::WeakEntity<CaptureWorkspace>,
@@ -1196,6 +1252,74 @@ impl Drop for RedactionEditor {
 }
 
 impl RedactionEditor {
+    fn base_transform_available(&self) -> bool {
+        !self.orientation_loading && !self.text_loading && !self.blur_loading
+            && !self.pixelation_loading && self.text_draft.is_none() && self.drag.is_none()
+            && self.edits.crop.is_none() && self.edits.order.is_empty()
+            && self.edits.regions.is_empty() && self.edits.pixelations.is_empty() && self.edits.blurs.is_empty()
+            && self.edits.frames.is_empty() && self.edits.arrows.is_empty() && self.edits.ellipses.is_empty()
+            && self.edits.texts.is_empty() && self.edits.pens.is_empty() && self.edits.highlights.is_empty()
+    }
+
+    fn transform_base(&mut self, orientation: BaseOrientation, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.base_transform_available() { return; }
+        self.edits.checkpoint();
+        self.edits.orientation = orientation;
+        self.sync_orientation(window, cx);
+    }
+
+    fn change_history(&mut self, redo: bool, window: &mut Window, cx: &mut Context<Self>) {
+        if self.orientation_loading || self.text_loading || self.text_draft.is_some()
+            || self.pixelation_loading || self.blur_loading { return; }
+        if redo { self.edits.redo(); } else { self.edits.undo(); }
+        self.selected = None;
+        self.drag = None;
+        self.sync_orientation(window, cx);
+        cx.notify();
+    }
+
+    fn sync_orientation(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let orientation = self.edits.orientation;
+        if orientation == self.prepared_orientation { return; }
+        self.orientation_loading = true;
+        self.orientation_error = None;
+        self.selected = None;
+        self.drag = None;
+        self.zoom = None;
+        self.pan = [0.; 2];
+        self.tool = Tool::Select;
+        self.pending_effect = None;
+        if let Some((_, image)) = self.pixelation.take() { window.drop_image(image).ok(); }
+        if let Some(image) = self.blur.take() { window.drop_image(image).ok(); }
+        let source = self.source.clone();
+        let relative = orientation.relative_to(self.prepared_orientation);
+        let cancelled = self.effects_cancel.clone();
+        let handle = crate::window::UiWindow::<Self>::from_window(window);
+        cx.spawn(async move |_, cx| {
+            let result = cx.background_spawn(async move {
+                let source = oriented_source(&source, relative, || cancelled.load(std::sync::atomic::Ordering::Relaxed))?;
+                if cancelled.load(std::sync::atomic::Ordering::Relaxed) { return Err("Image transformation canceled".into()); }
+                let render = crate::render_frame(&source);
+                Ok::<_, String>((source, render))
+            }).await;
+            handle.update(cx, |this, window, cx| {
+                if this.effects_cancel.load(std::sync::atomic::Ordering::Relaxed) { return; }
+                this.orientation_loading = false;
+                match result {
+                    Ok((mut source, render)) => {
+                        source.display_geometry = if orientation == BaseOrientation::default() { this.original_geometry } else { None };
+                        this.source = source;
+                        let previous = std::mem::replace(&mut this.render_image, render);
+                        window.drop_image(previous).ok();
+                        this.prepared_orientation = orientation;
+                    }
+                    Err(error) => this.orientation_error = Some(error),
+                }
+                cx.notify();
+            }).ok();
+        }).detach();
+        cx.notify();
+    }
     #[cfg(all(test, target_os = "windows"))]
     pub(super) fn prepare_toolbar_probe(&mut self, cx: &mut Context<Self>) {
         if self.edits.frames.is_empty() {
@@ -2037,7 +2161,7 @@ impl RedactionEditor {
         }
     }
     fn export(&self, mode: OutputMode, cx: &mut Context<Self>) {
-        if self.drag.is_some()
+        if self.orientation_loading || self.orientation_error.is_some() || self.drag.is_some()
             || self.text_draft.is_some()
             || self.text_loading
             || (self.edits.regions.is_empty()
@@ -2050,6 +2174,7 @@ impl RedactionEditor {
                 && self.edits.blurs.is_empty()
                 && self.edits.texts.is_empty()
                 && self.edits.crop.is_none()
+                && self.edits.orientation == BaseOrientation::default()
                 && !self.direct_capture)
         {
             return;
@@ -2109,6 +2234,10 @@ impl RedactionEditor {
         let focus = cx.focus_handle();
         window.focus(&focus, cx);
         Self {
+            original_geometry: source.display_geometry,
+            prepared_orientation: BaseOrientation::default(),
+            orientation_loading: false,
+            orientation_error: None,
             source,
             render_image,
             focus,
@@ -2169,6 +2298,14 @@ impl RedactionEditor {
 impl Render for RedactionEditor {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = crate::theme::current(cx);
+        if self.orientation_loading || self.orientation_error.is_some() {
+            return div().size_full().bg(rgb(theme.background)).text_color(rgb(theme.text))
+                .flex().flex_col().p_4().gap_3().track_focus(&self.focus)
+                .on_action(cx.listener(|this, _: &CloseOverlay, _, cx| this.cancel(cx)))
+                .child(self.orientation_error.clone().unwrap_or_else(|| "Transforming image…".into()))
+                .child(capture_button(cx, "transform-cancel", "Cancel", false,
+                    cx.listener(|this, _, _, cx| this.cancel(cx)))).into_any_element();
+        }
         let viewport = window.viewport_size();
         let layout = [f32::from(viewport.width), f32::from(viewport.height)];
         if self.layout != Some(layout) {
@@ -2438,20 +2575,8 @@ impl Render for RedactionEditor {
                     cx.notify();
                 }
             }))
-            .on_action(cx.listener(|this, _: &UndoRedaction, _, cx| {
-                if this.text_draft.is_some() || this.text_loading {return;}
-                this.edits.undo();
-                this.selected = None;
-                this.drag = None;
-                cx.notify();
-            }))
-            .on_action(cx.listener(|this, _: &RedoRedaction, _, cx| {
-                if this.text_draft.is_some() || this.text_loading {return;}
-                this.edits.redo();
-                this.selected = None;
-                this.drag = None;
-                cx.notify();
-            }))
+            .on_action(cx.listener(|this, _: &UndoRedaction, window, cx| this.change_history(false, window, cx)))
+            .on_action(cx.listener(|this, _: &RedoRedaction, window, cx| this.change_history(true, window, cx)))
             .on_mouse_move(cx.listener(|this, event: &gpui::MouseMoveEvent, _, cx| {
                 if this.drag.is_some() && !event.dragging() {
                     this.drag = None;
@@ -2523,6 +2648,7 @@ impl Render for RedactionEditor {
                                             && self.edits.arrows.is_empty()
                                             && self.edits.ellipses.is_empty() && self.edits.pixelations.is_empty() && self.edits.blurs.is_empty() && self.edits.texts.is_empty()
                                             && self.edits.crop.is_none()
+                                            && self.edits.orientation == BaseOrientation::default()
                                             && !self.direct_capture)
                                             || self.drag.is_some() || self.text_draft.is_some() || self.text_loading,
                                         matches!(mode, OutputMode::CopyOnly), cx.listener(move |this, _, _, cx| this.export(mode, cx)),
@@ -2534,6 +2660,15 @@ impl Render for RedactionEditor {
                                 false,
                                 cx.listener(|this, _, _, cx| this.cancel(cx)),
                             ))                    )
+                    .child(div().flex().flex_col().gap_1()
+                        .child(div().flex().flex_wrap().gap_2()
+                            .child(capture_button(cx, "rotate-image", "Rotate 90° clockwise", !self.base_transform_available(),
+                                cx.listener(|this, _, window, cx| this.transform_base(this.edits.orientation.rotate(), window, cx))))
+                            .child(capture_button(cx, "flip-image-horizontal", "Flip horizontal", !self.base_transform_available(),
+                                cx.listener(|this, _, window, cx| this.transform_base(this.edits.orientation.flip(false), window, cx))))
+                            .child(capture_button(cx, "flip-image-vertical", "Flip vertical", !self.base_transform_available(),
+                                cx.listener(|this, _, window, cx| this.transform_base(this.edits.orientation.flip(true), window, cx)))))
+                        .child(div().text_sm().child("Rotate and flip before cropping or adding marks. Undo edits to transform again.")))
                     .child(
                         div().flex().items_center().flex_wrap().gap_1().py_1()
                             .children(TOOLBAR_TOOLS.into_iter().map(|(tool, id, label, separator)| {
@@ -2608,29 +2743,19 @@ impl Render for RedactionEditor {
                             .child(capture_button(cx,
                                 "redaction-undo",
                                 "Undo",
-                                self.edits.past.is_empty() || self.text_draft.is_some() || self.text_loading,
-                                cx.listener(|this, _, _, cx| {
-                                    this.edits.undo();
-                                    this.selected = None;
-                                    this.drag = None;
-                                    cx.notify();
-                                }),
+                                self.edits.past.is_empty() || self.text_draft.is_some() || self.text_loading || self.blur_loading || self.pixelation_loading,
+                                cx.listener(|this, _, window, cx| this.change_history(false, window, cx)),
                             ))
 .child(capture_button(cx,
                                 "redaction-redo",
                                 "Redo",
-                                self.edits.undone.is_empty() || self.text_draft.is_some() || self.text_loading,
-                                cx.listener(|this, _, _, cx| {
-                                    this.edits.redo();
-                                    this.selected = None;
-                                    this.drag = None;
-                                    cx.notify();
-                                }),
+                                self.edits.undone.is_empty() || self.text_draft.is_some() || self.text_loading || self.blur_loading || self.pixelation_loading,
+                                cx.listener(|this, _, window, cx| this.change_history(true, window, cx)),
                             ))
 .child(capture_button(cx,
                                 "redaction-reset",
                                 "Reset",
-                                self.text_draft.is_some() || self.text_loading || (self.edits.regions.is_empty()
+                                self.text_draft.is_some() || self.text_loading || self.blur_loading || self.pixelation_loading || (self.edits.regions.is_empty()
                                     && self.edits.frames.is_empty() && self.edits.highlights.is_empty() && self.edits.pens.is_empty()
                                     && self.edits.arrows.is_empty()
                                     && self.edits.ellipses.is_empty() && self.edits.pixelations.is_empty() && self.edits.blurs.is_empty() && self.edits.texts.is_empty()
@@ -2643,6 +2768,7 @@ impl Render for RedactionEditor {
                                     for asset in this.text_assets.drain(..){window.drop_image(asset.preview.clone()).ok();}
                                     this.selected = None;
                                     this.drag = None;
+                                    this.sync_orientation(window, cx);
                                     cx.notify();
                                 }),
                             ))
@@ -3078,13 +3204,144 @@ impl Render for RedactionEditor {
                                     .border_color(rgb(theme.accent))
                             })),
                     ),
-            )
+            ).into_any_element()
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn orientation_fixture(width: u32, height: u32) -> CapturedImage {
+        CapturedImage {
+            width, height, display_id: "fixture".into(), window_id: None,
+            png_path: "unused.png".into(), elapsed_ms: 0,
+            source_format: app_core::PixelFormat::Rgba8UnormSrgb, display_geometry: None,
+            pixels: Arc::new(image::RgbaImage::from_fn(width, height, |x, y|
+                image::Rgba([x as u8, y as u8, (x + y) as u8, (x * 30 + y * 10) as u8]))),
+        }
+    }
+
+    #[test]
+    fn base_orientation_composition_preserves_pixels_and_metadata_history() {
+        for (width, height) in [(3, 2), (1, 4), (4, 1), (1, 1)] {
+            let original = orientation_fixture(width, height);
+            for turns in 0..4 {
+                for mirrored in [false, true] {
+                    let orientation = BaseOrientation { turns, mirrored };
+                    let actual = oriented_source(&original, orientation, || false).unwrap();
+                    let mut expected = match turns {
+                        0 => original.pixels.as_ref().clone(),
+                        1 => image::imageops::rotate90(&*original.pixels),
+                        2 => image::imageops::rotate180(&*original.pixels),
+                        _ => image::imageops::rotate270(&*original.pixels),
+                    };
+                    if mirrored { image::imageops::flip_horizontal_in_place(&mut expected); }
+                    assert_eq!(&*actual.pixels, &expected);
+                    assert_eq!((actual.width, actual.height), expected.dimensions());
+                    assert_eq!(&*oriented_source(&original, orientation.rotate(), || false).unwrap().pixels,
+                        &image::imageops::rotate90(&expected));
+                    assert_eq!(&*oriented_source(&original, orientation.flip(false), || false).unwrap().pixels,
+                        &image::imageops::flip_horizontal(&expected));
+                    assert_eq!(&*oriented_source(&original, orientation.flip(true), || false).unwrap().pixels,
+                        &image::imageops::flip_vertical(&expected));
+                    for target_turns in 0..4 {
+                        for target_mirrored in [false, true] {
+                            let target = BaseOrientation { turns: target_turns, mirrored: target_mirrored };
+                            let actual = oriented_source(&actual, target.relative_to(orientation), || false).unwrap();
+                            let expected = oriented_source(&original, target, || false).unwrap();
+                            assert_eq!(&*actual.pixels, &*expected.pixels);
+                        }
+                    }
+                }
+            }
+            let unchanged = oriented_source(&original, BaseOrientation::default(), || false).unwrap();
+            assert!(Arc::ptr_eq(&unchanged.pixels, &original.pixels));
+            assert!(oriented_source(&original, BaseOrientation::default().rotate(), || true).is_err());
+            let calls = std::cell::Cell::new(0);
+            assert!(oriented_source(&original, BaseOrientation::default().rotate(), || {
+                calls.set(calls.get() + 1); calls.get() > 1
+            }).is_err());
+        }
+        let mut edits = RectEdits::default();
+        edits.checkpoint();
+        edits.orientation = edits.orientation.rotate();
+        edits.undo();
+        assert_eq!(edits.orientation, BaseOrientation::default());
+        edits.redo();
+        assert_eq!(edits.orientation.turns, 1);
+        edits.reset();
+        assert_eq!(edits.orientation, BaseOrientation::default());
+    }
+
+    #[gpui::test]
+    fn base_orientation_ui_round_trips_and_keeps_annotations_in_source_coordinates(cx: &mut gpui::TestAppContext) {
+        use crate::window::OpenKitWindow as _;
+        use gpui::test::TestWindowExt as _;
+        let original = orientation_fixture(3, 2);
+        let handle = cx.update(|cx| cx.open_kit_window(gpui::WindowOptions::default(), |window, cx| {
+            let owner = cx.new(|cx| CaptureWorkspace::isolated_ui(window, cx));
+            cx.new(|cx| RedactionEditor::new(original.clone(), crate::render_frame(&original), owner.downgrade(), false, window, cx))
+        }).unwrap());
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.render_frame(cx);
+            window.click("rotate-image", cx);
+        }).unwrap();
+        cx.run_until_parked();
+        handle.update(cx, |this, _, _| {
+            assert_eq!((this.source.width, this.source.height), (2, 3));
+            assert!(!this.orientation_loading && this.orientation_error.is_none());
+            assert_eq!(&*this.source.pixels, &image::imageops::rotate90(&*original.pixels));
+        }).unwrap();
+        for (id, dimensions) in [("redaction-undo", (3, 2)), ("redaction-redo", (2, 3))] {
+            cx.update_window(handle.into(), |_, window, cx| { window.render_frame(cx); window.click(id, cx); }).unwrap();
+            cx.run_until_parked();
+            handle.update(cx, |this, _, _| assert_eq!((this.source.width, this.source.height), dimensions)).unwrap();
+        }
+        let mut expected = image::imageops::rotate90(&*original.pixels);
+        for (id, vertical) in [("flip-image-horizontal", false), ("flip-image-vertical", true)] {
+            expected = if vertical { image::imageops::flip_vertical(&expected) } else { image::imageops::flip_horizontal(&expected) };
+            cx.update_window(handle.into(), |_, window, cx| { window.render_frame(cx); window.click(id, cx); }).unwrap();
+            cx.run_until_parked();
+            handle.update(cx, |this, _, _| assert_eq!(&*this.source.pixels, &expected)).unwrap();
+        }
+        handle.update(cx, |this, _, _| { this.edits.add(PixelRegion { x: 0, y: 0, width: 1, height: 1 }); }).unwrap();
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.render_frame(cx);
+            assert_eq!(window.find("rotate-image").disabled(), Some(true));
+        }).unwrap();
+        handle.update(cx, |this, _, _| {
+            let result = app_core::render_ordered_snapshot(&this.source, &this.edits.regions, None, &[], &[], None, &[]).unwrap();
+            assert_eq!(result.pixels.dimensions(), (2, 3));
+            assert_eq!(result.pixels.get_pixel(0, 0).0, [0, 0, 0, 255]);
+            assert_eq!(result.pixels.get_pixel(1, 2), this.source.pixels.get_pixel(1, 2));
+        }).unwrap();
+        cx.update_window(handle.into(), |_, window, cx| { window.render_frame(cx); window.click("redaction-reset", cx); }).unwrap();
+        cx.run_until_parked();
+        handle.update(cx, |this, _, _| {
+            assert_eq!(&*this.source.pixels, &*original.pixels);
+            assert_eq!(this.source.pixels.dimensions(), (3, 2));
+            assert!(this.edits.past.is_empty() && this.edits.regions.is_empty());
+        }).unwrap();
+    }
+
+    #[test]
+    #[ignore = "short optimized 4K orientation comparison; synthetic pixels, no windows or clipboard"]
+    fn base_orientation_4k_cost() {
+        let original = orientation_fixture(3840, 2160);
+        let mut reference = Vec::new();
+        let mut cancellable = Vec::new();
+        for _ in 0..5 {
+            let started = std::time::Instant::now();
+            std::hint::black_box(image::imageops::rotate90(&*original.pixels));
+            reference.push(started.elapsed());
+            let started = std::time::Instant::now();
+            std::hint::black_box(oriented_source(&original, BaseOrientation::default().rotate(), || false).unwrap());
+            cancellable.push(started.elapsed());
+        }
+        reference.sort_unstable(); cancellable.sort_unstable();
+        eprintln!("4K clockwise rotation median: imageops={:?}; cancellable worker={:?}; 5 warm samples; one 33177600-byte output; excludes render preparation/presentation", reference[2], cancellable[2]);
+    }
     #[test]
     #[ignore = "short optimized endpoint metadata comparison; no windows, images or clipboard"]
     fn line_endpoint_preview_cost() {

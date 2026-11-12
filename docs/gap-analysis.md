@@ -39,6 +39,14 @@ through GPUI file-drop events. Native file-manager integration, accessibility,
 mixed DPI and resource acceptance remain open; URL/raw-image drops and Explorer
 Open With remain missing.
 
+Transform follow-up (2026-11-12): frozen and standalone editors now rotate 90
+degrees clockwise and flip horizontally/vertically before cropping or adding
+annotations. Undo/Redo/Reset retain orientation metadata and compute lossless
+inverse/relative transforms on a cancellable worker; no bitmap undo snapshots
+are retained. Exact pixels, history/UI and subsequent redaction/export are covered
+by optimized tests. Native interaction/resource acceptance remains open. Existing
+annotations cannot yet be transformed; resize/resampling is still missing.
+
 Assessment date: 2026-11-12. Local baseline: `ed53567f5112818781b55af63fc6931f12d0cd36`
 on `main`, including the GPUI Kit rewrite. Static inspection of production code,
 UI entry points, configuration and existing verification evidence; no new build,
@@ -139,7 +147,7 @@ cut-out/background editing and output actions integrated into tasks.
 | --- | --- | --- |
 | Open/Paste/Drop into editor | Partial: direct Open image / Ctrl+O and a single external file drop support PNG/JPEG/WebP; Windows Paste image / Ctrl+Shift+V supports PNG and common DIB layouts. Last capture and PNG history editing exist. Other formats/platform paste, URL/raw-image drops and Explorer Open With remain missing. See the implementation follow-ups for verification limits. | A |
 | Image formats | Partial: app workflows decode/export PNG. Add JPEG/WebP import/export with explicit format, quality and transparency behavior; other formats follow actual demand/parity scope. | A/B |
-| Resize and basic transforms | Missing output resampling, aspect-locked dimensions, rotate and flip. View zoom is implemented but does not resize the exported file. | A |
+| Resize and basic transforms | Partial: lossless 90-degree rotation and horizontal/vertical flip before crop/annotations, with metadata Undo/Redo. Transforming existing annotations, output resampling and aspect-locked dimensions remain missing. View zoom does not resize the exported file. | A |
 | Colors and typography | Partial: four drawing color swatches, discrete widths and text sizes; labels have four-line/512-byte limits. No general color/font selection, richer text/background/outline styling or reusable tool presets. | A/B |
 | Effect order | Partial: drawing annotations reorder; blur/pixelation are source-effect stages and opaque redaction is last. Arbitrary effect/drawing order is unavailable. Make restrictions clear or implement a consistent ordered document model. Keep opaque-redaction safety explicit. | A/B |
 | Advanced annotations | Missing speech balloons, inserted image/logo/clipboard objects, cursor stamps, emoji, magnify, clone/smart eraser, annotation rotation and richer arrow/shape options. | B/C |

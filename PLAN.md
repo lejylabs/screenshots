@@ -166,6 +166,43 @@ Real Explorer/Finder/Linux file-manager drag negotiation, keyboard/accessibility
 mixed DPI and reference-hardware input/resource acceptance remain open. Raw bitmap
 or URL drops, multiple editors and Explorer Open With are outside this slice.
 
+#### Current feature slice: rotate and flip before annotations
+
+Implemented (2026-11-12): both the frozen overlay editor and standalone editor
+offer Rotate 90 degrees clockwise, Flip horizontal and Flip vertical before
+cropping or adding marks. The UI explains the restriction; Undo can remove marks
+to make these actions available again. Transforming existing annotations/text is
+not implemented. All drawing/effect/crop tools remain available after transformation.
+
+Eight lossless orientations are represented by two small metadata fields in the
+existing bounded undo history. Undo/Redo/Reset compute a relative rotation/mirror
+from the current pixels; no original-image copy or full-image undo snapshots are
+retained. One operation at a time transforms pixels and prepares the render on the
+existing worker. A temporary loading view blocks editing/output until both agree,
+with Cancel still available. Transformation checks cancellation at each row;
+closed-window/canceled callbacks cannot replace an editor image. Effect previews
+are released before dispatch, and history changes wait for active effect/text jobs.
+
+The current source, current render, new source and new render are the bounded
+transition representations (at most four full-size RGBA buffers before renderer
+internals); old pixels/render are released on commit. There is no new dependency,
+thread, runtime, cache, queue or idle timer. The existing 256 MiB source admission
+and active-image budgets remain unchanged. Only original display geometry is kept
+as metadata: transformed pixels cannot seed an incorrect repeat-region rectangle;
+returning to original orientation restores that geometry. Export uses the same
+transformed source and the existing crop/redaction pipeline, with explicit output.
+
+Optimized tests cover all eight orientations and every relative transition on
+rectangular, skinny and one-pixel images, exact RGBA/alpha, cancellation, metadata
+Undo/Redo/Reset, UI buttons/history, and redaction/export after transforming.
+All regular app-ui tests pass. Five warm synthetic 4K clockwise-rotation samples
+observed median 11.52 ms for the installed imageops reference and 10.56 ms for the
+row-cancellable worker helper. This small development observation is inconclusive
+for performance differences and excludes render preparation, native presentation,
+process/GPU memory and reference-hardware acceptance. Native overlay/standalone
+interaction, mixed DPI, accessibility, cancellation soak and memory gates remain
+open. Resize/resampling and transforms of already annotated documents remain pending.
+
 #### Current feature slice: configurable Windows global hotkeys
 
 Implemented in the working tree (2026-11-12): three editable/disableable bindings
