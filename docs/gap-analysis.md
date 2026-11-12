@@ -16,7 +16,23 @@ commands. Native foreground-focus acceptance remains open; see PLAN.md.
 
 Last-region follow-up (2026-11-12): Windows can repeat one session-only selected
 region through UI/tray/configurable shortcut, with worker-side geometry checks.
-Exact numeric/preset region entry and cross-session persistence remain absent.
+Numeric-region entry and named rectangle templates are implemented in the
+follow-ups below; automatic cross-session monitor binding remains absent.
+
+Exact-region follow-up (2026-11-12): Displays & windows now accepts display-local
+physical X/Y/Width/Height and dispatches a geometry-checked exact-region request
+through existing output profiles. Successful capture becomes the session's last
+region. Inputs are temporary and bounded. Optimized metadata/parser/UI validation
+passes; native capture from the new controls, mixed DPI/topology, accessibility
+and resource acceptance remain open.
+
+Region-template follow-up (2026-11-12): up to 16 named rectangles now persist in
+settings. Sources offers Save / replace preset, Use and Remove; Use only fills
+coordinates, and capture requires explicitly selecting a display. Templates store
+no monitor identity or image pixels. Bounded parsing, legacy defaults, persistence,
+failure preservation and stale/UI behavior pass optimized checks. Native restart/
+accessibility and full resource acceptance remain open; automatic monitor binding
+and per-template hotkey/task profiles remain missing.
 
 Open-image follow-up (2026-11-12): Recent capture now opens PNG/JPEG/WebP directly into
 the shared editor through a single-file native picker or Ctrl+O (Cmd+O on macOS).
@@ -124,7 +140,7 @@ selection adjustment and configurable after-capture tasks in its capture flow.
 | User-defined global hotkeys | Partial: Windows settings now assign/disable/restore bindings for primary display, quick region, capture-and-annotate, active window and repeat-last-region. Arbitrary command assignment and per-shortcut task profiles remain missing; see the implementation follow-ups above for verification limits. | A |
 | Configurable output workflow | Partial: one saved global choice provides copy-only, save-only, save-and-copy or annotate-first for quick captures. Editor outputs stay explicit. Per-shortcut saved task profiles, after-capture chains and sharing profiles remain missing. | A |
 | Active-window/active-monitor command | Partial: a Windows foreground-window command now has a configurable shortcut and a menu/tray countdown; foreground-focus acceptance remains open. Enumerated windows/displays and cursor-based monitor targeting for Windows annotation exist. A general active-monitor command remains missing. | A |
-| Last region and exact region | Partial: Windows repeats one session-only selected region with display identity/geometry checks. Numeric/preset physical pixel dimensions/coordinates and persisted region presets remain missing. | A |
+| Last region and exact region | Partial: session-only repeat, geometry-checked numeric display-local X/Y/Width/Height and up to 16 saved named rectangles exist. Templates require explicit display choice; automatic cross-session monitor binding and per-template task/hotkey profiles remain missing. Native acceptance remains open. | A |
 | Precision selection | Partial: crop and transforms exist; no equivalent complete magnifier, window/control snapping or keyboard-driven region-selection workflow. | A |
 | Capture preferences | Missing configurable cursor inclusion, arbitrary delay, window-frame/shadow/transparency options and persistent capture defaults. Current delay is fixed to three seconds. | A/B |
 | Multiple outputs | Partial: all displays are captured separately. No stitched desktop output, cross-monitor drag selection or multiple independent regions in one capture session. | B |

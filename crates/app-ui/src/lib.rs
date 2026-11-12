@@ -149,6 +149,10 @@ pub struct CaptureWorkspace {
     hotkey_bindings: app_core::CaptureHotkeys,
     output_profile: CaptureOutputProfile,
     last_region: Option<app_core::RememberedRegion>,
+    exact_region_inputs: Option<[gpui::Entity<gpui::component::input::InputState>; 4]>,
+    exact_region_status: String,
+    region_presets: Vec<app_core::RegionPreset>,
+    region_preset_name: Option<gpui::Entity<gpui::component::input::InputState>>,
     #[cfg(target_os = "windows")]
     hotkey_inputs: Option<[gpui::Entity<gpui::component::input::InputState>; 5]>,
     history_database: Option<PathBuf>,
@@ -356,6 +360,9 @@ impl CaptureWorkspace {
             return;
         }
         self.preview_active = false;
+        self.exact_region_inputs = None;
+        self.region_preset_name = None;
+        self.exact_region_status.clear();
         #[cfg(target_os = "windows")]
         { self.hotkey_inputs = None; }
         self.hide_history(cx);
@@ -538,6 +545,10 @@ impl CaptureWorkspace {
             hotkey_bindings: app_core::CaptureHotkeys::default(),
             output_profile: CaptureOutputProfile::default(),
             last_region: None,
+            exact_region_inputs: None,
+            exact_region_status: String::new(),
+            region_presets: Vec::new(),
+            region_preset_name: None,
             #[cfg(target_os = "windows")]
             hotkey_inputs: None,
             history_database: if cfg!(test) {
@@ -625,6 +636,7 @@ impl CaptureWorkspace {
                         }
                         this.hotkey_bindings = settings.hotkeys;
                         this.output_profile = settings.output_profile;
+                        this.region_presets = settings.region_presets;
                         theme::apply(settings.theme, cx);
                         this.backend = XcapBackend::new(&settings.output_directory);
                         this.output_directory = Some(settings.output_directory);
@@ -755,6 +767,7 @@ impl CaptureWorkspace {
         let theme = theme::selected(cx);
         let hotkeys = self.hotkey_bindings.clone();
         let profile = self.output_profile;
+        let presets = self.region_presets.clone();
         let dialog = cx.prompt_for_paths(gpui::PathPromptOptions {
             files: false,
             directories: true,
@@ -781,7 +794,8 @@ impl CaptureWorkspace {
                     let settings = app_core::CaptureSettings::for_directory(path)
                         .map_err(|error| format!("{error:#}"))?.with_theme(theme)
                         .with_hotkeys(hotkeys).map_err(|error| format!("{error:#}"))?
-                        .with_output_profile(profile);
+                        .with_output_profile(profile).with_region_presets(presets)
+                        .map_err(|error| format!("{error:#}"))?;
                     settings.save().map_err(|error| format!("{error:#}"))?;
                     Ok::<_, String>(settings.output_directory)
                 })
@@ -820,6 +834,7 @@ impl CaptureWorkspace {
         let previous = theme::selected(cx);
         let hotkeys = self.hotkey_bindings.clone();
         let profile = self.output_profile;
+        let presets = self.region_presets.clone();
         theme::apply(selected, cx);
         self.settings_saving = true;
         self.settings_status = "Saving appearance…".into();
@@ -827,7 +842,7 @@ impl CaptureWorkspace {
             let result = cx.background_spawn(async move {
                 // The default capture folder may not exist before the first screenshot.
                 std::fs::create_dir_all(&directory)?;
-                app_core::CaptureSettings::for_directory(directory)?.with_theme(selected).with_hotkeys(hotkeys)?.with_output_profile(profile).save()
+                app_core::CaptureSettings::for_directory(directory)?.with_theme(selected).with_hotkeys(hotkeys)?.with_output_profile(profile).with_region_presets(presets)?.save()
             }).await;
             this.update(cx, |this, cx| {
                 this.settings_saving = false;
@@ -853,13 +868,14 @@ impl CaptureWorkspace {
         let Some(directory) = self.output_directory.clone() else { return; };
         let appearance = theme::selected(cx);
         let hotkeys = self.hotkey_bindings.clone();
+        let presets = self.region_presets.clone();
         self.settings_saving = true;
         self.settings_status = "Saving capture output…".into();
         cx.spawn(async move |this, cx| {
             let result = cx.background_spawn(async move {
                 std::fs::create_dir_all(&directory)?;
                 app_core::CaptureSettings::for_directory(directory)?.with_theme(appearance)
-                    .with_hotkeys(hotkeys)?.with_output_profile(selected).save()
+                    .with_hotkeys(hotkeys)?.with_output_profile(selected).with_region_presets(presets)?.save()
             }).await;
             this.update(cx, |this, cx| {
                 this.settings_saving = false;
@@ -884,6 +900,9 @@ impl CaptureWorkspace {
         self.hide_history(cx);
         self.hide_upload_history();
         self.page = page;
+        self.exact_region_inputs = None;
+        self.region_preset_name = None;
+        self.exact_region_status.clear();
         #[cfg(target_os = "windows")]
         { self.hotkey_inputs = None; }
         if page == ControlPage::History {
@@ -926,11 +945,12 @@ impl CaptureWorkspace {
         self.settings_saving = true;
         self.settings_status = "Saving shortcuts…".into();
         let saved_bindings = bindings.clone();
+        let presets = self.region_presets.clone();
         cx.spawn(async move |this, cx| {
             let result = cx.background_spawn(async move {
                 std::fs::create_dir_all(&directory)?;
                 app_core::CaptureSettings::for_directory(directory)?
-                    .with_theme(appearance).with_hotkeys(saved_bindings)?.with_output_profile(profile).save()
+                    .with_theme(appearance).with_hotkeys(saved_bindings)?.with_output_profile(profile).with_region_presets(presets)?.save()
             }).await;
             this.update(cx, |this, cx| {
                 this.settings_saving = false;
@@ -1622,6 +1642,88 @@ impl CaptureWorkspace {
             }],
             cx,
         );
+    }
+
+    fn capture_exact_region(&mut self, display: DisplayInfo, cx: &mut Context<Self>) {
+        if self.page != ControlPage::Sources || self.image_input_busy() || self.refreshing
+            || !self.backend.capabilities().capture_region { return; }
+        let Some(inputs) = &self.exact_region_inputs else { return; };
+        let values = std::array::from_fn(|index| inputs[index].read(cx).value().to_string());
+        match workspace::exact_region_request(&display, &values) {
+            Ok(region) => {
+                self.exact_region_status.clear();
+                self.show_page(ControlPage::Captures, cx);
+                self.start_capture(vec![CaptureJob::ExactRegion(region)], cx);
+            }
+            Err(error) => { self.exact_region_status = error; cx.notify(); }
+        }
+    }
+
+    fn save_region_preset(&mut self, display: DisplayInfo, cx: &mut Context<Self>) {
+        if self.page != ControlPage::Sources || self.image_input_busy() || self.refreshing { return; }
+        let (Some(inputs), Some(name)) = (&self.exact_region_inputs, &self.region_preset_name) else { return; };
+        let values = std::array::from_fn(|index| inputs[index].read(cx).value().to_string());
+        let result = workspace::exact_region_request(&display, &values)
+            .and_then(|region| app_core::RegionPreset::new(&name.read(cx).value(), region.area()).map_err(|e| e.to_string()));
+        match result {
+            Ok(preset) => {
+                let mut presets = self.region_presets.clone();
+                if let Some(previous) = presets.iter_mut().find(|old| old.name == preset.name) { *previous = preset; }
+                else { presets.push(preset); }
+                self.persist_region_presets(presets, cx);
+            }
+            Err(error) => { self.exact_region_status = error; cx.notify(); }
+        }
+    }
+
+    fn use_region_preset(&mut self, preset: &app_core::RegionPreset, window: &mut Window, cx: &mut Context<Self>) {
+        if self.page != ControlPage::Sources || self.image_input_busy() || !self.region_presets.contains(preset) { return; }
+        let Some(inputs) = &self.exact_region_inputs else { return; };
+        for (input, value) in inputs.iter().zip([preset.x, preset.y, preset.width, preset.height]) {
+            input.update(cx, |input, cx| input.set_value(value.to_string(), window, cx));
+        }
+        if let Some(name) = &self.region_preset_name {
+            name.update(cx, |input, cx| input.set_value(preset.name.clone(), window, cx));
+        }
+        self.exact_region_status = "Preset loaded. Choose a display and capture explicitly.".into();
+        cx.notify();
+    }
+
+    fn remove_region_preset(&mut self, preset: &app_core::RegionPreset, cx: &mut Context<Self>) {
+        if self.page != ControlPage::Sources || self.image_input_busy() { return; }
+        let Some(index) = self.region_presets.iter().position(|current| current == preset) else { return; };
+        let mut presets = self.region_presets.clone();
+        presets.remove(index);
+        self.persist_region_presets(presets, cx);
+    }
+
+    fn persist_region_presets(&mut self, presets: Vec<app_core::RegionPreset>, cx: &mut Context<Self>) {
+        let Some(directory) = self.output_directory.clone() else { return; };
+        let appearance = theme::selected(cx);
+        let hotkeys = self.hotkey_bindings.clone();
+        let profile = self.output_profile;
+        self.settings_saving = true;
+        self.exact_region_status = "Saving region presets…".into();
+        cx.spawn(async move |this, cx| {
+            let result = cx.background_spawn(async move {
+                let settings = app_core::CaptureSettings::for_directory(directory)?.with_theme(appearance)
+                    .with_hotkeys(hotkeys)?.with_output_profile(profile).with_region_presets(presets)?;
+                std::fs::create_dir_all(&settings.output_directory)?;
+                settings.save()?;
+                Ok::<_, anyhow::Error>(settings.region_presets)
+            }).await;
+            this.update(cx, |this, cx| {
+                this.settings_saving = false;
+                match result {
+                    Ok(presets) => { this.region_presets = presets; this.exact_region_status = "Region presets saved.".into(); }
+                    Err(error) => this.exact_region_status = format!("Region presets unchanged: {error:#}"),
+                }
+                this.settings_status = this.exact_region_status.clone();
+                this.finish_quit_if_idle(cx);
+                cx.notify();
+            }).ok();
+        }).detach();
+        cx.notify();
     }
 
     fn replace_last_render(&mut self, render: Arc<gpui::RenderImage>, cx: &mut Context<Self>) {
@@ -3281,6 +3383,9 @@ impl CaptureWorkspace {
         }
         let profile = self.output_profile;
         let repeating_region = jobs.iter().any(|job| matches!(job, CaptureJob::RepeatRegion(_)));
+        let exact_region = jobs.iter().find_map(|job| match job {
+            CaptureJob::ExactRegion(region) => Some(region.clone()), _ => None,
+        });
         if !preview && profile.requires_single_image() && jobs.len() != 1 {
             self.capture_status = "Choose one display or window for Copy only or Annotate first.".into();
             cx.notify();
@@ -3436,6 +3541,7 @@ impl CaptureWorkspace {
                             cx.notify();
                             return;
                         };
+                        if let Some(region) = exact_region { this.set_last_region(Some(region)); }
                         this.capture_status = format!(
                             "{}×{}  {} ms  {}",
                             shot.width,

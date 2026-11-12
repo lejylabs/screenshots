@@ -63,6 +63,19 @@ closing that window, or Quit cancels the countdown. A missing, minimized, closed
 or changed-process target fails without falling back to the desktop. Foreground
 focus/hotkey interaction and DPI acceptance remain separate manual checks.
 
+**Exact region:** open **Displays & windows**, enter X, Y, Width and Height in
+physical pixels, then choose **Exact region** for the desired display. Coordinates
+start at that display's top-left corner, regardless of its desktop position or DPI.
+The rectangle must fit entirely inside the display. The worker rejects changed
+display geometry rather than capturing another area. The current output profile
+applies; successful capture becomes the session's last reusable region on Windows.
+To keep a rectangle, enter a **Preset name** and choose **Save / replace preset**
+for a display where it fits. Up to 16 templates are saved across restarts; saving
+the same name replaces it. **Use** fills the fields without capturing, then you
+choose the target display explicitly. **Remove** deletes only the template.
+Templates contain the name and rectangle, with no monitor identity or image data.
+The input fields themselves are temporary.
+
 **Repeat last region** is available on Windows in Recent capture, the Capture menu
 and the tray after selecting a reusable region. Its optional shortcut starts
 disabled. The app remembers one monitor-local pixel rectangle for the current app

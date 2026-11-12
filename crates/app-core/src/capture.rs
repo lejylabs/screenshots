@@ -49,6 +49,7 @@ pub enum CaptureRequest {
         process_id: u32,
     },
     RepeatRegion(RememberedRegion),
+    ExactRegion(RememberedRegion),
     Region {
         display_id: String,
         x: i32,
@@ -131,6 +132,17 @@ pub struct RememberedRegion {
 }
 
 impl RememberedRegion {
+    pub fn from_display(display: &DisplayInfo, area: crate::PixelRegion) -> Result<Self, CaptureError> {
+        if display.id.is_empty() || display.id.len() > 64 { return Err(CaptureError::StaleRegion); }
+        validate_image_size(display.width, display.height)?;
+        let geometry = DisplayGeometry {
+            x: display.x, y: display.y, width: display.width, height: display.height,
+            scale_factor: display.scale_factor, rotation: display.rotation,
+        };
+        let region = Self { display_id: display.id.clone(), geometry, area };
+        region.validate_geometry(geometry)?;
+        Ok(region)
+    }
     pub fn from_snapshot(
         source: &CapturedImage,
         area: crate::PixelRegion,
@@ -354,7 +366,7 @@ impl XcapBackend {
             CaptureRequest::Display(id) => {
                 Ok(PreparedCapture::Display(self.find_monitor(&id)?, id))
             }
-            CaptureRequest::RepeatRegion(remembered) => {
+            CaptureRequest::RepeatRegion(remembered) | CaptureRequest::ExactRegion(remembered) => {
                 let monitor = self.find_monitor(&remembered.display_id)?;
                 remembered.validate_geometry(monitor_geometry(&monitor)?)?;
                 let area = remembered.area;
@@ -601,6 +613,33 @@ pub fn capture_output_dir() -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn exact_region_metadata_checks_display_geometry_and_bounds_without_pixels() {
+        let display = DisplayInfo { id: "fixture".into(), name: "Fixture".into(), x: -1920, y: -100,
+            width: 1920, height: 1080, scale_factor: 1.5, rotation: 0., is_primary: false };
+        let area = crate::PixelRegion { x: 1919, y: 1079, width: 1, height: 1 };
+        let region = RememberedRegion::from_display(&display, area).unwrap();
+        assert_eq!(region.area(), area);
+        assert_eq!(region.geometry.x, -1920);
+        region.validate_geometry(region.geometry).unwrap();
+        for geometry in [DisplayGeometry { x: 0, ..region.geometry },
+            DisplayGeometry { scale_factor: 2., ..region.geometry },
+            DisplayGeometry { rotation: 90., ..region.geometry },
+            DisplayGeometry { width: 1080, ..region.geometry }] {
+            assert!(matches!(region.validate_geometry(geometry), Err(CaptureError::StaleRegion)));
+        }
+        for area in [crate::PixelRegion { width: 0, ..area }, crate::PixelRegion { height: 0, ..area },
+            crate::PixelRegion { width: 2, ..area }, crate::PixelRegion { height: 2, ..area },
+            crate::PixelRegion { x: u32::MAX, ..area }] {
+            assert!(RememberedRegion::from_display(&display, area).is_err());
+        }
+        for display in [DisplayInfo { id: String::new(), ..display.clone() },
+            DisplayInfo { scale_factor: f32::NAN, ..display.clone() },
+            DisplayInfo { width: u32::MAX, ..display }] {
+            assert!(RememberedRegion::from_display(&display, area).is_err());
+        }
+    }
     use image::Rgba;
 
     #[test]
@@ -804,6 +843,14 @@ mod tests {
             backend.capture_batch(vec![CaptureRequest::RepeatRegion(remembered.clone())])?;
         let repeat_elapsed = repeat_started.elapsed();
         assert_eq!(baseline[0].pixels, repeated[0].pixels);
+        let exact_region = RememberedRegion::from_display(&DisplayInfo {
+            id: repeated[0].display_id.clone(), name: "Explicit fixture".into(),
+            x: geometry.x, y: geometry.y, width: geometry.width, height: geometry.height,
+            scale_factor: geometry.scale_factor, rotation: geometry.rotation, is_primary: false,
+        }, area)?;
+        let exact = backend.capture_batch(vec![CaptureRequest::ExactRegion(exact_region)])?;
+        assert_eq!(baseline[0].pixels, exact[0].pixels);
+        assert!(!exact[0].png_path.exists());
         assert_eq!(repeated[0].pixels.dimensions(), (2, 2));
         assert!(repeated[0].display_geometry.is_none());
         assert!(!baseline[0].png_path.exists() && !repeated[0].png_path.exists());

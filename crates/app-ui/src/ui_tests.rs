@@ -71,6 +71,97 @@ fn open_workspace(cx: &mut TestAppContext) -> WindowHandle<CaptureWorkspace> {
     })
 }
 
+fn exact_display() -> DisplayInfo {
+    DisplayInfo { id: "exact-fixture".into(), name: "Fixture display".into(), x: -320, y: 0,
+        width: 320, height: 200, scale_factor: 1.5, rotation: 0., is_primary: true }
+}
+
+#[test]
+fn exact_region_parser_rejects_unbounded_noninteger_and_outside_values() {
+    let values = |items: [&str; 4]| items.map(String::from);
+    let display = exact_display();
+    assert_eq!(workspace::exact_region_request(&display, &values(["10", "20", "30", "40"])).unwrap().area(),
+        app_core::PixelRegion { x: 10, y: 20, width: 30, height: 40 });
+    for invalid in ["", "-1", "+1", "1.5", " 1", "١", "4294967296", "00000000000"] {
+        assert!(workspace::exact_region_request(&display, &values([invalid, "0", "1", "1"])).is_err());
+    }
+    for items in [["0", "0", "0", "1"], ["0", "0", "1", "0"],
+        ["319", "0", "2", "1"], ["0", "199", "1", "2"], ["4294967295", "0", "1", "1"]] {
+        assert!(workspace::exact_region_request(&display, &values(items)).is_err());
+    }
+}
+
+#[gpui::test]
+fn exact_region_fields_are_named_validate_and_release_with_the_page(cx: &mut TestAppContext) {
+    let handle = open_workspace(cx);
+    handle.update(cx, |this, _, _| {
+        this.output_directory = Some(std::env::temp_dir());
+        this.xcap_displays = vec![exact_display()];
+    }).unwrap();
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.press(&shortcut("3"), cx);
+        window.render_frame(cx);
+        let _ = window.find_by_label("Region width");
+        window.click("exact-region-exact-fixture", cx);
+    }).unwrap();
+    cx.run_until_parked();
+    handle.update(cx, |this, _, _| {
+        assert!(this.exact_region_status.starts_with("The region must"));
+        assert!(this.exact_region_inputs.is_some());
+        assert!(!this.capturing && this.last_capture.is_none() && this.last_saved.is_none());
+    }).unwrap();
+    cx.update_window(handle.into(), |_, window, cx| window.press(&shortcut("1"), cx)).unwrap();
+    handle.update(cx, |this, _, cx| {
+        assert!(this.exact_region_inputs.is_none());
+        assert!(this.exact_region_status.is_empty());
+        this.capture_exact_region(exact_display(), cx);
+        assert!(!this.capturing);
+    }).unwrap();
+}
+
+#[gpui::test]
+fn region_presets_load_without_capture_reject_stale_actions_and_preserve_failed_saves(cx: &mut TestAppContext) {
+    use gpui::test::TestEventExt as _;
+    let handle = open_workspace(cx);
+    let blocker = std::env::temp_dir().join(format!("screenshots-preset-blocker-{}", std::process::id()));
+    std::fs::write(&blocker, b"not a folder").unwrap();
+    let preset = app_core::RegionPreset::new("Small", app_core::PixelRegion { x: 10, y: 20, width: 30, height: 40 }).unwrap();
+    handle.update(cx, |this, _, _| {
+        this.output_directory = Some(blocker.clone());
+        this.xcap_displays = vec![exact_display()];
+        this.region_presets = vec![preset.clone()];
+    }).unwrap();
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.press(&shortcut("3"), cx);
+        window.render_frame(cx);
+        let bounds = window.find_by_label("Use region preset Small").bounds();
+        window.pointer_down(bounds.center(), gpui::MouseButton::Left, cx);
+        window.pointer_up(bounds.center(), gpui::MouseButton::Left, cx);
+    }).unwrap();
+    handle.update(cx, |this, window, cx| {
+        let values: Vec<_> = this.exact_region_inputs.as_ref().unwrap().iter().map(|input| input.read(cx).value().to_string()).collect();
+        assert_eq!(values, ["10", "20", "30", "40"]);
+        assert_eq!(this.region_preset_name.as_ref().unwrap().read(cx).value().as_ref(), "Small");
+        assert!(!this.capturing && this.last_capture.is_none());
+        this.region_presets[0].x = 11;
+        this.use_region_preset(&preset, window, cx);
+        this.remove_region_preset(&preset, cx);
+        assert_eq!(this.region_presets[0].x, 11);
+        assert!(!this.settings_saving);
+        this.save_region_preset(exact_display(), cx);
+    }).unwrap();
+    cx.run_until_parked();
+    handle.update(cx, |this, _, _| {
+        assert!(!this.settings_saving);
+        assert_eq!(this.region_presets[0].x, 11);
+        assert!(this.exact_region_status.starts_with("Region presets unchanged:"));
+        assert!(!this.capturing && this.last_saved.is_none());
+    }).unwrap();
+    cx.update_window(handle.into(), |_, window, cx| window.press(&shortcut("1"), cx)).unwrap();
+    handle.update(cx, |this, _, _| assert!(this.region_preset_name.is_none() && this.exact_region_inputs.is_none())).unwrap();
+    std::fs::remove_file(blocker).unwrap();
+}
+
 #[gpui::test]
 fn open_image_cancel_and_invalid_input_release_admission(cx: &mut TestAppContext) {
     let handle = open_workspace(cx);

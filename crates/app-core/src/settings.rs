@@ -127,6 +127,44 @@ pub struct CaptureSettings {
     pub hotkeys: CaptureHotkeys,
     #[serde(default)]
     pub output_profile: CaptureOutputProfile,
+    #[serde(default)]
+    pub region_presets: Vec<RegionPreset>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RegionPreset {
+    pub name: String,
+    pub x: u32,
+    pub y: u32,
+    pub width: u32,
+    pub height: u32,
+}
+
+impl RegionPreset {
+    pub fn new(name: &str, area: crate::PixelRegion) -> Result<Self> {
+        let preset = Self { name: name.trim().into(), x: area.x, y: area.y, width: area.width, height: area.height };
+        preset.validate()?;
+        Ok(preset)
+    }
+    pub fn area(&self) -> crate::PixelRegion {
+        crate::PixelRegion { x: self.x, y: self.y, width: self.width, height: self.height }
+    }
+    fn validate(&self) -> Result<()> {
+        ensure!(!self.name.is_empty() && self.name.len() <= 64 && self.name.trim() == self.name
+            && !self.name.chars().any(char::is_control), "Use a preset name of 1–64 bytes without control characters");
+        crate::validate_image_size(self.width, self.height)?;
+        ensure!(self.x.checked_add(self.width).is_some() && self.y.checked_add(self.height).is_some(), "Preset coordinates overflow");
+        Ok(())
+    }
+}
+
+fn validate_region_presets(presets: &[RegionPreset]) -> Result<()> {
+    ensure!(presets.len() <= 16, "At most 16 region presets can be saved");
+    for (index, preset) in presets.iter().enumerate() {
+        preset.validate()?;
+        ensure!(!presets[..index].iter().any(|other| other.name == preset.name), "Preset names must be unique");
+    }
+    Ok(())
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -182,6 +220,7 @@ impl CaptureSettings {
             theme: UiTheme::default(),
             hotkeys: CaptureHotkeys::default(),
             output_profile: CaptureOutputProfile::default(),
+            region_presets: Vec::new(),
         })
     }
 
@@ -198,6 +237,12 @@ impl CaptureSettings {
     pub fn with_output_profile(mut self, profile: CaptureOutputProfile) -> Self {
         self.output_profile = profile;
         self
+    }
+
+    pub fn with_region_presets(mut self, presets: Vec<RegionPreset>) -> Result<Self> {
+        validate_region_presets(&presets)?;
+        self.region_presets = presets;
+        Ok(self)
     }
 
     pub(crate) fn config_path() -> Result<PathBuf> {
@@ -232,7 +277,8 @@ impl CaptureSettings {
         Ok(Self::for_directory(settings.output_directory)?
             .with_theme(settings.theme)
             .with_hotkeys(settings.hotkeys)?
-            .with_output_profile(settings.output_profile))
+            .with_output_profile(settings.output_profile)
+            .with_region_presets(settings.region_presets)?)
     }
 
     pub fn save(&self) -> Result<()> {
@@ -241,6 +287,7 @@ impl CaptureSettings {
 
     fn save_at(&self, path: &Path) -> Result<()> {
         self.hotkeys.validated()?;
+        validate_region_presets(&self.region_presets)?;
         ensure!(self.output_directory.is_absolute(), "Invalid save folder");
         ensure!(
             self.output_directory.is_dir(),
@@ -270,6 +317,54 @@ impl CaptureSettings {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn region_presets_round_trip_validate_and_keep_other_settings() -> Result<()> {
+        let root = std::env::temp_dir().join(format!("screenshots-preset-settings-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&root)?;
+        let config = root.join("settings.json");
+        let preset = RegionPreset::new(" Small ", crate::PixelRegion { x: 10, y: 20, width: 30, height: 40 })?;
+        assert_eq!(preset.name, "Small");
+        CaptureSettings::for_directory(root.clone())?.with_output_profile(CaptureOutputProfile::CopyOnly)
+            .with_region_presets(vec![preset.clone()])?.save_at(&config)?;
+        let loaded = CaptureSettings::load_at(&config, root.clone())?;
+        assert_eq!(loaded.region_presets, [preset.clone()]);
+        assert_eq!(loaded.output_profile, CaptureOutputProfile::CopyOnly);
+        let presets = loaded.region_presets.clone();
+        loaded.with_theme(UiTheme::Oldschool).with_output_profile(CaptureOutputProfile::SaveOnly)
+            .save_at(&config)?;
+        let loaded = CaptureSettings::load_at(&config, root.clone())?;
+        assert_eq!(loaded.region_presets, presets);
+        assert_eq!(loaded.theme, UiTheme::Oldschool);
+        let before = fs::read(&config)?;
+        let mut invalid = CaptureSettings::load_at(&config, root.clone())?;
+        invalid.region_presets = vec![preset.clone(); 2];
+        assert!(invalid.save_at(&config).is_err());
+        assert_eq!(fs::read(&config)?, before);
+        for name in ["", "\n", "bad\nname", &"x".repeat(65)] {
+            assert!(RegionPreset::new(name, preset.area()).is_err());
+        }
+        for area in [crate::PixelRegion { width: 0, ..preset.area() },
+            crate::PixelRegion { x: u32::MAX, ..preset.area() },
+            crate::PixelRegion { width: u32::MAX, height: u32::MAX, ..preset.area() }] {
+            assert!(RegionPreset::new("Invalid", area).is_err());
+        }
+        let presets: Vec<_> = (0..16).map(|index| RegionPreset::new(&format!("Region {index}"), preset.area()).unwrap()).collect();
+        let mut settings = CaptureSettings::for_directory(root.clone())?.with_region_presets(presets)?;
+        settings.save_at(&config)?;
+        settings.region_presets.push(preset);
+        assert!(settings.save_at(&config).is_err());
+        let mut legacy: serde_json::Value = serde_json::from_slice(&before)?;
+        legacy["region_presets"][0]["width"] = 0.into();
+        fs::write(&config, serde_json::to_vec(&legacy)?)?;
+        assert!(CaptureSettings::load_at(&config, root.clone()).is_err());
+        legacy.as_object_mut().unwrap().remove("region_presets");
+        fs::write(&config, serde_json::to_vec(&legacy)?)?;
+        assert!(CaptureSettings::load_at(&config, root.clone())?.region_presets.is_empty());
+        fs::remove_file(config)?;
+        fs::remove_dir(root)?;
+        Ok(())
+    }
     #[test]
     fn legacy_hotkeys_keep_bindings_and_active_window_starts_disabled() -> Result<()> {
         let legacy: CaptureHotkeys = serde_json::from_str(r#"["Alt+Q","","Ctrl+F9"]"#)?;

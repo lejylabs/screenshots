@@ -45,7 +45,7 @@ pub use selection::{
     render_filtered_snapshot, render_ordered_snapshot, render_pixelated_snapshot,
     render_text_snapshot,
 };
-pub use settings::{CaptureHotkeys, CaptureOutputProfile, CaptureSettings, UiTheme};
+pub use settings::{CaptureHotkeys, CaptureOutputProfile, CaptureSettings, RegionPreset, UiTheme};
 pub use upload::{
     UploadCancellation, UploadDestination, UploadProgress, UploadProgressReceiver,
     UploadProgressReporter, upload_png, upload_png_with_progress, upload_progress_channel,

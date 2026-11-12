@@ -203,6 +203,74 @@ process/GPU memory and reference-hardware acceptance. Native overlay/standalone
 interaction, mixed DPI, accessibility, cancellation soak and memory gates remain
 open. Resize/resampling and transforms of already annotated documents remain pending.
 
+#### Current feature slice: exact numeric capture regions
+
+Implemented (2026-11-12): Displays & windows offers four bounded Kit inputs for
+X, Y, Width and Height, and an Exact region button per display where the backend
+advertises region capture. Values are whole physical pixels relative to that
+display's top-left, independent of negative desktop origins and logical DPI.
+Validation rejects empty/non-ASCII/noninteger/overflowing values, zero dimensions,
+out-of-display rectangles and the existing image admission limit before dispatch.
+
+The request snapshots display identity and geometry without retaining pixels.
+The existing repeat-region worker resolves the monitor and checks position,
+resolution, scale and rotation before capture and rechecks geometry before
+publication. ExactRegion is a separate request variant so a failed numeric capture
+does not invalidate an unrelated previously remembered area. Successful capture
+updates the session's last region; Windows can repeat it through the existing
+command. Output profiles, in-memory pixels, cancellation and truthful output status
+reuse the existing single-job pipeline. Named presets are implemented in the
+follow-up below; changing pages or closing the UI releases the four inputs and status.
+
+Resource cost: four page-local inputs holding at most ten ASCII digits each and
+one bounded ID/geometry/rectangle request. There is no new thread, dependency,
+runtime, image buffer, cache, timer, polling or queue. Validation/callbacks inspect
+only bounded metadata; enumeration and capture remain on the existing worker.
+The capture/geometry algorithm is shared with Repeat last region; no new native
+latency or process/GPU memory measurements are claimed for this entry point.
+
+Optimized core/UI tests cover negative display origins, scale/rotation/topology
+rejection, coordinate overflow and rectangle bounds, strict parsing, accessible
+input labels, invalid capture without output and field release/stale callbacks
+after page exit. The explicit external-window fixture now also compares exact
+2x2 capture against direct/repeated capture; it was not run for this slice.
+Interactive capture and output profiles from these fields, mixed DPI/hotplug,
+keyboard/IME/accessibility and full native/resource acceptance remain open.
+
+#### Current feature slice: saved named region templates
+
+Implemented (2026-11-12): Displays & windows offers a bounded Preset name field
+and Save / replace preset per display. Up to 16 named rectangles persist in the
+existing settings file. Names are trimmed, case-sensitive, unique and at most
+64 UTF-8 bytes without control characters; same-name saves replace the rectangle.
+Use restores the four inputs and name without capturing; the user explicitly
+chooses the destination display. Remove deletes only the template. No monitor ID,
+display name, frame, texture or credential is stored in a preset.
+
+Saving first validates the rectangle against the selected display. Later capture
+validates it against the newly selected display and snapshots/rechecks current
+geometry through Exact region. Settings parsing validates list length, names,
+rectangle bounds/overflow and the existing image budget under the existing 64 KiB
+config-file limit. Older files default to an empty list. Folder/theme/hotkey/output
+profile saves preserve presets, and preset saves preserve those settings.
+Single-admission worker-side atomic persistence commits the active list only after
+success; failed writes retain the previous list. Value/page guards reject stale
+Use/Remove callbacks, and Quit follows the existing settings-job lifecycle.
+
+Resource cost: at most 16 small name/rectangle records in resident settings, one
+page-local 64-byte name input and at most 16 bounded template rows. The name input
+is released with the coordinate fields on page exit/UI close. No dependencies,
+threads, runtimes, timers, watchers, images or new queues are added. Explicit saves
+reuse the existing filesystem worker; no native capture or image path changes.
+No new process/GPU/latency measurements are claimed for this metadata-only slice.
+
+Optimized settings/UI fixtures cover persistence/reload, legacy defaults, list/name/
+rectangle limits, malformed stored input, failed-save file/list preservation,
+explicit no-capture Use, stale callbacks and input release. Native keyboard/IME/
+accessibility, packaged restart workflow, disk-full/recovery and full platform/
+resource gates remain open. Automatic monitor binding and per-preset hotkeys or
+output chains remain outside this slice.
+
 #### Current feature slice: configurable Windows global hotkeys
 
 Implemented in the working tree (2026-11-12): three editable/disableable bindings

@@ -14,8 +14,35 @@ pub(super) fn valid_search(value: &str) -> bool {
     value.len() <= 512 && !value.chars().any(char::is_control)
 }
 
+pub(super) fn exact_region_request(display: &DisplayInfo, values: &[String; 4]) -> Result<app_core::RememberedRegion, String> {
+    let mut numbers = [0; 4];
+    for (value, number) in values.iter().zip(&mut numbers) {
+        if value.is_empty() || value.len() > 10 || !value.bytes().all(|byte| byte.is_ascii_digit()) {
+            return Err("Enter X, Y, width and height as whole physical pixel values.".into());
+        }
+        *number = value.parse::<u32>().map_err(|_| "A pixel value is too large.".to_string())?;
+    }
+    let area = app_core::PixelRegion { x: numbers[0], y: numbers[1], width: numbers[2], height: numbers[3] };
+    app_core::RememberedRegion::from_display(display, area)
+        .map_err(|error| match error {
+            app_core::CaptureError::MemoryLimit => "The display or region exceeds the 256 MiB image limit.".into(),
+            app_core::CaptureError::StaleRegion | app_core::CaptureError::EmptyFrame => "Display geometry is unavailable. Refresh displays.".into(),
+            _ => "The region must have a positive size and fit inside this display. Refresh displays if their geometry changed.".into(),
+        })
+}
+
 impl Render for CaptureWorkspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if self.page == ControlPage::Sources && self.backend.capabilities().capture_region && self.exact_region_inputs.is_none() {
+            self.exact_region_inputs = Some(std::array::from_fn(|index| cx.new(|cx|
+                gpui::component::input::InputState::new(window, cx)
+                    .default_value(["0", "0", "400", "300"][index])
+                    .validate(|value, _| value.len() <= 10 && value.bytes().all(|byte| byte.is_ascii_digit())))));
+            self.region_preset_name = Some(cx.new(|cx| gpui::component::input::InputState::new(window, cx)
+                .placeholder("Preset name")
+                .validate(|value, _| value.len() <= 64 && !value.chars().any(char::is_control))));
+        }
+        if self.page != ControlPage::Sources { self.exact_region_inputs = None; self.region_preset_name = None; }
         #[cfg(target_os = "windows")]
         if self.page == ControlPage::Settings && !self.settings_loading && self.hotkey_inputs.is_none() {
             self.hotkey_inputs = Some(std::array::from_fn(|index| {
@@ -316,16 +343,51 @@ impl Render for CaptureWorkspace {
             )
             })
             .when(self.page == ControlPage::Sources, |view| {
-                view.child(
+                view.when(self.backend.capabilities().capture_region, |view| view.child(
+                    div().flex().flex_col().gap_2()
+                        .child("Exact region")
+                        .child(div().text_sm().child("Enter physical pixels relative to the chosen display's top-left corner. Then choose Exact region beside that display."))
+                        .children(self.exact_region_inputs.iter().map(|inputs| div().flex().flex_wrap().gap_2()
+                            .children(inputs.iter().enumerate().map(|(index, input)| div().w(px(120.)).flex().flex_col().gap_1()
+                                .child(["X", "Y", "Width", "Height"][index])
+                                .child(gpui::component::input::Input::new(input).id(("exact-region-input", index))
+                                    .aria_label(["Region X", "Region Y", "Region width", "Region height"][index]).disabled(unavailable || self.refreshing))))))
+                        .children(self.region_preset_name.iter().map(|input| gpui::component::input::Input::new(input)
+                            .id("region-preset-name").aria_label("Region preset name").disabled(unavailable || self.refreshing)))
+                        .child(div().text_sm().child("Save up to 16 named rectangles. Saving the same name replaces it. Load a preset, then explicitly choose the target display."))
+                        .children(self.region_presets.iter().cloned().enumerate().map(|(index, preset)| {
+                            let remove = preset.clone();
+                            div().flex().flex_wrap().items_center().gap_2()
+                                .child(format!("{} · {}, {} · {} × {}", preset.name, preset.x, preset.y, preset.width, preset.height))
+                                .child(Button::new(("use-region-preset", index)).small().label("Use").disabled(unavailable)
+                                    .accessibility_label(format!("Use region preset {}", preset.name))
+                                    .on_click(cx.listener(move |this, _, window, cx| this.use_region_preset(&preset, window, cx))))
+                                .child(Button::new(("remove-region-preset", index)).small().label("Remove").disabled(unavailable)
+                                    .accessibility_label(format!("Remove region preset {}", remove.name))
+                                    .on_click(cx.listener(move |this, _, _, cx| this.remove_region_preset(&remove, cx))))
+                        }))
+                        .child(div().text_sm().child(self.exact_region_status.clone()))))
+                .child(
                 div().flex().flex_col().gap_2()
                     .child("Capture a display")
                     .children(displays.into_iter().map(|display| {
-                        let id = display.id;
-                        Button::new(gpui::SharedString::from(format!("display-capture-{}", id)))
+                        let id = display.id.clone();
+                        let exact_display = display.clone();
+                        div().flex().flex_wrap().gap_2().child(Button::new(gpui::SharedString::from(format!("display-capture-{}", id)))
                             .small().w_full().justify_start().icon(ui_icon(cx, "nav-sources", 16.))
                             .disabled(unavailable).label(format!("{} · {} × {}{}", display.name,
                                 display.width, display.height, if display.is_primary { " · Primary display" } else { "" }))
-                            .on_click(cx.listener(move |this, _, _, cx| this.start_capture(vec![CaptureJob::Display(id.clone())], cx)))
+                            .on_click(cx.listener(move |this, _, _, cx| this.start_capture(vec![CaptureJob::Display(id.clone())], cx))))
+                            .when(self.backend.capabilities().capture_region, |row| row.child(Button::new(
+                                gpui::SharedString::from(format!("exact-region-{}", display.id)))
+                                .small().label("Exact region").accessibility_label(format!("Capture exact region on {}", display.name))
+                                .disabled(unavailable || self.refreshing)
+                                .on_click(cx.listener(move |this, _, _, cx| this.capture_exact_region(exact_display.clone(), cx)))))
+                            .when(self.backend.capabilities().capture_region, |row| row.child(Button::new(
+                                gpui::SharedString::from(format!("save-region-preset-{}", display.id)))
+                                .small().label("Save / replace preset").disabled(unavailable || self.refreshing)
+                                .accessibility_label(format!("Save region preset for {}", display.name))
+                                .on_click(cx.listener(move |this, _, _, cx| this.save_region_preset(display.clone(), cx)))))
                     })),
             )
             .when(self.backend.capabilities().capture_window, |view| {
