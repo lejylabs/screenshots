@@ -84,16 +84,16 @@ pub struct UploadDestination {
     authentication: Option<UploadAuthentication>,
 }
 
-#[derive(Clone, Copy, Default, Deserialize, Serialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
-pub(crate) enum UploadAuthentication {
+pub enum UploadAuthentication {
     #[default]
     Bearer,
     ApiKey,
     Basic,
 }
 impl UploadAuthentication {
-    pub(crate) fn header_name(self) -> &'static str {
+    pub fn header_name(self) -> &'static str {
         match self {
             Self::Bearer | Self::Basic => "authorization",
             Self::ApiKey => "x-api-key",
@@ -131,6 +131,45 @@ impl UploadDestination {
             credential: None, authentication: None };
         destination.validate()?;
         Ok(destination)
+    }
+
+    /// Attach a credential reference without reading or writing secrets.
+    pub fn with_authentication(
+        mut self,
+        reference: String,
+        authentication: UploadAuthentication,
+    ) -> Result<Self> {
+        self.credential = Some(reference.trim().into());
+        self.authentication = Some(authentication);
+        self.validate()?;
+        Ok(self)
+    }
+
+    /// Validate, store the secret in the OS credential store, and return the updated profile.
+    /// The secret is never written to the destination JSON.
+    pub fn attach_credential(
+        self,
+        reference: String,
+        authentication: UploadAuthentication,
+        username: String,
+        secret: String,
+    ) -> Result<Self> {
+        let username = zeroize::Zeroizing::new(username);
+        let secret = zeroize::Zeroizing::new(secret);
+        let destination = self.with_authentication(reference, authentication)?;
+        let target = destination
+            .credential_target()
+            .context("Authenticated destinations require a Windows credential target")?;
+        crate::upload_credentials::save(&target, authentication, &username, &secret)?;
+        Ok(destination)
+    }
+
+    pub fn credential_reference(&self) -> Option<&str> {
+        self.credential.as_deref()
+    }
+
+    pub fn authentication(&self) -> Option<UploadAuthentication> {
+        self.authentication
     }
 
     pub fn credential_target(&self) -> Option<String> {
@@ -992,6 +1031,106 @@ mod tests {
         config.url = "http://example.invalid/upload".into();
         config.allow_http = true;
         assert!(config.validate().is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn native_credential_attachment_validates_without_storing_secrets() -> Result<()> {
+        let destination = UploadDestination::manual(
+            "https://example.invalid/upload".into(),
+            UploadMethod::Post,
+            "file".into(),
+            None,
+            false,
+        )?;
+        let attached = destination
+            .clone()
+            .with_authentication("main".into(), UploadAuthentication::ApiKey);
+        if cfg!(target_os = "windows") {
+            let attached = attached?;
+            assert_eq!(attached.credential_reference(), Some("main"));
+            assert_eq!(attached.authentication(), Some(UploadAuthentication::ApiKey));
+            assert_eq!(
+                attached.credential_target().as_deref(),
+                Some("Screenshots/upload/https://example.invalid/main")
+            );
+            let root = std::env::temp_dir().join(format!("native-cred-{}", uuid::Uuid::new_v4()));
+            std::fs::create_dir_all(&root)?;
+            let path = root.join("destination.json");
+            attached.save_at(&path)?;
+            let text = String::from_utf8(std::fs::read(&path)?)?;
+            assert!(text.contains("main"));
+            assert!(text.contains("api_key"));
+            assert!(!text.contains("secret"));
+            std::fs::remove_dir_all(root)?;
+        } else {
+            assert!(attached.is_err());
+        }
+        assert!(
+            UploadDestination::manual(
+                "http://example.invalid/upload".into(),
+                UploadMethod::Post,
+                "file".into(),
+                None,
+                true,
+            )?
+            .with_authentication("main".into(), UploadAuthentication::Bearer)
+            .is_err()
+        );
+        for secret in ["", "two words", "bad\r\ntoken"] {
+            let Err(error) = destination.clone().attach_credential(
+                "main".into(),
+                UploadAuthentication::Bearer,
+                String::new(),
+                secret.into(),
+            ) else {
+                panic!("invalid secret must be rejected");
+            };
+            let error = error.to_string();
+            if !secret.is_empty() {
+                assert!(!error.contains(secret), "{error}");
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    #[cfg(target_os = "windows")]
+    #[ignore = "creates and deletes one uniquely named synthetic Windows credential; no real secrets or networking"]
+    fn attach_credential_writes_an_os_secret_without_embedding_it() -> Result<()> {
+        use windows_sys::Win32::Security::Credentials::*;
+        let name = format!("test-{}", uuid::Uuid::new_v4());
+        let destination = UploadDestination::manual(
+            "https://example.invalid/upload".into(),
+            UploadMethod::Post,
+            "file".into(),
+            None,
+            false,
+        )?
+        .attach_credential(
+            name,
+            UploadAuthentication::Bearer,
+            String::new(),
+            "synthetic-token_123.abc==".into(),
+        )?;
+        let target = destination.credential_target().unwrap();
+        struct Cleanup(Vec<u16>);
+        impl Drop for Cleanup {
+            fn drop(&mut self) {
+                unsafe {
+                    CredDeleteW(self.0.as_ptr(), CRED_TYPE_GENERIC, 0);
+                }
+            }
+        }
+        let _cleanup = Cleanup(target.encode_utf16().chain(Some(0)).collect());
+        let text = String::from_utf8(serde_json::to_vec(&destination)?)?;
+        assert!(!text.contains("synthetic-token"));
+        assert_eq!(
+            crate::upload_credentials::read_header(&target, UploadAuthentication::Bearer)?
+                .to_str()
+                .unwrap(),
+            "Bearer synthetic-token_123.abc=="
+        );
         Ok(())
     }
 

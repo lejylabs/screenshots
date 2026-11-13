@@ -1075,6 +1075,58 @@ fn upload_setup_validates_without_network_and_discards_closed_form_results(cx: &
     }).unwrap();
 }
 
+#[cfg(target_os = "windows")]
+#[gpui::test]
+fn upload_credential_form_validates_without_writing_secrets(cx: &mut TestAppContext) {
+    let handle = open_workspace(cx);
+    handle.update(cx, |this, _, cx| {
+        this.upload_destination = Some(app_core::UploadDestination::manual("http://127.0.0.1:1/upload".into(),
+            app_core::UploadMethod::Post, "file".into(), None, true).unwrap());
+        this.show_page(ControlPage::Uploads, cx);
+    }).unwrap();
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.click("save-upload-credential", cx);
+        window.render_frame(cx);
+        assert_eq!(window.find("upload-credential-reference").value(), Some("main"));
+        assert!(window.try_find("upload-setup-url").is_none());
+    }).unwrap();
+    handle.update(cx, |this, window, cx| {
+        assert_eq!(this.upload_credential_auth, app_core::UploadAuthentication::Bearer);
+        let inputs = this.upload_credential_inputs.clone().unwrap();
+        inputs[2].update(cx, |input, cx| input.set_value("synthetic-token_123.abc==", window, cx));
+        this.save_upload_credential(cx);
+        assert!(this.upload_config_loading);
+        assert!(this.upload_destination.as_ref().unwrap().credential_reference().is_none());
+        this.save_upload_credential(cx);
+    }).unwrap();
+    cx.run_until_parked();
+    handle.update(cx, |this, _, _| {
+        assert!(!this.upload_config_loading);
+        assert!(this.upload_status.starts_with("Credential unchanged:"));
+        assert!(!this.upload_status.contains("synthetic-token"));
+        assert!(this.upload_destination.as_ref().unwrap().credential_reference().is_none());
+        this.upload_destination = Some(app_core::UploadDestination::manual("https://old.invalid/upload".into(),
+            app_core::UploadMethod::Post, "file".into(), None, false).unwrap());
+        this.upload_credential_open = true;
+        this.upload_credential_inputs = None;
+    }).unwrap();
+    cx.update_window(handle.into(), |_, window, cx| window.render_frame(cx)).unwrap();
+    handle.update(cx, |this, window, cx| {
+        this.upload_credential_inputs.as_ref().unwrap()[2].update(cx, |input, cx| input.set_value("", window, cx));
+        this.save_upload_credential(cx);
+        this.show_page(ControlPage::Sources, cx);
+        assert!(this.upload_credential_inputs.is_none() && !this.upload_credential_open);
+    }).unwrap();
+    cx.run_until_parked();
+    handle.update(cx, |this, _, _| {
+        assert!(!this.upload_config_loading);
+        assert_eq!(this.upload_destination.as_ref().unwrap().origin(), "https://old.invalid");
+        assert!(this.upload_destination.as_ref().unwrap().credential_reference().is_none());
+        assert!(this.upload_cancel.is_none() && this.upload_generation == 0);
+    }).unwrap();
+}
+
 #[gpui::test]
 fn library_copy_path_routes_menu_and_discards_stale_status(cx: &mut TestAppContext) {
     let handle = open_workspace(cx);

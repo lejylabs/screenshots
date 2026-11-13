@@ -29,6 +29,16 @@ pub(crate) fn read_header(
     anyhow::bail!("Upload credential lookup is not implemented on this platform")
 }
 
+#[cfg(not(target_os = "windows"))]
+pub(crate) fn save(
+    _: &str,
+    _: UploadAuthentication,
+    _: &str,
+    _: &str,
+) -> Result<()> {
+    anyhow::bail!("Upload credential lookup is not implemented on this platform")
+}
+
 #[cfg(target_os = "windows")]
 pub(crate) fn read_header(
     target: &str,
@@ -116,6 +126,72 @@ pub(crate) fn read_header(
         return basic_header(&username, &token);
     }
     credential_header(&token, authentication)
+}
+
+#[cfg(target_os = "windows")]
+pub(crate) fn save(
+    target: &str,
+    authentication: UploadAuthentication,
+    username: &str,
+    secret: &str,
+) -> Result<()> {
+    use windows_sys::Win32::Security::Credentials::*;
+    use zeroize::Zeroize;
+    let username = if matches!(authentication, UploadAuthentication::Basic) {
+        username.trim()
+    } else {
+        "token"
+    };
+    match authentication {
+        UploadAuthentication::Bearer => {
+            let _ = bearer_header(secret)?;
+        }
+        UploadAuthentication::ApiKey => {
+            let _ = credential_header(secret, authentication)?;
+        }
+        UploadAuthentication::Basic => {
+            let _ = basic_header(username, secret)?;
+        }
+    }
+    ensure!(
+        !target.is_empty()
+            && target.len() <= 4096
+            && !target.chars().any(char::is_control),
+        "Credential target is invalid"
+    );
+    let mut name: Vec<u16> = target.encode_utf16().chain(Some(0)).collect();
+    let mut password: Zeroizing<Vec<u16>> = Zeroizing::new(secret.encode_utf16().collect());
+    ensure!(
+        !password.is_empty()
+            && password.len().saturating_mul(2) <= CRED_MAX_CREDENTIAL_BLOB_SIZE as usize,
+        "Upload credential exceeds the Windows password size limit"
+    );
+    let mut account: Zeroizing<Vec<u16>> =
+        Zeroizing::new(username.encode_utf16().chain(Some(0)).collect());
+    ensure!(
+        account.len() > 1 && account.len() - 1 <= CRED_MAX_USERNAME_LENGTH as usize,
+        "Stored Basic username is empty or too long"
+    );
+    let credential = CREDENTIALW {
+        Type: CRED_TYPE_GENERIC,
+        TargetName: name.as_mut_ptr(),
+        CredentialBlobSize: (password.len() * 2) as u32,
+        CredentialBlob: password.as_mut_ptr().cast(),
+        Persist: CRED_PERSIST_LOCAL_MACHINE,
+        UserName: account.as_mut_ptr(),
+        ..Default::default()
+    };
+    let written = unsafe { CredWriteW(&credential, 0) };
+    password.zeroize();
+    account.zeroize();
+    ensure!(
+        written != 0,
+        "Could not save the Windows upload credential (OS error {})",
+        std::io::Error::last_os_error()
+            .raw_os_error()
+            .unwrap_or_default()
+    );
+    Ok(())
 }
 
 #[cfg(any(target_os = "windows", test))]

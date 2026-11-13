@@ -42,6 +42,22 @@ impl Render for CaptureWorkspace {
                         .validate(move |value, _| value.len() <= [2048, 64, 256][index] && !value.chars().any(char::is_control)))));
             }
         } else { self.upload_form_inputs = None; }
+        if self.page == ControlPage::Uploads && self.upload_credential_open {
+            if self.upload_credential_inputs.is_none() {
+                let reference = self.upload_destination.as_ref().and_then(|destination| destination.credential_reference()).unwrap_or("main").to_string();
+                self.upload_credential_inputs = Some([
+                    cx.new(|cx| gpui::component::input::InputState::new(window, cx)
+                        .default_value(reference.clone()).placeholder("main")
+                        .validate(|value, _| value.len() <= 64 && !value.chars().any(char::is_control))),
+                    cx.new(|cx| gpui::component::input::InputState::new(window, cx)
+                        .placeholder("username")
+                        .validate(|value, _| value.len() <= 256 && !value.chars().any(char::is_control))),
+                    cx.new(|cx| gpui::component::input::InputState::new(window, cx)
+                        .masked(true).placeholder("token or password")
+                        .validate(|value, _| value.len() <= 2560 && !value.chars().any(char::is_control))),
+                ]);
+            }
+        } else { self.upload_credential_inputs = None; }
         if self.page == ControlPage::Captures {
             if self.capture_delay_input.is_none() {
                 self.capture_delay_input = Some(cx.new(|cx| gpui::component::input::InputState::new(window, cx)
@@ -361,8 +377,9 @@ impl Render for CaptureWorkspace {
                         .child(capture_button(cx, "setup-upload-destination", if self.upload_form_open { "Cancel setup" } else { "Set up destination" },
                             self.upload_config_loading || self.upload_cancel.is_some(), cx.listener(|this, _, _, cx| {
                                 if this.upload_config_loading || this.upload_cancel.is_some() || this.quitting { return; }
-                                this.upload_form_open = !this.upload_form_open;
-                                this.upload_form_inputs = None;
+                                let open = !this.upload_form_open;
+                                this.close_upload_forms();
+                                this.upload_form_open = open;
                                 this.upload_form_method = app_core::UploadMethod::Post;
                                 this.upload_form_json = false;
                                 this.upload_form_allow_http = false;
@@ -373,6 +390,18 @@ impl Render for CaptureWorkspace {
                         .when(self.upload_destination.is_some(), |row| row
                             .child(quiet_button(cx, "remember-upload-destination", "Remember", self.upload_config_loading || self.upload_cancel.is_some(), false,
                                 cx.listener(|this, _, _, cx| this.persist_upload_destination(false, cx)))))
+                        .when(cfg!(target_os = "windows") && self.upload_destination.is_some(), |row| row
+                            .child(capture_button(cx, "save-upload-credential", if self.upload_credential_open { "Cancel credential" } else { "Save credential" },
+                                self.upload_config_loading || self.upload_cancel.is_some(), cx.listener(|this, _, _, cx| {
+                                    if this.upload_config_loading || this.upload_cancel.is_some() || this.quitting || this.upload_destination.is_none() { return; }
+                                    let open = !this.upload_credential_open;
+                                    let auth = this.upload_destination.as_ref().and_then(|destination| destination.authentication())
+                                        .unwrap_or(app_core::UploadAuthentication::Bearer);
+                                    this.close_upload_forms();
+                                    this.upload_credential_open = open;
+                                    this.upload_credential_auth = auth;
+                                    cx.notify();
+                                }))))
                         .child(quiet_button(cx, "forget-upload-destination", "Forget destination", self.upload_config_loading || self.upload_cancel.is_some(), false,
                             cx.listener(|this, _, _, cx| this.persist_upload_destination(true, cx)))))
                     .children(self.upload_form_inputs.as_ref().map(|inputs| {
@@ -395,6 +424,37 @@ impl Render for CaptureWorkspace {
                                 .on_change(cx.listener(|this, checked, _, cx| { this.upload_form_allow_http = *checked; cx.notify(); })))
                             .child(capture_button(cx, "use-upload-setup", "Use destination (session only)", disabled,
                                 cx.listener(|this, _, _, cx| this.use_upload_form(cx))))
+                            .child(div().text_sm().child(self.upload_status.clone()))
+                    }))
+                    .children(self.upload_credential_inputs.as_ref().map(|inputs| {
+                        let disabled = self.upload_config_loading || self.upload_cancel.is_some();
+                        let basic = self.upload_credential_auth == app_core::UploadAuthentication::Basic;
+                        div().flex().flex_col().gap_2()
+                            .child("Windows Credential Manager · HTTPS required · the secret is not stored in the destination file")
+                            .child("Credential reference")
+                            .child(gpui::component::input::Input::new(&inputs[0]).id("upload-credential-reference").aria_label("Credential reference name").disabled(disabled))
+                            .child(RadioGroup::new("upload-credential-auth").children(["Bearer token", "API key", "Basic"])
+                                .selected_index(Some(match self.upload_credential_auth {
+                                    app_core::UploadAuthentication::Bearer => 0,
+                                    app_core::UploadAuthentication::ApiKey => 1,
+                                    app_core::UploadAuthentication::Basic => 2,
+                                })).disabled(disabled)
+                                .on_change(cx.listener(|this, index, _, cx| {
+                                    this.upload_credential_auth = match *index {
+                                        1 => app_core::UploadAuthentication::ApiKey,
+                                        2 => app_core::UploadAuthentication::Basic,
+                                        _ => app_core::UploadAuthentication::Bearer,
+                                    };
+                                    cx.notify();
+                                })))
+                            .when(basic, |view| view
+                                .child("Basic username")
+                                .child(gpui::component::input::Input::new(&inputs[1]).id("upload-credential-username").aria_label("Basic username").disabled(disabled)))
+                            .child("Secret")
+                            .child(gpui::component::input::Input::new(&inputs[2]).id("upload-credential-secret").aria_label("Upload credential secret")
+                                .content_type(gpui::component::input::InputContentType::Password).mask_toggle().disabled(disabled))
+                            .child(capture_button(cx, "use-upload-credential", "Save credential (session destination)", disabled,
+                                cx.listener(|this, _, _, cx| this.save_upload_credential(cx))))
                             .child(div().text_sm().child(self.upload_status.clone()))
                     }))
                     .children(self.upload_destination.as_ref().and_then(|value| value.credential_target()).map(|target| {

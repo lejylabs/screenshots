@@ -200,6 +200,9 @@ pub struct CaptureWorkspace {
     upload_form_method: app_core::UploadMethod,
     upload_form_json: bool,
     upload_form_allow_http: bool,
+    upload_credential_open: bool,
+    upload_credential_inputs: Option<[gpui::Entity<gpui::component::input::InputState>; 3]>,
+    upload_credential_auth: app_core::UploadAuthentication,
     upload_config_loading: bool,
     upload_profile_checked: bool,
     upload_cancel: Option<app_core::UploadCancellation>,
@@ -394,8 +397,7 @@ impl CaptureWorkspace {
         self.export_dimension_input = None;
         self.export_height_input = None;
         self.capture_delay_input = None;
-        self.upload_form_open = false;
-        self.upload_form_inputs = None;
+        self.close_upload_forms();
         self.exact_region_status.clear();
         #[cfg(target_os = "windows")]
         { self.hotkey_inputs = None; }
@@ -622,6 +624,9 @@ impl CaptureWorkspace {
             upload_form_method: app_core::UploadMethod::Post,
             upload_form_json: false,
             upload_form_allow_http: false,
+            upload_credential_open: false,
+            upload_credential_inputs: None,
+            upload_credential_auth: app_core::UploadAuthentication::Bearer,
             upload_config_loading: false,
             upload_profile_checked: cfg!(test),
             upload_cancel: None,
@@ -1093,8 +1098,7 @@ impl CaptureWorkspace {
         self.hide_history(cx);
         self.hide_upload_history();
         self.page = page;
-        self.upload_form_open = false;
-        self.upload_form_inputs = None;
+        self.close_upload_forms();
         self.capture_delay_input = None;
         self.export_dimension_input = None;
         self.export_height_input = None;
@@ -3041,6 +3045,7 @@ impl CaptureWorkspace {
         if forget {
             self.upload_destination = None;
             self.upload_url = None;
+            self.close_upload_forms();
         }
         cx.spawn(async move |this,cx| {
             let result = cx.background_spawn(async move {
@@ -3058,6 +3063,13 @@ impl CaptureWorkspace {
             }).ok();
         }).detach();
         cx.notify();
+    }
+
+    fn close_upload_forms(&mut self) {
+        self.upload_form_open = false;
+        self.upload_form_inputs = None;
+        self.upload_credential_open = false;
+        self.upload_credential_inputs = None;
     }
 
     fn use_upload_form(&mut self, cx: &mut Context<Self>) {
@@ -3083,10 +3095,52 @@ impl CaptureWorkspace {
                             this.upload_status = format!("Destination: {} · Session only · Manual upload", destination.origin());
                             this.upload_destination = Some(destination);
                             this.upload_url = None;
-                            this.upload_form_open = false;
-                            this.upload_form_inputs = None;
+                            this.close_upload_forms();
                         }
                         Err(error) => this.upload_status = format!("Destination unchanged: {error:#}"),
+                    }
+                }
+                this.finish_quit_if_idle(cx);
+                cx.notify();
+            }).ok();
+        }).detach();
+        cx.notify();
+    }
+
+    fn save_upload_credential(&mut self, cx: &mut Context<Self>) {
+        if !cfg!(target_os = "windows")
+            || self.page != ControlPage::Uploads
+            || !self.upload_credential_open
+            || self.quitting
+            || self.upload_config_loading
+            || self.upload_cancel.is_some()
+        {
+            return;
+        }
+        let Some(destination) = self.upload_destination.clone() else { return; };
+        let Some(inputs) = &self.upload_credential_inputs else { return; };
+        let [reference, username, secret] = std::array::from_fn(|index| inputs[index].read(cx).value().to_string());
+        let authentication = self.upload_credential_auth;
+        self.upload_config_loading = true;
+        self.upload_status = "Saving Windows credential…".into();
+        cx.spawn(async move |this, cx| {
+            let result = cx.background_spawn(async move {
+                destination.attach_credential(reference, authentication, username, secret)
+            }).await;
+            this.update(cx, |this, cx| {
+                this.upload_config_loading = false;
+                if !this.quitting && this.page == ControlPage::Uploads && this.upload_credential_open {
+                    match result {
+                        Ok(destination) => {
+                            this.upload_status = format!(
+                                "Credential saved for {} · Session destination updated · secret stays in Credential Manager",
+                                destination.origin()
+                            );
+                            this.upload_destination = Some(destination);
+                            this.upload_url = None;
+                            this.close_upload_forms();
+                        }
+                        Err(error) => this.upload_status = format!("Credential unchanged: {error:#}"),
                     }
                 }
                 this.finish_quit_if_idle(cx);
@@ -3102,6 +3156,7 @@ impl CaptureWorkspace {
         }
         self.upload_config_loading = true;
         self.upload_profile_checked = true;
+        self.close_upload_forms();
         self.upload_destination = None;
         self.upload_url = None;
         self.upload_status = "Choose an upload destination configuration (JSON)".into();

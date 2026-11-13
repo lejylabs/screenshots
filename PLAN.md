@@ -23,7 +23,7 @@ This section is the current continuation brief. The numbered sections below cont
 - **GPUI Kit rewrite (2026-11-11):** the complete native presentation uses Kit 0.9.1 / GPUI 0.3.12: Sidebar, Button, Input, Checkbox, RadioGroup, PopupMenu, Kbd and bundled Lucide icons. Dark stays the default; Oldschool keeps compact square controls and colorful icons. Every window has a Base Root, with transparent surfaces preserved for overlays. Typed content access preserves native lifecycle jobs and waiting for work on Quit. Library search/menu callbacks retain byte, paging and stale-result bounds. The image canvas and bounded source-label editor keep their domain-specific contracts. See [the rewrite and measured evidence](docs/ui-redesign.md).
 - **Windows functional prototype:** tray/resident lifecycle, single-instance forwarding, hotkeys, display/window/region capture, countdown, clipboard, PNG output and save-folder settings. Graphics attach on demand and detach when the last UI consumer closes.
 - **Shared editor:** crop, shapes, arrows, lines/endpoints, pen, text/style, numbering, highlight/spotlight, blur, pixelation and opaque redaction; selection/transforms, duplicate/reorder, bounded metadata undo/redo and zoom/pan. Copy, Save and Save & copy are explicit. Original files are preserved when editing a copy.
-- **Storage/sharing:** paged SQLite capture history with prefix search, filters, PNG import/relink, explicit preview, bounded selection/removal/export; explicit configurable POST/PUT uploads, progress/cancel, remembered credential-free profiles and upload history. Windows credentials support Bearer/API-key/Basic. Other secret-store integrations remain pending.
+- **Storage/sharing:** paged SQLite capture history with prefix search, filters, PNG import/relink, explicit preview, bounded selection/removal/export; explicit configurable POST/PUT uploads, progress/cancel, remembered credential-free profiles and upload history. Windows Uploads can save Bearer/API-key/Basic secrets to Credential Manager. Other secret-store integrations remain pending.
 - **Current main UI:** a responsive 200/208-logical-pixel sidebar with Recent capture / Library / Displays & windows / Uploads / Settings. Main windows start at 1060×760 with a 680×480 minimum. Content scrolls at compact sizes; library rows are paged, identified by database ID and expose Kit menus. Switching pages releases search/preview state and cancels stale requests. A thumbnail gallery remains a separate feature.
 - **Current editor UI:** grouped Kit tool buttons, accessible labels/shortcut tooltips, contextual selection actions, swatches and separate Copy / Save / Save & copy actions. Toolbar scrolling leaves bounded image space. The in-memory canvas and exported image algorithms remain in Rust.
 
@@ -585,8 +585,8 @@ POST file field and either a plain-text URL response or a JSON link pointer.
 HTTPS is required unless the user explicitly checks Allow unencrypted HTTP.
 The shared destination validator rejects embedded credentials, query/fragment
 tokens, invalid fields/pointers and oversized values. Imported profiles retain
-advanced authentication/response configuration; native credential management and
-connection testing are separate work.
+advanced authentication/response configuration. Native Windows credential entry
+is implemented below; connection testing remains separate work.
 
 Use destination validates on the existing worker and applies to this session only;
 the existing Remember action persists it explicitly. Invalid input keeps the
@@ -609,6 +609,32 @@ restores blocking mode on accepted sockets before bounded reads.
 Native keyboard/IME/accessibility, real hosting-service interoperability
 and latency/process/GPU/resource acceptance remain open; no new performance
 measurement is claimed for this bounded metadata entry point.
+
+#### Current feature slice: native Windows upload credential entry
+
+Uploads offers Save credential on Windows after a destination is present. The
+bounded form accepts a credential reference, Bearer/API-key/Basic, an optional
+Basic username and a masked secret. Save validates on the existing worker, writes
+the secret to Windows Credential Manager for the HTTPS origin/reference target,
+and attaches the non-secret reference to the session destination. HTTPS is
+required. Invalid input keeps the previous destination. Closing the form, page or
+window suppresses a pending result, and Quit discards it. The destination JSON
+never contains the secret; Forget destination still leaves the OS credential in
+place. No connection, upload, image decode or settings write occurs while saving.
+
+Resource cost is three lazy Kit inputs limited to 64/256/2560 UTF-8 bytes plus
+existing bounded input undo, one small auth choice and one admitted metadata
+future. The secret input is masked; inputs release on cancel, successful save,
+page exit or UI close. There is no new dependency, worker, runtime, queue, image,
+cache, watcher or idle timer. Constructor and headless UI fixtures verify HTTP
+rejection, empty secrets, duplicate admission, stale-result suppression and that
+status text never echoes the secret, without writing OS credentials or networking.
+An ignored native round-trip writes one uniquely named synthetic credential,
+reads it back and deletes it. Connection tests, credential rotation/deletion UI,
+named destinations and non-Windows secret stores remain separate work.
+Native keyboard/IME/accessibility, real Credential Manager UX and
+latency/process/GPU/resource acceptance remain open; no new performance
+measurement is claimed for this bounded secret-entry path.
 
 #### Current feature slice: configurable Windows global hotkeys
 
