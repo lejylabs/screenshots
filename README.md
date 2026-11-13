@@ -214,7 +214,7 @@ crates/shared     Shared types
 
 ## Build
 
-Requires Rust 1.99.
+Requires Rust 1.100.
 
 ```bash
 cargo build --locked -p screenshots

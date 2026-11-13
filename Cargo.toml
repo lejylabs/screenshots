@@ -11,8 +11,14 @@ members = [
 version = "0.1.0"
 edition = "2024"
 license = "MIT"
+authors = ["LejyFPS", "NewtTheWolf"]
+homepage = "https://lejy.me"
 repository = "https://github.com/lejylabs/screenshots"
-rust-version = "1.99"
+rust-version = "1.100"
+publish = false
+
+[workspace.lints.clippy]
+enum_glob_use = "deny"
 
 [workspace.dependencies]
 app-core = { path = "crates/app-core" }
