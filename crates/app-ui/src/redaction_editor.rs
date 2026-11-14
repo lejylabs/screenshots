@@ -66,6 +66,7 @@ pub(super) enum OutputMode {
     CopyOnly,
     SaveOnly,
     SaveAndCopy,
+    Upload,
 }
 impl OutputMode {
     pub fn copies(self) -> bool {
@@ -73,6 +74,9 @@ impl OutputMode {
     }
     pub fn saves(self) -> bool {
         matches!(self, Self::SaveOnly | Self::SaveAndCopy)
+    }
+    pub fn uploads(self) -> bool {
+        matches!(self, Self::Upload)
     }
 }
 
@@ -1196,6 +1200,7 @@ pub(super) struct RedactionEditor {
     focus: FocusHandle,
     owner: gpui::WeakEntity<CaptureWorkspace>,
     direct_capture: bool,
+    upload_available: bool,
     toolbar_bottom: bool,
     toolbar_height: std::rc::Rc<std::cell::Cell<f32>>,
     edits: RectEdits,
@@ -2228,6 +2233,7 @@ impl RedactionEditor {
         render_image: Arc<gpui::RenderImage>,
         owner: gpui::WeakEntity<CaptureWorkspace>,
         direct_capture: bool,
+        upload_available: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -2243,6 +2249,7 @@ impl RedactionEditor {
             focus,
             owner,
             direct_capture,
+            upload_available,
             toolbar_bottom: false,
             toolbar_height: std::rc::Rc::new(std::cell::Cell::new(0.0)),
             edits: RectEdits::default(),
@@ -2637,6 +2644,7 @@ impl Render for RedactionEditor {
                                     ("export-copy-only", "Copy", OutputMode::CopyOnly),
                                     ("export-save-only", "Save", OutputMode::SaveOnly),
                                     ("export-save-copy", "Save & copy", OutputMode::SaveAndCopy),
+                                    ("export-upload", "Upload", OutputMode::Upload),
                                 ]
                                 .into_iter()
                                 .map(|(id, label, mode)| {
@@ -2650,7 +2658,8 @@ impl Render for RedactionEditor {
                                             && self.edits.crop.is_none()
                                             && self.edits.orientation == BaseOrientation::default()
                                             && !self.direct_capture)
-                                            || self.drag.is_some() || self.text_draft.is_some() || self.text_loading,
+                                            || self.drag.is_some() || self.text_draft.is_some() || self.text_loading
+                                            || (matches!(mode, OutputMode::Upload) && !self.upload_available),
                                         matches!(mode, OutputMode::CopyOnly), cx.listener(move |this, _, _, cx| this.export(mode, cx)),
                                     )
                                 }),
@@ -3281,7 +3290,7 @@ mod tests {
         let original = orientation_fixture(3, 2);
         let handle = cx.update(|cx| cx.open_kit_window(gpui::WindowOptions::default(), |window, cx| {
             let owner = cx.new(|cx| CaptureWorkspace::isolated_ui(window, cx));
-            cx.new(|cx| RedactionEditor::new(original.clone(), crate::render_frame(&original), owner.downgrade(), false, window, cx))
+            cx.new(|cx| RedactionEditor::new(original.clone(), crate::render_frame(&original), owner.downgrade(), false, false, window, cx))
         }).unwrap());
         cx.update_window(handle.into(), |_, window, cx| {
             window.render_frame(cx);

@@ -174,6 +174,7 @@ pub struct CaptureWorkspace {
     region_presets: Vec<app_core::RegionPreset>,
     region_preset_name: Option<gpui::Entity<gpui::component::input::InputState>>,
     upload_task_defaults: [String; 6],
+    strip_metadata_on_upload: bool,
     #[cfg(target_os = "windows")]
     hotkey_inputs: Option<[gpui::Entity<gpui::component::input::InputState>; 6]>,
     history_database: Option<PathBuf>,
@@ -601,6 +602,7 @@ impl CaptureWorkspace {
             region_presets: Vec::new(),
             region_preset_name: None,
             upload_task_defaults: std::array::from_fn(|_| String::new()),
+            strip_metadata_on_upload: false,
             #[cfg(target_os = "windows")]
             hotkey_inputs: None,
             history_database: if cfg!(test) {
@@ -711,6 +713,7 @@ impl CaptureWorkspace {
                         this.filename_template = settings.filename_template;
                         this.region_presets = settings.region_presets;
                         this.upload_task_defaults = settings.upload_task_defaults;
+                        this.strip_metadata_on_upload = settings.strip_metadata_on_upload;
                         theme::apply(settings.theme, cx);
                         this.backend = XcapBackend::new(&settings.output_directory);
                         this.output_directory = Some(settings.output_directory);
@@ -849,6 +852,7 @@ impl CaptureWorkspace {
         let profile = self.output_profile;
         let presets = self.region_presets.clone();
         let upload_task_defaults = self.upload_task_defaults.clone();
+        let strip_metadata_on_upload = self.strip_metadata_on_upload;
         let dialog = cx.prompt_for_paths(gpui::PathPromptOptions {
             files: false,
             directories: true,
@@ -880,6 +884,7 @@ impl CaptureWorkspace {
                         .map(|settings| settings.with_export_format(export_format))
                         .and_then(|settings| settings.with_filename_template(filename_template)).and_then(|settings| settings.with_capture_delay(capture_delay_seconds))
                         .and_then(|settings| settings.with_upload_task_defaults(upload_task_defaults))
+                        .map(|settings| settings.with_strip_metadata_on_upload(strip_metadata_on_upload))
                         .map_err(|error| format!("{error:#}"))?;
                     settings.save().map_err(|error| format!("{error:#}"))?;
                     Ok::<_, String>(settings.output_directory)
@@ -934,6 +939,7 @@ impl CaptureWorkspace {
         let filename_template = self.filename_template.clone();
         let capture_delay_seconds = self.capture_delay_seconds;
         let upload_task_defaults = self.upload_task_defaults.clone();
+        let strip_metadata_on_upload = self.strip_metadata_on_upload;
         cx.spawn(async move |this, cx| {
             let chosen = match dialog.await {
                 Ok(Ok(path)) => path,
@@ -980,7 +986,7 @@ impl CaptureWorkspace {
                         .with_export_format(export_format)
                         .with_filename_template(filename_template)?
                         .with_capture_delay(capture_delay_seconds)?
-                        .with_upload_task_defaults(upload_task_defaults)?
+                        .with_upload_task_defaults(upload_task_defaults)?.with_strip_metadata_on_upload(strip_metadata_on_upload)
                         .export(&path)?;
                     Ok::<_, anyhow::Error>(path)
                 })
@@ -1138,6 +1144,7 @@ impl CaptureWorkspace {
                             this.capture_delay_seconds = settings.capture_delay_seconds;
                             this.region_presets = settings.region_presets;
                             this.upload_task_defaults = settings.upload_task_defaults;
+                            this.strip_metadata_on_upload = settings.strip_metadata_on_upload;
                             this.jpeg_quality_input = None;
                             this.filename_template_input = None;
                             this.capture_delay_input = None;
@@ -1201,6 +1208,7 @@ impl CaptureWorkspace {
         let profile = self.output_profile;
         let presets = self.region_presets.clone();
         let upload_task_defaults = self.upload_task_defaults.clone();
+        let strip_metadata_on_upload = self.strip_metadata_on_upload;
         theme::apply(selected, cx);
         self.settings_saving = true;
         self.settings_status = "Saving appearance…".into();
@@ -1208,7 +1216,7 @@ impl CaptureWorkspace {
             let result = cx.background_spawn(async move {
                 // The default capture folder may not exist before the first screenshot.
                 std::fs::create_dir_all(&directory)?;
-                app_core::CaptureSettings::for_directory(directory)?.with_theme(selected).with_hotkeys(hotkeys)?.with_output_profile(profile).with_region_presets(presets)?.with_jpeg_quality(jpeg_quality)?.with_export_format(export_format).with_filename_template(filename_template)?.with_capture_delay(capture_delay_seconds)?.with_upload_task_defaults(upload_task_defaults)?.save()
+                app_core::CaptureSettings::for_directory(directory)?.with_theme(selected).with_hotkeys(hotkeys)?.with_output_profile(profile).with_region_presets(presets)?.with_jpeg_quality(jpeg_quality)?.with_export_format(export_format).with_filename_template(filename_template)?.with_capture_delay(capture_delay_seconds)?.with_upload_task_defaults(upload_task_defaults)?.with_strip_metadata_on_upload(strip_metadata_on_upload).save()
             }).await;
             this.update(cx, |this, cx| {
                 this.settings_saving = false;
@@ -1231,6 +1239,7 @@ impl CaptureWorkspace {
         let jpeg_quality = self.jpeg_quality;
         let export_format = self.export_format;
         let filename_template = self.filename_template.clone();
+        let strip_metadata_on_upload = self.strip_metadata_on_upload;
         if self.settings_loading || self.settings_saving || self.quitting || self.capturing
             || self.copying || self.saving || self.preview_active || self.editor.is_some()
             || self.editor_closing || self.switching_graphics || self.capture_delay.is_some()
@@ -1246,7 +1255,7 @@ impl CaptureWorkspace {
             let result = cx.background_spawn(async move {
                 std::fs::create_dir_all(&directory)?;
                 app_core::CaptureSettings::for_directory(directory)?.with_theme(appearance)
-                    .with_hotkeys(hotkeys)?.with_output_profile(selected).with_region_presets(presets)?.with_jpeg_quality(jpeg_quality)?.with_export_format(export_format).with_filename_template(filename_template)?.with_capture_delay(capture_delay_seconds)?.with_upload_task_defaults(upload_task_defaults)?.save()
+                    .with_hotkeys(hotkeys)?.with_output_profile(selected).with_region_presets(presets)?.with_jpeg_quality(jpeg_quality)?.with_export_format(export_format).with_filename_template(filename_template)?.with_capture_delay(capture_delay_seconds)?.with_upload_task_defaults(upload_task_defaults)?.with_strip_metadata_on_upload(strip_metadata_on_upload).save()
             }).await;
             this.update(cx, |this, cx| {
                 this.settings_saving = false;
@@ -1268,6 +1277,7 @@ impl CaptureWorkspace {
         let capture_delay_seconds = self.capture_delay_seconds;
         let export_format = self.export_format;
         let filename_template = self.filename_template.clone();
+        let strip_metadata_on_upload = self.strip_metadata_on_upload;
         if self.page != ControlPage::Settings || self.image_input_busy() { return; }
         let Some(input) = &self.jpeg_quality_input else { return; };
         let quality = input.read(cx).value().parse::<u8>().ok().filter(|quality| (1..=100).contains(quality));
@@ -1293,7 +1303,7 @@ impl CaptureWorkspace {
             let result = cx.background_spawn(async move {
                 let settings = app_core::CaptureSettings::for_directory(directory)?.with_theme(appearance)
                     .with_hotkeys(hotkeys)?.with_output_profile(profile).with_region_presets(presets)?
-                    .with_jpeg_quality(quality)?.with_export_format(export_format).with_filename_template(filename_template)?.with_capture_delay(capture_delay_seconds)?.with_upload_task_defaults(upload_task_defaults)?;
+                    .with_jpeg_quality(quality)?.with_export_format(export_format).with_filename_template(filename_template)?.with_capture_delay(capture_delay_seconds)?.with_upload_task_defaults(upload_task_defaults)?.with_strip_metadata_on_upload(strip_metadata_on_upload);
                 std::fs::create_dir_all(&settings.output_directory)?;
                 settings.save()
             }).await;
@@ -1321,13 +1331,14 @@ impl CaptureWorkspace {
         let presets = self.region_presets.clone();
         let quality = self.jpeg_quality;
         let upload_task_defaults = self.upload_task_defaults.clone();
+        let strip_metadata_on_upload = self.strip_metadata_on_upload;
         self.settings_saving = true;
         self.settings_status = "Saving default export format…".into();
         cx.spawn(async move |this, cx| {
             let result = cx.background_spawn(async move {
                 let settings = app_core::CaptureSettings::for_directory(directory)?.with_theme(appearance)
                     .with_hotkeys(hotkeys)?.with_output_profile(profile).with_region_presets(presets)?
-                    .with_jpeg_quality(quality)?.with_export_format(format).with_filename_template(filename_template)?.with_capture_delay(capture_delay_seconds)?.with_upload_task_defaults(upload_task_defaults)?;
+                    .with_jpeg_quality(quality)?.with_export_format(format).with_filename_template(filename_template)?.with_capture_delay(capture_delay_seconds)?.with_upload_task_defaults(upload_task_defaults)?.with_strip_metadata_on_upload(strip_metadata_on_upload);
                 std::fs::create_dir_all(&settings.output_directory)?;
                 settings.save()
             }).await;
@@ -1365,13 +1376,14 @@ impl CaptureWorkspace {
         let quality = self.jpeg_quality;
         let format = self.export_format;
         let upload_task_defaults = self.upload_task_defaults.clone();
+        let strip_metadata_on_upload = self.strip_metadata_on_upload;
         self.settings_saving = true;
         self.settings_status = "Saving filename template…".into();
         cx.spawn(async move |this, cx| {
             let result = cx.background_spawn(async move {
                 let settings = app_core::CaptureSettings::for_directory(directory)?.with_theme(appearance)
                     .with_hotkeys(hotkeys)?.with_output_profile(profile).with_region_presets(presets)?
-                    .with_jpeg_quality(quality)?.with_export_format(format).with_filename_template(template)?.with_capture_delay(capture_delay_seconds)?.with_upload_task_defaults(upload_task_defaults)?;
+                    .with_jpeg_quality(quality)?.with_export_format(format).with_filename_template(template)?.with_capture_delay(capture_delay_seconds)?.with_upload_task_defaults(upload_task_defaults)?.with_strip_metadata_on_upload(strip_metadata_on_upload);
                 std::fs::create_dir_all(&settings.output_directory)?;
                 settings.save()?;
                 Ok::<_, anyhow::Error>(settings.filename_template)
@@ -1427,6 +1439,7 @@ impl CaptureWorkspace {
         let jpeg_quality = self.jpeg_quality;
         let export_format = self.export_format;
         let filename_template = self.filename_template.clone();
+        let strip_metadata_on_upload = self.strip_metadata_on_upload;
         if self.page != ControlPage::Settings || self.settings_loading || self.settings_saving || self.quitting {
             return;
         }
@@ -1457,7 +1470,7 @@ impl CaptureWorkspace {
             let result = cx.background_spawn(async move {
                 std::fs::create_dir_all(&directory)?;
                 app_core::CaptureSettings::for_directory(directory)?
-                    .with_theme(appearance).with_hotkeys(saved_bindings)?.with_output_profile(profile).with_region_presets(presets)?.with_jpeg_quality(jpeg_quality)?.with_export_format(export_format).with_filename_template(filename_template)?.with_capture_delay(capture_delay_seconds)?.with_upload_task_defaults(upload_task_defaults)?.save()
+                    .with_theme(appearance).with_hotkeys(saved_bindings)?.with_output_profile(profile).with_region_presets(presets)?.with_jpeg_quality(jpeg_quality)?.with_export_format(export_format).with_filename_template(filename_template)?.with_capture_delay(capture_delay_seconds)?.with_upload_task_defaults(upload_task_defaults)?.with_strip_metadata_on_upload(strip_metadata_on_upload).save()
             }).await;
             this.update(cx, |this, cx| {
                 this.settings_saving = false;
@@ -1857,6 +1870,7 @@ impl CaptureWorkspace {
         let format = self.export_format;
         let template = self.filename_template.clone();
         let upload_task_defaults = self.upload_task_defaults.clone();
+        let strip_metadata_on_upload = self.strip_metadata_on_upload;
         self.settings_saving = true;
         self.capture_status = "Saving capture delay…".into();
         cx.spawn(async move |this, cx| {
@@ -1864,7 +1878,7 @@ impl CaptureWorkspace {
                 let settings = app_core::CaptureSettings::for_directory(directory)?.with_theme(appearance)
                     .with_hotkeys(hotkeys)?.with_output_profile(profile).with_region_presets(presets)?
                     .with_jpeg_quality(quality)?.with_export_format(format).with_filename_template(template)?
-                    .with_capture_delay(seconds)?.with_upload_task_defaults(upload_task_defaults)?;
+                    .with_capture_delay(seconds)?.with_upload_task_defaults(upload_task_defaults)?.with_strip_metadata_on_upload(strip_metadata_on_upload);
                 std::fs::create_dir_all(&settings.output_directory)?;
                 settings.save()
             }).await;
@@ -2279,6 +2293,7 @@ impl CaptureWorkspace {
         let jpeg_quality = self.jpeg_quality;
         let export_format = self.export_format;
         let filename_template = self.filename_template.clone();
+        let strip_metadata_on_upload = self.strip_metadata_on_upload;
         let Some(directory) = self.output_directory.clone() else { return; };
         let appearance = theme::selected(cx);
         let hotkeys = self.hotkey_bindings.clone();
@@ -2289,7 +2304,7 @@ impl CaptureWorkspace {
         cx.spawn(async move |this, cx| {
             let result = cx.background_spawn(async move {
                 let settings = app_core::CaptureSettings::for_directory(directory)?.with_theme(appearance)
-                    .with_hotkeys(hotkeys)?.with_output_profile(profile).with_region_presets(presets)?.with_jpeg_quality(jpeg_quality)?.with_export_format(export_format).with_filename_template(filename_template)?.with_capture_delay(capture_delay_seconds)?.with_upload_task_defaults(upload_task_defaults)?;
+                    .with_hotkeys(hotkeys)?.with_output_profile(profile).with_region_presets(presets)?.with_jpeg_quality(jpeg_quality)?.with_export_format(export_format).with_filename_template(filename_template)?.with_capture_delay(capture_delay_seconds)?.with_upload_task_defaults(upload_task_defaults)?.with_strip_metadata_on_upload(strip_metadata_on_upload);
                 std::fs::create_dir_all(&settings.output_directory)?;
                 settings.save()?;
                 Ok::<_, anyhow::Error>(settings.region_presets)
@@ -2508,6 +2523,7 @@ impl CaptureWorkspace {
     ) {
         let owner = cx.entity().downgrade();
         let close_owner = owner.clone();
+        let upload_available = self.upload_destination.is_some();
         let bounds = Bounds::centered(None, size(px(1000.0), px(760.0)), cx);
         let options = if direct_capture {
             let display = cx
@@ -2538,7 +2554,7 @@ impl CaptureWorkspace {
                 });
                 false
             });
-            cx.new(|cx| RedactionEditor::new(source, render, owner, direct_capture, window, cx))
+            cx.new(|cx| RedactionEditor::new(source, render, owner, direct_capture, upload_available, window, cx))
         }) {
             Ok(handle) => {
                 self.editor = Some(handle);
@@ -2697,13 +2713,20 @@ impl CaptureWorkspace {
                             this.save_status = "Not saved · Edited image is kept in memory".into();
                         }
                         if !mode.copies() {
-                            this.clipboard_status = "Clipboard unchanged (Save only)".into();
+                            this.clipboard_status = if mode.uploads() {
+                                "Clipboard unchanged (Upload)".into()
+                            } else {
+                                "Clipboard unchanged (Save only)".into()
+                            };
                         }
                         this.output_captures(
-                            if mode.saves() { vec![shot] } else { Vec::new() },
+                            if mode.saves() { vec![shot.clone()] } else { Vec::new() },
                             mode.copies(),
                             cx,
                         );
+                        if mode.uploads() {
+                            this.begin_pixel_upload(shot, true, cx);
+                        }
                     }
                     Err(error) => this.capture_status = format!("Image editing failed: {error:#}"),
                 }
@@ -3549,6 +3572,7 @@ impl CaptureWorkspace {
         let jpeg_quality = self.jpeg_quality;
         let export_format = self.export_format;
         let filename_template = self.filename_template.clone();
+        let strip_metadata_on_upload = self.strip_metadata_on_upload;
         if self.page != ControlPage::Uploads
             || self.settings_loading
             || self.settings_saving
@@ -3579,7 +3603,8 @@ impl CaptureWorkspace {
                         .with_export_format(export_format)
                         .with_filename_template(filename_template)?
                         .with_capture_delay(capture_delay_seconds)?
-                        .with_upload_task_defaults(defaults)?;
+                        .with_upload_task_defaults(defaults)?
+                        .with_strip_metadata_on_upload(strip_metadata_on_upload);
                     std::fs::create_dir_all(&settings.output_directory)?;
                     settings.save()?;
                     Ok::<_, anyhow::Error>(settings.upload_task_defaults)
@@ -3594,6 +3619,74 @@ impl CaptureWorkspace {
                             "Per-task destination saved · Capture applies it to this session and never starts an upload".into()
                         }
                         Err(error) => format!("Per-task destination unchanged: {error:#}"),
+                    };
+                }
+                this.finish_quit_if_idle(cx);
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+        cx.notify();
+    }
+
+    fn persist_strip_metadata_on_upload(&mut self, strip: bool, cx: &mut Context<Self>) {
+        let capture_delay_seconds = self.capture_delay_seconds;
+        let jpeg_quality = self.jpeg_quality;
+        let export_format = self.export_format;
+        let filename_template = self.filename_template.clone();
+        if self.page != ControlPage::Uploads
+            || self.settings_loading
+            || self.settings_saving
+            || self.quitting
+            || self.upload_config_loading
+            || self.upload_cancel.is_some()
+            || strip == self.strip_metadata_on_upload
+        {
+            return;
+        }
+        let Some(directory) = self.output_directory.clone() else {
+            return;
+        };
+        let appearance = theme::selected(cx);
+        let hotkeys = self.hotkey_bindings.clone();
+        let profile = self.output_profile;
+        let presets = self.region_presets.clone();
+        let upload_task_defaults = self.upload_task_defaults.clone();
+        self.settings_saving = true;
+        self.upload_status = "Saving metadata policy…".into();
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_spawn(async move {
+                    let settings = app_core::CaptureSettings::for_directory(directory)?
+                        .with_theme(appearance)
+                        .with_hotkeys(hotkeys)?
+                        .with_output_profile(profile)
+                        .with_region_presets(presets)?
+                        .with_jpeg_quality(jpeg_quality)?
+                        .with_export_format(export_format)
+                        .with_filename_template(filename_template)?
+                        .with_capture_delay(capture_delay_seconds)?
+                        .with_upload_task_defaults(upload_task_defaults)?
+                        .with_strip_metadata_on_upload(strip);
+                    std::fs::create_dir_all(&settings.output_directory)?;
+                    settings.save()?;
+                    Ok::<_, anyhow::Error>(())
+                })
+                .await;
+            this.update(cx, |this, cx| {
+                this.settings_saving = false;
+                if !this.quitting {
+                    this.upload_status = match result {
+                        Ok(()) => {
+                            this.strip_metadata_on_upload = strip;
+                            if strip {
+                                "Uploads re-encode PNG pixels and drop ancillary metadata. Original files stay unchanged.".into()
+                            } else {
+                                "Uploads send stored PNG bytes, including existing metadata.".into()
+                            }
+                        }
+                        Err(error) => format!("Metadata policy unchanged: {error:#}"),
                     };
                 }
                 this.finish_quit_if_idle(cx);
@@ -4313,10 +4406,157 @@ impl CaptureWorkspace {
     }
 
     fn start_upload(&mut self, cx: &mut Context<Self>) {
-        let Some(path) = self.last_saved.clone() else {
+        if let Some(path) = self.last_saved.clone() {
+            self.begin_upload(Some(path), cx);
+        } else if let Some(shot) = self.last_capture.clone() {
+            self.begin_pixel_upload(shot, false, cx);
+        }
+    }
+
+    fn begin_pixel_upload(
+        &mut self,
+        shot: CapturedImage,
+        from_editor: bool,
+        cx: &mut Context<Self>,
+    ) {
+        if self.quitting
+            || self.upload_cancel.is_some()
+            || self.upload_config_loading
+            || self.saving
+            || self.copying
+            || self.history_mutating
+            || self.capture_delay.is_some()
+        {
+            return;
+        }
+        if !from_editor
+            && (self.capturing || self.editor.is_some() || self.editor_closing)
+        {
+            return;
+        }
+        let Some(destination) = self.upload_destination.clone() else {
             return;
         };
-        self.begin_upload(Some(path), cx);
+        let filename = app_core::capture_file_name(&self.filename_template)
+            .ok()
+            .flatten()
+            .unwrap_or_else(|| "screenshot.png".into());
+        let cancel = app_core::UploadCancellation::default();
+        self.upload_cancel = Some(cancel.clone());
+        self.upload_generation = self.upload_generation.wrapping_add(1);
+        self.upload_cancel_requested = false;
+        self.upload_probe = false;
+        let generation = self.upload_generation;
+        let (reporter, mut progress) = app_core::upload_progress_channel();
+        self.clear_upload_links();
+        self.upload_status = format!(
+            "Uploading {filename} via {} to {}…",
+            destination.request_method(),
+            destination.origin()
+        );
+        let database = self.history_database.clone();
+        let progress_filename = filename.clone();
+        let history_name = filename.clone();
+        cx.spawn(async move |this, cx| {
+            while let Some(progress) = progress.next().await {
+                if this
+                    .update(cx, |this, cx| {
+                        if this.quitting
+                            || this.upload_generation != generation
+                            || this.upload_cancel.is_none()
+                            || this.upload_cancel_requested
+                        {
+                            return false;
+                        }
+                        this.upload_status = if progress.prepared == progress.total {
+                            format!(
+                                "{progress_filename} · PNG data prepared · Awaiting server response"
+                            )
+                        } else {
+                            format!(
+                                "{progress_filename} · Upload request: {} / {} PNG bytes",
+                                progress.prepared, progress.total
+                            )
+                        };
+                        cx.notify();
+                        true
+                    })
+                    .ok()
+                    != Some(true)
+                {
+                    break;
+                }
+            }
+        })
+        .detach();
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_spawn(async move {
+                    let png = shot
+                        .png_bytes()
+                        .map_err(|error| format!("{error:#}"))?;
+                    app_core::upload_png_bytes_with_progress(
+                        &destination,
+                        png,
+                        cancel,
+                        Some(reporter),
+                    )
+                    .map(|outcome| {
+                        let history_error = database
+                            .as_ref()
+                            .map(|database| {
+                                app_core::record_uploaded_png(
+                                    database,
+                                    std::path::Path::new(&history_name),
+                                    &destination.origin(),
+                                    &outcome.url,
+                                )
+                            })
+                            .transpose()
+                            .err()
+                            .map(|error| format!("{error:#}"));
+                        (outcome, history_error)
+                    })
+                    .map_err(|error| format!("{error:#}"))
+                })
+                .await;
+            this.update(cx, |this, cx| {
+                this.upload_cancel = None;
+                this.upload_probe = false;
+                if !this.quitting {
+                    match result {
+                        Ok((outcome, history_error)) => {
+                            this.upload_status =
+                                format!("Uploaded {filename} · Link ready · Clipboard unchanged");
+                            this.upload_url = Some(outcome.url);
+                            this.upload_thumbnail = outcome.thumbnail;
+                            this.upload_deletion = outcome.deletion;
+                            if let Some(error) = history_error {
+                                this.upload_status
+                                    .push_str(&format!(" · History not saved: {error}"));
+                            }
+                            if this.upload_history_loading {
+                                this.upload_history_revision =
+                                    this.upload_history_revision.wrapping_add(1);
+                                if let Some(cancel) = &this.upload_history_cancel {
+                                    cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+                                }
+                            } else {
+                                this.refresh_upload_history(None, cx);
+                            }
+                        }
+                        Err(error) => {
+                            this.upload_status = format!("No upload link: {error}");
+                        }
+                    }
+                }
+                this.finish_quit_if_idle(cx);
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+        cx.notify();
     }
 
     fn start_destination_probe(&mut self, cx: &mut Context<Self>) {
@@ -4356,6 +4596,7 @@ impl CaptureWorkspace {
             return;
         };
         let probe = source.is_none();
+        let strip = !probe && self.strip_metadata_on_upload;
         let cancel = app_core::UploadCancellation::default();
         self.upload_cancel = Some(cancel.clone());
         self.upload_generation = self.upload_generation.wrapping_add(1);
@@ -4376,11 +4617,19 @@ impl CaptureWorkspace {
             );
         } else {
             self.clear_upload_links();
-            self.upload_status = format!(
-                "Uploading {filename} via {} to {}…",
-                destination.request_method(),
-                destination.origin()
-            );
+            self.upload_status = if strip {
+                format!(
+                    "Uploading {filename} without metadata via {} to {}…",
+                    destination.request_method(),
+                    destination.origin()
+                )
+            } else {
+                format!(
+                    "Uploading {filename} via {} to {}…",
+                    destination.request_method(),
+                    destination.origin()
+                )
+            };
         }
         let database = if probe {
             None
@@ -4424,13 +4673,26 @@ impl CaptureWorkspace {
             let result = cx
                 .background_spawn(async move {
                     match source {
-                        Some(path) => app_core::upload_png_with_progress(
-                            &destination,
-                            &path,
-                            cancel,
-                            reporter,
-                        )
-                        .map(|outcome| {
+                        Some(path) => {
+                            let outcome = if strip {
+                                let png = app_core::png_without_metadata(&path)
+                                    .map_err(|error| format!("{error:#}"))?;
+                                app_core::upload_png_bytes_with_progress(
+                                    &destination,
+                                    png,
+                                    cancel,
+                                    Some(reporter),
+                                )
+                                .map_err(|error| format!("{error:#}"))?
+                            } else {
+                                app_core::upload_png_with_progress(
+                                    &destination,
+                                    &path,
+                                    cancel,
+                                    reporter,
+                                )
+                                .map_err(|error| format!("{error:#}"))?
+                            };
                             let history_error = database
                                 .as_ref()
                                 .map(|database| {
@@ -4444,12 +4706,12 @@ impl CaptureWorkspace {
                                 .transpose()
                                 .err()
                                 .map(|error| format!("{error:#}"));
-                            (outcome, history_error)
-                        }),
+                            Ok((outcome, history_error))
+                        }
                         None => app_core::probe_upload(&destination, cancel, Some(reporter))
-                            .map(|outcome| (outcome, None)),
+                            .map(|outcome| (outcome, None))
+                            .map_err(|error| format!("{error:#}")),
                     }
-                    .map_err(|error| format!("{error:#}"))
                 })
                 .await;
             this.update(cx, |this, cx| {

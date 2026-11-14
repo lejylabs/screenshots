@@ -1752,7 +1752,7 @@ pub fn upload_png(
     path: &Path,
     cancel: UploadCancellation,
 ) -> Result<String> {
-    Ok(run_upload(destination, path, cancel, None)?.url)
+    Ok(run_upload(destination, UploadPng::Path(path.to_path_buf()), cancel, None)?.url)
 }
 
 pub fn upload_png_with_progress(
@@ -1761,7 +1761,17 @@ pub fn upload_png_with_progress(
     cancel: UploadCancellation,
     progress: UploadProgressReporter,
 ) -> Result<UploadOutcome> {
-    run_upload(destination, path, cancel, Some(progress))
+    run_upload(destination, UploadPng::Path(path.to_path_buf()), cancel, Some(progress))
+}
+
+/// Upload an already-encoded PNG buffer. Does not write a library file.
+pub fn upload_png_bytes_with_progress(
+    destination: &UploadDestination,
+    png: Vec<u8>,
+    cancel: UploadCancellation,
+    progress: Option<UploadProgressReporter>,
+) -> Result<UploadOutcome> {
+    run_upload(destination, UploadPng::Bytes(png), cancel, progress)
 }
 
 /// Upload a throwaway 1×1 PNG through the existing transfer path, then delete it.
@@ -1784,9 +1794,14 @@ pub fn probe_upload(
     std::fs::create_dir_all(&root)?;
     let cleanup = Cleanup(root.clone());
     let path = write_probe_png(&root)?;
-    let result = run_upload(destination, &path, cancel, progress);
+    let result = run_upload(destination, UploadPng::Path(path), cancel, progress);
     drop(cleanup);
     result
+}
+
+enum UploadPng {
+    Path(std::path::PathBuf),
+    Bytes(Vec<u8>),
 }
 
 fn write_probe_png(root: &Path) -> Result<std::path::PathBuf> {
@@ -1800,7 +1815,7 @@ fn write_probe_png(root: &Path) -> Result<std::path::PathBuf> {
 
 fn run_upload(
     destination: &UploadDestination,
-    path: &Path,
+    source: UploadPng,
     cancel: UploadCancellation,
     progress: Option<UploadProgressReporter>,
 ) -> Result<UploadOutcome> {
@@ -1813,7 +1828,7 @@ fn run_upload(
         tokio::select! {
             biased;
             _ = cancel.0.notified() => anyhow::bail!("Upload canceled. The server may already have received the file."),
-            result = tokio::time::timeout(Duration::from_secs(60), transfer(destination, path, url, progress)) => {
+            result = tokio::time::timeout(Duration::from_secs(60), transfer(destination, source, url, progress)) => {
                 result.context("Upload exceeded its 60 second deadline; the server may have received the file")?
             }
         }
@@ -1822,30 +1837,41 @@ fn run_upload(
 
 async fn transfer(
     destination: &UploadDestination,
-    path: &Path,
+    source: UploadPng,
     url: reqwest::Url,
     progress: Option<UploadProgressReporter>,
 ) -> Result<UploadOutcome> {
-    ensure!(path.is_absolute(), "Upload source must be an absolute path");
-    let mut file = tokio::fs::File::open(path)
-        .await
-        .context("Could not open the saved PNG")?;
-    file.set_max_buf_size(64 * 1024);
-    let metadata = file.metadata().await?;
-    ensure!(
-        metadata.is_file()
-            && metadata.len() >= 8
-            && metadata.len() <= crate::MAX_CAPTURE_BYTES + 16 * 1024 * 1024,
-        "PNG file exceeds the upload size limit or is not a regular file"
-    );
-    let mut signature = [0; 8];
-    file.read_exact(&mut signature).await?;
-    ensure!(
-        signature == [137, 80, 78, 71, 13, 10, 26, 10],
-        "Upload source is not a PNG"
-    );
-    file.rewind().await?;
-    let length = metadata.len();
+    const PNG_SIGNATURE: [u8; 8] = [137, 80, 78, 71, 13, 10, 26, 10];
+    let (length, png, mut file) = match source {
+        UploadPng::Path(path) => {
+            ensure!(path.is_absolute(), "Upload source must be an absolute path");
+            let mut file = tokio::fs::File::open(&path)
+                .await
+                .context("Could not open the saved PNG")?;
+            file.set_max_buf_size(64 * 1024);
+            let metadata = file.metadata().await?;
+            ensure!(
+                metadata.is_file()
+                    && metadata.len() >= 8
+                    && metadata.len() <= crate::MAX_CAPTURE_BYTES + 16 * 1024 * 1024,
+                "PNG file exceeds the upload size limit or is not a regular file"
+            );
+            let mut signature = [0; 8];
+            file.read_exact(&mut signature).await?;
+            ensure!(signature == PNG_SIGNATURE, "Upload source is not a PNG");
+            file.rewind().await?;
+            (metadata.len(), None, Some(file))
+        }
+        UploadPng::Bytes(png) => {
+            ensure!(
+                png.len() >= 8
+                    && (png.len() as u64) <= crate::MAX_CAPTURE_BYTES + 16 * 1024 * 1024,
+                "PNG file exceeds the upload size limit or is not a regular file"
+            );
+            ensure!(png.starts_with(&PNG_SIGNATURE), "Upload source is not a PNG");
+            (png.len() as u64, Some(png), None)
+        }
+    };
     let client = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
         .retry(reqwest::retry::never())
@@ -1862,18 +1888,25 @@ async fn transfer(
     let resource_url =
         matches!(destination.response, Some(UploadResponse::RequestUrl)).then(|| url.to_string());
     let mut request = if !destination.json.is_empty() {
-        let mut png = Vec::new();
-        png.try_reserve(length as usize)
-            .context("PNG file exceeds available memory for a JSON body")?;
-        let mut buf = vec![0u8; 64 * 1024];
-        let mut remaining = length;
-        while remaining > 0 {
-            let want = buf.len().min(remaining as usize);
-            let n = file.read(&mut buf[..want]).await?;
-            ensure!(n > 0, "PNG file ended before the declared size");
-            png.extend_from_slice(&buf[..n]);
-            remaining -= n as u64;
-        }
+        let png = match png {
+            Some(png) => png,
+            None => {
+                let mut file = file.take().context("PNG file is missing")?;
+                let mut png = Vec::new();
+                png.try_reserve(length as usize)
+                    .context("PNG file exceeds available memory for a JSON body")?;
+                let mut buf = vec![0u8; 64 * 1024];
+                let mut remaining = length;
+                while remaining > 0 {
+                    let want = buf.len().min(remaining as usize);
+                    let n = file.read(&mut buf[..want]).await?;
+                    ensure!(n > 0, "PNG file ended before the declared size");
+                    png.extend_from_slice(&buf[..n]);
+                    remaining -= n as u64;
+                }
+                png
+            }
+        };
         let json_bytes = json_request_body(&destination.json, &png)?;
         drop(png);
         let total = json_bytes.len() as u64;
@@ -1906,17 +1939,32 @@ async fn transfer(
                 total: length,
             });
         }
-        let reader = ProgressReader {
-            reader: file.take(length),
-            progress,
-            prepared: 0,
-            total: length,
-            last: std::time::Instant::now(),
+        let body = if let Some(png) = png {
+            let reader = ProgressReader {
+                reader: std::io::Cursor::new(png),
+                progress,
+                prepared: 0,
+                total: length,
+                last: std::time::Instant::now(),
+            };
+            reqwest::Body::wrap_stream(tokio_util::io::ReaderStream::with_capacity(
+                reader,
+                64 * 1024,
+            ))
+        } else {
+            let file = file.take().context("PNG file is missing")?;
+            let reader = ProgressReader {
+                reader: file.take(length),
+                progress,
+                prepared: 0,
+                total: length,
+                last: std::time::Instant::now(),
+            };
+            reqwest::Body::wrap_stream(tokio_util::io::ReaderStream::with_capacity(
+                reader,
+                64 * 1024,
+            ))
         };
-        let body = reqwest::Body::wrap_stream(tokio_util::io::ReaderStream::with_capacity(
-            reader,
-            64 * 1024,
-        ));
         match destination.method {
             UploadMethod::Post => {
                 let part = reqwest::multipart::Part::stream_with_length(body, length)
@@ -5072,7 +5120,13 @@ mod tests {
             .unwrap()
             .with_deletion("{json:result.delete}")
             .unwrap();
-        let outcome = run_upload(&extras, &path, UploadCancellation::default(), None).unwrap();
+        let outcome = run_upload(
+            &extras,
+            UploadPng::Path(path.clone()),
+            UploadCancellation::default(),
+            None,
+        )
+        .unwrap();
         assert_eq!(outcome.url, "https://example.invalid/share/abc");
         assert_eq!(
             outcome.thumbnail.as_deref(),
@@ -5152,6 +5206,51 @@ mod tests {
         let error = upload_png(&missing, &path, UploadCancellation::default()).unwrap_err();
         assert!(error.to_string().contains("XML"));
         let _ = task.join().unwrap();
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn in_memory_png_upload_rejects_invalid_buffers_without_connecting() -> Result<()> {
+        let destination = UploadDestination::manual(
+            "https://example.invalid/upload".into(),
+            UploadMethod::Post,
+            "file".into(),
+            Some("/url".into()),
+            false,
+        )?;
+        let cancel = UploadCancellation::default();
+        assert!(upload_png_bytes_with_progress(&destination, Vec::new(), cancel.clone(), None).is_err());
+        assert!(
+            upload_png_bytes_with_progress(&destination, b"not a png".to_vec(), cancel, None)
+                .is_err()
+        );
+        Ok(())
+    }
+
+    #[test]
+    #[ignore = "uses a local loopback HTTP server and synthetic PNG; no external connections"]
+    fn upload_sends_encoded_pixels_without_a_library_file() {
+        let (root, path) = fixture();
+        let png = std::fs::read(&path).unwrap();
+        std::fs::remove_file(&path).unwrap();
+        let (url, server) = server(
+            response(r#"{"result":{"url":"https://example.invalid/share/memory"}}"#),
+            None,
+            Duration::ZERO,
+        );
+        assert_eq!(
+            upload_png_bytes_with_progress(
+                &destination(url),
+                png,
+                UploadCancellation::default(),
+                None
+            )
+            .unwrap()
+            .url,
+            "https://example.invalid/share/memory"
+        );
+        let _ = server.join().unwrap();
+        assert!(!path.exists());
         std::fs::remove_dir_all(root).unwrap();
     }
 

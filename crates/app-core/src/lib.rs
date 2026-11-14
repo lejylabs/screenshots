@@ -54,8 +54,8 @@ pub use upload::{
     NamedUploadDestination, UploadAuthentication, UploadCancellation, UploadConfiguration,
     UploadDestination, UploadDestinationCatalog, UploadMethod, UploadOutcome, UploadProgress,
     UploadProgressReceiver,
-    UploadProgressReporter, probe_upload, upload_png, upload_png_with_progress,
-    upload_progress_channel,
+    UploadProgressReporter, probe_upload, upload_png, upload_png_bytes_with_progress,
+    upload_png_with_progress, upload_progress_channel,
 };
 
 pub use clipboard::{ImageClipboard, load_editor_image, load_png_thumbnail, load_saved_png};
@@ -78,7 +78,7 @@ pub use desktop_window::{DesktopWindow, cursor_position, foreground_window_captu
 pub use capture::{
     CaptureBackend, CaptureCapabilities, CaptureError, CaptureRequest, CapturedImage, DisplayInfo, DisplayGeometry, RememberedRegion,
     MAX_CAPTURE_BYTES, PixelFormat, WindowInfo, XcapBackend, capture_output_dir, export_saved_png, export_saved_png_as, ImageExportFormat,
-    validate_image_size,
+    png_without_metadata, validate_image_size,
 };
 
 pub fn version() -> &'static str {

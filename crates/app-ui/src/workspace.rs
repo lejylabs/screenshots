@@ -571,10 +571,21 @@ impl Render for CaptureWorkspace {
                     .child(div().font_weight(gpui::FontWeight::SEMIBOLD).child("Share your latest screenshot"))
                     .child(div().text_sm().text_color(colors.muted_foreground).child(
                         self.last_saved.as_ref().and_then(|path| path.file_name()).map(|name| name.to_string_lossy().into_owned())
-                            .unwrap_or_else(|| "Save a screenshot first, or choose an image from your library.".into())))
+                            .or_else(|| self.last_capture.is_some().then(|| "Latest screenshot in memory · not saved to the library".into()))
+                            .unwrap_or_else(|| "Capture, copy or save a screenshot first, or choose an image from your library.".into())))
+                    .child(div().text_sm().text_color(colors.muted_foreground).child(
+                        if self.strip_metadata_on_upload {
+                            "Strip metadata re-encodes saved PNG pixels before upload and drops ancillary chunks such as tEXt and eXIf. The original file is unchanged. Editor and unsaved captures already send pixels only. Library export still copies stored bytes."
+                        } else {
+                            "Saved-file uploads send stored PNG bytes, including existing metadata. Enable Strip metadata to re-encode pixels first. Editor and unsaved captures already send pixels only."
+                        }))
+                    .child(gpui::component::checkbox::Checkbox::new("strip-upload-metadata").label("Strip metadata on upload")
+                        .checked(self.strip_metadata_on_upload)
+                        .disabled(self.settings_loading || self.settings_saving || self.upload_config_loading || self.upload_cancel.is_some())
+                        .on_change(cx.listener(|this, checked, _, cx| this.persist_strip_metadata_on_upload(*checked, cx))))
                     .child(div().flex().flex_wrap().gap_2()
                         .child(ui_button(cx, "upload-saved-png", "Upload image", busy || self.upload_config_loading || self.upload_cancel.is_some()
-                            || self.upload_destination.is_none() || self.last_saved.is_none(), true,
+                            || self.upload_destination.is_none() || (self.last_saved.is_none() && self.last_capture.is_none()), true,
                             cx.listener(|this, _, _, cx| this.start_upload(cx))))
                         .when(self.upload_cancel.is_some() && !self.upload_probe, |row| row.child(capture_button(cx, "cancel-upload", "Cancel upload", false,
                             cx.listener(|this, _, _, cx| this.cancel_upload(cx)))))

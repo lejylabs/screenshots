@@ -1,5 +1,18 @@
 # Functional gap analysis: screenshots and ShareX
 
+Implementation follow-up (2026-11-14, working tree): Uploads **Strip metadata
+on upload** re-encodes saved PNG pixels before transfer and drops ancillary
+chunks. The original file is unchanged. Editor and unsaved captures already send
+pixels only. Library export still copies stored bytes. Secret-store platforms
+other than Windows remain missing. See PLAN.md's explicit metadata policy slice.
+
+Implementation follow-up (2026-11-14, working tree): Uploads can send the
+latest in-memory capture or editor pixels as PNG without a library file. The
+editor **Upload** action flattens the document, keeps RAM pixels, and starts the
+existing transfer. Saved PNG uploads still send file bytes. Secret-store
+platforms other than Windows remain missing. See PLAN.md's upload finalized
+editor pixels slice.
+
 Implementation follow-up (2026-11-14, working tree): Destination JSON
 `response.type` `xml` and ShareX `{xml:xpath}` extract a link from the
 already-buffered UTF-8 body with a bounded XPath subset on `roxmltree`. DTD,
@@ -76,8 +89,8 @@ destination defaults slice.
 
 Implementation follow-up (2026-11-14, working tree): Settings can export and
 import a preferences backup JSON (appearance, folder, shortcuts, output profile,
-region presets, JPEG quality, Save as format, filename template, capture delay
-and per-task destination names). A missing backup folder keeps the active save
+region presets, JPEG quality, Save as format, filename template, capture delay,
+per-task destination names and strip-metadata-on-upload). A missing backup folder keeps the active save
 folder. Upload destinations, history, images and OS credentials stay out of the
 file. Per-task defaults are implemented in the later 2026-11-14 follow-up.
 Custom request headers are implemented in the later 2026-11-14 follow-up.
@@ -356,7 +369,7 @@ cut-out/background editing and output actions integrated into tasks.
 | Effect order | Partial: drawing annotations reorder; blur/pixelation are source-effect stages and opaque redaction is last. Arbitrary effect/drawing order is unavailable. Make restrictions clear or implement a consistent ordered document model. Keep opaque-redaction safety explicit. | A/B |
 | Advanced annotations | Missing speech balloons, inserted image/logo/clipboard objects, cursor stamps, emoji, magnify, clone/smart eraser, annotation rotation and richer arrow/shape options. | B/C |
 | Canvas and presentation | Missing canvas expansion, cut-out strips, padding/background/shadow composition, watermark and reusable effect/export presets. | B |
-| Editor sharing | Partial: final pixels can be copied/saved, but no direct finalized-document upload or pin action. Upload currently requires a saved PNG. | A/B |
+| Editor sharing | Partial: final pixels can be copied, saved or uploaded; editor **Upload** and Uploads **Upload image** send in-memory PNG when no file exists. Pin action remains missing. Saved-file uploads still send stored bytes. | A/B |
 | Other outputs | Partial: Recent capture and Library More can explicitly copy saved paths as text; Windows also offers Copy file as a single native file reference after worker-side source validation. Unsaved captures and stale library actions are rejected; failures are reported. Native Explorer/attachment/clipboard acceptance remains open. Print, other-platform file transfer and drag-out remain missing. | B |
 | Editable projects | No persistent document/session format. Useful for longer edits, but not asserted here as a prerequisite merely because in-memory undo exists. | Product decision |
 
@@ -384,7 +397,7 @@ files/URLs and configured tasks.
 | Service integrations | No dedicated S3/R2, SFTP/FTP, OAuth/provider integrations or remote file management. Some simple services can already work through our generic POST/PUT path; test service by service. | B/C |
 | Accepted input | PNG files only. No arbitrary file/folder/text/clipboard/URL uploads, batch upload UI, watched-folder workflow or capture-to-link chain. | B |
 | Post-upload behavior | Explicit Copy link exists. Missing optional user-configured automatic copy, link templates/shortening/QR and follow-up tasks. No implicit network/browser action should be added. | A/B |
-| Metadata handling | Edited exports flatten pixels. Existing imported PNG uploads and bulk exports preserve source bytes/metadata; no explicit metadata-inspection/sanitization option. | A before privacy claims; B for full tooling |
+| Metadata handling | Partial: edited exports and editor/in-memory uploads encode pixels only. A saved **Strip metadata on upload** choice re-encodes saved PNG files before transfer and leaves originals unchanged. Library export still copies stored bytes; there is no metadata inspector or original-file sanitizer. | A before privacy claims; B for full tooling |
 | Secret stores | Windows Credential Manager lookup, native Save credential entry and Remove credential deletion exist; macOS Keychain and Linux Secret Service remain missing. | A for relevant platform releases |
 
 Evidence: [profile/method/response schema and validation](../crates/app-core/src/upload.rs),

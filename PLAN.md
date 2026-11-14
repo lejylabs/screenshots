@@ -23,7 +23,7 @@ This section is the current continuation brief. The numbered sections below cont
 - **GPUI Kit rewrite (2026-11-11):** the complete native presentation uses Kit 0.9.1 / GPUI 0.3.12: Sidebar, Button, Input, Checkbox, RadioGroup, PopupMenu, Kbd and bundled Lucide icons. Dark stays the default; Oldschool keeps compact square controls and colorful icons. Every window has a Base Root, with transparent surfaces preserved for overlays. Typed content access preserves native lifecycle jobs and waiting for work on Quit. Library search/menu callbacks retain byte, paging and stale-result bounds. The image canvas and bounded source-label editor keep their domain-specific contracts. See [the rewrite and measured evidence](docs/ui-redesign.md).
 - **Windows functional prototype:** tray/resident lifecycle, single-instance forwarding, hotkeys, display/window/region capture, countdown, clipboard, PNG output and save-folder settings. Graphics attach on demand and detach when the last UI consumer closes.
 - **Shared editor:** crop, shapes, arrows, lines/endpoints, pen, text/style, numbering, highlight/spotlight, blur, pixelation and opaque redaction; selection/transforms, duplicate/reorder, bounded metadata undo/redo and zoom/pan. Copy, Save and Save & copy are explicit. Original files are preserved when editing a copy.
-- **Storage/sharing:** paged SQLite capture history with prefix search, filters, PNG import/relink, explicit preview, bounded selection/removal/export; explicit configurable POST/PUT uploads with bounded custom request headers, query parameters, extra POST form fields and POST JSON bodies, progress/cancel, remembered credential-free profiles, named destinations, per-task destination defaults and upload history. Windows Uploads can save Bearer/API-key/Basic secrets to Credential Manager. Other secret-store integrations remain pending.
+- **Storage/sharing:** paged SQLite capture history with prefix search, filters, PNG import/relink, explicit preview, bounded selection/removal/export; explicit configurable POST/PUT uploads with bounded custom request headers, query parameters, extra POST form fields and POST JSON bodies, progress/cancel, remembered credential-free profiles, named destinations, per-task destination defaults, an optional strip-metadata-on-upload re-encode and upload history. Windows Uploads can save Bearer/API-key/Basic secrets to Credential Manager. Other secret-store integrations remain pending.
 - **Current main UI:** a responsive 200/208-logical-pixel sidebar with Recent capture / Library / Displays & windows / Uploads / Settings. Main windows start at 1060×760 with a 680×480 minimum. Content scrolls at compact sizes; library rows are paged, identified by database ID and expose Kit menus. Switching pages releases search/preview state and cancels stale requests. A thumbnail gallery remains a separate feature.
 - **Current editor UI:** grouped Kit tool buttons, accessible labels/shortcut tooltips, contextual selection actions, swatches and separate Copy / Save / Save & copy actions. Toolbar scrolling leaves bounded image space. The in-memory canvas and exported image algorithms remain in Rust.
 
@@ -50,6 +50,7 @@ priorities do not establish implementation or runtime acceptance.
 3. **Sharing and library:** native destination/auth setup, named destinations,
    sharing finalized editor pixels, explicit metadata policy and a bounded
    thumbnail gallery. Preserve truthful outcomes and explicit network consent.
+   Metadata policy is a saved upload choice; a thumbnail gallery remains open.
 4. **Major capabilities:** scrolling capture, OCR/QR, pinning and video/GIF
    recording, each with its own resource budget, cancellation and native checks.
 5. **Advanced parity:** richer capture/editor/effect behavior, custom-uploader
@@ -819,7 +820,8 @@ measurement is claimed for this bounded export.
 
 Settings offers Export settings and Import settings. Export writes the current
 appearance, save folder, shortcuts, output profile, region presets, JPEG quality,
-Save as format, filename template, capture delay and per-task destination names
+Save as format, filename template, capture delay, per-task destination names and
+the strip-metadata-on-upload choice
 into a user-chosen JSON file
 of at most 64 KiB. Import validates that backup, then replaces settings.json.
 If the backup folder is missing, the active save folder is kept and the rest of
@@ -1110,6 +1112,54 @@ and that a missing path fails the upload.
 Native keyboard/IME/accessibility, packaged restart workflow and
 latency/process/GPU/resource acceptance remain open; no new performance
 measurement is claimed for this bounded XML parse.
+
+#### Current feature slice: upload finalized editor pixels
+
+Uploads **Upload image** sends either the last saved PNG or, when no file exists,
+an in-memory PNG encoded from the latest capture/editor pixels. The editor
+exposes **Upload** next to Copy/Save; it flattens the current document, keeps the
+pixels in RAM, does not write a library file or copy the clipboard, then starts
+the existing transfer. Saved PNGs still upload their file bytes and metadata.
+The action stays explicit: no destination, no pixels, a busy session or an
+in-progress editor close from the Uploads page blocks it. Upload history records
+the filename template or `screenshot.png` without creating that path. Origin-scoped
+secrets and the 1 MiB response cap stay unchanged. GPUI visual design is unchanged
+beyond the existing Kit button.
+
+Resource cost is one encoded PNG buffer on the existing upload worker, bounded by
+the capture byte limit. There is no new dependency, runtime, queue, cache, watcher
+or idle timer. Constructor and headless UI fixtures verify the Uploads button
+enables for an unsaved last capture, busy/editor-closing guards, and that the
+editor shows a disabled Upload control without a destination. A regular core
+fixture encodes pixels to a PNG signature/round-trip and rejects invalid buffers
+without connecting. An ignored loopback fixture uploads those bytes after deleting
+the library file.
+Native keyboard/IME/accessibility, packaged restart workflow and
+latency/process/GPU/resource acceptance remain open; no new performance
+measurement is claimed for this bounded in-memory upload.
+
+#### Current feature slice: explicit metadata policy
+
+Uploads **Strip metadata on upload** is a saved settings choice, default off.
+When enabled, file uploads (Uploads **Upload image** of a saved PNG and Library
+**Upload PNG**) re-encode pixels on the existing worker and send that PNG buffer.
+Ancillary chunks such as `tEXt`, `zTXt`, `iTXt`, `eXIf` and `tIME` are dropped.
+The original file is unchanged. Editor **Upload** and unsaved in-memory captures
+already encode pixels only. Destination tests still send the throwaway 1×1 PNG.
+Library **Export selected** still copies stored bytes. Blur/pixelation remain
+visual tools, not sanitization, and this is not forensic deletion.
+
+Resource cost is one decode plus one encode on the existing upload worker,
+bounded by the capture byte limit. There is no new dependency, runtime, queue,
+cache, watcher or idle timer. Constructor and headless UI fixtures verify the
+checkbox is present and idle, busy guards, and that a settings backup includes
+the flag without importing. A regular core fixture injects a `tEXt` chunk,
+re-encodes pixels, leaves the source file unchanged and rejects invalid buffers.
+Legacy settings without the field default to off; other settings saves preserve
+an enabled choice.
+Native keyboard/IME/accessibility, packaged restart workflow and
+latency/process/GPU/resource acceptance remain open; no new performance
+measurement is claimed for this bounded re-encode.
 
 #### Current feature slice: configurable Windows global hotkeys
 

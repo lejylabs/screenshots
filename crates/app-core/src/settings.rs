@@ -149,6 +149,8 @@ pub struct CaptureSettings {
     pub capture_delay_seconds: u8,
     #[serde(default)]
     pub upload_task_defaults: [String; 6],
+    #[serde(default)]
+    pub strip_metadata_on_upload: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -262,6 +264,7 @@ impl CaptureSettings {
             filename_template: String::new(),
             capture_delay_seconds: default_capture_delay(),
             upload_task_defaults: std::array::from_fn(|_| String::new()),
+            strip_metadata_on_upload: false,
         })
     }
 
@@ -314,6 +317,11 @@ impl CaptureSettings {
         Ok(self)
     }
 
+    pub fn with_strip_metadata_on_upload(mut self, strip: bool) -> Self {
+        self.strip_metadata_on_upload = strip;
+        self
+    }
+
     pub(crate) fn config_path() -> Result<PathBuf> {
         Ok(ProjectDirs::from("", "lejylabs", "screenshots")
             .context("Application settings folder is unavailable")?
@@ -359,7 +367,8 @@ impl CaptureSettings {
             .with_export_format(settings.export_format)
             .with_filename_template(settings.filename_template)?
             .with_capture_delay(settings.capture_delay_seconds)?
-            .with_upload_task_defaults(settings.upload_task_defaults)?)
+            .with_upload_task_defaults(settings.upload_task_defaults)?
+            .with_strip_metadata_on_upload(settings.strip_metadata_on_upload))
     }
 
     /// Write a settings backup without secrets, uploads or overwriting.
@@ -973,6 +982,7 @@ mod tests {
         assert_eq!(imported.hotkeys.0[0], "Ctrl+Alt+Q");
         assert_eq!(imported.upload_task_defaults[0], "Host");
         assert!(imported.upload_task_defaults[1].is_empty());
+        assert!(!imported.strip_metadata_on_upload);
         let moved = CaptureSettings::for_directory(other.clone())?
             .with_theme(UiTheme::Default)
             .with_output_profile(CaptureOutputProfile::SaveOnly)
@@ -1074,6 +1084,45 @@ mod tests {
                 .all(String::is_empty)
         );
         fs::remove_file(path)?;
+        fs::remove_dir(root)?;
+        Ok(())
+    }
+
+    #[test]
+    fn strip_metadata_on_upload_persists_defaults_and_survives_other_saves() -> Result<()> {
+        let root = std::env::temp_dir().join(format!(
+            "screenshots-strip-metadata-settings-{}",
+            uuid::Uuid::new_v4()
+        ));
+        fs::create_dir_all(&root)?;
+        let path = root.join("settings.json");
+        CaptureSettings::for_directory(root.clone())?
+            .with_theme(UiTheme::Oldschool)
+            .with_jpeg_quality(73)?
+            .with_strip_metadata_on_upload(true)
+            .save_at(&path)?;
+        let loaded = CaptureSettings::load_at(&path, root.clone())?;
+        assert!(loaded.strip_metadata_on_upload);
+        assert_eq!(loaded.theme, UiTheme::Oldschool);
+        assert_eq!(loaded.jpeg_quality, 73);
+        loaded.with_theme(UiTheme::Default).save_at(&path)?;
+        let loaded = CaptureSettings::load_at(&path, root.clone())?;
+        assert!(loaded.strip_metadata_on_upload);
+        assert_eq!(loaded.theme, UiTheme::Default);
+        let backup = root.join("backup.json");
+        loaded.with_strip_metadata_on_upload(true).export_at(&backup)?;
+        let (imported, kept) = CaptureSettings::import_at(&backup, root.clone())?;
+        assert!(!kept);
+        assert!(imported.strip_metadata_on_upload);
+        let mut stored: serde_json::Value = serde_json::from_slice(&fs::read(&path)?)?;
+        stored
+            .as_object_mut()
+            .unwrap()
+            .remove("strip_metadata_on_upload");
+        fs::write(&path, serde_json::to_vec(&stored)?)?;
+        assert!(!CaptureSettings::load_at(&path, root.clone())?.strip_metadata_on_upload);
+        fs::remove_file(path)?;
+        fs::remove_file(backup)?;
         fs::remove_dir(root)?;
         Ok(())
     }

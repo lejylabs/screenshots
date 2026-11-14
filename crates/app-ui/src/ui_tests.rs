@@ -623,6 +623,12 @@ fn open_image_preserves_source_and_opens_without_output(cx: &mut TestAppContext)
         let editor = state.editor.unwrap().read(cx).unwrap();
         assert_eq!(editor.source.pixels.dimensions(), (3, 2));
     });
+    let editor = cx.update(|cx| handle.read(cx).unwrap().editor.unwrap());
+    cx.update_window(editor.into(), |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.try_find("export-upload").is_some());
+        assert_eq!(window.find("export-upload").disabled(), Some(true));
+    }).unwrap();
     assert_eq!(std::fs::read(&path).unwrap(), original);
     assert_eq!(std::fs::read_dir(&root).unwrap().count(), 1);
     std::fs::remove_file(&path).unwrap();
@@ -1995,6 +2001,62 @@ fn load_destination_applies_xml_result_without_uploading_or_persisting(cx: &mut 
 }
 
 #[gpui::test]
+fn upload_image_accepts_unsaved_capture_without_writing_library(cx: &mut TestAppContext) {
+    let handle = open_workspace(cx);
+    handle.update(cx, |this, _, cx| {
+        this.last_capture = Some(CapturedImage {
+            width: 1,
+            height: 1,
+            pixels: Arc::new(image::RgbaImage::new(1, 1)),
+            png_path: PathBuf::from("unsaved.png"),
+            display_id: "fixture".into(),
+            window_id: None,
+            elapsed_ms: 0,
+            source_format: app_core::PixelFormat::Rgba8UnormSrgb,
+            display_geometry: None,
+        });
+        this.show_page(ControlPage::Uploads, cx);
+    }).unwrap();
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.scroll("setup-upload-destination", gpui::ScrollDelta::Pixels(point(px(0.), px(-450.))), cx);
+        window.render_frame(cx);
+        assert_eq!(window.find("upload-saved-png").disabled(), Some(true));
+        assert_eq!(window.find("strip-upload-metadata").checked(), Some(false));
+        assert_ne!(window.find("strip-upload-metadata").disabled(), Some(true));
+    }).unwrap();
+    handle.update(cx, |this, _, cx| {
+        this.upload_destination = Some(app_core::UploadDestination::manual(
+            "https://memory.invalid/upload".into(),
+            app_core::UploadMethod::Post, "file".into(), None, false).unwrap());
+        this.show_page(ControlPage::Uploads, cx);
+    }).unwrap();
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.scroll("setup-upload-destination", gpui::ScrollDelta::Pixels(point(px(0.), px(-450.))), cx);
+        window.render_frame(cx);
+        assert_ne!(window.find("upload-saved-png").disabled(), Some(true));
+    }).unwrap();
+    handle.update(cx, |this, _, cx| {
+        this.saving = true;
+        this.start_upload(cx);
+        assert!(this.upload_cancel.is_none());
+        this.saving = false;
+        this.editor_closing = true;
+        this.start_upload(cx);
+        assert!(this.upload_cancel.is_none());
+        this.editor_closing = false;
+        this.settings_saving = true;
+        this.persist_strip_metadata_on_upload(true, cx);
+        assert!(!this.strip_metadata_on_upload);
+        this.settings_saving = false;
+        assert!(this.last_saved.is_none());
+        assert!(this.last_capture.is_some());
+        this.show_page(ControlPage::Sources, cx);
+    }).unwrap();
+}
+
+#[gpui::test]
 fn settings_backup_export_writes_a_chosen_file_without_importing(cx: &mut TestAppContext) {
     let handle = open_workspace(cx);
     let root = std::env::temp_dir().join(format!("screenshots-settings-backup-ui-{}", std::process::id()));
@@ -2003,6 +2065,7 @@ fn settings_backup_export_writes_a_chosen_file_without_importing(cx: &mut TestAp
         this.output_directory = Some(root.clone());
         this.jpeg_quality = 73;
         this.filename_template = "Shot-{date}".into();
+        this.strip_metadata_on_upload = true;
         this.output_profile = CaptureOutputProfile::CopyOnly;
         this.capture_delay_seconds = 7;
         this.upload_destination = Some(app_core::UploadDestination::manual(
@@ -2042,6 +2105,7 @@ fn settings_backup_export_writes_a_chosen_file_without_importing(cx: &mut TestAp
         assert!(!exported.contains("secret"));
         assert!(!exported.contains("kept.invalid"));
         assert!(exported.contains("Shot-{date}") && exported.contains("copy_only"));
+        assert!(exported.contains("\"strip_metadata_on_upload\": true"));
         assert_eq!(this.jpeg_quality, 73);
         assert_eq!(this.upload_destination.as_ref().unwrap().origin(), "https://kept.invalid");
         assert_eq!(this.upload_url.as_deref(), Some("https://kept.invalid/share"));

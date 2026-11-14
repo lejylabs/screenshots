@@ -624,6 +624,12 @@ mod tests {
             png_path: root.join("source.png"), display_id: "fixture".into(), window_id: None,
             elapsed_ms: 0, source_format: PixelFormat::Rgba8UnormSrgb, display_geometry: None };
         shot.save_png()?;
+        let encoded = shot.png_bytes()?;
+        assert!(encoded.starts_with(&[137, 80, 78, 71, 13, 10, 26, 10]));
+        assert_eq!(
+            image::load_from_memory(&encoded)?.into_rgba8(),
+            *shot.pixels
+        );
         let before = fs::read(&shot.png_path)?;
         for extension in ["png", "jpg", "webp"] {
             let target = root.join(format!("half.{extension}"));
@@ -666,6 +672,88 @@ mod tests {
         assert_eq!(fs::read_dir(&root)?.count(), 1);
         fs::remove_file(shot.png_path)?; fs::remove_dir(root)?;
         Ok(())
+    }
+
+    #[test]
+    fn png_without_metadata_reencodes_pixels_and_leaves_the_source_file() -> anyhow::Result<()> {
+        let root = std::env::temp_dir().join(format!("screenshots-png-sanitize-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&root)?;
+        let path = root.join("source.png");
+        let pixels = RgbaImage::from_pixel(2, 2, image::Rgba([12, 34, 56, 78]));
+        pixels.save(&path)?;
+        let original = fs::read(&path)?;
+        let with_text = insert_png_text_chunk(&original, "Comment", "secret location")?;
+        fs::write(&path, &with_text)?;
+        assert!(png_chunk_types(&with_text)?.iter().any(|chunk| chunk == b"tEXt"));
+        let sanitized = png_without_metadata(&path)?;
+        assert!(sanitized.starts_with(&[137, 80, 78, 71, 13, 10, 26, 10]));
+        assert!(!png_chunk_types(&sanitized)?.iter().any(|chunk| {
+            matches!(chunk, b"tEXt" | b"zTXt" | b"iTXt" | b"eXIf" | b"tIME")
+        }));
+        assert_eq!(image::load_from_memory(&sanitized)?.into_rgba8(), pixels);
+        assert_eq!(fs::read(&path)?, with_text);
+        let missing = root.join("missing.png");
+        assert!(png_without_metadata(&missing).is_err());
+        assert!(!missing.exists());
+        fs::write(&path, b"not a png")?;
+        assert!(png_without_metadata(&path).is_err());
+        assert_eq!(fs::read(&path)?, b"not a png");
+        fs::remove_file(path)?;
+        fs::remove_dir(root)?;
+        Ok(())
+    }
+
+    fn png_chunk_types(bytes: &[u8]) -> anyhow::Result<Vec<[u8; 4]>> {
+        anyhow::ensure!(bytes.len() >= 8 && bytes[..8] == [137, 80, 78, 71, 13, 10, 26, 10]);
+        let mut offset = 8;
+        let mut types = Vec::new();
+        while offset + 12 <= bytes.len() {
+            let length = usize::try_from(u32::from_be_bytes(bytes[offset..offset + 4].try_into()?))?;
+            let ty = bytes[offset + 4..offset + 8].try_into()?;
+            types.push(ty);
+            offset = offset
+                .checked_add(12)
+                .and_then(|end| end.checked_add(length))
+                .ok_or_else(|| anyhow::anyhow!("PNG chunk overflow"))?;
+            if ty == *b"IEND" {
+                break;
+            }
+        }
+        Ok(types)
+    }
+
+    fn insert_png_text_chunk(png: &[u8], keyword: &str, text: &str) -> anyhow::Result<Vec<u8>> {
+        let iend = png
+            .windows(8)
+            .position(|window| &window[4..] == b"IEND")
+            .ok_or_else(|| anyhow::anyhow!("PNG IEND missing"))?;
+        let mut payload = Vec::from(keyword.as_bytes());
+        payload.push(0);
+        payload.extend_from_slice(text.as_bytes());
+        let mut chunk = Vec::new();
+        chunk.extend_from_slice(&(u32::try_from(payload.len())?).to_be_bytes());
+        chunk.extend_from_slice(b"tEXt");
+        chunk.extend_from_slice(&payload);
+        chunk.extend_from_slice(&png_crc(&chunk[4..]).to_be_bytes());
+        let mut out = png[..iend].to_vec();
+        out.extend_from_slice(&chunk);
+        out.extend_from_slice(&png[iend..]);
+        Ok(out)
+    }
+
+    fn png_crc(data: &[u8]) -> u32 {
+        let mut crc = 0xffff_ffffu32;
+        for &byte in data {
+            crc ^= u32::from(byte);
+            for _ in 0..8 {
+                crc = if crc & 1 == 1 {
+                    (crc >> 1) ^ 0xedb8_8320
+                } else {
+                    crc >> 1
+                };
+            }
+        }
+        !crc
     }
 
     #[test]
@@ -1223,6 +1311,18 @@ impl CapturedImage {
     pub fn save_png_as(&self, destination: &Path) -> Result<(), CaptureError> {
         write_image_export(&self.pixels, destination, ImageExportFormat::Png, crate::DEFAULT_JPEG_QUALITY)
     }
+
+    /// Encode the current pixels as PNG without writing a library file.
+    pub fn png_bytes(&self) -> Result<Vec<u8>, CaptureError> {
+        encode_png_bytes(&self.pixels)
+    }
+}
+
+/// Re-encode a saved PNG from pixels so ancillary chunks are not sent.
+/// The source file is not modified.
+pub fn png_without_metadata(path: &Path) -> Result<Vec<u8>, CaptureError> {
+    let pixels = crate::load_saved_png(path).map_err(|error| CaptureError::Backend(error.to_string()))?;
+    encode_png_bytes(&pixels)
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -1257,6 +1357,33 @@ impl ImageExportFormat {
     pub fn label(self) -> &'static str {
         match self { Self::Png => "PNG", Self::Jpeg => "JPEG", Self::WebP => "WebP" }
     }
+}
+
+pub(crate) fn encode_png_bytes(pixels: &RgbaImage) -> Result<Vec<u8>, CaptureError> {
+    use image::ImageEncoder as _;
+    validate_image_size(pixels.width(), pixels.height())?;
+    let mut bytes = Vec::new();
+    {
+        use image::codecs::png::{CompressionType, FilterType, PngEncoder};
+        let mut cursor = std::io::Cursor::new(&mut bytes);
+        PngEncoder::new_with_quality(&mut cursor, CompressionType::Fast, FilterType::Adaptive)
+            .write_image(
+                pixels.as_raw(),
+                pixels.width(),
+                pixels.height(),
+                image::ExtendedColorType::Rgba8,
+            )
+            .map_err(|error| CaptureError::Backend(error.to_string()))?;
+    }
+    if bytes.len() < 8
+        || bytes.len() as u64 > MAX_CAPTURE_BYTES + 16 * 1024 * 1024
+        || bytes[..8] != [137, 80, 78, 71, 13, 10, 26, 10]
+    {
+        return Err(CaptureError::Backend(
+            "PNG encoding produced an invalid buffer".into(),
+        ));
+    }
+    Ok(bytes)
 }
 
 fn write_image_export(pixels: &RgbaImage, destination: &Path, format: ImageExportFormat, jpeg_quality: u8) -> Result<(), CaptureError> {
