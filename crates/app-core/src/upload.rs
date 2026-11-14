@@ -369,6 +369,40 @@ pub fn upload_png_with_progress(
     run_upload(destination, path, cancel, Some(progress))
 }
 
+/// Upload a throwaway 1×1 PNG through the existing transfer path, then delete it.
+/// The destination profile, capture library and last-saved image are not modified.
+pub fn probe_upload(
+    destination: &UploadDestination,
+    cancel: UploadCancellation,
+    progress: Option<UploadProgressReporter>,
+) -> Result<String> {
+    let root = std::env::temp_dir().join(format!(
+        "screenshots-upload-probe-{}",
+        uuid::Uuid::new_v4()
+    ));
+    struct Cleanup(std::path::PathBuf);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    std::fs::create_dir_all(&root)?;
+    let cleanup = Cleanup(root.clone());
+    let path = write_probe_png(&root)?;
+    let result = run_upload(destination, &path, cancel, progress);
+    drop(cleanup);
+    result
+}
+
+fn write_probe_png(root: &Path) -> Result<std::path::PathBuf> {
+    std::fs::create_dir_all(root)?;
+    let path = root.join("probe.png");
+    image::RgbaImage::new(1, 1)
+        .save(&path)
+        .context("Could not write the destination test image")?;
+    Ok(path)
+}
+
 fn run_upload(
     destination: &UploadDestination,
     path: &Path,
@@ -733,6 +767,40 @@ mod tests {
             json.len()
         )
         .into_bytes()
+    }
+    fn probe_temp_names() -> std::collections::HashSet<String> {
+        std::fs::read_dir(std::env::temp_dir())
+            .into_iter()
+            .flatten()
+            .filter_map(|entry| entry.ok())
+            .filter_map(|entry| {
+                let name = entry.file_name().into_string().ok()?;
+                name.starts_with("screenshots-upload-probe-")
+                    .then_some(name)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn probe_png_is_tiny_and_probe_upload_cleans_up_without_connecting() -> Result<()> {
+        let root = std::env::temp_dir().join(format!(
+            "screenshots-probe-png-check-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let path = write_probe_png(&root)?;
+        let bytes = std::fs::read(&path)?;
+        assert!(bytes.starts_with(&[137, 80, 78, 71, 13, 10, 26, 10]));
+        assert!(bytes.len() < 1024);
+        let (width, height) = image::image_dimensions(&path)?;
+        assert_eq!((width, height), (1, 1));
+        std::fs::remove_dir_all(&root)?;
+
+        let before = probe_temp_names();
+        let mut config = destination("https://example.invalid/upload".into());
+        config.url = "https://user:pass@example.invalid/upload".into();
+        assert!(probe_upload(&config, UploadCancellation::default(), None).is_err());
+        assert_eq!(before, probe_temp_names());
+        Ok(())
     }
 
     #[test]
@@ -1234,6 +1302,30 @@ mod tests {
         std::fs::write(&path, vec![b' '; 16385]).unwrap();
         assert!(UploadDestination::load(&path).is_err());
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    #[ignore = "uses a local loopback HTTP server and a throwaway 1×1 PNG; no external connections"]
+    fn probe_upload_sends_a_throwaway_png_and_parses_the_returned_link() {
+        let before = probe_temp_names();
+        let (url, server) = server(
+            response(r#"{"result":{"url":"https://example.invalid/share/probe"}}"#),
+            None,
+            Duration::ZERO,
+        );
+        let started = std::time::Instant::now();
+        assert_eq!(
+            probe_upload(&destination(url), UploadCancellation::default(), None).unwrap(),
+            "https://example.invalid/share/probe"
+        );
+        eprintln!(
+            "Synthetic 1×1 probe including runtime/client setup and teardown: {:?}",
+            started.elapsed()
+        );
+        let request = server.join().unwrap();
+        assert!(request.windows(8).any(|chunk| chunk == b"\x89PNG\r\n\x1a\n"));
+        assert!(request.len() < 8192);
+        assert_eq!(before, probe_temp_names());
     }
 
     #[test]

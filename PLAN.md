@@ -586,7 +586,7 @@ HTTPS is required unless the user explicitly checks Allow unencrypted HTTP.
 The shared destination validator rejects embedded credentials, query/fragment
 tokens, invalid fields/pointers and oversized values. Imported profiles retain
 advanced authentication/response configuration. Native Windows credential entry
-is implemented below; connection testing remains separate work.
+and destination connection testing are implemented below.
 
 Use destination validates on the existing worker and applies to this session only;
 the existing Remember action persists it explicitly. Invalid input keeps the
@@ -630,11 +630,38 @@ cache, watcher or idle timer. Constructor and headless UI fixtures verify HTTP
 rejection, empty secrets, duplicate admission, stale-result suppression and that
 status text never echoes the secret, without writing OS credentials or networking.
 An ignored native round-trip writes one uniquely named synthetic credential,
-reads it back and deletes it. Connection tests, credential rotation/deletion UI,
-named destinations and non-Windows secret stores remain separate work.
+reads it back and deletes it. Connection testing is implemented below.
+Credential rotation/deletion UI, named destinations and non-Windows secret
+stores remain separate work.
 Native keyboard/IME/accessibility, real Credential Manager UX and
 latency/process/GPU/resource acceptance remain open; no new performance
 measurement is claimed for this bounded secret-entry path.
+
+#### Current feature slice: destination connection test
+
+Uploads offers Test destination after a destination is present. The action
+uploads a throwaway 1×1 PNG through the existing transfer, auth, redirect,
+deadline and cancellation path, then deletes the local temp file. It does not
+record upload history, change the last capture or last-saved image, or start
+without an explicit click. It reuses the one-active-upload slot; Cancel test
+stops the in-flight request. A successful test shows the returned link for
+Copy link and notes that the server may keep the 1×1 image. Failure keeps the
+previous link and reports Destination unchanged. Real screenshot uploads still
+clear the displayed link when they start.
+
+Resource cost is one unique OS temp directory with a 1×1 PNG, the existing
+upload worker/runtime/client, and the existing progress channel. Drop removes
+the temp directory on success, failure and cancellation. There is no new
+dependency, idle timer, queue or history write. Constructor and headless UI
+fixtures verify button presence, busy/missing-destination guards, cancel
+labeling and that last capture/history stay unchanged, without networking.
+A regular core fixture writes the 1×1 PNG and confirms cleanup when
+destination validation fails before connect. An ignored loopback fixture
+sends the probe through the existing local server. PUT destinations that
+reject an existing target with HTTP 412 still need a unique resource URL.
+Native keyboard/IME/accessibility, real hosting-service interoperability and
+latency/process/GPU/resource acceptance remain open; no new performance
+measurement is claimed for this explicit probe.
 
 #### Current feature slice: configurable Windows global hotkeys
 

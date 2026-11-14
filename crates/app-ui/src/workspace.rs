@@ -372,7 +372,7 @@ impl Render for CaptureWorkspace {
                         .child(div().flex().flex_col().gap_1()
                             .child(div().font_weight(gpui::FontWeight::SEMIBOLD).child("Destination"))
                             .child(div().text_sm().text_color(colors.muted_foreground).child(if self.upload_destination.is_some() { "Ready for an explicit upload" } else { "Connect your own image hosting service" }))))
-                    .child(div().text_sm().text_color(colors.muted_foreground).child("Set up a destination or load a profile. Uploads only start when you choose an image and confirm."))
+                    .child(div().text_sm().text_color(colors.muted_foreground).child("Set up a destination or load a profile. Test destination sends a throwaway 1×1 PNG. Uploads of your screenshots start only when you choose an image and confirm."))
                     .child(div().flex().flex_wrap().gap_2()
                         .child(capture_button(cx, "setup-upload-destination", if self.upload_form_open { "Cancel setup" } else { "Set up destination" },
                             self.upload_config_loading || self.upload_cancel.is_some(), cx.listener(|this, _, _, cx| {
@@ -402,6 +402,13 @@ impl Render for CaptureWorkspace {
                                     this.upload_credential_auth = auth;
                                     cx.notify();
                                 }))))
+                        .when(self.upload_destination.is_some(), |row| row
+                            .child(capture_button(cx, "test-upload-destination", "Test destination",
+                                self.upload_config_loading || self.upload_cancel.is_some(),
+                                cx.listener(|this, _, _, cx| this.start_destination_probe(cx)))))
+                        .when(self.upload_probe && self.upload_cancel.is_some(), |row| row
+                            .child(capture_button(cx, "cancel-upload", "Cancel test", false,
+                                cx.listener(|this, _, _, cx| this.cancel_upload(cx)))))
                         .child(quiet_button(cx, "forget-upload-destination", "Forget destination", self.upload_config_loading || self.upload_cancel.is_some(), false,
                             cx.listener(|this, _, _, cx| this.persist_upload_destination(true, cx)))))
                     .children(self.upload_form_inputs.as_ref().map(|inputs| {
@@ -475,7 +482,7 @@ impl Render for CaptureWorkspace {
                         .child(ui_button(cx, "upload-saved-png", "Upload image", busy || self.upload_config_loading || self.upload_cancel.is_some()
                             || self.upload_destination.is_none() || self.last_saved.is_none(), true,
                             cx.listener(|this, _, _, cx| this.start_upload(cx))))
-                        .when(self.upload_cancel.is_some(), |row| row.child(capture_button(cx, "cancel-upload", "Cancel upload", false,
+                        .when(self.upload_cancel.is_some() && !self.upload_probe, |row| row.child(capture_button(cx, "cancel-upload", "Cancel upload", false,
                             cx.listener(|this, _, _, cx| this.cancel_upload(cx)))))
                         .when(self.upload_url.is_some(), |row| row.child(capture_button(cx, "copy-upload-link", "Copy link", false,
                             cx.listener(|this, _, _, cx| {

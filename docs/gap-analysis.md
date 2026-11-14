@@ -1,10 +1,17 @@
 # Functional gap analysis: screenshots and ShareX
 
+Implementation follow-up (2026-11-14, working tree): Uploads Test destination
+sends a throwaway 1×1 PNG through the existing upload path. It is explicit and
+cancellable, does not record upload history, and does not change the last
+capture. Named destinations, credential rotation/deletion UI and secret-store
+platforms other than Windows remain missing. See PLAN.md's destination
+connection-test slice.
+
 Implementation follow-up (2026-11-13, working tree): Windows Uploads can save a
 Bearer/API-key/Basic credential for the current HTTPS destination into Credential
-Manager. The secret never enters destination JSON. Connection tests, named
-destinations and secret-store platforms other than Windows remain missing. See
-PLAN.md's credential-entry slice.
+Manager. The secret never enters destination JSON. Connection testing is
+implemented in the 2026-11-14 follow-up. Named destinations and secret-store
+platforms other than Windows remain missing. See PLAN.md's credential-entry slice.
 
 Implementation follow-up (2026-11-12, working tree): configurable Windows bindings
 for the three existing capture commands are now implemented. See [scope and
@@ -246,7 +253,7 @@ files/URLs and configured tasks.
 
 | Capability | Current status and gap | Priority |
 | --- | --- | --- |
-| Destination setup | Partial: Uploads offers native credential-free POST/PUT setup with plain-text/JSON link responses, bounded validation and explicit HTTP opt-in; Use is session-only and Remember persists it. Windows Save credential writes Bearer/API-key/Basic secrets to Credential Manager and attaches only the reference to the session destination. JSON profiles retain advanced settings. Connection tests, named destinations, credential deletion/rotation UI and configuration export remain missing. | A |
+| Destination setup | Partial: Uploads offers native credential-free POST/PUT setup with plain-text/JSON link responses, bounded validation and explicit HTTP opt-in; Use is session-only and Remember persists it. Windows Save credential writes Bearer/API-key/Basic secrets to Credential Manager and attaches only the reference to the session destination. JSON profiles retain advanced settings. Test destination sends a throwaway 1×1 PNG through the existing transfer path without recording history. Named destinations, credential deletion/rotation UI and configuration export remain missing. | A |
 | Multiple destinations | Missing saved named destination list, destination switching and per-task defaults. Only one profile is remembered. | A/B |
 | Existing ShareX profiles | Missing `.sxcu` import/export or a documented compatibility subset. Our profile JSON is not the ShareX format. | B |
 | Generic HTTP breadth | Partial: POST multipart/PUT PNG; no custom request headers/arguments/query templates, JSON/form bodies, richer response expressions or deletion/thumbnail result URLs. Compatibility must preserve origin-scoped secrets and response bounds. | B |

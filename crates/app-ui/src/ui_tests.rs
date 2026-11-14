@@ -1128,6 +1128,70 @@ fn upload_credential_form_validates_without_writing_secrets(cx: &mut TestAppCont
 }
 
 #[gpui::test]
+fn upload_destination_probe_stays_idle_without_a_destination_or_saved_image(cx: &mut TestAppContext) {
+    let handle = open_workspace(cx);
+    handle.update(cx, |this, _, cx| {
+        this.show_page(ControlPage::Uploads, cx);
+    }).unwrap();
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.try_find("test-upload-destination").is_none());
+        assert!(window.try_find("cancel-upload").is_none());
+    }).unwrap();
+    handle.update(cx, |this, _, cx| {
+        this.upload_url = Some("https://old.invalid/share/kept".into());
+        this.start_destination_probe(cx);
+        assert!(this.upload_cancel.is_none() && this.upload_generation == 0 && !this.upload_probe);
+        assert_eq!(this.upload_url.as_deref(), Some("https://old.invalid/share/kept"));
+        this.upload_destination = Some(app_core::UploadDestination::manual(
+            "https://old.invalid/upload".into(),
+            app_core::UploadMethod::Post, "file".into(), None, false).unwrap());
+        this.saving = true;
+        this.start_destination_probe(cx);
+        assert!(this.upload_cancel.is_none() && this.upload_generation == 0 && !this.upload_probe);
+        this.saving = false;
+        this.upload_cancel = Some(app_core::UploadCancellation::default());
+        this.upload_generation = 4;
+        this.start_destination_probe(cx);
+        assert_eq!(this.upload_generation, 4);
+        assert!(!this.upload_probe);
+        this.upload_cancel = None;
+        this.upload_generation = 0;
+        this.show_page(ControlPage::Uploads, cx);
+    }).unwrap();
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.scroll("setup-upload-destination", gpui::ScrollDelta::Pixels(point(px(0.), px(-450.))), cx);
+        window.render_frame(cx);
+        assert_ne!(window.find("test-upload-destination").disabled(), Some(true));
+        assert!(window.try_find("cancel-upload").is_none());
+        assert_eq!(window.find("upload-saved-png").disabled(), Some(true));
+    }).unwrap();
+    handle.update(cx, |this, _, cx| {
+        this.upload_probe = true;
+        this.upload_cancel = Some(app_core::UploadCancellation::default());
+        this.show_page(ControlPage::Uploads, cx);
+    }).unwrap();
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        assert_eq!(window.find("test-upload-destination").disabled(), Some(true));
+        assert_ne!(window.find("cancel-upload").disabled(), Some(true));
+        window.click("cancel-upload", cx);
+    }).unwrap();
+    handle.update(cx, |this, _, _| {
+        assert!(this.upload_cancel_requested);
+        assert!(this.upload_status.starts_with("Canceling test"));
+        assert_eq!(this.upload_url.as_deref(), Some("https://old.invalid/share/kept"));
+        assert!(this.last_saved.is_none() && this.last_capture.is_none());
+        assert!(this.upload_history_entries.is_empty());
+        this.upload_cancel = None;
+        this.upload_probe = false;
+        this.upload_generation = 0;
+        this.upload_cancel_requested = false;
+    }).unwrap();
+}
+
+#[gpui::test]
 fn library_copy_path_routes_menu_and_discards_stale_status(cx: &mut TestAppContext) {
     let handle = open_workspace(cx);
     cx.update_window(handle.into(), |_, window, cx| window.press(&shortcut("2"), cx)).unwrap();

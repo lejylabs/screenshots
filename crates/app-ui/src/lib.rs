@@ -208,6 +208,7 @@ pub struct CaptureWorkspace {
     upload_cancel: Option<app_core::UploadCancellation>,
     upload_generation: u64,
     upload_cancel_requested: bool,
+    upload_probe: bool,
     upload_status: String,
     upload_url: Option<String>,
     upload_history_visible: bool,
@@ -632,6 +633,7 @@ impl CaptureWorkspace {
             upload_cancel: None,
             upload_generation: 0,
             upload_cancel_requested: false,
+            upload_probe: false,
             upload_status: "Uploads disabled · Load a destination to enable manual uploads".into(),
             upload_url: None,
             upload_history_visible: false,
@@ -3325,7 +3327,11 @@ impl CaptureWorkspace {
         let Some(path) = self.last_saved.clone() else {
             return;
         };
-        self.start_upload_source(path, cx);
+        self.begin_upload(Some(path), cx);
+    }
+
+    fn start_destination_probe(&mut self, cx: &mut Context<Self>) {
+        self.begin_upload(None, cx);
     }
 
     fn upload_history_image(&mut self, id: i64, revision: u64, cx: &mut Context<Self>) {
@@ -3340,10 +3346,10 @@ impl CaptureWorkspace {
         else {
             return;
         };
-        self.start_upload_source(path, cx);
+        self.begin_upload(Some(path), cx);
     }
 
-    fn start_upload_source(&mut self, path: PathBuf, cx: &mut Context<Self>) {
+    fn begin_upload(&mut self, source: Option<PathBuf>, cx: &mut Context<Self>) {
         if self.quitting
             || self.upload_cancel.is_some()
             || self.upload_config_loading
@@ -3360,24 +3366,38 @@ impl CaptureWorkspace {
         let Some(destination) = self.upload_destination.clone() else {
             return;
         };
+        let probe = source.is_none();
         let cancel = app_core::UploadCancellation::default();
         self.upload_cancel = Some(cancel.clone());
         self.upload_generation = self.upload_generation.wrapping_add(1);
         self.upload_cancel_requested = false;
+        self.upload_probe = probe;
         let generation = self.upload_generation;
         let (reporter, mut progress) = app_core::upload_progress_channel();
-        self.upload_url = None;
-        let filename = path
-            .file_name()
-            .unwrap_or_default()
-            .to_string_lossy()
-            .into_owned();
-        self.upload_status = format!(
-            "Uploading {filename} via {} to {}…",
-            destination.request_method(),
-            destination.origin()
-        );
-        let database = self.history_database.clone();
+        let filename = source
+            .as_ref()
+            .and_then(|path| path.file_name())
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "Test image".into());
+        if probe {
+            self.upload_status = format!(
+                "Testing destination via {} to {}…",
+                destination.request_method(),
+                destination.origin()
+            );
+        } else {
+            self.upload_url = None;
+            self.upload_status = format!(
+                "Uploading {filename} via {} to {}…",
+                destination.request_method(),
+                destination.origin()
+            );
+        }
+        let database = if probe {
+            None
+        } else {
+            self.history_database.clone()
+        };
         let progress_filename = filename.clone();
         cx.spawn(async move |this, cx| {
             while let Some(progress) = progress.next().await {
@@ -3414,7 +3434,13 @@ impl CaptureWorkspace {
         cx.spawn(async move |this, cx| {
             let result = cx
                 .background_spawn(async move {
-                    app_core::upload_png_with_progress(&destination, &path, cancel, reporter)
+                    match source {
+                        Some(path) => app_core::upload_png_with_progress(
+                            &destination,
+                            &path,
+                            cancel,
+                            reporter,
+                        )
                         .map(|url| {
                             let history_error = database
                                 .as_ref()
@@ -3430,33 +3456,53 @@ impl CaptureWorkspace {
                                 .err()
                                 .map(|error| format!("{error:#}"));
                             (url, history_error)
-                        })
-                        .map_err(|error| format!("{error:#}"))
+                        }),
+                        None => app_core::probe_upload(&destination, cancel, Some(reporter))
+                            .map(|url| (url, None)),
+                    }
+                    .map_err(|error| format!("{error:#}"))
                 })
                 .await;
             this.update(cx, |this, cx| {
+                let probe = this.upload_probe;
                 this.upload_cancel = None;
+                this.upload_probe = false;
                 if !this.quitting {
                     match result {
                         Ok((url, history_error)) => {
-                            this.upload_status =
-                                format!("Uploaded {filename} · Link ready · Clipboard unchanged");
-                            this.upload_url = Some(url);
-                            if let Some(error) = history_error {
-                                this.upload_status
-                                    .push_str(&format!(" · History not saved: {error}"));
-                            }
-                            if this.upload_history_loading {
-                                this.upload_history_revision =
-                                    this.upload_history_revision.wrapping_add(1);
-                                if let Some(cancel) = &this.upload_history_cancel {
-                                    cancel.store(true, std::sync::atomic::Ordering::Relaxed);
-                                }
+                            if probe {
+                                this.upload_status = format!(
+                                    "Destination responded · {url} · the server may keep this 1×1 test image · Clipboard unchanged"
+                                );
                             } else {
-                                this.refresh_upload_history(None, cx);
+                                this.upload_status = format!(
+                                    "Uploaded {filename} · Link ready · Clipboard unchanged"
+                                );
+                            }
+                            this.upload_url = Some(url);
+                            if !probe {
+                                if let Some(error) = history_error {
+                                    this.upload_status
+                                        .push_str(&format!(" · History not saved: {error}"));
+                                }
+                                if this.upload_history_loading {
+                                    this.upload_history_revision =
+                                        this.upload_history_revision.wrapping_add(1);
+                                    if let Some(cancel) = &this.upload_history_cancel {
+                                        cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+                                    }
+                                } else {
+                                    this.refresh_upload_history(None, cx);
+                                }
                             }
                         }
-                        Err(error) => this.upload_status = format!("No upload link: {error}"),
+                        Err(error) => {
+                            this.upload_status = if probe {
+                                format!("Destination unchanged: {error}")
+                            } else {
+                                format!("No upload link: {error}")
+                            }
+                        }
                     }
                 }
                 this.finish_quit_if_idle(cx);
@@ -3472,8 +3518,11 @@ impl CaptureWorkspace {
         if let Some(cancel) = &self.upload_cancel {
             self.upload_cancel_requested = true;
             cancel.cancel();
-            self.upload_status =
-                "Canceling upload… The server may already have received the file.".into();
+            self.upload_status = if self.upload_probe {
+                "Canceling test… The server may already have received the file.".into()
+            } else {
+                "Canceling upload… The server may already have received the file.".into()
+            };
             cx.notify();
         }
     }
