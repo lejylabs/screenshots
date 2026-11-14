@@ -1809,7 +1809,7 @@ fn write_output_checked(
     result
 }
 #[cfg(target_os = "windows")]
-fn publish_output(temporary: &Path, destination: &Path) -> std::io::Result<()> {
+pub(crate) fn publish_output(temporary: &Path, destination: &Path) -> std::io::Result<()> {
     use std::os::windows::ffi::OsStrExt;
     use windows_sys::Win32::Storage::FileSystem::{MOVEFILE_WRITE_THROUGH, MoveFileExW};
     let source: Vec<_> = temporary.as_os_str().encode_wide().chain(Some(0)).collect();
@@ -1826,7 +1826,7 @@ fn publish_output(temporary: &Path, destination: &Path) -> std::io::Result<()> {
 }
 
 #[cfg(not(target_os = "windows"))]
-fn publish_output(temporary: &Path, destination: &Path) -> std::io::Result<()> {
+pub(crate) fn publish_output(temporary: &Path, destination: &Path) -> std::io::Result<()> {
     // No partial-file copy fallback on filesystems that cannot publish without replacement.
     fs::hard_link(temporary, destination)
 }

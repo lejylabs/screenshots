@@ -30,6 +30,11 @@ mod blur;
 mod text;
 pub use text::TextAnnotation;
 mod history;
+mod storage;
+pub use storage::{
+    HistoryHealth, PartInspection, backup_history_database, check_history_database,
+    inspect_part_files,
+};
 mod pixelation;
 pub use blur::blur_preview_bgra;
 mod selection;
