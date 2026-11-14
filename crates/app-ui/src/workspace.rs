@@ -1136,6 +1136,39 @@ impl Render for CaptureWorkspace {
                     })))
                 .child(div().text_sm().text_color(colors.muted_foreground).child("Copy only keeps one image in memory without saving. Annotate first produces no output until you choose Copy or Save in the editor. With either option, capture one display or window at a time. Uploads always require a separate action.")))
             .child(div().flex_none().p_5().when(theme.workbench, |panel| panel.p_3()).rounded(px(theme.panel_radius)).bg(colors.group_box).flex().flex_col().gap_3()
+                .child(div().font_weight(gpui::FontWeight::SEMIBOLD).child("Per-task output"))
+                .child(div().text_sm().text_color(colors.muted_foreground).child("Each capture command can keep the session Capture output setting or apply a saved choice when that capture starts. Capture all, display tiles, window tiles and Probe overlays keep the session profile."))
+                .child({
+                    let disabled = busy || self.preview_active || self.output_directory.is_none();
+                    div().id("capture-output-task-profiles").test_support().flex().flex_col().gap_2()
+                        .children((0..app_core::CaptureHotkeys::LABELS.len()).map(|task| {
+                            let selected = match self.output_task_profiles[task] {
+                                None => Some(0),
+                                Some(profile) => CaptureOutputProfile::ALL
+                                    .iter()
+                                    .position(|item| *item == profile)
+                                    .map(|index| index + 1),
+                            };
+                            let labels = [
+                                "Session default",
+                                "Copy only",
+                                "Save only",
+                                "Save and copy",
+                                "Annotate first",
+                            ];
+                            div().flex().flex_col().gap_1()
+                                .child(div().text_sm().child(app_core::CaptureHotkeys::LABELS[task]))
+                                .child(RadioGroup::new(format!("capture-output-task-{task}"))
+                                    .layout(gpui::Axis::Horizontal)
+                                    .children(labels)
+                                    .selected_index(selected)
+                                    .disabled(disabled)
+                                    .on_change(cx.listener(move |this, index, _, cx| {
+                                        this.choose_output_task_profile(task, *index, cx);
+                                    })))
+                        }))
+                }))
+            .child(div().flex_none().p_5().when(theme.workbench, |panel| panel.p_3()).rounded(px(theme.panel_radius)).bg(colors.group_box).flex().flex_col().gap_3()
                 .child(div().font_weight(gpui::FontWeight::SEMIBOLD).child("JPEG export quality"))
                 .child(div().text_sm().child(format!("Active quality: {} · Applies only to JPEG copies created with Save as. PNG and lossless WebP are unchanged. JPEG requires opaque pixels.", self.jpeg_quality)))
                 .children(self.jpeg_quality_input.iter().map(|input| gpui::component::input::Input::new(input)
@@ -1163,7 +1196,7 @@ impl Render for CaptureWorkspace {
             .child(self.hotkey_settings(cx))
             .child(div().flex_none().p_5().when(theme.workbench, |panel| panel.p_3()).rounded(px(theme.panel_radius)).bg(colors.group_box).flex().flex_col().gap_3()
                 .child(div().font_weight(gpui::FontWeight::SEMIBOLD).child("Backup"))
-                .child(div().text_sm().text_color(colors.muted_foreground).child("Export copies appearance, folder, shortcuts, output profile, region presets, JPEG quality, Save as format, filename template and capture delay. Upload destinations, history, images and secrets stay out of the file. Import never starts an upload."))
+                .child(div().text_sm().text_color(colors.muted_foreground).child("Export copies appearance, folder, shortcuts, output profile, per-task output, region presets, JPEG quality, Save as format, filename template, capture delay, per-task destination names and the strip-metadata-on-upload choice. Upload destinations, history, images and secrets stay out of the file. Import never starts an upload."))
                 .child(div().flex().flex_wrap().gap_2()
                     .child(capture_button(cx, "export-settings", "Export settings",
                         unavailable,

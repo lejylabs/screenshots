@@ -36,7 +36,8 @@ Capture and annotate, Active window, Repeat last region and Active display. Save
 that command. Restore defaults saves Ctrl+Shift+S/R/E and disables Active window, Repeat last region and Active display. Input supports Ctrl, Alt,
 Shift and Super with letters, digits, F1–F24 or PrintScreen. Letters/digits need
 Ctrl, Alt or Super. Each string is limited to 64 bytes; normalization precedes
-duplicate detection. Arbitrary command assignment/task profiles remain future work.
+duplicate detection. Arbitrary command assignment remains future work. Per-task
+output profiles are a separate Settings choice.
 
 Settings version 1 gains an optional hotkeys array. Older files retain the original
 defaults. Folder/theme writes preserve bindings, and validation precedes settings

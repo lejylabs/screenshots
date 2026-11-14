@@ -1,5 +1,13 @@
 # Functional gap analysis: screenshots and ShareX
 
+Implementation follow-up (2026-11-14, working tree): Settings can save an
+optional output profile for each of the six capture commands. Starting that
+capture applies the choice without changing the session Capture output setting.
+Empty values keep the session profile. Capture all, display/window tiles and
+Probe overlays keep the session profile. Settings backup stores the six values.
+Secret-store platforms other than Windows remain missing. See PLAN.md's
+per-task output profiles slice.
+
 Implementation follow-up (2026-11-14, working tree): Library decodes at most
 one visible-page PNG thumbnail at a time and caches only the current 20 rows.
 Search/filter/page changes and hiding Library cancel the job and drop images.
@@ -97,7 +105,7 @@ destination defaults slice.
 
 Implementation follow-up (2026-11-14, working tree): Settings can export and
 import a preferences backup JSON (appearance, folder, shortcuts, output profile,
-region presets, JPEG quality, Save as format, filename template, capture delay,
+per-task output, region presets, JPEG quality, Save as format, filename template, capture delay,
 per-task destination names and strip-metadata-on-upload). A missing backup folder keeps the active save
 folder. Upload destinations, history, images and OS credentials stay out of the
 file. Per-task defaults are implemented in the later 2026-11-14 follow-up.
@@ -165,8 +173,9 @@ historical; this follow-up does not establish complete platform/runtime acceptan
 
 Further implementation follow-up (2026-11-12): one saved global quick-capture
 output choice now supports Copy only, Save only, Save and copy and Annotate first.
-Per-shortcut task profiles/chains remain missing. See PLAN.md's output-profile
-slice for scope, multi-image restrictions and verification limits.
+Per-task output overrides are implemented in the later 2026-11-14 follow-up.
+After-capture chains remain missing. See PLAN.md's output-profile slice for
+scope, multi-image restrictions and verification limits.
 
 Active-window follow-up (2026-11-12): Windows now exposes a configurable active-
 window shortcut (disabled by default) and cancellable configurable menu/tray
@@ -346,8 +355,8 @@ selection adjustment and configurable after-capture tasks in its capture flow.
 
 | Capability | Current status and gap | Priority |
 | --- | --- | --- |
-| User-defined global hotkeys | Partial: Windows settings now assign/disable/restore bindings for primary display, quick region, capture-and-annotate, active window and repeat-last-region. Arbitrary command assignment and per-shortcut task profiles remain missing; see the implementation follow-ups above for verification limits. | A |
-| Configurable output workflow | Partial: one saved global choice provides copy-only, save-only, save-and-copy or annotate-first for quick captures. Editor outputs stay explicit. Per-shortcut saved task profiles, after-capture chains and sharing profiles remain missing. | A |
+| User-defined global hotkeys | Partial: Windows settings now assign/disable/restore bindings for primary display, quick region, capture-and-annotate, active window and repeat-last-region. Arbitrary command assignment remains missing; per-shortcut output profiles are implemented in the later 2026-11-14 follow-up. See the implementation follow-ups above for verification limits. | A |
+| Configurable output workflow | Partial: one saved global choice provides copy-only, save-only, save-and-copy or annotate-first for quick captures, with optional per-task overrides for the six capture commands. Editor outputs stay explicit. After-capture chains and sharing profiles remain missing. | A |
 | Active-window/active-monitor command | Partial: Windows foreground-window and active-display capture each have an optional configurable immediate shortcut and menu/tray countdown. Active display selects the foreground window's largest-intersection monitor. Both reject own/invalid targets; native focus/topology/DPI acceptance and other-platform integration remain open. Cursor-based monitor targeting for Windows annotation also exists. | A |
 | Last region and exact region | Partial: session-only repeat, geometry-checked numeric display-local X/Y/Width/Height and up to 16 saved named rectangles exist. Templates require explicit display choice; automatic cross-session monitor binding and per-template task/hotkey profiles remain missing. Native acceptance remains open. | A |
 | Precision selection | Partial: crop and transforms exist; no equivalent complete magnifier, window/control snapping or keyboard-driven region-selection workflow. | A |
@@ -398,7 +407,7 @@ files/URLs and configured tasks.
 
 | Capability | Current status and gap | Priority |
 | --- | --- | --- |
-| Destination setup | Partial: Uploads offers native credential-free POST/PUT setup with plain-text/JSON link responses, bounded validation and explicit HTTP opt-in; Use is session-only and Remember persists it. Windows Save credential writes Bearer/API-key/Basic secrets to Credential Manager and attaches only the reference to the session destination. Remove credential deletes that OS secret and clears the session reference; Forget destination still leaves the OS secret in place. JSON profiles retain advanced settings, including up to 8 custom request headers, 8 query parameters, 8 extra POST form fields and 8 POST JSON body fields with one `{base64}` PNG field. Test destination sends a throwaway 1×1 PNG through the existing transfer path without recording history. Named destinations persist up to 16 profiles in a separate catalog. Per-task defaults apply a saved name when that capture starts, without uploading. Export/Import configuration copies that catalog and the current destination without secrets. Settings Export/Import copies preferences, including per-task destination names, without destination URLs, history, images or secrets. | A |
+| Destination setup | Partial: Uploads offers native credential-free POST/PUT setup with plain-text/JSON link responses, bounded validation and explicit HTTP opt-in; Use is session-only and Remember persists it. Windows Save credential writes Bearer/API-key/Basic secrets to Credential Manager and attaches only the reference to the session destination. Remove credential deletes that OS secret and clears the session reference; Forget destination still leaves the OS secret in place. JSON profiles retain advanced settings, including up to 8 custom request headers, 8 query parameters, 8 extra POST form fields and 8 POST JSON body fields with one `{base64}` PNG field. Test destination sends a throwaway 1×1 PNG through the existing transfer path without recording history. Named destinations persist up to 16 profiles in a separate catalog. Per-task defaults apply a saved name when that capture starts, without uploading. Export/Import configuration copies that catalog and the current destination without secrets. Settings Export/Import copies preferences, including per-task destination names and per-task output, without destination URLs, history, images or secrets. | A |
 | Multiple destinations | Partial: a named catalog of up to 16 destinations can be saved, switched into the session and removed. Export/Import configuration copies the catalog with the current destination. Per-task defaults apply a saved name when that capture starts, without uploading. The remembered current destination remains one profile. | A/B |
 | Existing ShareX profiles | Partial: Uploads can import and export a documented `.sxcu` subset (HTTPS ImageUploader POST multipart, POST JSON or PUT binary, `{json}`/`{header}`/`{response}`/`{responseurl}`/`{regex:pattern}`/`{regex:pattern\|group}`/`{xml:xpath}` with one optional HTTPS prefix/suffix, ThumbnailURL, DeletionURL, Headers, Parameters, Arguments and Body JSON Data string maps through the same validators). `{base64}` is the only JSON file placeholder; secrets, HTTP, `{input}`/`{filename}`, RegexList, lookaround, `{xml}` without a path, `{xml:input\|xpath}` and multi-token parsers are rejected. Full custom-uploader parity remains missing. Our profile JSON is not the ShareX format. | B |
 | Generic HTTP breadth | Partial: POST multipart/PUT PNG/POST JSON with up to 8 custom request headers, 8 query parameters, 8 extra POST form fields, 8 POST JSON body fields with one `{base64}` PNG field, composed result URLs from a JSON string/number, text, header, bounded linear-time regex or bounded XML path plus prefix/suffix, and session-only thumbnail/deletion result URLs from the same parser subset. Compatibility must preserve origin-scoped secrets and response bounds. | B |

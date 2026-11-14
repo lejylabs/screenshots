@@ -107,7 +107,7 @@ impl RegionLatencyProbe {
 enum UiRequest {
     Control,
     Overlay(OverlayMode),
-    Capture(Vec<CaptureJob>),
+    Capture(Vec<CaptureJob>, CaptureOutputProfile),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -175,6 +175,7 @@ pub struct CaptureWorkspace {
     region_presets: Vec<app_core::RegionPreset>,
     region_preset_name: Option<gpui::Entity<gpui::component::input::InputState>>,
     upload_task_defaults: [String; 6],
+    output_task_profiles: [Option<CaptureOutputProfile>; 6],
     strip_metadata_on_upload: bool,
     #[cfg(target_os = "windows")]
     hotkey_inputs: Option<[gpui::Entity<gpui::component::input::InputState>; 6]>,
@@ -284,7 +285,9 @@ impl CaptureWorkspace {
                         match request {
                             UiRequest::Control => this.show_control(cx),
                             UiRequest::Overlay(mode) => this.open_overlays(mode, cx),
-                            UiRequest::Capture(jobs) => this.start_capture(jobs, cx),
+                            UiRequest::Capture(jobs, profile) => {
+                                this.start_capture_with_profile(jobs, false, profile, cx)
+                            }
                         }
                     }
                     Err(error) => {
@@ -634,6 +637,7 @@ impl CaptureWorkspace {
             region_presets: Vec::new(),
             region_preset_name: None,
             upload_task_defaults: std::array::from_fn(|_| String::new()),
+            output_task_profiles: [None; 6],
             strip_metadata_on_upload: false,
             #[cfg(target_os = "windows")]
             hotkey_inputs: None,
@@ -749,6 +753,7 @@ impl CaptureWorkspace {
                         this.filename_template = settings.filename_template;
                         this.region_presets = settings.region_presets;
                         this.upload_task_defaults = settings.upload_task_defaults;
+                        this.output_task_profiles = settings.output_task_profiles;
                         this.strip_metadata_on_upload = settings.strip_metadata_on_upload;
                         theme::apply(settings.theme, cx);
                         this.backend = XcapBackend::new(&settings.output_directory);
@@ -907,6 +912,7 @@ impl CaptureWorkspace {
         let profile = self.output_profile;
         let presets = self.region_presets.clone();
         let upload_task_defaults = self.upload_task_defaults.clone();
+        let output_task_profiles = self.output_task_profiles;
         let strip_metadata_on_upload = self.strip_metadata_on_upload;
         let dialog = cx.prompt_for_paths(gpui::PathPromptOptions {
             files: false,
@@ -945,6 +951,7 @@ impl CaptureWorkspace {
                         .and_then(|settings| {
                             settings.with_upload_task_defaults(upload_task_defaults)
                         })
+                        .map(|settings| settings.with_output_task_profiles(output_task_profiles))
                         .map(|settings| {
                             settings.with_strip_metadata_on_upload(strip_metadata_on_upload)
                         })
@@ -1002,6 +1009,7 @@ impl CaptureWorkspace {
         let filename_template = self.filename_template.clone();
         let capture_delay_seconds = self.capture_delay_seconds;
         let upload_task_defaults = self.upload_task_defaults.clone();
+        let output_task_profiles = self.output_task_profiles;
         let strip_metadata_on_upload = self.strip_metadata_on_upload;
         cx.spawn(async move |this, cx| {
             let chosen = match dialog.await {
@@ -1049,7 +1057,7 @@ impl CaptureWorkspace {
                         .with_export_format(export_format)
                         .with_filename_template(filename_template)?
                         .with_capture_delay(capture_delay_seconds)?
-                        .with_upload_task_defaults(upload_task_defaults)?.with_strip_metadata_on_upload(strip_metadata_on_upload)
+                        .with_upload_task_defaults(upload_task_defaults)?.with_output_task_profiles(output_task_profiles).with_strip_metadata_on_upload(strip_metadata_on_upload)
                         .export(&path)?;
                     Ok::<_, anyhow::Error>(path)
                 })
@@ -1207,6 +1215,7 @@ impl CaptureWorkspace {
                             this.capture_delay_seconds = settings.capture_delay_seconds;
                             this.region_presets = settings.region_presets;
                             this.upload_task_defaults = settings.upload_task_defaults;
+                            this.output_task_profiles = settings.output_task_profiles;
                             this.strip_metadata_on_upload = settings.strip_metadata_on_upload;
                             this.jpeg_quality_input = None;
                             this.filename_template_input = None;
@@ -1277,6 +1286,7 @@ impl CaptureWorkspace {
         let profile = self.output_profile;
         let presets = self.region_presets.clone();
         let upload_task_defaults = self.upload_task_defaults.clone();
+        let output_task_profiles = self.output_task_profiles;
         let strip_metadata_on_upload = self.strip_metadata_on_upload;
         theme::apply(selected, cx);
         self.settings_saving = true;
@@ -1296,6 +1306,7 @@ impl CaptureWorkspace {
                         .with_filename_template(filename_template)?
                         .with_capture_delay(capture_delay_seconds)?
                         .with_upload_task_defaults(upload_task_defaults)?
+                        .with_output_task_profiles(output_task_profiles)
                         .with_strip_metadata_on_upload(strip_metadata_on_upload)
                         .save()
                 })
@@ -1346,6 +1357,7 @@ impl CaptureWorkspace {
         let hotkeys = self.hotkey_bindings.clone();
         let presets = self.region_presets.clone();
         let upload_task_defaults = self.upload_task_defaults.clone();
+        let output_task_profiles = self.output_task_profiles;
         self.settings_saving = true;
         self.settings_status = "Saving capture output…".into();
         cx.spawn(async move |this, cx| {
@@ -1362,6 +1374,7 @@ impl CaptureWorkspace {
                         .with_filename_template(filename_template)?
                         .with_capture_delay(capture_delay_seconds)?
                         .with_upload_task_defaults(upload_task_defaults)?
+                        .with_output_task_profiles(output_task_profiles)
                         .with_strip_metadata_on_upload(strip_metadata_on_upload)
                         .save()
                 })
@@ -1422,6 +1435,7 @@ impl CaptureWorkspace {
         let profile = self.output_profile;
         let presets = self.region_presets.clone();
         let upload_task_defaults = self.upload_task_defaults.clone();
+        let output_task_profiles = self.output_task_profiles;
         self.settings_saving = true;
         self.settings_status = "Saving JPEG quality…".into();
         cx.spawn(async move |this, cx| {
@@ -1437,6 +1451,7 @@ impl CaptureWorkspace {
                         .with_filename_template(filename_template)?
                         .with_capture_delay(capture_delay_seconds)?
                         .with_upload_task_defaults(upload_task_defaults)?
+                        .with_output_task_profiles(output_task_profiles)
                         .with_strip_metadata_on_upload(strip_metadata_on_upload);
                     std::fs::create_dir_all(&settings.output_directory)?;
                     settings.save()
@@ -1484,6 +1499,7 @@ impl CaptureWorkspace {
         let presets = self.region_presets.clone();
         let quality = self.jpeg_quality;
         let upload_task_defaults = self.upload_task_defaults.clone();
+        let output_task_profiles = self.output_task_profiles;
         let strip_metadata_on_upload = self.strip_metadata_on_upload;
         self.settings_saving = true;
         self.settings_status = "Saving default export format…".into();
@@ -1500,6 +1516,7 @@ impl CaptureWorkspace {
                         .with_filename_template(filename_template)?
                         .with_capture_delay(capture_delay_seconds)?
                         .with_upload_task_defaults(upload_task_defaults)?
+                        .with_output_task_profiles(output_task_profiles)
                         .with_strip_metadata_on_upload(strip_metadata_on_upload);
                     std::fs::create_dir_all(&settings.output_directory)?;
                     settings.save()
@@ -1555,6 +1572,7 @@ impl CaptureWorkspace {
         let quality = self.jpeg_quality;
         let format = self.export_format;
         let upload_task_defaults = self.upload_task_defaults.clone();
+        let output_task_profiles = self.output_task_profiles;
         let strip_metadata_on_upload = self.strip_metadata_on_upload;
         self.settings_saving = true;
         self.settings_status = "Saving filename template…".into();
@@ -1571,6 +1589,7 @@ impl CaptureWorkspace {
                         .with_filename_template(template)?
                         .with_capture_delay(capture_delay_seconds)?
                         .with_upload_task_defaults(upload_task_defaults)?
+                        .with_output_task_profiles(output_task_profiles)
                         .with_strip_metadata_on_upload(strip_metadata_on_upload);
                     std::fs::create_dir_all(&settings.output_directory)?;
                     settings.save()?;
@@ -1676,11 +1695,12 @@ impl CaptureWorkspace {
         let saved_bindings = bindings.clone();
         let presets = self.region_presets.clone();
         let upload_task_defaults = self.upload_task_defaults.clone();
+        let output_task_profiles = self.output_task_profiles;
         cx.spawn(async move |this, cx| {
             let result = cx.background_spawn(async move {
                 std::fs::create_dir_all(&directory)?;
                 app_core::CaptureSettings::for_directory(directory)?
-                    .with_theme(appearance).with_hotkeys(saved_bindings)?.with_output_profile(profile).with_region_presets(presets)?.with_jpeg_quality(jpeg_quality)?.with_export_format(export_format).with_filename_template(filename_template)?.with_capture_delay(capture_delay_seconds)?.with_upload_task_defaults(upload_task_defaults)?.with_strip_metadata_on_upload(strip_metadata_on_upload).save()
+                    .with_theme(appearance).with_hotkeys(saved_bindings)?.with_output_profile(profile).with_region_presets(presets)?.with_jpeg_quality(jpeg_quality)?.with_export_format(export_format).with_filename_template(filename_template)?.with_capture_delay(capture_delay_seconds)?.with_upload_task_defaults(upload_task_defaults)?.with_output_task_profiles(output_task_profiles).with_strip_metadata_on_upload(strip_metadata_on_upload).save()
             }).await;
             this.update(cx, |this, cx| {
                 this.settings_saving = false;
@@ -2013,7 +2033,8 @@ impl CaptureWorkspace {
             return;
         }
         if matches!(mode, OverlayMode::Fullscreen) {
-            self.apply_upload_task_default(if self.edit_selection { 2 } else { 1 }, cx);
+            let task = if self.edit_selection { 2 } else { 1 };
+            self.apply_upload_task_default(task, cx);
             if self.edit_selection {
                 #[cfg(target_os = "windows")]
                 let pointed = app_core::cursor_position().and_then(|point| {
@@ -2034,7 +2055,12 @@ impl CaptureWorkspace {
                     cx.primary_display()
                         .map(|display| u64::from(display.id()).to_string())
                 }) {
-                    self.start_capture_with_preview(vec![CaptureJob::Display(id)], true, cx);
+                    self.start_capture_with_preview(
+                        vec![CaptureJob::Display(id)],
+                        true,
+                        Some(task),
+                        cx,
+                    );
                 }
                 return;
             }
@@ -2043,7 +2069,7 @@ impl CaptureWorkspace {
                 .iter()
                 .map(|display| CaptureJob::Display(u64::from(display.id()).to_string()))
                 .collect();
-            self.start_capture_with_preview(jobs, true, cx);
+            self.start_capture_with_preview(jobs, true, Some(task), cx);
             return;
         }
         self.show_overlays(mode, &[], &HashMap::new(), cx);
@@ -2100,6 +2126,7 @@ impl CaptureWorkspace {
         let format = self.export_format;
         let template = self.filename_template.clone();
         let upload_task_defaults = self.upload_task_defaults.clone();
+        let output_task_profiles = self.output_task_profiles;
         let strip_metadata_on_upload = self.strip_metadata_on_upload;
         self.settings_saving = true;
         self.capture_status = "Saving capture delay…".into();
@@ -2116,6 +2143,7 @@ impl CaptureWorkspace {
                         .with_filename_template(template)?
                         .with_capture_delay(seconds)?
                         .with_upload_task_defaults(upload_task_defaults)?
+                        .with_output_task_profiles(output_task_profiles)
                         .with_strip_metadata_on_upload(strip_metadata_on_upload);
                     std::fs::create_dir_all(&settings.output_directory)?;
                     settings.save()
@@ -2394,7 +2422,7 @@ impl CaptureWorkspace {
             cx.notify();
             return;
         };
-        self.start_capture(vec![CaptureJob::Display(display.id)], cx);
+        self.start_capture_task(0, vec![CaptureJob::Display(display.id)], cx);
     }
 
     #[cfg(target_os = "windows")]
@@ -2416,7 +2444,7 @@ impl CaptureWorkspace {
         }
         self.apply_upload_task_default(3, cx);
         match app_core::foreground_window_capture() {
-            Ok(request) => self.start_capture(vec![request], cx),
+            Ok(request) => self.start_capture_task(3, vec![request], cx),
             Err(error) => {
                 self.capture_status = format!("Active window not captured: {error}");
                 self.show_control(cx);
@@ -2432,7 +2460,7 @@ impl CaptureWorkspace {
         }
         self.apply_upload_task_default(5, cx);
         match app_core::foreground_display_capture() {
-            Ok(request) => self.start_capture(vec![request], cx),
+            Ok(request) => self.start_capture_task(5, vec![request], cx),
             Err(error) => {
                 self.capture_status = format!("Active display not captured: {error}");
                 self.show_control(cx);
@@ -2473,7 +2501,7 @@ impl CaptureWorkspace {
             return;
         };
         self.apply_upload_task_default(4, cx);
-        self.start_capture(vec![CaptureJob::RepeatRegion(region)], cx);
+        self.start_capture_task(4, vec![CaptureJob::RepeatRegion(region)], cx);
     }
 
     fn capture_all(&mut self, cx: &mut Context<Self>) {
@@ -2535,7 +2563,7 @@ impl CaptureWorkspace {
                 self.exact_region_status.clear();
                 self.show_page(ControlPage::Captures, cx);
                 self.apply_upload_task_default(1, cx);
-                self.start_capture(vec![CaptureJob::ExactRegion(region)], cx);
+                self.start_capture_task(1, vec![CaptureJob::ExactRegion(region)], cx);
             }
             Err(error) => {
                 self.exact_region_status = error;
@@ -2639,6 +2667,7 @@ impl CaptureWorkspace {
         let hotkeys = self.hotkey_bindings.clone();
         let profile = self.output_profile;
         let upload_task_defaults = self.upload_task_defaults.clone();
+        let output_task_profiles = self.output_task_profiles;
         self.settings_saving = true;
         self.exact_region_status = "Saving region presets…".into();
         cx.spawn(async move |this, cx| {
@@ -2654,6 +2683,7 @@ impl CaptureWorkspace {
                         .with_filename_template(filename_template)?
                         .with_capture_delay(capture_delay_seconds)?
                         .with_upload_task_defaults(upload_task_defaults)?
+                        .with_output_task_profiles(output_task_profiles)
                         .with_strip_metadata_on_upload(strip_metadata_on_upload);
                     std::fs::create_dir_all(&settings.output_directory)?;
                     settings.save()?;
@@ -4149,6 +4179,7 @@ impl CaptureWorkspace {
         let hotkeys = self.hotkey_bindings.clone();
         let profile = self.output_profile;
         let presets = self.region_presets.clone();
+        let output_task_profiles = self.output_task_profiles;
         self.settings_saving = true;
         self.upload_status = "Saving per-task destination…".into();
         cx.spawn(async move |this, cx| {
@@ -4164,6 +4195,7 @@ impl CaptureWorkspace {
                         .with_filename_template(filename_template)?
                         .with_capture_delay(capture_delay_seconds)?
                         .with_upload_task_defaults(defaults)?
+                        .with_output_task_profiles(output_task_profiles)
                         .with_strip_metadata_on_upload(strip_metadata_on_upload);
                     std::fs::create_dir_all(&settings.output_directory)?;
                     settings.save()?;
@@ -4179,6 +4211,109 @@ impl CaptureWorkspace {
                             "Per-task destination saved · Capture applies it to this session and never starts an upload".into()
                         }
                         Err(error) => format!("Per-task destination unchanged: {error:#}"),
+                    };
+                }
+                this.finish_quit_if_idle(cx);
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+        cx.notify();
+    }
+
+    fn output_profile_for_task(&self, task: Option<usize>) -> CaptureOutputProfile {
+        task.and_then(|index| self.output_task_profiles.get(index).copied().flatten())
+            .unwrap_or(self.output_profile)
+    }
+
+    fn choose_output_task_profile(&mut self, task: usize, selected: usize, cx: &mut Context<Self>) {
+        if self.page != ControlPage::Settings
+            || self.settings_loading
+            || self.settings_saving
+            || self.quitting
+            || self.capturing
+            || self.copying
+            || self.saving
+            || self.preview_active
+            || self.editor.is_some()
+            || self.editor_closing
+            || self.switching_graphics
+            || self.capture_delay.is_some()
+        {
+            return;
+        }
+        let profile = if selected == 0 {
+            None
+        } else if let Some(profile) = CaptureOutputProfile::ALL.get(selected.saturating_sub(1)) {
+            Some(*profile)
+        } else {
+            return;
+        };
+        if task >= self.output_task_profiles.len() || self.output_task_profiles[task] == profile {
+            return;
+        }
+        let mut profiles = self.output_task_profiles;
+        profiles[task] = profile;
+        self.persist_output_task_profiles(profiles, cx);
+    }
+
+    fn persist_output_task_profiles(
+        &mut self,
+        profiles: [Option<CaptureOutputProfile>; 6],
+        cx: &mut Context<Self>,
+    ) {
+        let capture_delay_seconds = self.capture_delay_seconds;
+        let jpeg_quality = self.jpeg_quality;
+        let export_format = self.export_format;
+        let filename_template = self.filename_template.clone();
+        let strip_metadata_on_upload = self.strip_metadata_on_upload;
+        if self.page != ControlPage::Settings
+            || self.settings_loading
+            || self.settings_saving
+            || self.quitting
+        {
+            return;
+        }
+        let Some(directory) = self.output_directory.clone() else {
+            return;
+        };
+        let appearance = theme::selected(cx);
+        let hotkeys = self.hotkey_bindings.clone();
+        let profile = self.output_profile;
+        let presets = self.region_presets.clone();
+        let upload_task_defaults = self.upload_task_defaults.clone();
+        self.settings_saving = true;
+        self.settings_status = "Saving per-task output…".into();
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_spawn(async move {
+                    let settings = app_core::CaptureSettings::for_directory(directory)?
+                        .with_theme(appearance)
+                        .with_hotkeys(hotkeys)?
+                        .with_output_profile(profile)
+                        .with_region_presets(presets)?
+                        .with_jpeg_quality(jpeg_quality)?
+                        .with_export_format(export_format)
+                        .with_filename_template(filename_template)?
+                        .with_capture_delay(capture_delay_seconds)?
+                        .with_upload_task_defaults(upload_task_defaults)?
+                        .with_output_task_profiles(profiles)
+                        .with_strip_metadata_on_upload(strip_metadata_on_upload);
+                    std::fs::create_dir_all(&settings.output_directory)?;
+                    settings.save()?;
+                    Ok::<_, anyhow::Error>(settings.output_task_profiles)
+                })
+                .await;
+            this.update(cx, |this, cx| {
+                this.settings_saving = false;
+                if !this.quitting {
+                    this.settings_status = match result {
+                        Ok(profiles) => {
+                            this.output_task_profiles = profiles;
+                            "Per-task output saved · Capture uses it without changing Capture output".into()
+                        }
+                        Err(error) => format!("Per-task output unchanged: {error:#}"),
                     };
                 }
                 this.finish_quit_if_idle(cx);
@@ -4213,6 +4348,7 @@ impl CaptureWorkspace {
         let profile = self.output_profile;
         let presets = self.region_presets.clone();
         let upload_task_defaults = self.upload_task_defaults.clone();
+        let output_task_profiles = self.output_task_profiles;
         self.settings_saving = true;
         self.upload_status = "Saving metadata policy…".into();
         cx.spawn(async move |this, cx| {
@@ -4228,6 +4364,7 @@ impl CaptureWorkspace {
                         .with_filename_template(filename_template)?
                         .with_capture_delay(capture_delay_seconds)?
                         .with_upload_task_defaults(upload_task_defaults)?
+                        .with_output_task_profiles(output_task_profiles)
                         .with_strip_metadata_on_upload(strip);
                     std::fs::create_dir_all(&settings.output_directory)?;
                     settings.save()?;
@@ -5760,13 +5897,33 @@ impl CaptureWorkspace {
     }
 
     fn start_capture(&mut self, jobs: Vec<CaptureJob>, cx: &mut Context<Self>) {
-        self.start_capture_with_preview(jobs, false, cx);
+        self.start_capture_with_preview(jobs, false, None, cx);
+    }
+
+    fn start_capture_task(
+        &mut self,
+        task: usize,
+        jobs: Vec<CaptureJob>,
+        cx: &mut Context<Self>,
+    ) {
+        self.start_capture_with_preview(jobs, false, Some(task), cx);
     }
 
     fn start_capture_with_preview(
         &mut self,
         jobs: Vec<CaptureJob>,
         preview: bool,
+        task: Option<usize>,
+        cx: &mut Context<Self>,
+    ) {
+        self.start_capture_with_profile(jobs, preview, self.output_profile_for_task(task), cx);
+    }
+
+    fn start_capture_with_profile(
+        &mut self,
+        jobs: Vec<CaptureJob>,
+        preview: bool,
+        profile: CaptureOutputProfile,
         cx: &mut Context<Self>,
     ) {
         if self.editor.is_some() || self.editor_closing {
@@ -5785,7 +5942,6 @@ impl CaptureWorkspace {
         if jobs.is_empty() {
             return;
         }
-        let profile = self.output_profile;
         let repeating_region = jobs
             .iter()
             .any(|job| matches!(job, CaptureJob::RepeatRegion(_)));
@@ -5800,7 +5956,7 @@ impl CaptureWorkspace {
             return;
         }
         if !preview && profile == CaptureOutputProfile::AnnotateFirst && !self.graphics {
-            self.attach_ui(UiRequest::Capture(jobs), cx);
+            self.attach_ui(UiRequest::Capture(jobs, profile), cx);
             return;
         }
         // A new capture replaces the preview; keep the control window hidden.

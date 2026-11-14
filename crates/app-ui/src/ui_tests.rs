@@ -622,7 +622,7 @@ fn default_export_format_failure_retains_active_choice(cx: &mut TestAppContext) 
         window.render_frame(cx);
         window.scroll(
             "choose-output-directory",
-            gpui::ScrollDelta::Pixels(point(px(0.), px(-650.))),
+            gpui::ScrollDelta::Pixels(point(px(0.), px(-1400.))),
             cx,
         );
         window.render_frame(cx);
@@ -660,6 +660,12 @@ fn jpeg_quality_input_validates_preserves_failed_saves_and_releases_on_exit(
     cx.update_window(handle.into(), |_, window, cx| {
         window.press(&shortcut(","), cx);
         window.render_frame(cx);
+        window.scroll(
+            "choose-output-directory",
+            gpui::ScrollDelta::Pixels(point(px(0.), px(-900.))),
+            cx,
+        );
+        window.render_frame(cx);
         let _ = window.find_by_label("JPEG quality (1–100)");
     })
     .unwrap();
@@ -677,7 +683,7 @@ fn jpeg_quality_input_validates_preserves_failed_saves_and_releases_on_exit(
         window.render_frame(cx);
         window.scroll(
             "choose-output-directory",
-            gpui::ScrollDelta::Pixels(point(px(0.), px(-450.))),
+            gpui::ScrollDelta::Pixels(point(px(0.), px(-900.))),
             cx,
         );
         window.render_frame(cx);
@@ -2114,6 +2120,85 @@ fn upload_task_defaults_apply_on_capture_without_uploading_or_persisting(cx: &mu
 }
 
 #[gpui::test]
+fn output_task_profiles_apply_on_capture_without_persisting_the_session_profile(
+    cx: &mut TestAppContext,
+) {
+    let handle = open_workspace(cx);
+    handle
+        .update(cx, |this, _, cx| {
+            this.show_page(ControlPage::Settings, cx);
+        })
+        .unwrap();
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.scroll(
+            "choose-output-directory",
+            gpui::ScrollDelta::Pixels(point(px(0.), px(-400.))),
+            cx,
+        );
+        window.render_frame(cx);
+        let _ = window.find("capture-output-task-profiles");
+    })
+    .unwrap();
+    handle
+        .update(cx, |this, _, cx| {
+            this.output_profile = CaptureOutputProfile::SaveAndCopy;
+            this.output_task_profiles[0] = Some(CaptureOutputProfile::CopyOnly);
+            this.start_capture_task(
+                0,
+                vec![
+                    CaptureJob::Display("first".into()),
+                    CaptureJob::Display("second".into()),
+                ],
+                cx,
+            );
+            assert!(!this.capturing);
+            assert!(this.capture_status.starts_with("Choose one display"));
+            assert_eq!(this.output_profile, CaptureOutputProfile::SaveAndCopy);
+            assert_eq!(
+                this.output_task_profiles[0],
+                Some(CaptureOutputProfile::CopyOnly)
+            );
+            this.output_profile = CaptureOutputProfile::CopyOnly;
+            this.output_task_profiles[0] = Some(CaptureOutputProfile::SaveAndCopy);
+            this.capture_status.clear();
+            this.start_capture(
+                vec![
+                    CaptureJob::Display("first".into()),
+                    CaptureJob::Display("second".into()),
+                ],
+                cx,
+            );
+            assert!(!this.capturing);
+            assert!(this.capture_status.starts_with("Choose one display"));
+            assert_eq!(this.output_profile, CaptureOutputProfile::CopyOnly);
+            this.output_task_profiles[0] = None;
+            this.capture_status.clear();
+            this.start_capture_task(
+                0,
+                vec![
+                    CaptureJob::Display("first".into()),
+                    CaptureJob::Display("second".into()),
+                ],
+                cx,
+            );
+            assert!(!this.capturing);
+            assert!(this.capture_status.starts_with("Choose one display"));
+            this.settings_saving = true;
+            this.choose_output_task_profile(0, 1, cx);
+            assert!(this.settings_saving);
+            assert!(this.output_task_profiles[0].is_none());
+            this.settings_saving = false;
+            this.show_page(ControlPage::Sources, cx);
+            this.choose_output_task_profile(0, 1, cx);
+            assert!(this.output_task_profiles[0].is_none());
+            assert_eq!(this.output_profile, CaptureOutputProfile::CopyOnly);
+            assert!(this.last_saved.is_none() && this.last_capture.is_none());
+        })
+        .unwrap();
+}
+
+#[gpui::test]
 fn upload_configuration_export_writes_a_chosen_file_without_importing(cx: &mut TestAppContext) {
     let handle = open_workspace(cx);
     let root = std::env::temp_dir().join(format!(
@@ -3208,6 +3293,7 @@ fn settings_backup_export_writes_a_chosen_file_without_importing(cx: &mut TestAp
             this.filename_template = "Shot-{date}".into();
             this.strip_metadata_on_upload = true;
             this.output_profile = CaptureOutputProfile::CopyOnly;
+            this.output_task_profiles[0] = Some(CaptureOutputProfile::SaveOnly);
             this.capture_delay_seconds = 7;
             this.upload_destination = Some(
                 app_core::UploadDestination::manual(
@@ -3227,7 +3313,7 @@ fn settings_backup_export_writes_a_chosen_file_without_importing(cx: &mut TestAp
         window.render_frame(cx);
         window.scroll(
             "choose-output-directory",
-            gpui::ScrollDelta::Pixels(point(px(0.), px(-2400.))),
+            gpui::ScrollDelta::Pixels(point(px(0.), px(-3200.))),
             cx,
         );
         window.render_frame(cx);
@@ -3264,6 +3350,7 @@ fn settings_backup_export_writes_a_chosen_file_without_importing(cx: &mut TestAp
             assert!(!exported.contains("secret"));
             assert!(!exported.contains("kept.invalid"));
             assert!(exported.contains("Shot-{date}") && exported.contains("copy_only"));
+            assert!(exported.contains("save_only"));
             assert!(exported.contains("\"strip_metadata_on_upload\": true"));
             assert_eq!(this.jpeg_quality, 73);
             assert_eq!(

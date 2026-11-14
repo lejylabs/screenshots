@@ -37,6 +37,13 @@ unavailable for these profiles. Use a chosen display/window or a single region.
 Save only and Save and copy can still save all displays separately; the latter
 copies the last image as before. Uploads remain a separate explicit action.
 
+**Settings → Per-task output** can override that session choice for Primary
+display, Quick region, Capture and annotate, Active window, Repeat last region
+and Active display. Session default keeps Capture output. The override applies
+when that capture starts and does not change the saved Capture output setting.
+Capture all, display tiles, window tiles and Probe overlays keep the session
+profile.
+
 On Windows, **Settings → Global shortcuts** configures Primary display, Quick
 region, Capture and annotate, Active window and Repeat last region. Enter a combination such as `Ctrl+Alt+Q`, leave
 it empty to disable the command, then choose **Save shortcuts**. **Restore defaults**
@@ -102,7 +109,7 @@ The overlay and standalone editor share a grouped Kit-button toolbar: Select/Cro
 
 Open the control window with `cargo run --locked -p screenshots -- --show` (Windows otherwise starts in the tray). The home screen offers region selection, primary/all displays, individual displays and window capture. The last capture has a bounded preview, recopy and **Show file**. Technical controls are under **Diagnostics**.
 
-New captures use the user's Pictures/Screenshots folder by default (application config storage is the fallback if no Pictures directory is available). **Change folder…** opens the native directory picker and persists the selection in the platform application's `settings.json`. A canceled or failed change preserves the previous folder. **Export settings** writes appearance, folder, shortcuts, output profile, region presets, JPEG quality, Save as format, filename template, capture delay, per-task destination names and the strip-metadata-on-upload choice to a JSON file you choose; existing files are never overwritten. **Import settings** replaces `settings.json` from such a backup. If the backup folder is missing, the active save folder is kept. Upload destinations, history, images and secrets stay out of the file. Import never starts an upload. Settings load/save run on workers; capture is disabled while settings are loading/changing. Existing files under `target/captures` are left in place. Hardware tests keep their isolated test directories and do not read or alter user settings.
+New captures use the user's Pictures/Screenshots folder by default (application config storage is the fallback if no Pictures directory is available). **Change folder…** opens the native directory picker and persists the selection in the platform application's `settings.json`. A canceled or failed change preserves the previous folder. **Export settings** writes appearance, folder, shortcuts, output profile, per-task output, region presets, JPEG quality, Save as format, filename template, capture delay, per-task destination names and the strip-metadata-on-upload choice to a JSON file you choose; existing files are never overwritten. **Import settings** replaces `settings.json` from such a backup. If the backup folder is missing, the active save folder is kept. Upload destinations, history, images and secrets stay out of the file. Import never starts an upload. Settings load/save run on workers; capture is disabled while settings are loading/changing. Existing files under `target/captures` are left in place. Hardware tests keep their isolated test directories and do not read or alter user settings.
 
 **Settings → Capture filename template** customizes automatic PNG names, including
 edited/selected captures. For example, `Shot-{date}_{time}` uses UTC save date/time.

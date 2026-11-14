@@ -21,7 +21,7 @@ This section is the current continuation brief. The numbered sections below cont
 ### Current implementation
 
 - **GPUI Kit rewrite (2026-11-11):** the complete native presentation uses Kit 0.9.1 / GPUI 0.3.12: Sidebar, Button, Input, Checkbox, RadioGroup, PopupMenu, Kbd and bundled Lucide icons. Dark stays the default; Oldschool keeps compact square controls and colorful icons; Classic maps One Dark chrome tokens onto Kit without replacing Dark. Every window has a Base Root, with transparent surfaces preserved for overlays. Typed content access preserves native lifecycle jobs and waiting for work on Quit. Library search/menu callbacks retain byte, paging and stale-result bounds. The image canvas and bounded source-label editor keep their domain-specific contracts. See [the rewrite and measured evidence](docs/ui-redesign.md).
-- **Windows functional prototype:** tray/resident lifecycle, single-instance forwarding, hotkeys, display/window/region capture, countdown, clipboard, PNG output and save-folder settings. Graphics attach on demand and detach when the last UI consumer closes.
+- **Windows functional prototype:** tray/resident lifecycle, single-instance forwarding, hotkeys, display/window/region capture, countdown, clipboard, PNG output, save-folder settings and optional per-task output profiles. Graphics attach on demand and detach when the last UI consumer closes.
 - **Shared editor:** crop, shapes, arrows, lines/endpoints, pen, text/style, numbering, highlight/spotlight, blur, pixelation and opaque redaction; selection/transforms, duplicate/reorder, bounded metadata undo/redo and zoom/pan. Copy, Save and Save & copy are explicit. Original files are preserved when editing a copy.
 - **Storage/sharing:** paged SQLite capture history with prefix search, filters, PNG import/relink, explicit preview, visible-page thumbnail cache, bounded selection/removal/export; explicit configurable POST/PUT uploads with bounded custom request headers, query parameters, extra POST form fields and POST JSON bodies, progress/cancel, remembered credential-free profiles, named destinations, per-task destination defaults, an optional strip-metadata-on-upload re-encode and upload history. Windows Uploads can save Bearer/API-key/Basic secrets to Credential Manager. Other secret-store integrations remain pending.
 - **Current main UI:** a responsive 200/208-logical-pixel sidebar with Recent capture / Library / Displays & windows / Uploads / Settings. Main windows start at 1060×760 with a 680×480 minimum. Content scrolls at compact sizes; library rows are paged, identified by database ID and expose Kit menus. Switching pages releases search/preview state and cancels stale requests. The visible library page decodes at most one bounded thumbnail at a time and retains only those 20 images.
@@ -44,9 +44,10 @@ priorities do not establish implementation or runtime acceptance.
    clipboard, tray/hotkey, DPI/topology, cancellation and recovery acceptance;
    produce a reproducible portable or installable artifact. Track this alongside
    feature work. Linux/macOS obligations and all performance budgets remain.
-2. **Everyday capture:** configurable hotkeys, then saved output profiles;
-   active-window/monitor and last/exact-region commands; Open/Paste/Drop;
-   resize/rotate/flip, JPEG/WebP and naming/folder preferences.
+2. **Everyday capture:** configurable hotkeys, then saved output profiles
+   including optional per-task overrides; active-window/monitor and
+   last/exact-region commands; Open/Paste/Drop; resize/rotate/flip, JPEG/WebP
+   and naming/folder preferences.
 3. **Sharing and library:** native destination/auth setup, named destinations,
    sharing finalized editor pixels, explicit metadata policy and a bounded
    thumbnail gallery. Preserve truthful outcomes and explicit network consent.
@@ -820,7 +821,7 @@ measurement is claimed for this bounded export.
 #### Current feature slice: full settings backup
 
 Settings offers Export settings and Import settings. Export writes the current
-appearance, save folder, shortcuts, output profile, region presets, JPEG quality,
+appearance, save folder, shortcuts, output profile, per-task output, region presets, JPEG quality,
 Save as format, filename template, capture delay, per-task destination names and
 the strip-metadata-on-upload choice
 into a user-chosen JSON file
@@ -1161,6 +1162,29 @@ an enabled choice.
 Native keyboard/IME/accessibility, packaged restart workflow and
 latency/process/GPU/resource acceptance remain open; no new performance
 measurement is claimed for this bounded re-encode.
+
+#### Current feature slice: per-task output profiles
+
+Settings → Per-task output offers a choice for each of Primary display, Quick
+region, Capture and annotate, Active window, Repeat last region and Active
+display. Session default keeps the saved Capture output setting. A saved choice
+applies only when that capture starts and never overwrites Capture output.
+Display-list tiles, window-list tiles, Capture all and Probe overlays keep the
+session profile. Copy only and Annotate first still reject multi-image capture
+before native work. Settings backup includes the six optional values. Closing
+the page or window while a save is in progress suppresses applying the pending
+result; Quit discards it. No profile starts an upload.
+
+Resource cost is six RadioGroups on Settings that reuse the existing
+settings.json write path and capture output enum. There is no new dependency,
+worker, runtime, queue, image, cache, watcher or idle timer. Constructor and
+headless UI fixtures verify radio presence, in-memory apply/stale/busy guards
+and that capture does not persist the session Capture output setting. A regular
+core fixture covers round-trip values, missing-field defaults, unknown-value
+rejection and that other preference saves keep the overrides.
+Native keyboard/IME/accessibility, packaged restart workflow and
+latency/process/GPU/resource acceptance remain open; no new performance
+measurement is claimed for this bounded default.
 
 #### Current feature slice: bounded visible-page thumbnail gallery
 

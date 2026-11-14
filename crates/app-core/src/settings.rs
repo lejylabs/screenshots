@@ -168,6 +168,8 @@ pub struct CaptureSettings {
     #[serde(default)]
     pub upload_task_defaults: [String; 6],
     #[serde(default)]
+    pub output_task_profiles: [Option<CaptureOutputProfile>; 6],
+    #[serde(default)]
     pub strip_metadata_on_upload: bool,
 }
 
@@ -309,6 +311,7 @@ impl CaptureSettings {
             filename_template: String::new(),
             capture_delay_seconds: default_capture_delay(),
             upload_task_defaults: std::array::from_fn(|_| String::new()),
+            output_task_profiles: [None; 6],
             strip_metadata_on_upload: false,
         })
     }
@@ -368,6 +371,14 @@ impl CaptureSettings {
         Ok(self)
     }
 
+    pub fn with_output_task_profiles(
+        mut self,
+        profiles: [Option<CaptureOutputProfile>; 6],
+    ) -> Self {
+        self.output_task_profiles = profiles;
+        self
+    }
+
     pub fn with_strip_metadata_on_upload(mut self, strip: bool) -> Self {
         self.strip_metadata_on_upload = strip;
         self
@@ -419,6 +430,7 @@ impl CaptureSettings {
             .with_filename_template(settings.filename_template)?
             .with_capture_delay(settings.capture_delay_seconds)?
             .with_upload_task_defaults(settings.upload_task_defaults)?
+            .with_output_task_profiles(settings.output_task_profiles)
             .with_strip_metadata_on_upload(settings.strip_metadata_on_upload))
     }
 
@@ -1168,7 +1180,15 @@ mod tests {
                 String::new(),
                 String::new(),
                 String::new(),
-            ])?;
+            ])?
+            .with_output_task_profiles([
+                Some(CaptureOutputProfile::SaveOnly),
+                None,
+                None,
+                None,
+                None,
+                None,
+            ]);
         original.save_at(&settings_path)?;
         let backup = root.join("backup.json");
         original.export_at(&backup)?;
@@ -1190,6 +1210,11 @@ mod tests {
         assert_eq!(imported.hotkeys.0[0], "Ctrl+Alt+Q");
         assert_eq!(imported.upload_task_defaults[0], "Host");
         assert!(imported.upload_task_defaults[1].is_empty());
+        assert_eq!(
+            imported.output_task_profiles[0],
+            Some(CaptureOutputProfile::SaveOnly)
+        );
+        assert!(imported.output_task_profiles[1].is_none());
         assert!(!imported.strip_metadata_on_upload);
         let moved = CaptureSettings::for_directory(other.clone())?
             .with_theme(UiTheme::Default)
@@ -1295,6 +1320,86 @@ mod tests {
                 .all(String::is_empty)
         );
         fs::remove_file(path)?;
+        fs::remove_dir(root)?;
+        Ok(())
+    }
+
+    #[test]
+    fn output_task_profiles_round_trip_validate_and_survive_other_saves() -> Result<()> {
+        let root = std::env::temp_dir().join(format!(
+            "screenshots-output-task-profiles-{}",
+            uuid::Uuid::new_v4()
+        ));
+        fs::create_dir_all(&root)?;
+        let path = root.join("settings.json");
+        let profiles = [
+            Some(CaptureOutputProfile::CopyOnly),
+            None,
+            Some(CaptureOutputProfile::AnnotateFirst),
+            None,
+            None,
+            Some(CaptureOutputProfile::SaveOnly),
+        ];
+        CaptureSettings::for_directory(root.clone())?
+            .with_theme(UiTheme::Oldschool)
+            .with_output_profile(CaptureOutputProfile::SaveAndCopy)
+            .with_jpeg_quality(73)?
+            .with_output_task_profiles(profiles)
+            .save_at(&path)?;
+        let loaded = CaptureSettings::load_at(&path, root.clone())?;
+        assert_eq!(
+            loaded.output_task_profiles[0],
+            Some(CaptureOutputProfile::CopyOnly)
+        );
+        assert!(loaded.output_task_profiles[1].is_none());
+        assert_eq!(
+            loaded.output_task_profiles[2],
+            Some(CaptureOutputProfile::AnnotateFirst)
+        );
+        assert_eq!(
+            loaded.output_task_profiles[5],
+            Some(CaptureOutputProfile::SaveOnly)
+        );
+        assert_eq!(loaded.output_profile, CaptureOutputProfile::SaveAndCopy);
+        assert_eq!(loaded.theme, UiTheme::Oldschool);
+        assert_eq!(loaded.jpeg_quality, 73);
+        loaded.with_theme(UiTheme::Default).save_at(&path)?;
+        let loaded = CaptureSettings::load_at(&path, root.clone())?;
+        assert_eq!(
+            loaded.output_task_profiles[0],
+            Some(CaptureOutputProfile::CopyOnly)
+        );
+        assert_eq!(
+            loaded.output_task_profiles[2],
+            Some(CaptureOutputProfile::AnnotateFirst)
+        );
+        assert_eq!(loaded.theme, UiTheme::Default);
+        assert_eq!(loaded.output_profile, CaptureOutputProfile::SaveAndCopy);
+        let before = fs::read(&path)?;
+        let mut stored: serde_json::Value = serde_json::from_slice(&before)?;
+        stored["output_task_profiles"][0] = "upload".into();
+        fs::write(&path, serde_json::to_vec(&stored)?)?;
+        assert!(CaptureSettings::load_at(&path, root.clone()).is_err());
+        stored
+            .as_object_mut()
+            .unwrap()
+            .remove("output_task_profiles");
+        fs::write(&path, serde_json::to_vec(&stored)?)?;
+        assert!(
+            CaptureSettings::load_at(&path, root.clone())?
+                .output_task_profiles
+                .iter()
+                .all(Option::is_none)
+        );
+        let backup = root.join("backup.json");
+        CaptureSettings::for_directory(root.clone())?
+            .with_output_task_profiles(profiles)
+            .export_at(&backup)?;
+        let (imported, kept) = CaptureSettings::import_at(&backup, root.clone())?;
+        assert!(!kept);
+        assert_eq!(imported.output_task_profiles, profiles);
+        fs::remove_file(path)?;
+        fs::remove_file(backup)?;
         fs::remove_dir(root)?;
         Ok(())
     }
