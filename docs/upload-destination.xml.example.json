@@ -1,0 +1,9 @@
+{
+  "url": "https://example.invalid/upload",
+  "field": "file",
+  "allow_http": false,
+  "response": {
+    "type": "xml",
+    "path": "/files/file[1]/url"
+  }
+}

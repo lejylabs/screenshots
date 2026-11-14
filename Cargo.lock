@@ -225,6 +225,7 @@ dependencies = [
  "image",
  "regex",
  "reqwest",
+ "roxmltree 0.21.2",
  "rusqlite",
  "rusqlite_migration",
  "serde",

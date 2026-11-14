@@ -75,6 +75,10 @@ const MAX_REGEX_PATTERN: usize = 256;
 const MAX_REGEX_SIZE: usize = 64 * 1024;
 const MAX_REGEX_NEST: u32 = 32;
 const MAX_REGEX_GROUP_INDEX: usize = 8;
+const MAX_XML_PATH: usize = 256;
+const MAX_XML_STEPS: usize = 8;
+const MAX_XML_INDEX: usize = 256;
+const MAX_XML_NODES: u32 = 4096;
 const RESERVED_QUERY_NAMES: &[&str] = &[
     "password",
     "passwd",
@@ -210,6 +214,16 @@ enum UploadResponse {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         group: Option<String>,
     },
+    Xml {
+        path: String,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum XmlPathStep {
+    Child { name: String, position: usize },
+    Attribute { name: String },
+    Text,
 }
 
 impl UploadDestination {
@@ -341,6 +355,23 @@ impl UploadDestination {
     pub fn regex_group(&self) -> Option<&str> {
         match &self.response {
             Some(UploadResponse::Regex { group, .. }) => group.as_deref(),
+            _ => None,
+        }
+    }
+
+    /// Attach a bounded XML result parser without networking or secrets.
+    pub fn with_xml(mut self, path: impl AsRef<str>) -> Result<Self> {
+        self.response = Some(UploadResponse::Xml {
+            path: path.as_ref().trim().to_owned(),
+        });
+        self.json_pointer.clear();
+        self.validate()?;
+        Ok(self)
+    }
+
+    pub fn xml_path(&self) -> Option<&str> {
+        match &self.response {
+            Some(UploadResponse::Xml { path }) => Some(path),
             _ => None,
         }
     }
@@ -533,6 +564,9 @@ impl UploadDestination {
             }
             if let UploadResponse::Regex { pattern, group } = response {
                 validate_regex_response(pattern, group.as_deref(), "result")?;
+            }
+            if let UploadResponse::Xml { path } = response {
+                validate_xml_response(path, "result")?;
             }
         }
         ensure!(
@@ -1257,6 +1291,27 @@ fn parse_sharex_url_token(
         );
         return Ok((String::new(), Some(UploadResponse::RequestUrl)));
     }
+    if token == "{xml}" {
+        anyhow::bail!("ShareX XML path is required");
+    }
+    if let Some(inner) = token
+        .strip_prefix("{xml:")
+        .and_then(|value| value.strip_suffix('}'))
+    {
+        let parts = split_sharex_escaped(inner, '|')?;
+        ensure!(
+            parts.len() == 1,
+            "ShareX xml input syntax is not supported"
+        );
+        let path = parts[0].trim();
+        validate_xml_response(path, "result")?;
+        return Ok((
+            String::new(),
+            Some(UploadResponse::Xml {
+                path: path.to_owned(),
+            }),
+        ));
+    }
     if token == "{regex}" {
         anyhow::bail!("ShareX RegexList is not supported");
     }
@@ -1977,6 +2032,13 @@ async fn transfer(
             group.as_deref(),
             "result",
         )?)?
+    } else if let Some(UploadResponse::Xml { path }) = &destination.response {
+        destination.result_link(&xml_capture(
+            text.as_deref()
+                .context("Upload completed, but its response is not UTF-8 text")?,
+            path,
+            "result",
+        )?)?
     } else {
         let value = json
             .as_ref()
@@ -2061,6 +2123,9 @@ impl UploadResultParser {
             if let UploadResponse::Regex { pattern, group } = response {
                 validate_regex_response(pattern, group.as_deref(), label)?;
             }
+            if let UploadResponse::Xml { path } = response {
+                validate_xml_response(path, label)?;
+            }
         } else {
             ensure!(
                 self.json_pointer.len() <= 256
@@ -2135,6 +2200,21 @@ impl UploadResultParser {
                 )?,
             );
         }
+        if let Some(UploadResponse::Xml { path }) = &self.response {
+            return compose_result_link(
+                &self.link_prefix,
+                &self.link_suffix,
+                &xml_capture(
+                    text.with_context(|| {
+                        format!(
+                            "Upload completed, but the configured {label} text response is missing"
+                        )
+                    })?,
+                    path,
+                    label,
+                )?,
+            );
+        }
         let value = json
             .with_context(|| {
                 format!("Upload completed, but the configured {label} JSON response is missing")
@@ -2151,7 +2231,7 @@ impl UploadResultParser {
 fn response_needs_text(response: Option<&UploadResponse>) -> bool {
     matches!(
         response,
-        Some(UploadResponse::Text | UploadResponse::Regex { .. })
+        Some(UploadResponse::Text | UploadResponse::Regex { .. } | UploadResponse::Xml { .. })
     )
 }
 
@@ -2237,6 +2317,180 @@ fn regex_capture(text: &str, pattern: &str, group: Option<&str>, label: &str) ->
         "Upload completed, but the configured {label} regex group is empty"
     );
     Ok(value.to_owned())
+}
+
+fn is_xml_name(name: &str) -> bool {
+    let mut bytes = name.bytes();
+    matches!(
+        bytes.next(),
+        Some(byte) if byte.is_ascii_alphabetic() || byte == b'_'
+    ) && bytes.all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-' || byte == b'.')
+        && name.len() <= 64
+}
+
+fn parse_xml_child_step(step: &str, label: &str) -> Result<(String, usize)> {
+    if let Some(name) = step.strip_suffix(']') {
+        let (name, index) = name
+            .split_once('[')
+            .context(format!("Use a valid {label} XML path step"))?;
+        ensure!(
+            is_xml_name(name),
+            "Use a {label} XML element name of 1–64 letters, digits, underscores, hyphens or dots"
+        );
+        ensure!(
+            !index.is_empty()
+                && index.bytes().all(|byte| byte.is_ascii_digit())
+                && !(index.len() > 1 && index.starts_with('0')),
+            "Use a {label} XML index from 1 to {MAX_XML_INDEX}"
+        );
+        let position: usize = index.parse()?;
+        ensure!(
+            (1..=MAX_XML_INDEX).contains(&position),
+            "Use a {label} XML index from 1 to {MAX_XML_INDEX}"
+        );
+        return Ok((name.to_owned(), position));
+    }
+    ensure!(
+        is_xml_name(step),
+        "Use a {label} XML element name of 1–64 letters, digits, underscores, hyphens or dots"
+    );
+    Ok((step.to_owned(), 1))
+}
+
+fn parse_xml_path(path: &str, label: &str) -> Result<Vec<XmlPathStep>> {
+    ensure!(
+        !path.is_empty()
+            && path.len() <= MAX_XML_PATH
+            && path.trim() == path
+            && path.starts_with('/')
+            && !path.contains("//")
+            && !path.chars().any(|character| character.is_whitespace() || character.is_control()),
+        "Use a {label} XML path of 1–256 bytes starting with /"
+    );
+    let mut steps = Vec::new();
+    for (index, step) in path.split('/').enumerate() {
+        if index == 0 {
+            ensure!(step.is_empty(), "Use a {label} XML path starting with /");
+            continue;
+        }
+        ensure!(
+            !step.is_empty(),
+            "Use a {label} XML path without empty steps"
+        );
+        ensure!(
+            steps.len() < MAX_XML_STEPS,
+            "Use a {label} XML path of at most {MAX_XML_STEPS} steps"
+        );
+        if step == "text()" {
+            steps.push(XmlPathStep::Text);
+            continue;
+        }
+        if let Some(name) = step.strip_prefix('@') {
+            ensure!(
+                is_xml_name(name),
+                "Use a {label} XML attribute name of 1–64 letters, digits, underscores, hyphens or dots"
+            );
+            steps.push(XmlPathStep::Attribute {
+                name: name.to_owned(),
+            });
+            continue;
+        }
+        let (name, position) = parse_xml_child_step(step, label)?;
+        steps.push(XmlPathStep::Child { name, position });
+    }
+    ensure!(
+        !steps.is_empty(),
+        "Use a {label} XML path with at least one step"
+    );
+    ensure!(
+        matches!(steps.first(), Some(XmlPathStep::Child { .. })),
+        "Use a {label} XML path that starts with an element"
+    );
+    ensure!(
+        steps.iter().enumerate().all(|(index, step)| {
+            index + 1 == steps.len() || matches!(step, XmlPathStep::Child { .. })
+        }),
+        "Use text() or @attribute only as the last {label} XML step"
+    );
+    Ok(steps)
+}
+
+fn validate_xml_response(path: &str, label: &str) -> Result<()> {
+    let _ = parse_xml_path(path, label)?;
+    Ok(())
+}
+
+fn xml_inner_text(node: roxmltree::Node<'_, '_>) -> String {
+    node.descendants()
+        .filter(|child| child.is_text())
+        .filter_map(|child| child.text())
+        .collect::<String>()
+        .trim()
+        .to_owned()
+}
+
+fn xml_capture(text: &str, path: &str, label: &str) -> Result<String> {
+    let steps = parse_xml_path(path, label)?;
+    let document = roxmltree::Document::parse_with_options(
+        text,
+        roxmltree::ParsingOptions {
+            nodes_limit: MAX_XML_NODES,
+            ..roxmltree::ParsingOptions::default()
+        },
+    )
+    .with_context(|| {
+        format!("Upload completed, but the configured {label} XML is invalid")
+    })?;
+    let mut current = document.root();
+    let last = steps.len() - 1;
+    for (index, step) in steps.iter().enumerate() {
+        match step {
+            XmlPathStep::Child { name, position } => {
+                current = current
+                    .children()
+                    .filter(|node| node.is_element() && node.tag_name().name() == name)
+                    .nth(position - 1)
+                    .with_context(|| {
+                        format!(
+                            "Upload completed, but the configured {label} XML path contains no link"
+                        )
+                    })?;
+            }
+            XmlPathStep::Attribute { name } => {
+                ensure!(
+                    index == last,
+                    "Use @attribute only as the last {label} XML step"
+                );
+                let value = current.attribute(name.as_str()).with_context(|| {
+                    format!("Upload completed, but the configured {label} XML path contains no link")
+                })?;
+                let value = value.trim();
+                ensure!(
+                    !value.is_empty(),
+                    "Upload completed, but the configured {label} XML path is empty"
+                );
+                return Ok(value.to_owned());
+            }
+            XmlPathStep::Text => {
+                ensure!(
+                    index == last,
+                    "Use text() only as the last {label} XML step"
+                );
+                let value = xml_inner_text(current);
+                ensure!(
+                    !value.is_empty(),
+                    "Upload completed, but the configured {label} XML path is empty"
+                );
+                return Ok(value);
+            }
+        }
+    }
+    let value = xml_inner_text(current);
+    ensure!(
+        !value.is_empty(),
+        "Upload completed, but the configured {label} XML path is empty"
+    );
+    Ok(value)
 }
 
 fn split_sharex_escaped(value: &str, delimiter: char) -> Result<Vec<String>> {
@@ -2395,11 +2649,14 @@ fn sharex_url_template(
         (Some(UploadResponse::Regex { pattern, group: Some(group) }), "") => {
             format!("{{regex:{}|{}}}", sharex_escape(pattern), group)
         }
+        (Some(UploadResponse::Xml { path }), "") => {
+            format!("{{xml:{}}}", sharex_escape(path))
+        }
         (None, pointer) if !pointer.is_empty() => {
             format!("{{json:{}}}", sharex_json_path(pointer)?)
         }
         _ => anyhow::bail!(
-            "ShareX export needs a JSON pointer, text, header, regex or PUT request-URL response"
+            "ShareX export needs a JSON pointer, text, header, regex, XML or PUT request-URL response"
         ),
     };
     let url = format!("{prefix}{token}{suffix}");
@@ -3109,7 +3366,8 @@ mod tests {
         )?;
         assert!(UploadDestination::load(&path).is_err());
         assert!(destination.clone().with_thumbnail("{regex}").is_err());
-        assert!(destination.clone().with_thumbnail("{xml:/url}").is_err());
+        assert!(destination.clone().with_thumbnail("{xml}").is_err());
+        assert!(destination.clone().with_thumbnail("{xml://url}").is_err());
         assert!(destination.clone().with_thumbnail("{responseurl}").is_err());
         assert!(destination.clone().with_deletion("").is_err());
         let mut put = UploadDestination::manual(
@@ -3212,6 +3470,98 @@ mod tests {
         assert_eq!(
             extras.thumbnail_template().as_deref(),
             Some(r#"{regex:thumb="(.+)"|1}"#)
+        );
+        assert_eq!(std::fs::read(&other)?, b"keep-settings");
+        std::fs::remove_dir_all(root)?;
+        Ok(())
+    }
+
+    #[test]
+    fn xml_result_urls_validate_persist_and_select_nodes() -> Result<()> {
+        let body = r#"<?xml version="1.0" encoding="UTF-8"?>
+<files>
+    <file>
+        <name>image.png</name>
+        <url>https://example.invalid/share/abc</url>
+    </file>
+    <file href="https://example.invalid/share/second">
+        <url>https://example.invalid/share/other</url>
+    </file>
+</files>"#;
+        let destination = UploadDestination::manual(
+            "https://example.invalid/upload".into(),
+            UploadMethod::Post,
+            "file".into(),
+            Some("/url".into()),
+            false,
+        )?
+        .with_xml(" /files/file[1]/url ")?;
+        assert_eq!(destination.xml_path(), Some("/files/file[1]/url"));
+        assert_eq!(
+            xml_capture(body, destination.xml_path().unwrap(), "result")?,
+            "https://example.invalid/share/abc"
+        );
+        assert_eq!(
+            xml_capture(body, "/files/file/url", "result")?,
+            "https://example.invalid/share/abc"
+        );
+        assert_eq!(
+            xml_capture(body, "/files/file[2]/@href", "result")?,
+            "https://example.invalid/share/second"
+        );
+        assert_eq!(
+            xml_capture(body, "/files/file[1]/url/text()", "result")?,
+            "https://example.invalid/share/abc"
+        );
+        let composed = destination.clone().with_xml("/files/file[1]/name")?;
+        let composed = composed.with_link_affixes("https://cdn.example.invalid/", "")?;
+        assert_eq!(
+            composed.result_link(&xml_capture(body, "/files/file[1]/name", "result")?)?,
+            "https://cdn.example.invalid/image.png"
+        );
+        let root = std::env::temp_dir().join(format!(
+            "screenshots-xml-link-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&root)?;
+        let path = root.join("destination.json");
+        let other = root.join("settings.json");
+        std::fs::write(&other, b"keep-settings")?;
+        destination.save_at(&path)?;
+        let loaded = UploadDestination::load(&path)?;
+        assert_eq!(loaded.xml_path(), destination.xml_path());
+        let json = std::fs::read_to_string(&path)?;
+        assert!(json.contains("\"xml\""));
+        assert!(json.contains("/files/file[1]/url"));
+        assert!(!json.contains("api_key"));
+        std::fs::write(
+            &path,
+            r#"{"url":"https://example.invalid/upload","field":"file","response":{"type":"xml","path":"/files/file[1]/url"}}"#,
+        )?;
+        let loaded = UploadDestination::load(&path)?;
+        assert_eq!(loaded.xml_path(), Some("/files/file[1]/url"));
+        assert!(destination.clone().with_xml("").is_err());
+        assert!(destination.clone().with_xml("files/file/url").is_err());
+        assert!(destination.clone().with_xml("//files/file/url").is_err());
+        assert!(destination.clone().with_xml("/files/*").is_err());
+        assert!(destination.clone().with_xml("/files/file[0]/url").is_err());
+        assert!(destination.clone().with_xml("/files/file[257]/url").is_err());
+        assert!(destination.clone().with_xml("/@href").is_err());
+        assert!(destination.clone().with_xml("/text()").is_err());
+        assert!(destination.clone().with_xml("/a/b/c/d/e/f/g/h/i").is_err());
+        assert!(destination.clone().with_xml(&"/a".repeat(130)).is_err());
+        assert!(xml_capture("not xml", "/files/url", "result").is_err());
+        assert!(xml_capture(
+            r#"<!DOCTYPE files [<!ELEMENT files ANY>]><files><url>https://example.invalid/x</url></files>"#,
+            "/files/url",
+            "result",
+        )
+        .is_err());
+        assert!(xml_capture(body, "/files/file[3]/url", "result").is_err());
+        let extras = destination.clone().with_thumbnail("{xml:/files/file[1]/name}")?;
+        assert_eq!(
+            extras.thumbnail_template().as_deref(),
+            Some("{xml:/files/file[1]/name}")
         );
         assert_eq!(std::fs::read(&other)?, b"keep-settings");
         std::fs::remove_dir_all(root)?;
@@ -3756,6 +4106,12 @@ mod tests {
             Some(r#"https://example\.invalid/\S+"#)
         );
         assert!(destination.regex_group().is_none());
+        std::fs::write(
+            &path,
+            r#"{"DestinationType":"ImageUploader","RequestURL":"https://example.invalid/upload","URL":"{xml:/files/file[1]/url}"}"#,
+        )?;
+        let (destination, _) = UploadDestination::from_sharex_at(&path)?;
+        assert_eq!(destination.xml_path(), Some("/files/file[1]/url"));
         for profile in [
             r#"{"DestinationType":"FileUploader","RequestURL":"https://example.invalid/upload"}"#,
             r#"{"DestinationType":"ImageUploader","RequestURL":"http://example.invalid/upload"}"#,
@@ -3775,7 +4131,10 @@ mod tests {
             r#"{"DestinationType":"ImageUploader","RequestURL":"https://example.invalid/upload","Body":"JSON","Data":{"image":"{base64}","thumb":"{base64}"}}"#,
             r#"{"DestinationType":"ImageUploader","RequestMethod":"PUT","RequestURL":"https://example.invalid/image.png","Body":"JSON","Data":{"image":"{base64}"}}"#,
             r#"{"DestinationType":"ImageUploader","RequestURL":"https://example.invalid/upload","URL":"{regex}"}"#,
-            r#"{"DestinationType":"ImageUploader","RequestURL":"https://example.invalid/upload","URL":"{xml:/url}"}"#,
+            r#"{"DestinationType":"ImageUploader","RequestURL":"https://example.invalid/upload","URL":"{xml}"}"#,
+            r#"{"DestinationType":"ImageUploader","RequestURL":"https://example.invalid/upload","URL":"{xml:input|/url}"}"#,
+            r#"{"DestinationType":"ImageUploader","RequestURL":"https://example.invalid/upload","URL":"{xml://files/url}"}"#,
+            r#"{"DestinationType":"ImageUploader","RequestURL":"https://example.invalid/upload","URL":"{xml:files/url}"}"#,
             r#"{"DestinationType":"ImageUploader","RequestURL":"https://example.invalid/upload","URL":"{regex:(?<=href=\").+(?=\")}"}"#,
             r#"{"DestinationType":"ImageUploader","RequestURL":"https://example.invalid/upload","URL":"{regex:a|b|c}"}"#,
             r#"{"DestinationType":"ImageUploader","RequestURL":"https://example.invalid/{json:url}"}"#,
@@ -3941,6 +4300,21 @@ mod tests {
         let (imported, _) = UploadDestination::from_sharex_at(&path)?;
         assert_eq!(imported.regex_pattern(), Some(r#"href="(.+)""#));
         assert_eq!(imported.regex_group(), Some("1"));
+        std::fs::remove_file(&path)?;
+        let xmled = UploadDestination::manual(
+            "https://example.invalid/upload".into(),
+            UploadMethod::Post,
+            "file".into(),
+            Some("/url".into()),
+            false,
+        )?
+        .with_xml("/files/file[1]/url")?;
+        xmled.to_sharex_at(&path, Some("Host"))?;
+        let exported = std::fs::read_to_string(&path)?;
+        assert!(exported.contains("{xml:/files/file[1]/url}"));
+        assert!(!exported.contains("api_key"));
+        let (imported, _) = UploadDestination::from_sharex_at(&path)?;
+        assert_eq!(imported.xml_path(), Some("/files/file[1]/url"));
         std::fs::remove_file(&path)?;
         let mut header = UploadDestination::manual(
             "https://example.invalid/upload".into(),
@@ -4746,6 +5120,37 @@ mod tests {
             .unwrap();
         let error = upload_png(&missing, &path, UploadCancellation::default()).unwrap_err();
         assert!(error.to_string().contains("regex"));
+        let _ = task.join().unwrap();
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    #[ignore = "uses a local loopback HTTP server and synthetic PNG; no external connections"]
+    fn upload_extracts_xml_path_from_body() {
+        let (root, path) = fixture();
+        let (url, server) = server(
+            response(
+                r#"<?xml version="1.0"?><files><file><url>https://example.invalid/share/abc</url></file></files>"#,
+            ),
+            None,
+            Duration::ZERO,
+        );
+        let parsed = destination(url)
+            .with_xml("/files/file[1]/url")
+            .unwrap();
+        assert_eq!(
+            upload_png(&parsed, &path, UploadCancellation::default()).unwrap(),
+            "https://example.invalid/share/abc"
+        );
+        let _ = server.join().unwrap();
+        let (url, task) = self::server(
+            response(r#"<files><file><name>image.png</name></file></files>"#),
+            None,
+            Duration::ZERO,
+        );
+        let missing = destination(url).with_xml("/files/file[1]/url").unwrap();
+        let error = upload_png(&missing, &path, UploadCancellation::default()).unwrap_err();
+        assert!(error.to_string().contains("XML"));
         let _ = task.join().unwrap();
         std::fs::remove_dir_all(root).unwrap();
     }

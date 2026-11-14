@@ -1,0 +1,10 @@
+{
+  "Version": "17.0.0",
+  "Name": "Example XML",
+  "DestinationType": "ImageUploader",
+  "RequestMethod": "POST",
+  "RequestURL": "https://example.invalid/upload",
+  "Body": "MultipartFormData",
+  "FileFormName": "file",
+  "URL": "{xml:/files/file[1]/url}"
+}

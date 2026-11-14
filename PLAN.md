@@ -983,7 +983,7 @@ session, without Remember, named-catalog writes or an upload. A regular core
 fixture covers validation, persistence, reserved-name/template/PUT/form-field
 rejection and ShareX Data mapping. An ignored loopback fixture asserts
 Content-Type application/json and the `{base64}` field on the wire. Composed
-result URLs are implemented below. Regex/XML parsers remain separate work.
+result URLs are implemented below. Regex/XML parsers are implemented below.
 Native keyboard/IME/accessibility, packaged restart workflow and
 latency/process/GPU/resource acceptance remain open; no new performance
 measurement is claimed for this bounded JSON body.
@@ -1013,7 +1013,7 @@ prefix/suffix updates only this session, without Remember, named-catalog writes
 or an upload. A regular core fixture covers validation, persistence, origin
 preservation, PUT rejection and ShareX URL mapping. An ignored loopback fixture
 asserts a numeric JSON id composed onto a CDN prefix. Thumbnail and deletion
-result URLs are implemented below. Regex/XML parsers remain separate work.
+result URLs are implemented below. Regex/XML parsers are implemented below.
 Native keyboard/IME/accessibility, packaged restart workflow and
 latency/process/GPU/resource acceptance remain open; no new performance
 measurement is claimed for this bounded result-link composition.
@@ -1033,7 +1033,7 @@ pointer does. Extract extras from the already-buffered response; do not GET the
 thumbnail or POST the deletion URL. Session UI shows **Copy thumbnail** and
 **Copy deletion** after a successful upload or test. Upload history still stores
 only the primary URL, so this slice does not migrate SQLite. Regex result
-parsers are implemented below. XML parsers stay out. Origin-scoped secrets and
+parsers are implemented below. XML parsers are implemented below. Origin-scoped secrets and
 the 1 MiB response cap stay unchanged. No connection or upload starts while
 loading or validating a profile.
 
@@ -1045,7 +1045,7 @@ without Remember, named-catalog writes or an upload. A regular core fixture
 covers validation, persistence, PUT request-URL rejection and ShareX
 ThumbnailURL/DeletionURL mapping. An ignored loopback fixture asserts extra URLs
 from one JSON body and that a missing extra fails the upload. Regex result
-parsers are implemented below. XML parsers remain separate work.
+parsers are implemented below. XML parsers are implemented below.
 Native keyboard/IME/accessibility, packaged restart workflow and
 latency/process/GPU/resource acceptance remain open; no new performance
 measurement is claimed for this bounded extra-result parse.
@@ -1061,10 +1061,10 @@ The extracted value still goes through `link_prefix`/`link_suffix` and
 `validate_link`. Lookaround, backreferences and other non-linear features fail
 at compile. ShareX import/export maps `{regex:pattern}` and `{regex:pattern|group}`
 with `\{` `\}` `\|` `\\` escapes; `{regex}` RegexList, three-parameter
-`{regex:input|pattern|group}`, `{json:path|regex:}` and `{xml}` stay rejected.
+`{regex:input|pattern|group}` and `{json:path|regex:}` stay rejected.
 The same parser is available on thumbnail/deletion extras. The setup form has no
 regex rows; load JSON, Remember, named catalog, configuration export/import and
-ShareX profiles reuse the same validator. XML parsers stay out. Origin-scoped
+ShareX profiles reuse the same validator. XML parsers are implemented below. Origin-scoped
 secrets and the 1 MiB response cap stay unchanged. No connection or upload starts
 while loading or validating a profile.
 
@@ -1079,6 +1079,37 @@ capture and that a missing match fails the upload.
 Native keyboard/IME/accessibility, packaged restart workflow and
 latency/process/GPU/resource acceptance remain open; no new performance
 measurement is claimed for this bounded regex parse.
+
+#### Current feature slice: XML result URLs
+
+Destination JSON may include `response: { "type": "xml", "path": "/files/file[1]/url" }`
+to extract a link from the already-buffered UTF-8 body. Path is 1–256 bytes, starts
+with `/`, and is a bounded XPath subset: at most 8 child steps, 1-based `[n]`
+indexes 1–256, optional final `@attr` or `text()`, and XML names of 1–64
+`[A-Za-z_][A-Za-z0-9_.-]*` characters. Missing indexes select the first matching
+child. The selected element's descendant text, or the attribute value, still goes
+through `link_prefix`/`link_suffix` and `validate_link`. Empty matches fail the
+upload. `//`, `*`, relative paths, namespaces, unions, functions, DTD and
+`{xml:input|xpath}` stay rejected. ShareX import/export maps `{xml:xpath}` with
+`\{` `\}` `\|` `\\` escapes; `{xml}` without a path stays rejected. The same
+parser is available on thumbnail/deletion extras. The setup form has no XML rows;
+load JSON, Remember, named catalog, configuration export/import and ShareX
+profiles reuse the same validator. Origin-scoped secrets and the 1 MiB response
+cap stay unchanged. No connection or upload starts while loading or validating a
+profile.
+
+Resource cost is one optional path string plus parsing the already-buffered body
+with `roxmltree` (no DTD, 4096-node limit) on validate/extract. The new
+dependency is `roxmltree` 0.21. There is no new worker, runtime, queue, image,
+cache, watcher or idle timer. Constructor and headless UI fixtures verify that
+loading a temp JSON with an XML parser updates only this session, without
+Remember, named-catalog writes or an upload. A regular core fixture covers
+validation, persistence, positional/attribute/text selection, DTD rejection and
+ShareX `{xml}` mapping. An ignored loopback fixture asserts an XML url element
+and that a missing path fails the upload.
+Native keyboard/IME/accessibility, packaged restart workflow and
+latency/process/GPU/resource acceptance remain open; no new performance
+measurement is claimed for this bounded XML parse.
 
 #### Current feature slice: configurable Windows global hotkeys
 
