@@ -630,9 +630,9 @@ cache, watcher or idle timer. Constructor and headless UI fixtures verify HTTP
 rejection, empty secrets, duplicate admission, stale-result suppression and that
 status text never echoes the secret, without writing OS credentials or networking.
 An ignored native round-trip writes one uniquely named synthetic credential,
-reads it back and deletes it. Connection testing is implemented below.
-Credential rotation/deletion UI, named destinations and non-Windows secret
-stores remain separate work.
+reads it back and deletes it. Connection testing and credential removal are
+implemented below. Named destinations and non-Windows secret stores remain
+separate work.
 Native keyboard/IME/accessibility, real Credential Manager UX and
 latency/process/GPU/resource acceptance remain open; no new performance
 measurement is claimed for this bounded secret-entry path.
@@ -662,6 +662,34 @@ reject an existing target with HTTP 412 still need a unique resource URL.
 Native keyboard/IME/accessibility, real hosting-service interoperability and
 latency/process/GPU/resource acceptance remain open; no new performance
 measurement is claimed for this explicit probe.
+
+#### Current feature slice: Windows upload credential removal
+
+Uploads offers Remove credential on Windows after the session destination has
+an attached HTTPS credential reference. The action deletes only the
+Screenshots/upload/https://… Generic Credential for that origin/reference,
+then returns a credential-free session destination. Save credential remains
+the rotation path for the same reference. Forget destination still leaves the
+OS secret in place. Removal is session-only; Remember persists the anonymous
+profile. A missing OS entry is treated as success so the session reference
+cannot keep pointing at a deleted secret. Invalid or unrelated targets are
+rejected before any CredDeleteW call. Closing the page discards a pending
+status; Quit discards it. No upload, image decode or settings write occurs
+while removing.
+
+Resource cost is one admitted metadata future on the existing worker and the
+existing destination clone. There is no new dependency, runtime, queue, image,
+cache, watcher or idle timer. Constructor and headless UI fixtures verify
+button presence only with an attached reference, busy/missing-reference guards
+and that last capture stays unchanged, without deleting OS credentials.
+A regular core fixture rejects destinations without a reference and unrelated
+or HTTP targets. An ignored native round-trip writes one uniquely named
+synthetic credential, deletes it through detach_credential, confirms lookup
+fails and leaves no secret in JSON.
+Named destinations and non-Windows secret stores remain separate work.
+Native keyboard/IME/accessibility, real Credential Manager UX and
+latency/process/GPU/resource acceptance remain open; no new performance
+measurement is claimed for this bounded deletion path.
 
 #### Current feature slice: configurable Windows global hotkeys
 

@@ -164,6 +164,20 @@ impl UploadDestination {
         Ok(destination)
     }
 
+    /// Delete the OS secret for this destination's credential target and return
+    /// a credential-free copy. Forget destination does not call this.
+    pub fn detach_credential(self) -> Result<Self> {
+        let target = self
+            .credential_target()
+            .context("This destination has no Windows credential to remove")?;
+        crate::upload_credentials::delete(&target)?;
+        let mut destination = self;
+        destination.credential = None;
+        destination.authentication = None;
+        destination.validate()?;
+        Ok(destination)
+    }
+
     pub fn credential_reference(&self) -> Option<&str> {
         self.credential.as_deref()
     }
@@ -1198,6 +1212,73 @@ mod tests {
                 .to_str()
                 .unwrap(),
             "Bearer synthetic-token_123.abc=="
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn detach_credential_requires_an_attached_https_reference_without_os_writes() -> Result<()> {
+        let destination = UploadDestination::manual(
+            "https://example.invalid/upload".into(),
+            UploadMethod::Post,
+            "file".into(),
+            None,
+            false,
+        )?;
+        assert!(destination.clone().detach_credential().is_err());
+        if cfg!(target_os = "windows") {
+            let attached = destination.with_authentication(
+                "main".into(),
+                UploadAuthentication::Bearer,
+            )?;
+            assert_eq!(attached.credential_reference(), Some("main"));
+            let text = String::from_utf8(serde_json::to_vec(&attached)?)?;
+            assert!(text.contains("main"));
+            assert!(!text.contains("secret"));
+        }
+        Ok(())
+    }
+
+    #[test]
+    #[cfg(target_os = "windows")]
+    #[ignore = "creates and deletes one uniquely named synthetic Windows credential; no real secrets or networking"]
+    fn detach_credential_removes_the_os_secret_and_clears_the_reference() -> Result<()> {
+        let name = format!("test-{}", uuid::Uuid::new_v4());
+        let destination = UploadDestination::manual(
+            "https://example.invalid/upload".into(),
+            UploadMethod::Post,
+            "file".into(),
+            None,
+            false,
+        )?
+        .attach_credential(
+            name,
+            UploadAuthentication::Bearer,
+            String::new(),
+            "synthetic-token_123.abc==".into(),
+        )?;
+        let target = destination.credential_target().unwrap();
+        struct Cleanup(Vec<u16>);
+        impl Drop for Cleanup {
+            fn drop(&mut self) {
+                unsafe {
+                    windows_sys::Win32::Security::Credentials::CredDeleteW(
+                        self.0.as_ptr(),
+                        windows_sys::Win32::Security::Credentials::CRED_TYPE_GENERIC,
+                        0,
+                    );
+                }
+            }
+        }
+        let _cleanup = Cleanup(target.encode_utf16().chain(Some(0)).collect());
+        let detached = destination.detach_credential()?;
+        assert!(detached.credential_reference().is_none());
+        assert!(detached.authentication().is_none());
+        let text = String::from_utf8(serde_json::to_vec(&detached)?)?;
+        assert!(!text.contains("synthetic-token"));
+        assert!(!text.contains("credential"));
+        assert!(
+            crate::upload_credentials::read_header(&target, UploadAuthentication::Bearer).is_err()
         );
         Ok(())
     }

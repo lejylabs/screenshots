@@ -3152,6 +3152,53 @@ impl CaptureWorkspace {
         cx.notify();
     }
 
+    fn remove_upload_credential(&mut self, cx: &mut Context<Self>) {
+        if !cfg!(target_os = "windows")
+            || self.quitting
+            || self.upload_config_loading
+            || self.upload_cancel.is_some()
+        {
+            return;
+        }
+        let Some(destination) = self.upload_destination.clone() else {
+            return;
+        };
+        if destination.credential_target().is_none() {
+            return;
+        }
+        self.close_upload_forms();
+        self.upload_config_loading = true;
+        self.upload_status = "Removing Windows credential…".into();
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_spawn(async move { destination.detach_credential() })
+                .await;
+            this.update(cx, |this, cx| {
+                this.upload_config_loading = false;
+                if !this.quitting && this.page == ControlPage::Uploads {
+                    match result {
+                        Ok(destination) => {
+                            this.upload_status = format!(
+                                "Credential removed for {} · Session destination is anonymous · Remember to persist",
+                                destination.origin()
+                            );
+                            this.upload_destination = Some(destination);
+                            this.upload_url = None;
+                        }
+                        Err(error) => {
+                            this.upload_status = format!("Credential unchanged: {error:#}");
+                        }
+                    }
+                }
+                this.finish_quit_if_idle(cx);
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+        cx.notify();
+    }
+
     fn load_upload_destination(&mut self, cx: &mut Context<Self>) {
         if self.quitting || self.upload_config_loading || self.upload_cancel.is_some() {
             return;

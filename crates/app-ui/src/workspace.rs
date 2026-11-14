@@ -402,6 +402,10 @@ impl Render for CaptureWorkspace {
                                     this.upload_credential_auth = auth;
                                     cx.notify();
                                 }))))
+                        .when(cfg!(target_os = "windows") && self.upload_destination.as_ref().is_some_and(|destination| destination.credential_target().is_some()), |row| row
+                            .child(quiet_button(cx, "remove-upload-credential", "Remove credential",
+                                self.upload_config_loading || self.upload_cancel.is_some(), false,
+                                cx.listener(|this, _, _, cx| this.remove_upload_credential(cx)))))
                         .when(self.upload_destination.is_some(), |row| row
                             .child(capture_button(cx, "test-upload-destination", "Test destination",
                                 self.upload_config_loading || self.upload_cancel.is_some(),

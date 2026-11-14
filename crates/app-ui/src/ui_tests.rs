@@ -1127,6 +1127,59 @@ fn upload_credential_form_validates_without_writing_secrets(cx: &mut TestAppCont
     }).unwrap();
 }
 
+#[cfg(target_os = "windows")]
+#[gpui::test]
+fn upload_remove_credential_stays_idle_without_an_attached_reference(cx: &mut TestAppContext) {
+    let handle = open_workspace(cx);
+    handle.update(cx, |this, _, cx| {
+        this.show_page(ControlPage::Uploads, cx);
+    }).unwrap();
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.try_find("remove-upload-credential").is_none());
+    }).unwrap();
+    handle.update(cx, |this, _, cx| {
+        this.upload_destination = Some(app_core::UploadDestination::manual(
+            "https://old.invalid/upload".into(),
+            app_core::UploadMethod::Post, "file".into(), None, false).unwrap());
+        this.upload_url = Some("https://old.invalid/share/kept".into());
+        this.remove_upload_credential(cx);
+        assert!(!this.upload_config_loading);
+        assert_eq!(this.upload_destination.as_ref().unwrap().credential_reference(), None);
+        this.show_page(ControlPage::Uploads, cx);
+    }).unwrap();
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.try_find("remove-upload-credential").is_none());
+    }).unwrap();
+    handle.update(cx, |this, _, cx| {
+        this.upload_destination = Some(this.upload_destination.take().unwrap()
+            .with_authentication("main".into(), app_core::UploadAuthentication::Bearer).unwrap());
+        this.upload_cancel = Some(app_core::UploadCancellation::default());
+        this.remove_upload_credential(cx);
+        assert!(!this.upload_config_loading);
+        assert_eq!(this.upload_destination.as_ref().unwrap().credential_reference(), Some("main"));
+        this.upload_cancel = None;
+        this.upload_config_loading = true;
+        this.remove_upload_credential(cx);
+        assert_eq!(this.upload_destination.as_ref().unwrap().credential_reference(), Some("main"));
+        this.upload_config_loading = false;
+        this.show_page(ControlPage::Uploads, cx);
+    }).unwrap();
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.scroll("setup-upload-destination", gpui::ScrollDelta::Pixels(point(px(0.), px(-450.))), cx);
+        window.render_frame(cx);
+        assert_ne!(window.find("remove-upload-credential").disabled(), Some(true));
+    }).unwrap();
+    handle.update(cx, |this, _, _| {
+        assert_eq!(this.upload_url.as_deref(), Some("https://old.invalid/share/kept"));
+        assert_eq!(this.upload_destination.as_ref().unwrap().credential_reference(), Some("main"));
+        assert!(this.last_saved.is_none() && this.last_capture.is_none());
+        assert!(!this.upload_config_loading);
+    }).unwrap();
+}
+
 #[gpui::test]
 fn upload_destination_probe_stays_idle_without_a_destination_or_saved_image(cx: &mut TestAppContext) {
     let handle = open_workspace(cx);

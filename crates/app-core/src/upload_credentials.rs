@@ -6,6 +6,18 @@ use anyhow::ensure;
 use zeroize::Zeroizing;
 
 #[cfg(any(target_os = "windows", test))]
+fn validate_managed_target(target: &str) -> Result<()> {
+    ensure!(
+        !target.is_empty()
+            && target.len() <= 4096
+            && !target.chars().any(char::is_control)
+            && target.starts_with("Screenshots/upload/https://"),
+        "Credential target is invalid"
+    );
+    Ok(())
+}
+
+#[cfg(any(target_os = "windows", test))]
 fn bearer_header(token: &str) -> Result<reqwest::header::HeaderValue> {
     ensure!(
         !token.is_empty()
@@ -36,6 +48,11 @@ pub(crate) fn save(
     _: &str,
     _: &str,
 ) -> Result<()> {
+    anyhow::bail!("Upload credential lookup is not implemented on this platform")
+}
+
+#[cfg(not(target_os = "windows"))]
+pub(crate) fn delete(_: &str) -> Result<()> {
     anyhow::bail!("Upload credential lookup is not implemented on this platform")
 }
 
@@ -194,6 +211,25 @@ pub(crate) fn save(
     Ok(())
 }
 
+#[cfg(target_os = "windows")]
+pub(crate) fn delete(target: &str) -> Result<()> {
+    use windows_sys::Win32::Foundation::ERROR_NOT_FOUND;
+    use windows_sys::Win32::Security::Credentials::*;
+    validate_managed_target(target)?;
+    let name: Vec<u16> = target.encode_utf16().chain(Some(0)).collect();
+    if unsafe { CredDeleteW(name.as_ptr(), CRED_TYPE_GENERIC, 0) } != 0 {
+        return Ok(());
+    }
+    let error = std::io::Error::last_os_error();
+    if error.raw_os_error() == Some(ERROR_NOT_FOUND as i32) {
+        return Ok(());
+    }
+    anyhow::bail!(
+        "Could not remove the Windows upload credential (OS error {})",
+        error.raw_os_error().unwrap_or_default()
+    )
+}
+
 #[cfg(any(target_os = "windows", test))]
 fn basic_header(username: &str, password: &str) -> Result<reqwest::header::HeaderValue> {
     use base64::Engine;
@@ -306,6 +342,25 @@ mod tests {
         let value = bearer_header("synthetic-token_123.abc==").unwrap();
         assert!(value.is_sensitive());
         assert_eq!(value.to_str().unwrap(), "Bearer synthetic-token_123.abc==");
+    }
+
+    #[test]
+    fn managed_credential_targets_reject_unrelated_or_http_names() {
+        for target in [
+            "",
+            "Windows/other",
+            "Screenshots/upload/http://example.invalid/main",
+            "Screenshots/upload/https://example.invalid/main\n",
+            &format!(
+                "Screenshots/upload/https://example.invalid/{}",
+                "x".repeat(5000)
+            ),
+        ] {
+            assert!(validate_managed_target(target).is_err());
+        }
+        assert!(
+            validate_managed_target("Screenshots/upload/https://example.invalid/main").is_ok()
+        );
     }
     #[cfg(target_os = "windows")]
     #[test]

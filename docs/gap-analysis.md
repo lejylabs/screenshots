@@ -1,11 +1,17 @@
 # Functional gap analysis: screenshots and ShareX
 
+Implementation follow-up (2026-11-14, working tree): Windows Uploads Remove
+credential deletes the origin-scoped Generic Credential for the attached
+reference and returns a credential-free session destination. Forget destination
+still leaves the OS secret in place. Named destinations and secret-store
+platforms other than Windows remain missing. See PLAN.md's credential-removal
+slice.
+
 Implementation follow-up (2026-11-14, working tree): Uploads Test destination
 sends a throwaway 1×1 PNG through the existing upload path. It is explicit and
 cancellable, does not record upload history, and does not change the last
-capture. Named destinations, credential rotation/deletion UI and secret-store
-platforms other than Windows remain missing. See PLAN.md's destination
-connection-test slice.
+capture. Named destinations and secret-store platforms other than Windows
+remain missing. See PLAN.md's destination connection-test slice.
 
 Implementation follow-up (2026-11-13, working tree): Windows Uploads can save a
 Bearer/API-key/Basic credential for the current HTTPS destination into Credential
@@ -253,7 +259,7 @@ files/URLs and configured tasks.
 
 | Capability | Current status and gap | Priority |
 | --- | --- | --- |
-| Destination setup | Partial: Uploads offers native credential-free POST/PUT setup with plain-text/JSON link responses, bounded validation and explicit HTTP opt-in; Use is session-only and Remember persists it. Windows Save credential writes Bearer/API-key/Basic secrets to Credential Manager and attaches only the reference to the session destination. JSON profiles retain advanced settings. Test destination sends a throwaway 1×1 PNG through the existing transfer path without recording history. Named destinations, credential deletion/rotation UI and configuration export remain missing. | A |
+| Destination setup | Partial: Uploads offers native credential-free POST/PUT setup with plain-text/JSON link responses, bounded validation and explicit HTTP opt-in; Use is session-only and Remember persists it. Windows Save credential writes Bearer/API-key/Basic secrets to Credential Manager and attaches only the reference to the session destination. Remove credential deletes that OS secret and clears the session reference; Forget destination still leaves the OS secret in place. JSON profiles retain advanced settings. Test destination sends a throwaway 1×1 PNG through the existing transfer path without recording history. Named destinations and configuration export remain missing. | A |
 | Multiple destinations | Missing saved named destination list, destination switching and per-task defaults. Only one profile is remembered. | A/B |
 | Existing ShareX profiles | Missing `.sxcu` import/export or a documented compatibility subset. Our profile JSON is not the ShareX format. | B |
 | Generic HTTP breadth | Partial: POST multipart/PUT PNG; no custom request headers/arguments/query templates, JSON/form bodies, richer response expressions or deletion/thumbnail result URLs. Compatibility must preserve origin-scoped secrets and response bounds. | B |
@@ -261,7 +267,7 @@ files/URLs and configured tasks.
 | Accepted input | PNG files only. No arbitrary file/folder/text/clipboard/URL uploads, batch upload UI, watched-folder workflow or capture-to-link chain. | B |
 | Post-upload behavior | Explicit Copy link exists. Missing optional user-configured automatic copy, link templates/shortening/QR and follow-up tasks. No implicit network/browser action should be added. | A/B |
 | Metadata handling | Edited exports flatten pixels. Existing imported PNG uploads and bulk exports preserve source bytes/metadata; no explicit metadata-inspection/sanitization option. | A before privacy claims; B for full tooling |
-| Secret stores | Windows Credential Manager lookup and native Save credential entry exist; rotation/deletion UI, macOS Keychain and Linux Secret Service remain missing. | A for relevant platform releases |
+| Secret stores | Windows Credential Manager lookup, native Save credential entry and Remove credential deletion exist; macOS Keychain and Linux Secret Service remain missing. | A for relevant platform releases |
 
 Evidence: [profile/method/response schema and validation](../crates/app-core/src/upload.rs),
 [credential implementation](../crates/app-core/src/upload_credentials.rs),
