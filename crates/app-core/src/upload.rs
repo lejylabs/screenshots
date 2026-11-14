@@ -64,6 +64,26 @@ impl<R: tokio::io::AsyncRead + Unpin> tokio::io::AsyncRead for ProgressReader<R>
 
 const MAX_RESPONSE: usize = 1024 * 1024;
 const MAX_CUSTOM_HEADERS: usize = 8;
+const MAX_QUERY_PARAMETERS: usize = 8;
+const MAX_FORM_FIELDS: usize = 8;
+const MAX_JSON_FIELDS: usize = 8;
+const JSON_BASE64_PLACEHOLDER: &str = "{base64}";
+const RESERVED_QUERY_NAMES: &[&str] = &[
+    "password",
+    "passwd",
+    "secret",
+    "token",
+    "access_token",
+    "refresh_token",
+    "auth_token",
+    "api_key",
+    "apikey",
+    "api-key",
+    "authorization",
+    "auth",
+    "client_secret",
+    "key",
+];
 const RESERVED_REQUEST_HEADERS: &[&str] = &[
     "authorization",
     "proxy-authorization",
@@ -106,6 +126,12 @@ pub struct UploadDestination {
     authentication: Option<UploadAuthentication>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     headers: BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    query: BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    form: BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    json: BTreeMap<String, String>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
@@ -152,7 +178,7 @@ impl UploadDestination {
         let field = if method == UploadMethod::Post { field.trim().into() } else { default_field() };
         let destination = Self { url: url.trim().into(), method, field,
             json_pointer: json_pointer.unwrap_or_default().trim().into(), response, allow_http,
-            credential: None, authentication: None, headers: BTreeMap::new() };
+            credential: None, authentication: None, headers: BTreeMap::new(), query: BTreeMap::new(), form: BTreeMap::new(), json: BTreeMap::new() };
         destination.validate()?;
         Ok(destination)
     }
@@ -174,6 +200,63 @@ impl UploadDestination {
 
     pub fn request_headers(&self) -> &BTreeMap<String, String> {
         &self.headers
+    }
+
+    /// Attach bounded query parameters without networking or secrets.
+    pub fn with_query<I, N, V>(mut self, query: I) -> Result<Self>
+    where
+        I: IntoIterator<Item = (N, V)>,
+        N: AsRef<str>,
+        V: AsRef<str>,
+    {
+        self.query = query
+            .into_iter()
+            .map(|(name, value)| (name.as_ref().trim().to_owned(), value.as_ref().trim().to_owned()))
+            .collect();
+        self.validate()?;
+        Ok(self)
+    }
+
+    pub fn request_query(&self) -> &BTreeMap<String, String> {
+        &self.query
+    }
+
+    /// Attach bounded extra multipart fields without networking or secrets.
+    pub fn with_form<I, N, V>(mut self, form: I) -> Result<Self>
+    where
+        I: IntoIterator<Item = (N, V)>,
+        N: AsRef<str>,
+        V: AsRef<str>,
+    {
+        self.form = form
+            .into_iter()
+            .map(|(name, value)| (name.as_ref().trim().to_owned(), value.as_ref().trim().to_owned()))
+            .collect();
+        self.validate()?;
+        Ok(self)
+    }
+
+    pub fn request_form(&self) -> &BTreeMap<String, String> {
+        &self.form
+    }
+
+    /// Attach a bounded JSON body with one `{base64}` PNG field, without networking or secrets.
+    pub fn with_json<I, N, V>(mut self, json: I) -> Result<Self>
+    where
+        I: IntoIterator<Item = (N, V)>,
+        N: AsRef<str>,
+        V: AsRef<str>,
+    {
+        self.json = json
+            .into_iter()
+            .map(|(name, value)| (name.as_ref().trim().to_owned(), value.as_ref().trim().to_owned()))
+            .collect();
+        self.validate()?;
+        Ok(self)
+    }
+
+    pub fn request_json(&self) -> &BTreeMap<String, String> {
+        &self.json
     }
 
     /// Attach a credential reference without reading or writing secrets.
@@ -387,10 +470,31 @@ impl UploadDestination {
                 .all(|part| part.starts_with('0') || part.starts_with('1')),
             "Invalid JSON pointer escape; use ~0 for ~ and ~1 for /"
         );
+        validate_custom_query(&self.query)?;
+        validate_custom_form(&self.form, self.method, &self.field)?;
+        validate_custom_json(&self.json, self.method, &self.form)?;
+        validate_custom_headers(&self.headers)?;
+        let url = self.apply_query(url)?;
         if matches!(self.response, Some(UploadResponse::RequestUrl)) {
             validate_link(url.as_str())?;
         }
-        validate_custom_headers(&self.headers)?;
+        Ok(url)
+    }
+
+    fn apply_query(&self, mut url: reqwest::Url) -> Result<reqwest::Url> {
+        if self.query.is_empty() {
+            return Ok(url);
+        }
+        {
+            let mut pairs = url.query_pairs_mut();
+            for (name, value) in &self.query {
+                pairs.append_pair(name, value);
+            }
+        }
+        ensure!(
+            url.as_str().len() <= 2048 && !url.as_str().chars().any(char::is_control),
+            "Upload URL with query parameters exceeds 2048 bytes"
+        );
         Ok(url)
     }
 
@@ -493,10 +597,8 @@ impl ShareXCustomUploader {
                 .any(|kind| kind.trim().eq_ignore_ascii_case("ImageUploader")),
             "ShareX profile must include ImageUploader"
         );
-        let headers = sharex_headers(&self.headers)?;
-        sharex_reject_object(&self.parameters, "query parameters")?;
-        sharex_reject_object(&self.arguments, "body arguments")?;
-        sharex_reject_object(&self.data, "JSON body fields")?;
+        let headers = sharex_string_map(&self.headers, "headers")?;
+        let query = sharex_string_map(&self.parameters, "query parameters")?;
         ensure!(
             !self.request_url.contains('{') && !self.request_url.contains('}'),
             "ShareX request URL syntax is not supported"
@@ -522,12 +624,27 @@ impl ShareXCustomUploader {
             })
             .trim();
         match (method, body) {
-            (UploadMethod::Post, "MultipartFormData") => {}
+            (UploadMethod::Post, "MultipartFormData") | (UploadMethod::Post, "JSON") => {}
             (UploadMethod::Put, "Binary") => {}
             _ => anyhow::bail!(
-                "ShareX import supports POST multipart or PUT binary bodies only"
+                "ShareX import supports POST multipart, POST JSON or PUT binary bodies only"
             ),
         }
+        let (form, json) = if body == "JSON" {
+            sharex_reject_object(&self.arguments, "form fields")?;
+            let json = sharex_string_map(&self.data, "JSON body fields")?;
+            ensure!(
+                !json.is_empty(),
+                "ShareX JSON bodies need a Data object with one {{base64}} field"
+            );
+            (BTreeMap::new(), json)
+        } else {
+            sharex_reject_object(&self.data, "JSON body fields")?;
+            (
+                sharex_string_map(&self.arguments, "form fields")?,
+                BTreeMap::new(),
+            )
+        };
         let field = if method == UploadMethod::Post {
             self.file_form_name
                 .as_deref()
@@ -548,6 +665,9 @@ impl ShareXCustomUploader {
             credential: None,
             authentication: None,
             headers,
+            query,
+            form,
+            json,
         };
         destination.validate()?;
         let name = match self.name.as_deref().map(str::trim).filter(|name| !name.is_empty()) {
@@ -594,24 +714,39 @@ impl ShareXCustomUploader {
             request_method: Some(destination.request_method().into()),
             request_url: destination.url.clone(),
             body: Some(
-                if destination.method == UploadMethod::Post {
+                if !destination.json.is_empty() {
+                    "JSON"
+                } else if destination.method == UploadMethod::Post {
                     "MultipartFormData"
                 } else {
                     "Binary"
                 }
                 .into(),
             ),
-            file_form_name: (destination.method == UploadMethod::Post)
-                .then(|| destination.field.clone()),
+            file_form_name: (destination.method == UploadMethod::Post
+                && destination.json.is_empty())
+            .then(|| destination.field.clone()),
             url,
             headers: if destination.headers.is_empty() {
                 None
             } else {
                 Some(serde_json::to_value(&destination.headers)?)
             },
-            parameters: None,
-            arguments: None,
-            data: None,
+            parameters: if destination.query.is_empty() {
+                None
+            } else {
+                Some(serde_json::to_value(&destination.query)?)
+            },
+            arguments: if destination.form.is_empty() {
+                None
+            } else {
+                Some(serde_json::to_value(&destination.form)?)
+            },
+            data: if destination.json.is_empty() {
+                None
+            } else {
+                Some(serde_json::to_value(&destination.json)?)
+            },
         })
     }
 }
@@ -624,27 +759,201 @@ fn sharex_reject_object(value: &Option<serde_json::Value>, label: &str) -> Resul
     }
 }
 
-fn sharex_headers(value: &Option<serde_json::Value>) -> Result<BTreeMap<String, String>> {
+fn sharex_string_map(value: &Option<serde_json::Value>, label: &str) -> Result<BTreeMap<String, String>> {
     match value {
         None | Some(serde_json::Value::Null) => Ok(BTreeMap::new()),
         Some(serde_json::Value::Object(map)) => {
-            let mut headers = BTreeMap::new();
+            let mut pairs = BTreeMap::new();
             for (name, value) in map {
                 let Some(text) = value.as_str() else {
-                    anyhow::bail!("ShareX headers must be string pairs");
+                    anyhow::bail!("ShareX {label} must be string pairs");
                 };
-                headers.insert(name.trim().to_owned(), text.trim().to_owned());
+                pairs.insert(name.trim().to_owned(), text.trim().to_owned());
             }
-            Ok(headers)
+            Ok(pairs)
         }
-        Some(_) => anyhow::bail!("ShareX headers must be an object of string pairs"),
+        Some(_) => anyhow::bail!("ShareX {label} must be an object of string pairs"),
     }
 }
 
-fn contains_header_template(value: &str) -> bool {
+fn contains_upload_template(value: &str) -> bool {
     value
         .bytes()
         .any(|byte| matches!(byte, b'{' | b'}' | b'$'))
+}
+
+fn validate_custom_query(query: &BTreeMap<String, String>) -> Result<()> {
+    ensure!(
+        query.len() <= MAX_QUERY_PARAMETERS,
+        "At most 8 query parameters"
+    );
+    let mut seen = Vec::with_capacity(query.len());
+    for (name, value) in query {
+        ensure!(
+            !name.is_empty()
+                && name.len() <= 64
+                && name.trim() == name
+                && !name.chars().any(char::is_control)
+                && !contains_upload_template(name)
+                && name
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-'),
+            "Use a query parameter name of 1–64 letters, digits, underscores or hyphens without templates"
+        );
+        let lower = name.to_ascii_lowercase();
+        ensure!(
+            !RESERVED_QUERY_NAMES.contains(&lower.as_str()),
+            "Query parameters cannot set {name}"
+        );
+        ensure!(
+            !seen.iter().any(|existing| existing == &lower),
+            "Query parameter names must be unique ignoring case"
+        );
+        seen.push(lower);
+        ensure!(
+            !value.is_empty()
+                && value.len() <= 256
+                && value.trim() == value
+                && !value.chars().any(char::is_control)
+                && !contains_upload_template(value),
+            "Use a query parameter value of 1–256 bytes without templates or control characters"
+        );
+    }
+    Ok(())
+}
+
+fn validate_custom_form(
+    form: &BTreeMap<String, String>,
+    method: UploadMethod,
+    field: &str,
+) -> Result<()> {
+    ensure!(
+        form.is_empty() || matches!(method, UploadMethod::Post),
+        "Extra form fields require POST multipart"
+    );
+    ensure!(
+        form.len() <= MAX_FORM_FIELDS,
+        "At most 8 extra form fields"
+    );
+    let mut seen = Vec::with_capacity(form.len());
+    for (name, value) in form {
+        ensure!(
+            !name.is_empty()
+                && name.len() <= 64
+                && name.trim() == name
+                && !name.chars().any(char::is_control)
+                && !contains_upload_template(name)
+                && name
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-'),
+            "Use a form field name of 1–64 letters, digits, underscores or hyphens without templates"
+        );
+        let lower = name.to_ascii_lowercase();
+        ensure!(
+            !RESERVED_QUERY_NAMES.contains(&lower.as_str()),
+            "Form fields cannot set {name}"
+        );
+        ensure!(
+            !lower.eq_ignore_ascii_case(field),
+            "Extra form fields cannot reuse the multipart file field"
+        );
+        ensure!(
+            !seen.iter().any(|existing| existing == &lower),
+            "Form field names must be unique ignoring case"
+        );
+        seen.push(lower);
+        ensure!(
+            !value.is_empty()
+                && value.len() <= 256
+                && value.trim() == value
+                && !value.chars().any(char::is_control)
+                && !contains_upload_template(value),
+            "Use a form field value of 1–256 bytes without templates or control characters"
+        );
+    }
+    Ok(())
+}
+
+fn validate_custom_json(
+    json: &BTreeMap<String, String>,
+    method: UploadMethod,
+    form: &BTreeMap<String, String>,
+) -> Result<()> {
+    if json.is_empty() {
+        return Ok(());
+    }
+    ensure!(
+        matches!(method, UploadMethod::Post),
+        "JSON bodies require POST"
+    );
+    ensure!(
+        form.is_empty(),
+        "JSON bodies cannot be combined with extra form fields"
+    );
+    ensure!(
+        json.len() <= MAX_JSON_FIELDS,
+        "At most 8 JSON body fields"
+    );
+    let mut seen = Vec::with_capacity(json.len());
+    let mut base64_fields = 0usize;
+    for (name, value) in json {
+        ensure!(
+            !name.is_empty()
+                && name.len() <= 64
+                && name.trim() == name
+                && !name.chars().any(char::is_control)
+                && !contains_upload_template(name)
+                && name
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-'),
+            "Use a JSON body field name of 1–64 letters, digits, underscores or hyphens without templates"
+        );
+        let lower = name.to_ascii_lowercase();
+        ensure!(
+            !RESERVED_QUERY_NAMES.contains(&lower.as_str()),
+            "JSON body fields cannot set {name}"
+        );
+        ensure!(
+            !seen.iter().any(|existing| existing == &lower),
+            "JSON body field names must be unique ignoring case"
+        );
+        seen.push(lower);
+        if value == JSON_BASE64_PLACEHOLDER {
+            base64_fields += 1;
+            continue;
+        }
+        ensure!(
+            !value.is_empty()
+                && value.len() <= 256
+                && value.trim() == value
+                && !value.chars().any(char::is_control)
+                && !contains_upload_template(value),
+            "Use a JSON body field value of 1–256 bytes without templates or control characters, or exactly {{base64}}"
+        );
+    }
+    ensure!(
+        base64_fields == 1,
+        "JSON bodies need exactly one {{base64}} field for the PNG"
+    );
+    Ok(())
+}
+
+fn json_request_body(json: &BTreeMap<String, String>, png: &[u8]) -> Result<Vec<u8>> {
+    use base64::Engine;
+    let mut encoded = Some(base64::engine::general_purpose::STANDARD.encode(png));
+    let mut object = serde_json::Map::with_capacity(json.len());
+    for (name, value) in json {
+        let text = if value == JSON_BASE64_PLACEHOLDER {
+            encoded
+                .take()
+                .context("JSON bodies need exactly one {{base64}} field for the PNG")?
+        } else {
+            value.clone()
+        };
+        object.insert(name.clone(), serde_json::Value::String(text));
+    }
+    serde_json::to_vec(&serde_json::Value::Object(object))
+        .context("Could not build the JSON upload body")
 }
 
 fn validate_custom_headers(headers: &BTreeMap<String, String>) -> Result<()> {
@@ -659,7 +968,7 @@ fn validate_custom_headers(headers: &BTreeMap<String, String>) -> Result<()> {
                 && name.len() <= 64
                 && name.trim() == name
                 && !name.chars().any(char::is_control)
-                && !contains_header_template(name)
+                && !contains_upload_template(name)
                 && reqwest::header::HeaderName::from_bytes(name.as_bytes()).is_ok(),
             "Use a valid custom request header name of 1–64 bytes without templates"
         );
@@ -678,7 +987,7 @@ fn validate_custom_headers(headers: &BTreeMap<String, String>) -> Result<()> {
                 && value.len() <= 256
                 && value.trim() == value
                 && !value.chars().any(char::is_control)
-                && !contains_header_template(value)
+                && !contains_upload_template(value)
                 && reqwest::header::HeaderValue::from_str(value).is_ok(),
             "Use a valid custom request header value of 1–256 bytes without templates or control characters"
         );
@@ -1211,23 +1520,6 @@ async fn transfer(
     );
     file.rewind().await?;
     let length = metadata.len();
-    if let Some(progress) = &progress {
-        progress.0.send_replace(UploadProgress {
-            prepared: 0,
-            total: length,
-        });
-    }
-    let reader = ProgressReader {
-        reader: file.take(length),
-        progress,
-        prepared: 0,
-        total: length,
-        last: std::time::Instant::now(),
-    };
-    let body = reqwest::Body::wrap_stream(tokio_util::io::ReaderStream::with_capacity(
-        reader,
-        64 * 1024,
-    ));
     let client = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
         .retry(reqwest::retry::never())
@@ -1243,21 +1535,82 @@ async fn transfer(
         .build()?;
     let resource_url =
         matches!(destination.response, Some(UploadResponse::RequestUrl)).then(|| url.to_string());
-    let mut request = match destination.method {
-        UploadMethod::Post => {
-            let part = reqwest::multipart::Part::stream_with_length(body, length)
-                .file_name("screenshot.png")
-                .mime_str("image/png")?;
-            client
-                .post(url)
-                .multipart(reqwest::multipart::Form::new().part(destination.field.clone(), part))
+    let mut request = if !destination.json.is_empty() {
+        let mut png = Vec::new();
+        png.try_reserve(length as usize)
+            .context("PNG file exceeds available memory for a JSON body")?;
+        let mut buf = vec![0u8; 64 * 1024];
+        let mut remaining = length;
+        while remaining > 0 {
+            let want = buf.len().min(remaining as usize);
+            let n = file.read(&mut buf[..want]).await?;
+            ensure!(n > 0, "PNG file ended before the declared size");
+            png.extend_from_slice(&buf[..n]);
+            remaining -= n as u64;
         }
-        UploadMethod::Put => client
-            .put(url)
-            .header(reqwest::header::CONTENT_TYPE, "image/png")
-            .header(reqwest::header::CONTENT_LENGTH, length)
-            .header(reqwest::header::IF_NONE_MATCH, "*")
-            .body(body),
+        let json_bytes = json_request_body(&destination.json, &png)?;
+        drop(png);
+        let total = json_bytes.len() as u64;
+        if let Some(progress) = &progress {
+            progress.0.send_replace(UploadProgress {
+                prepared: 0,
+                total,
+            });
+        }
+        let reader = ProgressReader {
+            reader: std::io::Cursor::new(json_bytes),
+            progress,
+            prepared: 0,
+            total,
+            last: std::time::Instant::now(),
+        };
+        let body = reqwest::Body::wrap_stream(tokio_util::io::ReaderStream::with_capacity(
+            reader,
+            64 * 1024,
+        ));
+        client
+            .post(url)
+            .header(reqwest::header::CONTENT_TYPE, "application/json")
+            .header(reqwest::header::CONTENT_LENGTH, total)
+            .body(body)
+    } else {
+        if let Some(progress) = &progress {
+            progress.0.send_replace(UploadProgress {
+                prepared: 0,
+                total: length,
+            });
+        }
+        let reader = ProgressReader {
+            reader: file.take(length),
+            progress,
+            prepared: 0,
+            total: length,
+            last: std::time::Instant::now(),
+        };
+        let body = reqwest::Body::wrap_stream(tokio_util::io::ReaderStream::with_capacity(
+            reader,
+            64 * 1024,
+        ));
+        match destination.method {
+            UploadMethod::Post => {
+                let part = reqwest::multipart::Part::stream_with_length(body, length)
+                    .file_name("screenshot.png")
+                    .mime_str("image/png")?;
+                let mut form = reqwest::multipart::Form::new();
+                for (name, value) in &destination.form {
+                    form = form.text(name.clone(), value.clone());
+                }
+                client
+                    .post(url)
+                    .multipart(form.part(destination.field.clone(), part))
+            }
+            UploadMethod::Put => client
+                .put(url)
+                .header(reqwest::header::CONTENT_TYPE, "image/png")
+                .header(reqwest::header::CONTENT_LENGTH, length)
+                .header(reqwest::header::IF_NONE_MATCH, "*")
+                .body(body),
+        }
     };
     for (name, value) in &destination.headers {
         request = request.header(
@@ -1503,6 +1856,370 @@ mod tests {
             r#"{"url":"https://example.invalid/upload","field":"file","json_pointer":"/url","headers":{"Authorization":"Bearer secret"}}"#,
         )?;
         assert!(UploadDestination::load(&path).is_err());
+        assert_eq!(std::fs::read(&other)?, b"keep-settings");
+        std::fs::remove_dir_all(root)?;
+        Ok(())
+    }
+
+    #[test]
+    fn query_parameters_validate_persist_and_reject_secrets() -> Result<()> {
+        let destination = UploadDestination::manual(
+            "https://example.invalid/upload".into(),
+            UploadMethod::Post,
+            "file".into(),
+            Some("/url".into()),
+            false,
+        )?;
+        assert!(destination.request_query().is_empty());
+        let destination = destination.with_query([
+            (" format ", " json "),
+            ("client_id", "public-app"),
+        ])?;
+        assert_eq!(
+            destination.request_query().get("format").map(String::as_str),
+            Some("json")
+        );
+        assert_eq!(
+            destination
+                .request_query()
+                .get("client_id")
+                .map(String::as_str),
+            Some("public-app")
+        );
+        let composed = destination.validate()?;
+        assert_eq!(composed.query(), Some("client_id=public-app&format=json"));
+        assert_eq!(destination.origin(), "https://example.invalid");
+        let root = std::env::temp_dir().join(format!(
+            "screenshots-query-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&root)?;
+        let path = root.join("destination.json");
+        let other = root.join("settings.json");
+        std::fs::write(&other, b"keep-settings")?;
+        destination.save_at(&path)?;
+        let loaded = UploadDestination::load(&path)?;
+        assert_eq!(loaded.request_query(), destination.request_query());
+        let json = std::fs::read_to_string(&path)?;
+        assert!(json.contains("\"query\""));
+        assert!(json.contains("format"));
+        assert!(!json.contains("api_key"));
+        assert!(!json.contains("secret"));
+        assert!(!json.contains("?format="));
+        std::fs::write(
+            &path,
+            r#"{"url":"https://example.invalid/upload","field":"file","json_pointer":"/url","query":{"format":"json"}}"#,
+        )?;
+        let loaded = UploadDestination::load(&path)?;
+        assert_eq!(
+            loaded.request_query().get("format").map(String::as_str),
+            Some("json")
+        );
+        for (name, value) in [
+            ("api_key", "secret"),
+            ("key", "secret"),
+            ("token", "x"),
+            ("Authorization", "x"),
+            ("format", "{json:token}"),
+            ("format", "$filename$"),
+            ("format", "a\nb"),
+            ("", "x"),
+            ("bad name", "x"),
+            ("format", ""),
+        ] {
+            assert!(
+                destination.clone().with_query([(name, value)]).is_err(),
+                "{name}={value}"
+            );
+        }
+        assert!(
+            destination
+                .clone()
+                .with_query([("format", "x".repeat(257))])
+                .is_err()
+        );
+        assert!(
+            destination
+                .clone()
+                .with_query([("x".repeat(65), "x")])
+                .is_err()
+        );
+        let many: Vec<(String, String)> = (0..9)
+            .map(|index| (format!("q{index}"), "v".into()))
+            .collect();
+        assert!(destination.clone().with_query(many).is_err());
+        assert!(
+            destination
+                .clone()
+                .with_query([("format", "a"), ("Format", "b")])
+                .is_err()
+        );
+        std::fs::write(
+            &path,
+            r#"{"url":"https://example.invalid/upload","field":"file","json_pointer":"/url","query":{"api_key":"secret"}}"#,
+        )?;
+        assert!(UploadDestination::load(&path).is_err());
+        std::fs::write(
+            &path,
+            r#"{"url":"https://example.invalid/upload?format=json","field":"file","json_pointer":"/url"}"#,
+        )?;
+        assert!(UploadDestination::load(&path).is_err());
+        let long = format!("https://example.invalid/{}", "a".repeat(2020));
+        assert!(
+            UploadDestination::manual(long, UploadMethod::Post, "file".into(), Some("/url".into()), false)?
+                .with_query([("format", "json")])
+                .is_err()
+        );
+        assert_eq!(std::fs::read(&other)?, b"keep-settings");
+        std::fs::remove_dir_all(root)?;
+        Ok(())
+    }
+
+    #[test]
+    fn form_fields_validate_persist_and_reject_secrets() -> Result<()> {
+        let destination = UploadDestination::manual(
+            "https://example.invalid/upload".into(),
+            UploadMethod::Post,
+            "file".into(),
+            Some("/url".into()),
+            false,
+        )?;
+        assert!(destination.request_form().is_empty());
+        let destination = destination.with_form([
+            (" title ", " screenshot "),
+            ("type", "file"),
+        ])?;
+        assert_eq!(
+            destination.request_form().get("title").map(String::as_str),
+            Some("screenshot")
+        );
+        assert_eq!(
+            destination.request_form().get("type").map(String::as_str),
+            Some("file")
+        );
+        let root = std::env::temp_dir().join(format!(
+            "screenshots-form-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&root)?;
+        let path = root.join("destination.json");
+        let other = root.join("settings.json");
+        std::fs::write(&other, b"keep-settings")?;
+        destination.save_at(&path)?;
+        let loaded = UploadDestination::load(&path)?;
+        assert_eq!(loaded.request_form(), destination.request_form());
+        let json = std::fs::read_to_string(&path)?;
+        assert!(json.contains("\"form\""));
+        assert!(json.contains("title"));
+        assert!(!json.contains("api_key"));
+        assert!(!json.contains("secret"));
+        std::fs::write(
+            &path,
+            r#"{"url":"https://example.invalid/upload","field":"file","json_pointer":"/url","form":{"title":"screenshot"}}"#,
+        )?;
+        let loaded = UploadDestination::load(&path)?;
+        assert_eq!(
+            loaded.request_form().get("title").map(String::as_str),
+            Some("screenshot")
+        );
+        for (name, value) in [
+            ("api_key", "secret"),
+            ("key", "secret"),
+            ("token", "x"),
+            ("file", "x"),
+            ("title", "{json:token}"),
+            ("title", "$filename$"),
+            ("title", "a\nb"),
+            ("", "x"),
+            ("bad name", "x"),
+            ("title", ""),
+        ] {
+            assert!(
+                destination.clone().with_form([(name, value)]).is_err(),
+                "{name}={value}"
+            );
+        }
+        assert!(
+            destination
+                .clone()
+                .with_form([("title", "x".repeat(257))])
+                .is_err()
+        );
+        assert!(
+            destination
+                .clone()
+                .with_form([("x".repeat(65), "x")])
+                .is_err()
+        );
+        let many: Vec<(String, String)> = (0..9)
+            .map(|index| (format!("f{index}"), "v".into()))
+            .collect();
+        assert!(destination.clone().with_form(many).is_err());
+        assert!(
+            destination
+                .clone()
+                .with_form([("title", "a"), ("Title", "b")])
+                .is_err()
+        );
+        std::fs::write(
+            &path,
+            r#"{"url":"https://example.invalid/upload","field":"file","json_pointer":"/url","form":{"api_key":"secret"}}"#,
+        )?;
+        assert!(UploadDestination::load(&path).is_err());
+        assert!(
+            UploadDestination::manual(
+                "https://example.invalid/image.png".into(),
+                UploadMethod::Put,
+                "file".into(),
+                Some("/url".into()),
+                false,
+            )?
+            .with_form([("title", "screenshot")])
+            .is_err()
+        );
+        assert_eq!(std::fs::read(&other)?, b"keep-settings");
+        std::fs::remove_dir_all(root)?;
+        Ok(())
+    }
+
+    #[test]
+    fn json_bodies_validate_persist_and_reject_secrets() -> Result<()> {
+        let destination = UploadDestination::manual(
+            "https://example.invalid/upload".into(),
+            UploadMethod::Post,
+            "file".into(),
+            Some("/url".into()),
+            false,
+        )?;
+        assert!(destination.request_json().is_empty());
+        let destination = destination.with_json([
+            (" image ", " {base64} "),
+            ("type", "file"),
+        ])?;
+        assert_eq!(
+            destination.request_json().get("image").map(String::as_str),
+            Some("{base64}")
+        );
+        assert_eq!(
+            destination.request_json().get("type").map(String::as_str),
+            Some("file")
+        );
+        let root = std::env::temp_dir().join(format!(
+            "screenshots-json-body-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&root)?;
+        let path = root.join("destination.json");
+        let other = root.join("settings.json");
+        std::fs::write(&other, b"keep-settings")?;
+        destination.save_at(&path)?;
+        let loaded = UploadDestination::load(&path)?;
+        assert_eq!(loaded.request_json(), destination.request_json());
+        let json = std::fs::read_to_string(&path)?;
+        assert!(json.contains("\"json\""));
+        assert!(json.contains("{base64}"));
+        assert!(!json.contains("api_key"));
+        assert!(!json.contains("secret"));
+        std::fs::write(
+            &path,
+            r#"{"url":"https://example.invalid/upload","field":"file","json_pointer":"/url","json":{"image":"{base64}","type":"file"}}"#,
+        )?;
+        let loaded = UploadDestination::load(&path)?;
+        assert_eq!(
+            loaded.request_json().get("image").map(String::as_str),
+            Some("{base64}")
+        );
+        for (name, value) in [
+            ("api_key", "secret"),
+            ("key", "secret"),
+            ("token", "x"),
+            ("image", "{input}"),
+            ("image", "{filename}"),
+            ("image", "prefix{base64}"),
+            ("image", "$filename$"),
+            ("image", "a\nb"),
+            ("", "x"),
+            ("bad name", "x"),
+            ("type", ""),
+        ] {
+            assert!(
+                destination.clone().with_json([(name, value)]).is_err(),
+                "{name}={value}"
+            );
+        }
+        assert!(
+            destination
+                .clone()
+                .with_json([("type", "x".repeat(257))])
+                .is_err()
+        );
+        assert!(
+            destination
+                .clone()
+                .with_json([("x".repeat(65), "{base64}")])
+                .is_err()
+        );
+        let many: Vec<(String, String)> = (0..8)
+            .map(|index| {
+                (
+                    format!("f{index}"),
+                    if index == 0 {
+                        "{base64}".into()
+                    } else {
+                        "v".into()
+                    },
+                )
+            })
+            .collect();
+        assert!(destination.clone().with_json(many).is_ok());
+        let too_many: Vec<(String, String)> = (0..9)
+            .map(|index| {
+                (
+                    format!("f{index}"),
+                    if index == 0 {
+                        "{base64}".into()
+                    } else {
+                        "v".into()
+                    },
+                )
+            })
+            .collect();
+        assert!(destination.clone().with_json(too_many).is_err());
+        assert!(
+            destination
+                .clone()
+                .with_json([("image", "{base64}"), ("Image", "file")])
+                .is_err()
+        );
+        assert!(
+            destination
+                .clone()
+                .with_json([("image", "{base64}"), ("thumb", "{base64}")])
+                .is_err()
+        );
+        assert!(destination.clone().with_json([("type", "file")]).is_err());
+        std::fs::write(
+            &path,
+            r#"{"url":"https://example.invalid/upload","field":"file","json_pointer":"/url","json":{"api_key":"secret"}}"#,
+        )?;
+        assert!(UploadDestination::load(&path).is_err());
+        assert!(
+            destination
+                .clone()
+                .with_form([("title", "screenshot")])
+                .is_err()
+        );
+        assert!(
+            UploadDestination::manual(
+                "https://example.invalid/image.png".into(),
+                UploadMethod::Put,
+                "file".into(),
+                Some("/url".into()),
+                false,
+            )?
+            .with_json([("image", "{base64}")])
+            .is_err()
+        );
         assert_eq!(std::fs::read(&other)?, b"keep-settings");
         std::fs::remove_dir_all(root)?;
         Ok(())
@@ -1971,6 +2688,38 @@ mod tests {
             destination.request_headers().get("X-Client").map(String::as_str),
             Some("screenshots")
         );
+        std::fs::write(
+            &path,
+            r#"{"DestinationType":"ImageUploader","RequestURL":"https://example.invalid/upload","Parameters":{"format":"json"},"URL":"{json:url}"}"#,
+        )?;
+        let (destination, _) = UploadDestination::from_sharex_at(&path)?;
+        assert_eq!(
+            destination.request_query().get("format").map(String::as_str),
+            Some("json")
+        );
+        std::fs::write(
+            &path,
+            r#"{"DestinationType":"ImageUploader","RequestURL":"https://example.invalid/upload","Arguments":{"title":"screenshot"},"URL":"{json:url}"}"#,
+        )?;
+        let (destination, _) = UploadDestination::from_sharex_at(&path)?;
+        assert_eq!(
+            destination.request_form().get("title").map(String::as_str),
+            Some("screenshot")
+        );
+        std::fs::write(
+            &path,
+            r#"{"DestinationType":"ImageUploader","RequestURL":"https://example.invalid/upload","Body":"JSON","Data":{"image":"{base64}","type":"file"},"URL":"{json:url}"}"#,
+        )?;
+        let (destination, _) = UploadDestination::from_sharex_at(&path)?;
+        assert_eq!(
+            destination.request_json().get("image").map(String::as_str),
+            Some("{base64}")
+        );
+        assert_eq!(
+            destination.request_json().get("type").map(String::as_str),
+            Some("file")
+        );
+        assert!(destination.request_form().is_empty());
         for profile in [
             r#"{"DestinationType":"FileUploader","RequestURL":"https://example.invalid/upload"}"#,
             r#"{"DestinationType":"ImageUploader","RequestURL":"http://example.invalid/upload"}"#,
@@ -1979,7 +2728,16 @@ mod tests {
             r#"{"DestinationType":"ImageUploader","RequestURL":"https://example.invalid/upload","Headers":{"Authorization":"Bearer secret"}}"#,
             r#"{"DestinationType":"ImageUploader","RequestURL":"https://example.invalid/upload","Headers":{"X-Client":"{json:token}"}}"#,
             r#"{"DestinationType":"ImageUploader","RequestURL":"https://example.invalid/upload","Parameters":{"api_key":"secret"}}"#,
+            r#"{"DestinationType":"ImageUploader","RequestURL":"https://example.invalid/upload","Parameters":{"format":"{json:token}"}}"#,
+            r#"{"DestinationType":"ImageUploader","RequestURL":"https://example.invalid/upload","Arguments":{"api_key":"secret"}}"#,
+            r#"{"DestinationType":"ImageUploader","RequestURL":"https://example.invalid/upload","Arguments":{"title":"{json:token}"}}"#,
+            r#"{"DestinationType":"ImageUploader","RequestMethod":"PUT","RequestURL":"https://example.invalid/image.png","Body":"Binary","Arguments":{"title":"screenshot"}}"#,
             r#"{"DestinationType":"ImageUploader","RequestURL":"https://example.invalid/upload","Body":"JSON"}"#,
+            r#"{"DestinationType":"ImageUploader","RequestURL":"https://example.invalid/upload","Body":"JSON","Data":{"image":"{base64}"},"Arguments":{"title":"screenshot"}}"#,
+            r#"{"DestinationType":"ImageUploader","RequestURL":"https://example.invalid/upload","Body":"JSON","Data":{"image":"{input}"}}"#,
+            r#"{"DestinationType":"ImageUploader","RequestURL":"https://example.invalid/upload","Body":"JSON","Data":{"api_key":"{base64}"}}"#,
+            r#"{"DestinationType":"ImageUploader","RequestURL":"https://example.invalid/upload","Body":"JSON","Data":{"image":"{base64}","thumb":"{base64}"}}"#,
+            r#"{"DestinationType":"ImageUploader","RequestMethod":"PUT","RequestURL":"https://example.invalid/image.png","Body":"JSON","Data":{"image":"{base64}"}}"#,
             r#"{"DestinationType":"ImageUploader","RequestURL":"https://example.invalid/upload","URL":"{regex:href}"}"#,
             r#"{"DestinationType":"ImageUploader","RequestURL":"https://example.invalid/{json:url}"}"#,
         ] {
@@ -2038,6 +2796,57 @@ mod tests {
             imported.request_headers().get("X-Client").map(String::as_str),
             Some("screenshots")
         );
+        std::fs::remove_file(&path)?;
+        let queried = destination
+            .clone()
+            .with_query([("format", "json")])?;
+        queried.to_sharex_at(&path, Some("Host"))?;
+        let exported = std::fs::read_to_string(&path)?;
+        assert!(exported.contains("format"));
+        assert!(exported.contains("json"));
+        assert!(!exported.contains("api_key"));
+        assert!(!exported.contains("?format="));
+        let (imported, _) = UploadDestination::from_sharex_at(&path)?;
+        assert_eq!(
+            imported.request_query().get("format").map(String::as_str),
+            Some("json")
+        );
+        std::fs::remove_file(&path)?;
+        let formed = destination
+            .clone()
+            .with_form([("title", "screenshot")])?;
+        formed.to_sharex_at(&path, Some("Host"))?;
+        let exported = std::fs::read_to_string(&path)?;
+        assert!(exported.contains("title"));
+        assert!(exported.contains("screenshot"));
+        assert!(!exported.contains("api_key"));
+        let (imported, _) = UploadDestination::from_sharex_at(&path)?;
+        assert_eq!(
+            imported.request_form().get("title").map(String::as_str),
+            Some("screenshot")
+        );
+        std::fs::remove_file(&path)?;
+        let json_body = destination
+            .clone()
+            .with_json([("image", "{base64}"), ("type", "file")])?;
+        json_body.to_sharex_at(&path, Some("Host"))?;
+        let exported = std::fs::read_to_string(&path)?;
+        assert!(exported.contains("\"JSON\""));
+        assert!(exported.contains("{base64}"));
+        assert!(exported.contains("\"type\""));
+        assert!(!exported.contains("api_key"));
+        assert!(!exported.contains("FileFormName"));
+        assert!(!exported.contains("Arguments"));
+        let (imported, _) = UploadDestination::from_sharex_at(&path)?;
+        assert_eq!(
+            imported.request_json().get("image").map(String::as_str),
+            Some("{base64}")
+        );
+        assert_eq!(
+            imported.request_json().get("type").map(String::as_str),
+            Some("file")
+        );
+        assert!(imported.request_form().is_empty());
         std::fs::remove_file(&path)?;
         let mut header = UploadDestination::manual(
             "https://example.invalid/upload".into(),
@@ -2677,6 +3486,82 @@ mod tests {
         assert!(request.windows(8).any(|chunk| chunk == b"\x89PNG\r\n\x1a\n"));
         assert!(request.len() < 8192);
         assert_eq!(before, probe_temp_names());
+    }
+
+    #[test]
+    #[ignore = "uses a local loopback HTTP server and synthetic PNG; no external connections"]
+    fn upload_sends_query_parameters_on_the_wire() {
+        let (root, path) = fixture();
+        let (url, server) = server(
+            response(r#"{"result":{"url":"https://example.invalid/share/query"}}"#),
+            None,
+            Duration::ZERO,
+        );
+        let destination = destination(url)
+            .with_query([("format", "json")])
+            .unwrap();
+        assert_eq!(
+            upload_png(&destination, &path, UploadCancellation::default()).unwrap(),
+            "https://example.invalid/share/query"
+        );
+        let request = String::from_utf8(server.join().unwrap()).unwrap();
+        let line = request.lines().next().unwrap();
+        assert!(line.starts_with("POST /upload?format=json HTTP/1.1"));
+        assert!(!request.to_ascii_lowercase().contains("api_key"));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    #[ignore = "uses a local loopback HTTP server and synthetic PNG; no external connections"]
+    fn upload_sends_extra_form_fields_on_the_wire() {
+        let (root, path) = fixture();
+        let (url, server) = server(
+            response(r#"{"result":{"url":"https://example.invalid/share/form"}}"#),
+            None,
+            Duration::ZERO,
+        );
+        let destination = destination(url)
+            .with_form([("title", "screenshot")])
+            .unwrap();
+        assert_eq!(
+            upload_png(&destination, &path, UploadCancellation::default()).unwrap(),
+            "https://example.invalid/share/form"
+        );
+        let request = String::from_utf8(server.join().unwrap()).unwrap();
+        assert!(request.contains("name=\"title\""));
+        assert!(request.contains("screenshot"));
+        assert!(request.contains("name=\"file\""));
+        assert!(!request.to_ascii_lowercase().contains("api_key"));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    #[ignore = "uses a local loopback HTTP server and synthetic PNG; no external connections"]
+    fn upload_sends_json_body_on_the_wire() {
+        use base64::Engine;
+        let (root, path) = fixture();
+        let png = std::fs::read(&path).unwrap();
+        let encoded = base64::engine::general_purpose::STANDARD.encode(&png);
+        let (url, server) = server(
+            response(r#"{"result":{"url":"https://example.invalid/share/json"}}"#),
+            None,
+            Duration::ZERO,
+        );
+        let destination = destination(url)
+            .with_json([("image", "{base64}"), ("type", "file")])
+            .unwrap();
+        assert_eq!(
+            upload_png(&destination, &path, UploadCancellation::default()).unwrap(),
+            "https://example.invalid/share/json"
+        );
+        let request = String::from_utf8(server.join().unwrap()).unwrap();
+        let lower = request.to_ascii_lowercase();
+        assert!(lower.contains("content-type: application/json"));
+        assert!(request.contains(&format!(r#"{{"image":"{encoded}","type":"file"}}"#)));
+        assert!(!request.contains("multipart"));
+        assert!(!request.contains("name=\"file\""));
+        assert!(!lower.contains("api_key"));
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

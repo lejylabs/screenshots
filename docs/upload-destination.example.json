@@ -5,5 +5,11 @@
   "allow_http": false,
   "headers": {
     "X-Client": "screenshots"
+  },
+  "query": {
+    "format": "json"
+  },
+  "form": {
+    "title": "screenshot"
   }
 }

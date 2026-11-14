@@ -23,7 +23,7 @@ This section is the current continuation brief. The numbered sections below cont
 - **GPUI Kit rewrite (2026-11-11):** the complete native presentation uses Kit 0.9.1 / GPUI 0.3.12: Sidebar, Button, Input, Checkbox, RadioGroup, PopupMenu, Kbd and bundled Lucide icons. Dark stays the default; Oldschool keeps compact square controls and colorful icons. Every window has a Base Root, with transparent surfaces preserved for overlays. Typed content access preserves native lifecycle jobs and waiting for work on Quit. Library search/menu callbacks retain byte, paging and stale-result bounds. The image canvas and bounded source-label editor keep their domain-specific contracts. See [the rewrite and measured evidence](docs/ui-redesign.md).
 - **Windows functional prototype:** tray/resident lifecycle, single-instance forwarding, hotkeys, display/window/region capture, countdown, clipboard, PNG output and save-folder settings. Graphics attach on demand and detach when the last UI consumer closes.
 - **Shared editor:** crop, shapes, arrows, lines/endpoints, pen, text/style, numbering, highlight/spotlight, blur, pixelation and opaque redaction; selection/transforms, duplicate/reorder, bounded metadata undo/redo and zoom/pan. Copy, Save and Save & copy are explicit. Original files are preserved when editing a copy.
-- **Storage/sharing:** paged SQLite capture history with prefix search, filters, PNG import/relink, explicit preview, bounded selection/removal/export; explicit configurable POST/PUT uploads with bounded custom request headers, progress/cancel, remembered credential-free profiles, named destinations, per-task destination defaults and upload history. Windows Uploads can save Bearer/API-key/Basic secrets to Credential Manager. Other secret-store integrations remain pending.
+- **Storage/sharing:** paged SQLite capture history with prefix search, filters, PNG import/relink, explicit preview, bounded selection/removal/export; explicit configurable POST/PUT uploads with bounded custom request headers, query parameters, extra POST form fields and POST JSON bodies, progress/cancel, remembered credential-free profiles, named destinations, per-task destination defaults and upload history. Windows Uploads can save Bearer/API-key/Basic secrets to Credential Manager. Other secret-store integrations remain pending.
 - **Current main UI:** a responsive 200/208-logical-pixel sidebar with Recent capture / Library / Displays & windows / Uploads / Settings. Main windows start at 1060×760 with a 680×480 minimum. Content scrolls at compact sizes; library rows are paged, identified by database ID and expose Kit menus. Switching pages releases search/preview state and cancels stale requests. A thumbnail gallery remains a separate feature.
 - **Current editor UI:** grouped Kit tool buttons, accessible labels/shortcut tooltips, contextual selection actions, swatches and separate Copy / Save / Save & copy actions. Toolbar scrolling leaves bounded image space. The in-memory canvas and exported image algorithms remain in Rust.
 
@@ -756,11 +756,14 @@ measurement is claimed for this bounded backup.
 
 Uploads offers Import ShareX after the destination panel is visible. The action
 loads one .sxcu file through the existing native picker and maps a documented
-subset onto the session destination: ImageUploader, HTTPS POST multipart or PUT
-binary, FileFormName, URL parsers {json:path}, {header:name}, {response} or
+subset onto the session destination: ImageUploader, HTTPS POST multipart, POST
+JSON or PUT binary, FileFormName, URL parsers {json:path}, {header:name}, {response} or
 PUT {responseurl}, and Headers string maps through the same custom-header
 validator. Empty URL uses the plain-text response. Unknown informational
-fields are ignored. Query parameters, body arguments, JSON/XML bodies,
+fields are ignored. Query parameters are implemented in the later 2026-11-14
+follow-up. Extra form fields are implemented in the later 2026-11-14
+follow-up. JSON bodies are implemented in the later 2026-11-14 follow-up. XML
+bodies,
 HTTP, embedded secrets, request-URL syntax and richer parsers are rejected
 before any network or credential write. Import is session-only; Remember and
 Save named remain explicit. Invalid files keep the previous destination.
@@ -773,10 +776,11 @@ queue, image, cache, watcher or idle timer. Constructor and headless UI fixtures
 verify button presence, canceled pickers, busy guards and that a completed
 import updates only the session destination from a temp .sxcu, without writing
 user settings. A regular core fixture covers JSON-path mapping, PUT/header/text
-modes, custom-header mapping, secret/query rejection and that neighboring files stay untouched.
+modes, custom-header mapping, secret rejection and that neighboring files stay untouched.
 ShareX export is implemented below. Per-task destination defaults and full
 settings backup are implemented in the later 2026-11-14 follow-up. Custom
-request headers are implemented in the later 2026-11-14 follow-up.
+request headers and query parameters are implemented in the later 2026-11-14
+follow-up.
 Native keyboard/IME/accessibility, packaged restart workflow and
 latency/process/GPU/resource acceptance remain open; no new performance
 measurement is claimed for this bounded import.
@@ -785,9 +789,9 @@ measurement is claimed for this bounded import.
 
 Uploads offers Export ShareX after a session destination exists. The action
 writes one .sxcu file through the existing native save picker, mapping the
-documented subset: ImageUploader, HTTPS POST multipart or PUT binary,
+documented subset: ImageUploader, HTTPS POST multipart, POST JSON or PUT binary,
 FileFormName, URL parsers {json:path}, {header:name}, {response} or PUT
-{responseurl}, and custom request headers as a Headers object. Secrets and credential references are omitted. HTTP destinations,
+{responseurl}, custom request headers as a Headers object, query parameters as a Parameters object, extra form fields as an Arguments object, and JSON bodies as a Data object with one {base64} field. Secrets and credential references are omitted. HTTP destinations,
 JSON-pointer escapes and response modes outside that subset are rejected before
 any file is created. Existing files are never overwritten; a missing extension
 becomes .sxcu. Export does not change the session destination, named catalog,
@@ -804,8 +808,9 @@ settings. A regular core fixture covers JSON-path reverse mapping, PUT/header/te
 modes, HTTPS-only export, overwrite rejection, omitted credentials and that
 neighboring files stay untouched.
 Full settings backup is implemented below. Per-task destination defaults are
-implemented in the later 2026-11-14 follow-up. Custom request headers are
-implemented in the later 2026-11-14 follow-up.
+implemented in the later 2026-11-14 follow-up. Custom request headers, query
+parameters and extra form fields are implemented in the later 2026-11-14
+follow-up.
 Native keyboard/IME/accessibility, packaged restart workflow and
 latency/process/GPU/resource acceptance remain open; no new performance
 measurement is claimed for this bounded export.
@@ -874,11 +879,11 @@ Cookie, Host, Content-Type, Content-Length, Accept-Encoding, If-None-Match and
 other transport names stay reserved for credentials and the existing request
 path. Empty `headers` is omitted. The setup form has no header rows; load JSON,
 Remember, named catalog, configuration export/import and ShareX Headers string
-maps reuse the same validator. Query templates, JSON/form bodies, richer parsers
-and deletion/thumbnail URLs stay out of this slice. Headers are applied before
-the credential and Accept-Encoding so they cannot override auth or transport.
-Origin-scoped secrets and the 1 MiB response cap stay unchanged. No connection
-or upload starts while loading or validating a profile.
+maps reuse the same validator. Query parameters are implemented below. JSON/form
+bodies, richer parsers and deletion/thumbnail URLs stay out of this slice.
+Headers are applied before the credential and Accept-Encoding so they cannot
+override auth or transport. Origin-scoped secrets and the 1 MiB response cap stay
+unchanged. No connection or upload starts while loading or validating a profile.
 
 Resource cost is one BTreeMap of at most 8 name/value strings on the existing
 destination profile. There is no new dependency, worker, runtime, queue, image,
@@ -887,10 +892,100 @@ loading a temp JSON with headers updates only this session, without Remember,
 named-catalog writes or an upload. A regular core fixture covers validation,
 persistence, reserved-name/template rejection and ShareX Headers mapping.
 An ignored loopback fixture asserts the custom header on the wire.
-Query parameters, JSON/form bodies and richer ShareX parsers remain separate work.
+Query parameters are implemented below. JSON/form bodies and richer ShareX
+parsers remain separate work.
 Native keyboard/IME/accessibility, packaged restart workflow and
 latency/process/GPU/resource acceptance remain open; no new performance
 measurement is claimed for this bounded header map.
+
+#### Current feature slice: query parameters
+
+Destination JSON may include up to 8 query parameters in a `query` map. Names are
+1–64 letter/digit/`_`/`-` tokens and values are 1–256 bytes, trimmed, unique
+ignoring case, without control characters or `{` `}` `$` templates. Names such as
+`api_key`, `key`, `token`, `password` and `authorization` stay reserved so secrets
+remain in the OS store. The URL field itself still rejects embedded query strings
+and fragments; parameters are appended only when sending. The composed request URL
+stays within 2,048 bytes. Empty `query` is omitted. The setup form has no query
+rows; load JSON, Remember, named catalog, configuration export/import and ShareX
+Parameters string maps reuse the same validator. Extra multipart form fields are
+implemented below. JSON bodies, richer parsers and deletion/thumbnail URLs stay
+out of this slice. Origin-scoped secrets and the 1 MiB response cap stay
+unchanged. No connection or upload starts while loading or validating a profile.
+
+Resource cost is one BTreeMap of at most 8 name/value strings on the existing
+destination profile. There is no new dependency, worker, runtime, queue, image,
+cache, watcher or idle timer. Constructor and headless UI fixtures verify that
+loading a temp JSON with query parameters updates only this session, without
+Remember, named-catalog writes or an upload. A regular core fixture covers
+validation, persistence, reserved-name/template rejection, composed-URL length and
+ShareX Parameters mapping. An ignored loopback fixture asserts the query string on
+the wire. Extra multipart form fields are implemented below. JSON bodies and
+richer ShareX parsers remain separate work.
+Native keyboard/IME/accessibility, packaged restart workflow and
+latency/process/GPU/resource acceptance remain open; no new performance
+measurement is claimed for this bounded query map.
+
+#### Current feature slice: extra multipart form fields
+
+Destination JSON may include up to 8 extra POST multipart text fields in a `form`
+map. Names are 1–64 letter/digit/`_`/`-` tokens and values are 1–256 bytes,
+trimmed, unique ignoring case, without control characters or `{` `}` `$`
+templates. Names such as `api_key`, `key`, `token`, `password` and
+`authorization` stay reserved so secrets remain in the OS store. Extra fields
+cannot reuse the file field name. PUT destinations reject a nonempty `form` map.
+Empty `form` is omitted. The setup form has no extra field rows; load JSON,
+Remember, named catalog, configuration export/import and ShareX Arguments string
+maps reuse the same validator. JSON bodies are implemented below. Richer parsers
+and deletion/thumbnail URLs stay out of this slice. Origin-scoped secrets and the
+1 MiB response cap stay
+unchanged. No connection or upload starts while loading or validating a profile.
+
+Resource cost is one BTreeMap of at most 8 name/value strings on the existing
+destination profile plus those text parts on the existing multipart POST. There
+is no new dependency, worker, runtime, queue, image, cache, watcher or idle
+timer. Constructor and headless UI fixtures verify that loading a temp JSON with
+form fields updates only this session, without Remember, named-catalog writes or
+an upload. A regular core fixture covers validation, persistence,
+reserved-name/template/PUT/file-field rejection and ShareX Arguments mapping.
+An ignored loopback fixture asserts the extra field on the wire. JSON bodies are
+implemented below. Richer ShareX parsers remain separate work.
+Native keyboard/IME/accessibility, packaged restart workflow and
+latency/process/GPU/resource acceptance remain open; no new performance
+measurement is claimed for this bounded form map.
+
+#### Current feature slice: JSON request bodies
+
+Destination JSON may include up to 8 POST JSON object fields in a `json` map.
+Names are 1–64 letter/digit/`_`/`-` tokens and static values are 1–256 bytes,
+trimmed, unique ignoring case, without control characters or `{` `}` `$`
+templates. Exactly one value must be `{base64}` and is replaced with STANDARD
+base64 of the PNG when sending. Names such as `api_key`, `key`, `token`,
+`password` and `authorization` stay reserved so secrets remain in the OS store.
+JSON bodies cannot be combined with extra multipart form fields. PUT destinations
+reject a nonempty `json` map. Empty `json` is omitted and keeps the existing
+multipart POST or PUT PNG path. The setup form has no JSON-body rows; load JSON,
+Remember, named catalog, configuration export/import and ShareX Body JSON Data
+string maps reuse the same validator. `{input}`, `{filename}` and other ShareX
+templates stay rejected. Richer parsers and deletion/thumbnail URLs stay out of
+this slice. Origin-scoped secrets and the 1 MiB response cap stay unchanged. No
+connection or upload starts while loading or validating a profile.
+
+Resource cost is one BTreeMap of at most 8 name/value strings plus a JSON request
+body of STANDARD base64(PNG) with those fields. The JSON path reads the PNG into
+memory once (existing encoded-size admission), encodes it, then streams the JSON
+bytes with a known Content-Length. Peak extra memory is the PNG bytes plus the
+4/3 base64 string plus the JSON wrapper. There is no new dependency, worker,
+runtime, queue, image, cache, watcher or idle timer. Constructor and headless UI
+fixtures verify that loading a temp JSON with a JSON body updates only this
+session, without Remember, named-catalog writes or an upload. A regular core
+fixture covers validation, persistence, reserved-name/template/PUT/form-field
+rejection and ShareX Data mapping. An ignored loopback fixture asserts
+Content-Type application/json and the `{base64}` field on the wire. Richer
+ShareX parsers remain separate work.
+Native keyboard/IME/accessibility, packaged restart workflow and
+latency/process/GPU/resource acceptance remain open; no new performance
+measurement is claimed for this bounded JSON body.
 
 #### Current feature slice: configurable Windows global hotkeys
 
@@ -2266,7 +2361,7 @@ Selected history entries can be exported with Export selected… to one explicit
 The existing saved-PNG export/publication path now supports operation-local cancellation with one 64 KiB streaming buffer. It retains PNG signature/encoded-size admission and writes to a unique temporary file, syncs it, checks cancellation, then publishes without replacement. Checkpoints run before opening, between chunks and immediately before publication after sync. Saved-PNG exports (including Save As) also have a 60-second per-file deadline checked at these checkpoints; blocking native filesystem calls are not interruptible mid-call, so this is not a hard I/O timeout. A canceled in-progress file is not published; best-effort temporary cleanup retains the existing warning on cleanup failure. Export uses the existing single saving-job admission and parked worker executor. There is no pixel decoding, per-file task queue, timer, runtime, cache, new dependency or idle work; at most 20 source paths and 20 failure records are retained.
 
 Optimized tests cover admission/cancel-before-storage, partial success, missing/invalid PNGs, existing-file preservation, original bytes, cancellation between files and after streaming has started, and cancellation immediately before publication with no leaked part files. The native headless fixture checks worker completion, truthful status, released job state, exactly the chosen fixture copy, and unchanged history/last capture/clipboard. One sequential development diagnostic copied twenty 886,733-byte PNGs: individual calls took 173.60 ms, followed by the selected-export wrapper at 77.49 ms. Different cache/directory warmup and single samples prevent claiming a speedup or latency distribution. The relevant bounded cost is one 64 KiB application copy buffer without decoded images; process memory, disk-full/permission errors, interrupted cleanup, slow/network filesystems, native folder-picker interaction and full platform/resource acceptance remain production gates.
-An initial anonymous HTTP uploader (2026-11-09) is available from the control window: Load destination…, Upload saved PNG, Cancel upload, Forget destination and explicit Copy link. A strict JSON configuration (at most 16 KiB) supplies a URL (at most 2,048 bytes), multipart field (1–64 safe ASCII characters), JSON pointer (at most 256 bytes) and explicit allow_http flag. Default requests require HTTPS. Credentials/userinfo, URL queries/fragments, control characters, invalid pointer escapes and unknown fields are rejected; no secrets are stored. Loading another profile initially changes the session only and clears the old destination/link before validation; explicit persistence is implemented below. Authentication beyond Windows Bearer/X-API-Key/Basic credentials, macOS/Linux secret storage, HTTP methods beyond POST/PUT, query parameters and proxy integration remain pending; bounded custom request headers, response-header/plain-text extraction and upload history are implemented below; this does not complete the generic uploader or Phase 5 gate.
+An initial anonymous HTTP uploader (2026-11-09) is available from the control window: Load destination…, Upload saved PNG, Cancel upload, Forget destination and explicit Copy link. A strict JSON configuration (at most 16 KiB) supplies a URL (at most 2,048 bytes), multipart field (1–64 safe ASCII characters), JSON pointer (at most 256 bytes) and explicit allow_http flag. Default requests require HTTPS. Credentials/userinfo, URL queries/fragments, control characters, invalid pointer escapes and unknown fields are rejected; no secrets are stored. Loading another profile initially changes the session only and clears the old destination/link before validation; explicit persistence is implemented below. Authentication beyond Windows Bearer/X-API-Key/Basic credentials, macOS/Linux secret storage, HTTP methods beyond POST/PUT and proxy integration remain pending; bounded custom request headers, query parameters, extra POST form fields, POST JSON bodies, response-header/plain-text extraction and upload history are implemented below; this does not complete the generic uploader or Phase 5 gate.
 
 Only a manual action uploads the current saved-PNG path snapshot; capture, selection, annotation and opening history never upload. The UI identifies the source filename and destination origin, keeps one active upload, and does not alter originals, image history, last capture or clipboard. Link copying is separate and updates clipboard status. A later capture may proceed while an upload is active. The source streams as a size-limited PNG with the generic multipart filename screenshot.png; bytes/metadata are preserved, so this is not an imported-file metadata sanitizer. Redirects, automatic retries, decompression and idle HTTP connection pooling are disabled. HTTP/1 is used in this first slice. Explicitly configured anonymous HTTP endpoints can serve local/self-hosted installations; no endpoint is inferred from file contents or server responses. The returned link must be an absolute HTTP(S) URL without embedded credentials, is limited to 2,048 bytes and is never automatically opened/copied. A missing/bad link is distinguished from transfer success; failed/canceled requests can already have reached the service and do not promise remote deletion.
 

@@ -1515,6 +1515,214 @@ fn load_destination_applies_custom_headers_without_uploading_or_persisting(cx: &
 }
 
 #[gpui::test]
+fn load_destination_applies_query_parameters_without_uploading_or_persisting(cx: &mut TestAppContext) {
+    let handle = open_workspace(cx);
+    let root = std::env::temp_dir().join(format!("screenshots-query-ui-{}", std::process::id()));
+    std::fs::create_dir_all(&root).unwrap();
+    let profile = root.join("destination.json");
+    std::fs::write(
+        &profile,
+        r#"{
+            "url": "https://query.invalid/upload",
+            "field": "file",
+            "json_pointer": "/url",
+            "query": { "format": "json" }
+        }"#,
+    )
+    .unwrap();
+    handle.update(cx, |this, _, cx| {
+        this.upload_destination = Some(app_core::UploadDestination::manual(
+            "https://old.invalid/upload".into(),
+            app_core::UploadMethod::Post, "file".into(), None, false).unwrap());
+        this.upload_url = Some("https://old.invalid/share/kept".into());
+        this.show_page(ControlPage::Uploads, cx);
+    }).unwrap();
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.click("load-upload-destination", cx);
+    }).unwrap();
+    assert!(cx.did_prompt_for_paths());
+    handle.update(cx, |this, _, cx| {
+        assert!(this.upload_config_loading);
+        assert!(this.upload_destination.is_none());
+        this.load_upload_destination(cx);
+    }).unwrap();
+    cx.simulate_path_prompt_response(|options| {
+        assert!(options.files && !options.directories && !options.multiple);
+        None
+    });
+    cx.run_until_parked();
+    handle.update(cx, |this, _, cx| {
+        assert!(!this.upload_config_loading);
+        assert!(this.upload_status.contains("canceled"));
+        assert!(this.upload_destination.is_none());
+        this.load_upload_destination(cx);
+    }).unwrap();
+    cx.simulate_path_prompt_response(|_| Some(vec![profile.clone()]));
+    cx.run_until_parked();
+    handle.update(cx, |this, _, cx| {
+        assert!(!this.upload_config_loading);
+        let destination = this.upload_destination.as_ref().unwrap();
+        assert_eq!(destination.origin(), "https://query.invalid");
+        assert_eq!(
+            destination.request_query().get("format").map(String::as_str),
+            Some("json")
+        );
+        assert!(this.upload_status.contains("Session only"));
+        assert!(this.upload_url.is_none());
+        assert!(this.last_saved.is_none() && this.last_capture.is_none());
+        this.upload_cancel = Some(app_core::UploadCancellation::default());
+        this.load_upload_destination(cx);
+        assert_eq!(
+            this.upload_destination.as_ref().unwrap().origin(),
+            "https://query.invalid"
+        );
+        this.show_page(ControlPage::Sources, cx);
+    }).unwrap();
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[gpui::test]
+fn load_destination_applies_form_fields_without_uploading_or_persisting(cx: &mut TestAppContext) {
+    let handle = open_workspace(cx);
+    let root = std::env::temp_dir().join(format!("screenshots-form-ui-{}", std::process::id()));
+    std::fs::create_dir_all(&root).unwrap();
+    let profile = root.join("destination.json");
+    std::fs::write(
+        &profile,
+        r#"{
+            "url": "https://form.invalid/upload",
+            "field": "file",
+            "json_pointer": "/url",
+            "form": { "title": "screenshot" }
+        }"#,
+    )
+    .unwrap();
+    handle.update(cx, |this, _, cx| {
+        this.upload_destination = Some(app_core::UploadDestination::manual(
+            "https://old.invalid/upload".into(),
+            app_core::UploadMethod::Post, "file".into(), None, false).unwrap());
+        this.upload_url = Some("https://old.invalid/share/kept".into());
+        this.show_page(ControlPage::Uploads, cx);
+    }).unwrap();
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.click("load-upload-destination", cx);
+    }).unwrap();
+    assert!(cx.did_prompt_for_paths());
+    handle.update(cx, |this, _, cx| {
+        assert!(this.upload_config_loading);
+        assert!(this.upload_destination.is_none());
+        this.load_upload_destination(cx);
+    }).unwrap();
+    cx.simulate_path_prompt_response(|options| {
+        assert!(options.files && !options.directories && !options.multiple);
+        None
+    });
+    cx.run_until_parked();
+    handle.update(cx, |this, _, cx| {
+        assert!(!this.upload_config_loading);
+        assert!(this.upload_status.contains("canceled"));
+        assert!(this.upload_destination.is_none());
+        this.load_upload_destination(cx);
+    }).unwrap();
+    cx.simulate_path_prompt_response(|_| Some(vec![profile.clone()]));
+    cx.run_until_parked();
+    handle.update(cx, |this, _, cx| {
+        assert!(!this.upload_config_loading);
+        let destination = this.upload_destination.as_ref().unwrap();
+        assert_eq!(destination.origin(), "https://form.invalid");
+        assert_eq!(
+            destination.request_form().get("title").map(String::as_str),
+            Some("screenshot")
+        );
+        assert!(this.upload_status.contains("Session only"));
+        assert!(this.upload_url.is_none());
+        assert!(this.last_saved.is_none() && this.last_capture.is_none());
+        this.upload_cancel = Some(app_core::UploadCancellation::default());
+        this.load_upload_destination(cx);
+        assert_eq!(
+            this.upload_destination.as_ref().unwrap().origin(),
+            "https://form.invalid"
+        );
+        this.show_page(ControlPage::Sources, cx);
+    }).unwrap();
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[gpui::test]
+fn load_destination_applies_json_body_without_uploading_or_persisting(cx: &mut TestAppContext) {
+    let handle = open_workspace(cx);
+    let root = std::env::temp_dir().join(format!("screenshots-json-body-ui-{}", std::process::id()));
+    std::fs::create_dir_all(&root).unwrap();
+    let profile = root.join("destination.json");
+    std::fs::write(
+        &profile,
+        r#"{
+            "url": "https://json.invalid/upload",
+            "field": "file",
+            "json_pointer": "/url",
+            "json": { "image": "{base64}", "type": "file" }
+        }"#,
+    )
+    .unwrap();
+    handle.update(cx, |this, _, cx| {
+        this.upload_destination = Some(app_core::UploadDestination::manual(
+            "https://old.invalid/upload".into(),
+            app_core::UploadMethod::Post, "file".into(), None, false).unwrap());
+        this.upload_url = Some("https://old.invalid/share/kept".into());
+        this.show_page(ControlPage::Uploads, cx);
+    }).unwrap();
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.click("load-upload-destination", cx);
+    }).unwrap();
+    assert!(cx.did_prompt_for_paths());
+    handle.update(cx, |this, _, cx| {
+        assert!(this.upload_config_loading);
+        assert!(this.upload_destination.is_none());
+        this.load_upload_destination(cx);
+    }).unwrap();
+    cx.simulate_path_prompt_response(|options| {
+        assert!(options.files && !options.directories && !options.multiple);
+        None
+    });
+    cx.run_until_parked();
+    handle.update(cx, |this, _, cx| {
+        assert!(!this.upload_config_loading);
+        assert!(this.upload_status.contains("canceled"));
+        assert!(this.upload_destination.is_none());
+        this.load_upload_destination(cx);
+    }).unwrap();
+    cx.simulate_path_prompt_response(|_| Some(vec![profile.clone()]));
+    cx.run_until_parked();
+    handle.update(cx, |this, _, cx| {
+        assert!(!this.upload_config_loading);
+        let destination = this.upload_destination.as_ref().unwrap();
+        assert_eq!(destination.origin(), "https://json.invalid");
+        assert_eq!(
+            destination.request_json().get("image").map(String::as_str),
+            Some("{base64}")
+        );
+        assert_eq!(
+            destination.request_json().get("type").map(String::as_str),
+            Some("file")
+        );
+        assert!(this.upload_status.contains("Session only"));
+        assert!(this.upload_url.is_none());
+        assert!(this.last_saved.is_none() && this.last_capture.is_none());
+        this.upload_cancel = Some(app_core::UploadCancellation::default());
+        this.load_upload_destination(cx);
+        assert_eq!(
+            this.upload_destination.as_ref().unwrap().origin(),
+            "https://json.invalid"
+        );
+        this.show_page(ControlPage::Sources, cx);
+    }).unwrap();
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[gpui::test]
 fn settings_backup_export_writes_a_chosen_file_without_importing(cx: &mut TestAppContext) {
     let handle = open_workspace(cx);
     let root = std::env::temp_dir().join(format!("screenshots-settings-backup-ui-{}", std::process::id()));

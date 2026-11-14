@@ -9,5 +9,11 @@
   "Headers": {
     "X-Client": "screenshots"
   },
+  "Parameters": {
+    "format": "json"
+  },
+  "Arguments": {
+    "title": "screenshot"
+  },
   "URL": "{json:url}"
 }

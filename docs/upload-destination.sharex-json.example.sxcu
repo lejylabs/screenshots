@@ -1,0 +1,13 @@
+{
+  "Version": "17.0.0",
+  "Name": "Example JSON",
+  "DestinationType": "ImageUploader",
+  "RequestMethod": "POST",
+  "RequestURL": "https://example.invalid/upload",
+  "Body": "JSON",
+  "Data": {
+    "image": "{base64}",
+    "type": "file"
+  },
+  "URL": "{json:url}"
+}
