@@ -69,7 +69,7 @@ fn classic_appearance_projects_one_dark_onto_kit_and_does_not_stick_to_dark(
         assert_eq!(theme.colors.list_active_border, rgb(0x74ade8).into());
         assert_eq!(theme.colors.danger, rgb(0xd07277).into());
         assert_eq!(theme.window_radius, px(10.));
-        assert_eq!(theme.font_size, px(14.));
+        assert_eq!(theme.font_size, px(16.));
         assert_eq!(theme.radius, px(4.));
         assert_eq!(theme.radius_lg, px(4.));
         assert!(theme.shadow && theme.focus_ring);

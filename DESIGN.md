@@ -9,7 +9,7 @@ interface helps it move from capture to annotation to explicit output.
 | --- | --- | --- | --- |
 | Dark (default) | Neutral charcoal, grayscale controls, restrained borders | 6px controls / 8px panels | Segoe UI / system / Cantarell |
 | Oldschool | Compact task menu, blue selection, colorful function icons | Square controls, Kit small tools | Segoe UI / DejaVu Sans |
-| Classic | One Dark workbench: Kit TitleBar, pane tabs, 240px dock, segmented status bar; editor `#282c33`, panels `#2f343e`, accent `#74ade8` | 4px controls / 4px panels, 33/32/24 chrome, 14px UI | Segoe UI / system / Cantarell |
+| Classic | One Dark workbench: Kit TitleBar, pane tabs, 240px dock, segmented status bar; editor `#282c33`, panels `#2f343e`, accent `#74ade8` | 4px controls / 4px panels, 33/32/24 chrome, 16px rem / 14px body | Segoe UI / system / Cantarell |
 
 Dark is the startup and settings fallback. Retired or unknown saved values fall
 back to Dark; an explicit Oldschool or Classic choice remains that appearance. All

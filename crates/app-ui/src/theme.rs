@@ -94,7 +94,9 @@ fn sync_kit(cx: &mut App) {
     KitTheme::change(ThemeMode::Dark, None, cx);
     KitTheme::update(cx, |theme| {
         theme.font_family = font.into();
-        theme.font_size = px(if p.workbench { 14. } else { 16. });
+        // Kit Root maps this to window rem. Body copy is mostly text_sm
+        // (0.875rem), so Classic keeps 16px rem and gets density from chrome.
+        theme.font_size = px(16.);
         theme.radius = px(p.radius);
         theme.radius_lg = px(p.panel_radius);
         apply_product_colors(&mut theme.colors, p);
