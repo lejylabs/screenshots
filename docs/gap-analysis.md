@@ -1,5 +1,13 @@
 # Functional gap analysis: screenshots and ShareX
 
+Implementation follow-up (2026-11-14, working tree): Library decodes at most
+one visible-page PNG thumbnail at a time and caches only the current 20 rows.
+Search/filter/page changes and hiding Library cancel the job and drop images.
+Explicit Preview uses the cache when present. Next-page prefetch, a persistent
+thumbnail store, date filtering/sorting and missing-file relink UX remain
+separate. Secret-store platforms other than Windows remain missing. See
+PLAN.md's bounded visible-page thumbnail gallery slice.
+
 Implementation follow-up (2026-11-14, working tree): Uploads **Strip metadata
 on upload** re-encodes saved PNG pixels before transfer and drops ancillary
 chunks. The original file is unchanged. Editor and unsaved captures already send
@@ -447,10 +455,11 @@ the requested parity target therefore requires a larger scope than that MVP.
 
 These gaps determine whether implemented features are convenient and dependable:
 
-- Library has bounded metadata lists and an explicit single preview, not a
-  thumbnail gallery. Add bounded visible-thumbnail decoding/cache, useful date
-  filtering/sorting and missing-file handling. Search is metadata word-prefix
-  search, not arbitrary substring, OCR content or integrated upload-link search.
+- Library has bounded metadata lists, an explicit preview and visible-page
+  thumbnail decoding/cache. Useful date filtering/sorting, missing-file
+  handling, next-page prefetch and a persistent thumbnail store remain open.
+  Search is metadata word-prefix search, not arbitrary substring, OCR content
+  or integrated upload-link search.
 - Current selection/export/removal is limited to one page. Cross-page batch
   workflows, rename/move and deliberate file deletion/retention are missing.
   Metadata-only removal correctly preserves user files and should remain explicit.
@@ -502,7 +511,7 @@ additional parity gap if the goal includes ShareX's localization breadth.
    produce only the requested outputs, and reopen/reuse a previous image without
    developer configuration or unintended source persistence.
 3. **Sharing/library package (A/B):** destination/auth UI, named profiles,
-   finalized-document sharing, explicit metadata policy and bounded gallery.
+   finalized-document sharing, explicit metadata policy and a visible-page gallery.
    Acceptance: configure and test a real HTTPS destination, share an edited image,
    copy its result and find it later; cancellation/failure must remain truthful.
 4. **Distinctive capabilities (B):** scrolling capture, OCR/QR, pinning and

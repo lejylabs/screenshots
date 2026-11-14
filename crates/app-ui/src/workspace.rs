@@ -1011,6 +1011,7 @@ impl Render for CaptureWorkspace {
                                                 .as_ref()
                                                 .filter(|(id, _)| *id == entry_id)
                                                 .map(|(_, render)| render.clone());
+                                            let thumb = self.history_thumbs.get(&entry_id).cloned();
                                             let selected = self.history_selected.contains(&entry_id);
                                             let filename = entry.path.file_name().unwrap_or_default().to_string_lossy().into_owned();
                                             div().id(gpui::SharedString::from(format!("history-entry-{}", entry.id))).flex_none().flex().flex_col().gap_3()
@@ -1018,6 +1019,21 @@ impl Render for CaptureWorkspace {
                                                 .when(theme.classic || theme.workbench, |row| row.p_2().gap_1())
                                                 .border_1().border_color(if selected { colors.caret } else { colors.border })
                                                 .child(div().flex().flex_wrap().items_center().gap_2()
+                                                    .child(
+                                                        div()
+                                                            .id("history-thumb")
+                                                            .w(px(72.))
+                                                            .h(px(48.))
+                                                            .flex_none()
+                                                            .rounded(px(theme.radius))
+                                                            .bg(colors.background)
+                                                            .overflow_hidden()
+                                                            .children(thumb.map(|render| {
+                                                                img(render)
+                                                                    .max_w(px(72.))
+                                                                    .max_h(px(48.))
+                                                            })),
+                                                    )
                                                     .child(div().flex_1().min_w_0().flex().flex_col().gap_1()
                                                         .child(Button::new("history-preview").ghost().small().w_full().justify_start()
                                                             .accessibility_label(format!("Preview {filename}"))

@@ -148,7 +148,15 @@ fn native_kit_workspace_and_editor() {
                         .update(cx, |_, window, cx| window.press("ctrl-2", cx))
                         .map_err(|e| e.to_string())?;
                     ready(handle, cx, |state| {
-                        !state.history_loading && state.history_entries.len() == 1
+                        !state.history_loading
+                            && state.history_entries.len() == 1
+                            && state.history_thumb_loading.is_none()
+                            && (state
+                                .history_thumbs
+                                .contains_key(&state.history_entries[0].id)
+                                || state
+                                    .history_thumb_failed
+                                    .contains(&state.history_entries[0].id))
                     })
                     .await?;
                     snapshot(handle.into(), "library.png", &directory, cx).await?;
@@ -205,7 +213,9 @@ fn native_kit_workspace_and_editor() {
                         })
                         .map_err(|e| e.to_string())?;
                     ready(handle, cx, |state| {
-                        !state.history_loading && state.history_entries.len() == 1
+                        !state.history_loading
+                            && state.history_entries.len() == 1
+                            && state.history_thumb_loading.is_none()
                     })
                     .await?;
                     AnyWindowHandle::from(handle)

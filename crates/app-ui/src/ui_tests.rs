@@ -1560,6 +1560,118 @@ fn stale_library_menu_cannot_mutate_a_new_page(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn library_decodes_visible_page_thumbnails_and_releases_them(cx: &mut TestAppContext) {
+    let handle = open_workspace(cx);
+    let root = std::env::temp_dir().join(format!(
+        "screenshots-gallery-{}",
+        std::process::id()
+    ));
+    std::fs::create_dir_all(&root).unwrap();
+    let database = root.join("history.sqlite3");
+    let mut paths = Vec::new();
+    for index in 0..21 {
+        let path = root.join(format!("shot-{index:02}.png"));
+        image::RgbaImage::from_pixel(2, 3, image::Rgba([7, 20, 110, 255]))
+            .save(&path)
+            .unwrap();
+        app_core::record_saved_capture(&database, &path).unwrap();
+        paths.push(path);
+    }
+    std::fs::remove_file(paths.last().unwrap()).unwrap();
+    handle
+        .update(cx, |this, _, _| {
+            this.history_database = Some(database);
+        })
+        .unwrap();
+    cx.update_window(handle.into(), |_, window, cx| window.press(&shortcut("2"), cx))
+        .unwrap();
+    cx.run_until_parked();
+    let newest = handle
+        .update(cx, |this, _, cx| {
+            assert!(!this.history_loading);
+            assert!(this.history_thumb_loading.is_none());
+            assert_eq!(this.history_entries.len(), 20);
+            assert!(this.history_has_more);
+            assert_eq!(this.history_thumbs.len(), 19);
+            assert_eq!(this.history_thumb_failed.len(), 1);
+            let missing = this.history_entries[0].id;
+            assert!(this.history_thumb_failed.contains(&missing));
+            assert!(!this.history_thumbs.contains_key(&missing));
+            let cached = this.history_entries[1].id;
+            let render = this.history_thumbs.get(&cached).cloned().unwrap();
+            let bytes = render.as_bytes(0).unwrap();
+            assert_eq!(bytes.len(), 2 * 3 * 4);
+            assert_eq!(&bytes[..4], &[110, 20, 7, 255]);
+            this.preview_history_image(cached, this.history_revision, cx);
+            assert!(!this.capturing);
+            assert!(
+                this.history_preview
+                    .as_ref()
+                    .is_some_and(|(id, _)| *id == cached)
+            );
+            this.preview_history_image(cached, this.history_revision, cx);
+            assert!(this.history_preview.is_none());
+            assert!(this.history_thumbs.contains_key(&cached));
+            this.refresh_history(Some(this.history_entries.last().unwrap().id), cx);
+            cached
+        })
+        .unwrap();
+    cx.run_until_parked();
+    handle
+        .update(cx, |this, _, cx| {
+            assert_eq!(this.history_entries.len(), 1);
+            assert!(!this.history_has_more);
+            assert_eq!(this.history_thumbs.len(), 1);
+            assert!(this.history_thumb_failed.is_empty());
+            assert!(!this.history_thumbs.contains_key(&newest));
+            let older = this.history_entries[0].id;
+            assert!(this.history_thumbs.contains_key(&older));
+            this.show_page(ControlPage::Captures, cx);
+            assert!(this.history_thumbs.is_empty());
+            assert!(this.history_thumb_failed.is_empty());
+            assert!(this.history_thumb_loading.is_none());
+        })
+        .unwrap();
+    let extra = root.join("preview-miss.png");
+    image::RgbaImage::from_pixel(3, 2, image::Rgba([11, 22, 33, 255]))
+        .save(&extra)
+        .unwrap();
+    handle
+        .update(cx, |this, _, cx| {
+            this.history_visible = true;
+            this.history_entries = vec![app_core::HistoryEntry {
+                id: 99,
+                path: extra.clone(),
+                width: 3,
+                height: 2,
+                created_at: "2026-11-14".into(),
+            }];
+            this.preview_history_image(99, this.history_revision, cx);
+            assert!(this.capturing);
+            assert!(this.history_preview_cancel.is_some());
+            this.preview_history_image(99, this.history_revision, cx);
+            assert!(this.capturing);
+        })
+        .unwrap();
+    cx.run_until_parked();
+    handle
+        .update(cx, |this, _, cx| {
+            assert!(!this.capturing);
+            let (id, render) = this.history_preview.as_ref().unwrap();
+            assert_eq!(*id, 99);
+            let bytes = render.as_bytes(0).unwrap();
+            assert_eq!(bytes.len(), 3 * 2 * 4);
+            assert_eq!(&bytes[..4], &[33, 22, 11, 255]);
+            assert!(this.history_thumbs.contains_key(&99));
+            this.hide_history(cx);
+            assert!(this.history_thumbs.is_empty());
+            assert!(this.history_preview.is_none());
+        })
+        .unwrap();
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[gpui::test]
 fn upload_setup_validates_without_network_and_discards_closed_form_results(
     cx: &mut TestAppContext,
 ) {

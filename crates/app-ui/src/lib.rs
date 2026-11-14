@@ -17,7 +17,7 @@ use redaction_editor::{OutputMode, RedactionEditor};
 use window::{OpenKitWindow, UiWindow as WindowHandle, app_window_options};
 
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     path::PathBuf,
     sync::{Arc, Mutex},
 };
@@ -196,6 +196,10 @@ pub struct CaptureWorkspace {
     history_preview: Option<(i64, Arc<gpui::RenderImage>)>,
     history_preview_cancel: Option<Arc<std::sync::atomic::AtomicBool>>,
     history_preview_status: String,
+    history_thumbs: HashMap<i64, Arc<gpui::RenderImage>>,
+    history_thumb_failed: HashSet<i64>,
+    history_thumb_cancel: Option<Arc<std::sync::atomic::AtomicBool>>,
+    history_thumb_loading: Option<i64>,
     history_export_cancel: Option<Arc<std::sync::atomic::AtomicBool>>,
     upload_destination: Option<app_core::UploadDestination>,
     upload_form_open: bool,
@@ -655,6 +659,10 @@ impl CaptureWorkspace {
             history_preview: None,
             history_preview_cancel: None,
             history_preview_status: String::new(),
+            history_thumbs: HashMap::new(),
+            history_thumb_failed: HashSet::new(),
+            history_thumb_cancel: None,
+            history_thumb_loading: None,
             history_export_cancel: None,
             upload_destination: None,
             upload_form_open: false,
@@ -1722,6 +1730,7 @@ impl CaptureWorkspace {
     }
     fn hide_history(&mut self, cx: &mut Context<Self>) {
         self.clear_history_preview(cx);
+        self.clear_history_thumbs(cx);
         self.history_visible = false;
         self.history_query.clear();
         self.history_search_input = None;
@@ -1786,6 +1795,7 @@ impl CaptureWorkspace {
     }
     fn restart_history(&mut self, cx: &mut Context<Self>) {
         self.clear_history_preview(cx);
+        self.clear_history_thumbs(cx);
         self.history_revision = self.history_revision.wrapping_add(1);
         if let Some(cancel) = &self.history_cancel {
             cancel.store(true, std::sync::atomic::Ordering::Relaxed);
@@ -1813,6 +1823,7 @@ impl CaptureWorkspace {
         self.history_selected.clear();
         self.history_revision = self.history_revision.wrapping_add(1);
         self.clear_history_preview(cx);
+        self.clear_history_thumbs(cx);
         self.history_loading = true;
         self.history_refresh_pending = false;
         let filter = self.history_filter;
@@ -1868,6 +1879,7 @@ impl CaptureWorkspace {
                                 }
                                 .into()
                             };
+                            this.request_history_thumbs(cx);
                         }
                         Err(error) => {
                             this.history_status = format!("History could not be loaded: {error:#}")
@@ -2697,6 +2709,7 @@ impl CaptureWorkspace {
             && !self.switching_graphics
             && !self.settings_saving
             && !self.history_mutating
+            && self.history_thumb_loading.is_none()
             && !self.upload_config_loading
             && self.upload_cancel.is_none()
             && !self.editor_closing
@@ -2770,7 +2783,7 @@ impl CaptureWorkspace {
             return;
         }
         self.show_page(ControlPage::Captures, cx);
-        self.capturing = true;
+        self.begin_capturing();
         self.capture_status = "Choosing an image…".into();
         let dialog = cx.prompt_for_paths(gpui::PathPromptOptions {
             files: true,
@@ -2781,7 +2794,7 @@ impl CaptureWorkspace {
         cx.spawn(async move |this, cx| {
             let selected = dialog.await;
             this.update(cx, |this, cx| {
-                this.capturing = false;
+                this.finish_capturing(cx);
                 if this.quitting {
                     this.finish_quit_if_idle(cx);
                     return;
@@ -2829,7 +2842,7 @@ impl CaptureWorkspace {
         let Some(directory) = self.output_directory.clone() else {
             return;
         };
-        self.capturing = true;
+        self.begin_capturing();
         self.capture_status = "Opening image editor…".into();
         cx.spawn(async move |this, cx| {
             let result = cx
@@ -2864,7 +2877,7 @@ impl CaptureWorkspace {
                 })
                 .await;
             this.update(cx, |this, cx| {
-                this.capturing = false;
+                this.finish_capturing(cx);
                 if this.quitting {
                     this.finish_quit_if_idle(cx);
                     return;
@@ -3026,6 +3039,7 @@ impl CaptureWorkspace {
                             this.capture_status = format!("Editor cleanup failed: {error}");
                         }
                         this.restore_control(cx);
+                        this.request_history_thumbs(cx);
                         this.finish_quit_if_idle(cx);
                         cx.notify();
                     })
@@ -3053,7 +3067,7 @@ impl CaptureWorkspace {
         let remembered =
             crop.and_then(|area| app_core::RememberedRegion::from_snapshot(&source, area).ok());
         self.close_editor(cx);
-        self.capturing = true;
+        self.begin_capturing();
         self.capture_status = "Applying image edits…".into();
         cx.spawn(async move |this, cx| {
             let result = cx
@@ -3074,7 +3088,7 @@ impl CaptureWorkspace {
                 })
                 .await;
             this.update(cx, |this, cx| {
-                this.capturing = false;
+                this.finish_capturing(cx);
                 if this.quitting {
                     this.finish_quit_if_idle(cx);
                     return;
@@ -3121,20 +3135,145 @@ impl CaptureWorkspace {
         cx.notify();
     }
 
+    fn drop_history_images(
+        &self,
+        images: impl IntoIterator<Item = Arc<gpui::RenderImage>>,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(control) = self.control else {
+            return;
+        };
+        for render in images {
+            cx.defer(move |cx| {
+                control
+                    .update(cx, |_, window, _| {
+                        window.drop_image(render).ok();
+                    })
+                    .ok();
+            });
+        }
+    }
+
+    fn cancel_history_thumb_job(&mut self) {
+        if let Some(cancel) = &self.history_thumb_cancel {
+            cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+
+    fn begin_capturing(&mut self) {
+        self.cancel_history_thumb_job();
+        self.capturing = true;
+    }
+
+    fn finish_capturing(&mut self, cx: &mut Context<Self>) {
+        self.capturing = false;
+        self.request_history_thumbs(cx);
+    }
+
+    fn clear_history_thumbs(&mut self, cx: &mut Context<Self>) {
+        self.cancel_history_thumb_job();
+        self.history_thumb_cancel = None;
+        self.history_thumb_loading = None;
+        self.history_thumb_failed.clear();
+        let images: Vec<_> = self.history_thumbs.drain().map(|(_, render)| render).collect();
+        self.drop_history_images(images, cx);
+    }
+
+    fn history_thumbs_blocked(&self) -> bool {
+        self.quitting
+            || !self.history_visible
+            || self.history_loading
+            || self.capturing
+            || self.copying
+            || self.saving
+            || self.editor.is_some()
+            || self.editor_closing
+            || self.capture_delay.is_some()
+    }
+
+    fn request_history_thumbs(&mut self, cx: &mut Context<Self>) {
+        if self.history_thumbs_blocked()
+            || self.history_thumb_loading.is_some()
+            || self
+                .history_thumb_cancel
+                .as_ref()
+                .is_some_and(|cancel| cancel.load(std::sync::atomic::Ordering::Relaxed))
+        {
+            return;
+        }
+        let Some(entry) = self.history_entries.iter().find(|entry| {
+            !self.history_thumbs.contains_key(&entry.id)
+                && !self.history_thumb_failed.contains(&entry.id)
+        }) else {
+            return;
+        };
+        let id = entry.id;
+        let path = entry.path.clone();
+        let revision = self.history_revision;
+        let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        self.history_thumb_cancel = Some(cancel.clone());
+        self.history_thumb_loading = Some(id);
+        cx.spawn(async move |this, cx| {
+            let flag = cancel.clone();
+            let result = cx
+                .background_spawn(async move {
+                    app_core::load_png_thumbnail(&path, || {
+                        flag.load(std::sync::atomic::Ordering::Relaxed)
+                    })
+                    .map(thumbnail_render_image)
+                    .map_err(|error| format!("{error:#}"))
+                })
+                .await;
+            this.update(cx, |this, cx| {
+                let stale = this.history_thumb_loading != Some(id)
+                    || !this
+                        .history_thumb_cancel
+                        .as_ref()
+                        .is_some_and(|active| Arc::ptr_eq(active, &cancel));
+                if stale {
+                    if let Ok(render) = result {
+                        this.drop_history_images([render], cx);
+                    }
+                    this.finish_quit_if_idle(cx);
+                    cx.notify();
+                    return;
+                }
+                this.history_thumb_cancel = None;
+                this.history_thumb_loading = None;
+                if this.history_visible
+                    && this.history_revision == revision
+                    && !cancel.load(std::sync::atomic::Ordering::Relaxed)
+                    && this.history_entries.iter().any(|entry| entry.id == id)
+                {
+                    match result {
+                        Ok(render) => {
+                            this.history_thumbs.insert(id, render);
+                        }
+                        Err(_) => {
+                            this.history_thumb_failed.insert(id);
+                        }
+                    }
+                } else if let Ok(render) = result {
+                    this.drop_history_images([render], cx);
+                }
+                this.request_history_thumbs(cx);
+                this.finish_quit_if_idle(cx);
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+        cx.notify();
+    }
+
     fn clear_history_preview(&mut self, cx: &mut Context<Self>) {
         if let Some(cancel) = &self.history_preview_cancel {
             cancel.store(true, std::sync::atomic::Ordering::Relaxed);
         }
         self.history_preview_status.clear();
-        if let Some((_, render)) = self.history_preview.take() {
-            if let Some(control) = self.control {
-                cx.defer(move |cx| {
-                    control
-                        .update(cx, |_, window, _| {
-                            window.drop_image(render).ok();
-                        })
-                        .ok();
-                });
+        if let Some((id, render)) = self.history_preview.take() {
+            if !self.history_thumbs.contains_key(&id) {
+                self.drop_history_images([render], cx);
             }
         }
     }
@@ -3149,6 +3288,14 @@ impl CaptureWorkspace {
             .is_some_and(|(current, _)| *current == id)
         {
             self.clear_history_preview(cx);
+            cx.notify();
+            return;
+        }
+        if let Some(render) = self.history_thumbs.get(&id).cloned() {
+            self.clear_history_preview(cx);
+            self.history_preview = Some((id, render));
+            self.history_preview_status =
+                "Preview only · Image and clipboard unchanged".into();
             cx.notify();
             return;
         }
@@ -3173,10 +3320,11 @@ impl CaptureWorkspace {
             return;
         };
         self.clear_history_preview(cx);
+        self.history_thumb_failed.remove(&id);
         let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
         self.history_preview_cancel = Some(cancel.clone());
         self.history_preview_status = "Loading preview…".into();
-        self.capturing = true;
+        self.begin_capturing();
         cx.spawn(async move |this, cx| {
             let flag = cancel.clone();
             let result = cx
@@ -3184,17 +3332,11 @@ impl CaptureWorkspace {
                     app_core::load_png_thumbnail(&path, || {
                         flag.load(std::sync::atomic::Ordering::Relaxed)
                     })
-                    .map(|mut pixels| {
-                        for pixel in pixels.pixels_mut() {
-                            pixel.0.swap(0, 2);
-                        }
-                        Arc::new(gpui::RenderImage::new(vec![image::Frame::new(pixels)]))
-                    })
+                    .map(thumbnail_render_image)
                     .map_err(|error| format!("{error:#}"))
                 })
                 .await;
             this.update(cx, |this, cx| {
-                this.capturing = false;
                 this.history_preview_cancel = None;
                 if !this.quitting
                     && this.history_visible
@@ -3203,15 +3345,20 @@ impl CaptureWorkspace {
                 {
                     match result {
                         Ok(render) => {
+                            this.history_thumbs.insert(id, render.clone());
                             this.history_preview = Some((id, render));
                             this.history_preview_status =
                                 "Preview only · Image and clipboard unchanged".into();
                         }
                         Err(error) => {
+                            this.history_thumb_failed.insert(id);
                             this.history_preview_status = format!("Preview unavailable: {error}")
                         }
                     }
+                } else if let Ok(render) = result {
+                    this.drop_history_images([render], cx);
                 }
+                this.finish_capturing(cx);
                 this.finish_quit_if_idle(cx);
                 cx.notify();
             })
@@ -5579,13 +5726,13 @@ impl CaptureWorkspace {
             self.preview_active = false;
         }
         self.close_overlays(cx);
-        self.capturing = true;
+        self.begin_capturing();
         self.capture_status = "Preparing selection…".into();
         cx.notify();
         cx.spawn(async move |this, cx| {
             let result = cx.background_spawn(async move { app_core::crop_snapshot(&source, region).map(|shot| { let render = if edit_selection { render_frame(&shot) } else { render_thumbnail(&shot) }; (shot, render) }) }).await;
             this.update(cx, |this, cx| {
-                this.capturing = false;
+                this.finish_capturing(cx);
                 if this.quitting { this.finish_quit_if_idle(cx); return; }
                 match result {
                     Ok((shot, render)) => {
@@ -5666,7 +5813,7 @@ impl CaptureWorkspace {
             cx.notify();
             return;
         }
-        self.capturing = true;
+        self.begin_capturing();
         self.capture_status = format!("capturing {} job(s)…", jobs.len());
         cx.notify();
 
@@ -5709,7 +5856,7 @@ impl CaptureWorkspace {
                 Ok(control) => control,
                 Err(error) => {
                     this.update(cx, |this, cx| {
-                        this.capturing = false;
+                        this.finish_capturing(cx);
                         if this.quitting {
                             this.finish_quit_if_idle(cx);
                             return;
@@ -5786,7 +5933,7 @@ impl CaptureWorkspace {
                 .await;
 
             this.update(cx, |this, cx| {
-                this.capturing = false;
+                this.finish_capturing(cx);
                 if this.quitting {
                     this.finish_quit_if_idle(cx);
                     return;
@@ -5884,12 +6031,15 @@ fn render_frame(shot: &CapturedImage) -> Arc<gpui::RenderImage> {
     Arc::new(gpui::RenderImage::new(vec![image::Frame::new(bgra)]))
 }
 
-fn render_thumbnail(shot: &CapturedImage) -> Arc<gpui::RenderImage> {
-    let mut pixels = image::imageops::thumbnail(shot.pixels.as_ref(), 400, 240);
+fn thumbnail_render_image(mut pixels: image::RgbaImage) -> Arc<gpui::RenderImage> {
     for pixel in pixels.pixels_mut() {
         pixel.0.swap(0, 2);
     }
     Arc::new(gpui::RenderImage::new(vec![image::Frame::new(pixels)]))
+}
+
+fn render_thumbnail(shot: &CapturedImage) -> Arc<gpui::RenderImage> {
+    thumbnail_render_image(image::imageops::thumbnail(shot.pixels.as_ref(), 400, 240))
 }
 
 struct Overlay {
@@ -6733,6 +6883,7 @@ mod tests {
                                         && !this.history_mutating
                                         && !this.history_refresh_pending
                                         && !this.refreshing
+                                        && this.history_thumb_loading.is_none()
                                 }) {
                                     break;
                                 }
@@ -6756,6 +6907,9 @@ mod tests {
                                         || this.history_preview.is_some()
                                         || this.history_preview_cancel.is_some()
                                         || !this.history_preview_status.is_empty()
+                                        || !this.history_thumbs.is_empty()
+                                        || this.history_thumb_loading.is_some()
+                                        || !this.history_thumb_failed.is_empty()
                                     {
                                         return Err(
                                             "A hidden history request applied stale rows/status"
@@ -6819,14 +6973,36 @@ mod tests {
                                                 .into(),
                                         );
                                     }
-                                    this.preview_history_image(id, revision, cx);
-                                    if !this.capturing || this.history_preview_cancel.is_none() {
-                                        return Err("History preview did not start a bounded image job".into());
+                                    if !this.history_thumbs.contains_key(&id)
+                                        || this.history_thumb_loading.is_some()
+                                        || this.capturing
+                                    {
+                                        return Err(
+                                            "Visible library page did not publish its thumbnail"
+                                                .into(),
+                                        );
                                     }
-                                    let active = this.history_preview_cancel.clone().unwrap();
                                     this.preview_history_image(id, revision, cx);
-                                    if !Arc::ptr_eq(&active, this.history_preview_cancel.as_ref().unwrap()) {
-                                        return Err("Duplicate preview created another job".into());
+                                    if this.capturing
+                                        || this.history_preview_cancel.is_some()
+                                        || this
+                                            .history_preview
+                                            .as_ref()
+                                            .is_none_or(|(current, _)| *current != id)
+                                    {
+                                        return Err(
+                                            "Cached thumbnail did not open the explicit preview"
+                                                .into(),
+                                        );
+                                    }
+                                    this.preview_history_image(id, revision, cx);
+                                    if this.history_preview.is_some()
+                                        || !this.history_thumbs.contains_key(&id)
+                                    {
+                                        return Err(
+                                            "Hide preview dropped the visible-page thumbnail"
+                                                .into(),
+                                        );
                                     }
                                 }
                                 Ok::<_, String>(())
@@ -6835,14 +7011,10 @@ mod tests {
                                 controller.update(cx, |this, cx| {
                                     this.preview_history_image(this.history_entries[0].id, this.history_revision, cx);
                                 });
-                                let started = std::time::Instant::now();
-                                while controller.update(cx, |this, _| this.capturing) {
-                                    if started.elapsed().as_secs() > 8 {
-                                        return Err("History preview timed out".into());
-                                    }
-                                    cx.background_executor().timer(std::time::Duration::from_millis(20)).await;
-                                }
                                 controller.update(cx, |this, cx| {
+                                    if this.capturing || this.history_preview_cancel.is_some() {
+                                        return Err("Cached thumbnail started another preview job".into());
+                                    }
                                     let (id, render) = this.history_preview.as_ref().ok_or("History preview was not published")?;
                                     let bytes = render.as_bytes(0).ok_or("History preview has no pixel data")?;
                                     if bytes.len() != 2 * 3 * 4 || bytes[..4] != [110,20,7,255] {
@@ -6851,9 +7023,15 @@ mod tests {
                                     let id = *id;
                                     let released = Arc::downgrade(render);
                                     this.preview_history_image(id, this.history_revision, cx);
-                                    if this.history_preview.is_some() || released.upgrade().is_some()
-                                        || this.history_preview_cancel.is_some() || !this.history_preview_status.is_empty() {
+                                    if this.history_preview.is_some()
+                                        || this.history_preview_cancel.is_some()
+                                        || !this.history_preview_status.is_empty()
+                                    {
                                         return Err("Hide preview retained its image/job/status".into());
+                                    }
+                                    if released.upgrade().is_none() || !this.history_thumbs.contains_key(&id)
+                                    {
+                                        return Err("Hide preview released the visible-page thumbnail".into());
                                     }
                                     Ok::<_, String>(())
                                 })?;
@@ -8053,6 +8231,8 @@ try {
                                         assert!(
                                             this.history_preview.is_none()
                                                 && this.history_search_input.is_none()
+                                                && this.history_thumbs.is_empty()
+                                                && this.history_thumb_loading.is_none()
                                         );
                                     }
                                     assert!(this.page == page);

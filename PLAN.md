@@ -23,15 +23,15 @@ This section is the current continuation brief. The numbered sections below cont
 - **GPUI Kit rewrite (2026-11-11):** the complete native presentation uses Kit 0.9.1 / GPUI 0.3.12: Sidebar, Button, Input, Checkbox, RadioGroup, PopupMenu, Kbd and bundled Lucide icons. Dark stays the default; Oldschool keeps compact square controls and colorful icons; Classic maps One Dark chrome tokens onto Kit without replacing Dark. Every window has a Base Root, with transparent surfaces preserved for overlays. Typed content access preserves native lifecycle jobs and waiting for work on Quit. Library search/menu callbacks retain byte, paging and stale-result bounds. The image canvas and bounded source-label editor keep their domain-specific contracts. See [the rewrite and measured evidence](docs/ui-redesign.md).
 - **Windows functional prototype:** tray/resident lifecycle, single-instance forwarding, hotkeys, display/window/region capture, countdown, clipboard, PNG output and save-folder settings. Graphics attach on demand and detach when the last UI consumer closes.
 - **Shared editor:** crop, shapes, arrows, lines/endpoints, pen, text/style, numbering, highlight/spotlight, blur, pixelation and opaque redaction; selection/transforms, duplicate/reorder, bounded metadata undo/redo and zoom/pan. Copy, Save and Save & copy are explicit. Original files are preserved when editing a copy.
-- **Storage/sharing:** paged SQLite capture history with prefix search, filters, PNG import/relink, explicit preview, bounded selection/removal/export; explicit configurable POST/PUT uploads with bounded custom request headers, query parameters, extra POST form fields and POST JSON bodies, progress/cancel, remembered credential-free profiles, named destinations, per-task destination defaults, an optional strip-metadata-on-upload re-encode and upload history. Windows Uploads can save Bearer/API-key/Basic secrets to Credential Manager. Other secret-store integrations remain pending.
-- **Current main UI:** a responsive 200/208-logical-pixel sidebar with Recent capture / Library / Displays & windows / Uploads / Settings. Main windows start at 1060×760 with a 680×480 minimum. Content scrolls at compact sizes; library rows are paged, identified by database ID and expose Kit menus. Switching pages releases search/preview state and cancels stale requests. A thumbnail gallery remains a separate feature.
+- **Storage/sharing:** paged SQLite capture history with prefix search, filters, PNG import/relink, explicit preview, visible-page thumbnail cache, bounded selection/removal/export; explicit configurable POST/PUT uploads with bounded custom request headers, query parameters, extra POST form fields and POST JSON bodies, progress/cancel, remembered credential-free profiles, named destinations, per-task destination defaults, an optional strip-metadata-on-upload re-encode and upload history. Windows Uploads can save Bearer/API-key/Basic secrets to Credential Manager. Other secret-store integrations remain pending.
+- **Current main UI:** a responsive 200/208-logical-pixel sidebar with Recent capture / Library / Displays & windows / Uploads / Settings. Main windows start at 1060×760 with a 680×480 minimum. Content scrolls at compact sizes; library rows are paged, identified by database ID and expose Kit menus. Switching pages releases search/preview state and cancels stale requests. The visible library page decodes at most one bounded thumbnail at a time and retains only those 20 images.
 - **Current editor UI:** grouped Kit tool buttons, accessible labels/shortcut tooltips, contextual selection actions, swatches and separate Copy / Save / Save & copy actions. Toolbar scrolling leaves bounded image space. The in-memory canvas and exported image algorithms remain in Rust.
 
 ### Continue from here
 
 1. Keep the Kit component/theme/root contracts when adding UI. Use existing history/capture operations and bounded paging; do not introduce eager full-history decoding.
 2. Complete platform acceptance: interactive Windows/macOS/Wayland, manual keyboard/IME/accessibility, mixed DPI/multi-monitor/topology, failure/recovery and packaging. CI checks compilation; it does not establish native runtime acceptance.
-3. Follow the delivery sequence below and the [functional gap analysis](docs/gap-analysis.md). Arbitrary effect/layer-order agreement, thumbnail gallery and full reference-hardware resource acceptance remain open. Recording, OCR, scrolling capture, pinning and workflows are required for the ShareX functional-scope goal, even when delivered after the everyday screenshot milestone. Plugins and cloud remain separate later product decisions.
+3. Follow the delivery sequence below and the [functional gap analysis](docs/gap-analysis.md). Arbitrary effect/layer-order agreement and full reference-hardware resource acceptance remain open. Recording, OCR, scrolling capture, pinning and workflows are required for the ShareX functional-scope goal, even when delivered after the everyday screenshot milestone. Plugins and cloud remain separate later product decisions.
 
 ### Delivery sequence toward ShareX functional scope (2026-11-12)
 
@@ -50,7 +50,8 @@ priorities do not establish implementation or runtime acceptance.
 3. **Sharing and library:** native destination/auth setup, named destinations,
    sharing finalized editor pixels, explicit metadata policy and a bounded
    thumbnail gallery. Preserve truthful outcomes and explicit network consent.
-   Metadata policy is a saved upload choice; a thumbnail gallery remains open.
+   Metadata policy is a saved upload choice; the visible-page thumbnail gallery
+   is implemented.
 4. **Major capabilities:** scrolling capture, OCR/QR, pinning and video/GIF
    recording, each with its own resource budget, cancellation and native checks.
 5. **Advanced parity:** richer capture/editor/effect behavior, custom-uploader
@@ -1160,6 +1161,29 @@ an enabled choice.
 Native keyboard/IME/accessibility, packaged restart workflow and
 latency/process/GPU/resource acceptance remain open; no new performance
 measurement is claimed for this bounded re-encode.
+
+#### Current feature slice: bounded visible-page thumbnail gallery
+
+Library rows on the current page show a 72×48 slot and decode at most one
+aspect-preserving PNG thumbnail at a time with `load_png_thumbnail` (at most
+400×240 BGRA). The cache holds only the 20 visible IDs. Search, filter, Older,
+Latest, hiding Library and leaving the page cancel the job and drop uploaded
+images. Capture, editor and explicit Preview take the existing image-job slot
+and pause gallery work; Preview uses a cached thumbnail when present. Missing
+or corrupt files leave the filename row and mark that ID failed for this page.
+No disk thumbnail files, persistent cache, folder scan, next-page prefetch,
+timer, thread or dependency is added. GPUI visual design is unchanged beyond
+the existing row slot.
+
+Resource cost is one in-flight source decode (temporary, existing 256 MiB
+admission) plus at most 20 retained thumbnails (≤7.68 MiB CPU pixels plus
+toolkit/driver overhead). Original PNGs, clipboard, database and last capture
+stay unchanged. Constructor and headless UI fixtures load 21 synthetic rows,
+keep 20 visible thumbs, drop them on Older/hide, publish BGRA pixels, open
+explicit Preview from cache and still start one bounded job for an uncached
+row. Native keyboard/IME/accessibility, GPU reclamation, unavailable storage
+and full process/GPU/resource acceptance remain open; no new performance
+measurement is claimed for this bounded decode.
 
 #### Current feature slice: configurable Windows global hotkeys
 
@@ -2525,7 +2549,7 @@ Schema version 3 adds an external-content FTS5 index, backfills existing metadat
 The UI reuses the native annotation text field in single-line mode, retaining UTF-16/IME, selection, clipboard editing and bounded input undo without a second widget implementation. It creates the field only when history is shown, limits text to 512 bytes and 100 input-undo strings (at most 51,200 text payload bytes, plus metadata/layout), and releases the field/query when history closes. Escape clears search. Deferred input callbacks check field identity, so a discarded field cannot alter a reopened history. Search changes cancel obsolete work, clear selection, and coalesce behind the single active fetch/write; there is no polling/debounce timer, new worker/thread/runtime, eager query, pixel buffer or thumbnail cache. The native regression covers rapid query/filter changes and latest-result application, query/field cleanup, and single-line/Unicode/byte/undo admission; the annotation regression still passes after sharing the input. Actual search-field keyboard/IME interaction, DPI/accessibility and full memory/latency acceptance remain manual gates.
 
 One optimized development run with 10,000 synthetic entries observed the combined version-1-to-3 source/search-index migration at 22.57 ms with 1,196,032 additional logical database bytes (not total WAL/disk footprint). Across 25 reads per case, unsearched page p95 was 0.88–0.90 ms; searched page p95 was 1.17 ms for a common prefix, 2.16 ms for source/date words, and 0.96 ms for no matches. Results retained at most 21 metadata rows. SQLite's 512 KiB page-cache setting is unchanged, but does not bound all internal FTS allocations or establish total process memory. These are development observations, not reference-hardware, physical-input or production resource acceptance.
-History offers an explicit Preview/Hide preview action per displayed entry. It prepares at most one image on the existing background executor and retains only one aspect-preserving thumbnail, at most 400×240 BGRA pixels (384,000 CPU pixel bytes and the corresponding uploaded image, plus toolkit/driver overhead). Small PNGs are not enlarged. The original PNG, clipboard, database and last capture remain unchanged. Missing/corrupt/oversized images show a preview error and remain available for explicit relinking/removal. No thumbnail file, persistent cache, folder scan, automatic decode, timer, thread or dependency is added. Automatic viewport thumbnails/prefetch remain a separate pending slice.
+History offers an explicit Preview/Hide preview action per displayed entry. It prepares at most one image on the existing background executor and retains only one aspect-preserving thumbnail, at most 400×240 BGRA pixels (384,000 CPU pixel bytes and the corresponding uploaded image, plus toolkit/driver overhead). Small PNGs are not enlarged. The original PNG, clipboard, database and last capture remain unchanged. Missing/corrupt/oversized images show a preview error and remain available for explicit relinking/removal. The visible library page now also decodes those same bounded thumbnails automatically, one at a time, and caches only the current 20 rows. Next-page prefetch and a persistent thumbnail store remain outside this slice.
 
 Preview decoding shares the existing image-job admission via the capturing flag, so it cannot overlap capture/editor image preparation, recopy or saving; duplicate requests receive busy admission rather than queuing. The existing PNG decoder and 256 MiB decoded-size admission are reused. It temporarily decodes the full original on the worker, then releases it before publishing only the thumbnail. Cancellation is checked before opening, after decoding and after resizing; decoding/blocking filesystem calls are not interruptible mid-stage, and unavailable storage/peak decoder allocations remain production gates. Closing the control window may retire graphics while this read-only worker finishes. Search/filter/page changes, hiding history, replacing/hiding a preview and quitting discard previews and mark obsolete work canceled. Callbacks check both page generation and cancellation, so canceled work cannot repopulate a later page. Uploaded images are explicitly dropped on the control window; no preview survives return to tray.
 
