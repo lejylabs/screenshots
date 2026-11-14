@@ -19,6 +19,13 @@ publish = false
 
 [workspace.lints.clippy]
 enum_glob_use = "deny"
+#dbg_macro = "deny"
+#todo = "deny"
+#declare_interior_mutable_const = "deny"
+redundant_clone = "deny"
+#disallowed_methods = "deny"
+too_many_arguments = "allow" # in Rust it can be very tedious to reduce argument count without running afoul of the borrow checker.
+#large_enum_variant = "allow" # We often have large enum variants yet we rarely actually bother with splitting them up.
 
 [workspace.dependencies]
 app-core = { path = "crates/app-core" }
@@ -33,7 +40,7 @@ chrono = { version = "0.4.45", features = ["serde"] }
 directories = "6.0.0"
 global-hotkey = "0.10.0"
 image = "0.25.10"
-regex = "1.12.2"
+regex = "1.13.1"
 reqwest = { version = "0.13.5", features = ["json", "multipart", "stream"] }
 roxmltree = "0.21.2"
 rfd = "0.18.0"
@@ -50,7 +57,7 @@ tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter", "fmt"] }
 tray-icon = "0.26.1"
 uuid = { version = "1.29.2", features = ["v4", "v7", "serde"] }
-zeroize = "1.9"
+zeroize = "1.9.1"
 
 # Phase 0 still-image spike. Not a committed product backend yet.
 xcap = "=0.9.8"
@@ -66,3 +73,17 @@ opt-level = 1
 
 [patch.crates-io]
 gpui-pre-windows = { path = "vendor/gpui-pre-windows" }
+
+[profile.release]
+debug = "limited"
+lto = "thin"
+codegen-units = 1
+
+#[profile.release.package]
+#gpui = { codegen-units = 16 }
+
+[profile.release-fast]
+inherits = "release"
+debug = "full"
+lto = false
+codegen-units = 16
