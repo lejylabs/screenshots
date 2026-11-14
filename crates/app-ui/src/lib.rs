@@ -742,7 +742,7 @@ impl CaptureWorkspace {
                         this.region_presets = settings.region_presets;
                         this.upload_task_defaults = settings.upload_task_defaults;
                         this.strip_metadata_on_upload = settings.strip_metadata_on_upload;
-                        this.apply_appearance(settings.theme, cx);
+                        theme::apply(settings.theme, cx);
                         this.backend = XcapBackend::new(&settings.output_directory);
                         this.output_directory = Some(settings.output_directory);
                     }
@@ -1210,7 +1210,7 @@ impl CaptureWorkspace {
                                     this.hotkey_status = hotkey.status().to_string();
                                 }
                             }
-                            this.apply_appearance(settings.theme, cx);
+                            theme::apply(settings.theme, cx);
                             let folder = if folder_kept {
                                 "save folder kept because the backup folder is missing"
                             } else {
@@ -1249,14 +1249,6 @@ impl CaptureWorkspace {
         cx.notify();
     }
 
-    fn apply_appearance(&mut self, selected: app_core::UiTheme, cx: &mut Context<Self>) {
-        theme::apply(selected, cx);
-        #[cfg(target_os = "windows")]
-        if let Some(tray) = &self.tray {
-            tray.set_appearance(selected);
-        }
-    }
-
     fn choose_theme(&mut self, selected: app_core::UiTheme, cx: &mut Context<Self>) {
         let capture_delay_seconds = self.capture_delay_seconds;
         if self.settings_loading
@@ -1278,7 +1270,7 @@ impl CaptureWorkspace {
         let presets = self.region_presets.clone();
         let upload_task_defaults = self.upload_task_defaults.clone();
         let strip_metadata_on_upload = self.strip_metadata_on_upload;
-        self.apply_appearance(selected, cx);
+        theme::apply(selected, cx);
         self.settings_saving = true;
         self.settings_status = "Saving appearance…".into();
         cx.spawn(async move |this, cx| {
@@ -1305,7 +1297,7 @@ impl CaptureWorkspace {
                 match result {
                     Ok(()) => this.settings_status = "Appearance saved".into(),
                     Err(error) => {
-                        this.apply_appearance(previous, cx);
+                        theme::apply(previous, cx);
                         this.settings_status = format!("Appearance unchanged: {error:#}");
                     }
                 }

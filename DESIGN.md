@@ -33,9 +33,9 @@ GPUI Kit 0.9.1 owns standard control behavior. Use its Sidebar, Button, Input,
 Checkbox, RadioGroup, PopupMenu, Kbd and TitleBar components for application
 commands, forms and the window caption. Every native window mounts the Kit Base
 Root. Decorated windows use `TitleBar::window_options()` so the caption follows
-the appearance. Capture overlays stay undecorated. On Windows the tray popup is owner-drawn with the current appearance
-surface, text and hover; process-owned system menus opt into dark `HMENU`.
-Explorer jump lists still follow the system. The application retains
+the appearance. Capture overlays stay undecorated. On Windows the tray popup and other process-owned `HMENU` menus opt into
+native dark mode with the (currently always-dark) appearance. Explorer jump
+lists still follow the system. The application retains
 explicit typed access to the content inside that Root for native lifecycle jobs.
 
 `theme.rs` applies product palettes through `Theme::update`, keeping styled tokens
