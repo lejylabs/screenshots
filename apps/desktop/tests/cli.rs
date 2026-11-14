@@ -255,7 +255,7 @@ fn executable_upload_sends_exact_png_and_reports_remote_failures() {
 }
 
 #[test]
-fn executable_storage_backup_preserves_a_live_wal_database() {
+fn executable_storage_backup_preserves_existing_history() {
     let f = Fixture::new();
     let source = f.path("history.sqlite3");
     app_core::record_uploaded_png(

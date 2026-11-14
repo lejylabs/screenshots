@@ -215,7 +215,14 @@ pub fn backup_history_database(
     target.close().map_err(|(_, error)| error)?;
     check_history_database(&part.0)?;
     check()?;
-    fs::File::open(&part.0)?.sync_all()?;
+    {
+        // Windows FlushFileBuffers requires write access; never truncate the verified copy.
+        let file = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&part.0)?;
+        file.sync_all()?;
+    }
     check()?;
     crate::capture::publish_output(&part.0, destination)?;
     Ok(())
