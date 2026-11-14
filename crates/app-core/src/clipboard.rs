@@ -737,6 +737,59 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "optimized synthetic 4K WebP worker comparison; no desktop or clipboard"]
+    fn webp_admission_cost() -> Result<()> {
+        let path = std::env::temp_dir().join(format!(
+            "screenshots-webp-cost-{}.webp",
+            uuid::Uuid::new_v4()
+        ));
+        let mut seed = 1_u32;
+        let source = image::RgbaImage::from_fn(3840, 2160, |_, _| {
+            seed ^= seed << 13;
+            seed ^= seed >> 17;
+            seed ^= seed << 5;
+            image::Rgba([seed as u8, (seed >> 8) as u8, (seed >> 16) as u8, 255])
+        });
+        source.save(&path)?;
+        let mut streaming = Vec::new();
+        let mut checked = Vec::new();
+        for sample in 0..6 {
+            // Trusted fixture only: reproduce the former decoder path for comparison.
+            let started = std::time::Instant::now();
+            let mut reader = image::ImageReader::open(&path)?.with_guessed_format()?;
+            let mut limits = image::Limits::default();
+            limits.max_alloc = Some(crate::MAX_CAPTURE_BYTES);
+            reader.limits(limits);
+            let pixels = decode_editor_pixels_with_limit(
+                reader.into_decoder()?,
+                crate::MAX_CAPTURE_BYTES,
+                None,
+            )?;
+            let before = started.elapsed();
+            assert_eq!(pixels, source);
+            drop(pixels);
+            let started = std::time::Instant::now();
+            let pixels = load_editor_image(&path)?;
+            let after = started.elapsed();
+            assert_eq!(pixels, source);
+            if sample > 0 {
+                streaming.push(before);
+                checked.push(after);
+            }
+        }
+        streaming.sort();
+        checked.sort();
+        eprintln!(
+            "4K WebP encoded={} bytes; warm medians n=5: trusted streaming={:?}, checked immutable snapshot={:?}; worker-only development comparison, not hardware acceptance",
+            std::fs::metadata(&path)?.len(),
+            streaming[2],
+            checked[2]
+        );
+        std::fs::remove_file(path)?;
+        Ok(())
+    }
+
+    #[test]
     fn editor_image_rejects_oversized_header_before_pixel_decode() -> Result<()> {
         let path = std::env::temp_dir().join(format!(
             "screenshots-editor-limit-{}.png",

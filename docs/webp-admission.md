@@ -25,6 +25,8 @@ Before constructing that decoder, the loader validates:
 - VP8X canvas dimensions and agreement with its still-image bitstream.
 - Every animation-frame rectangle against its canvas, and its bitstream against
   the frame dimensions. ANMF accepts one VP8/VP8L chunk, or ALPH followed by VP8.
+  Optional trailing unknown chunks are extent-checked and skipped; additional
+  known reconstruction chunks are rejected.
 
 The first EXIF chunk's orientation is parsed directly from its admitted borrowed
 slice. This preserves orientation without invoking the decoder's allocating
@@ -44,3 +46,12 @@ dimensions, excessive/truncated chunks, remaining pixel budgets, lossless alpha,
 lossy alpha, EXIF rotation, animated still pixels and unchanged source bytes.
 Commands and measured test outcomes belong in the delivery evidence; source
 fixtures alone do not establish native or performance acceptance.
+
+An optimized Linux development comparison used one synthetic 3840×2160 opaque
+noise image (24,883,294 encoded bytes), one warmup and five alternating samples.
+The former trusted-fixture streaming path had a 63.06 ms median; the checked
+immutable-snapshot path had a 62.83 ms median. This small difference is inconclusive,
+not a speedup claim. The added encoded snapshot was 23.73 MiB for this fixture;
+process peak memory, physical presentation and reference-hardware acceptance
+were not measured. Reproduce explicitly with
+`cargo test --workspace --profile release-fast --locked webp_admission_cost -- --ignored --nocapture --test-threads=1`.
