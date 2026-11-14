@@ -23,6 +23,8 @@ Headless commands (no desktop UI, clipboard writes or implicit uploads):
   screenshots storage inspect-parts DIRECTORY
   screenshots upload PROFILE_JSON PNG
   screenshots credentials target|store|remove PROFILE_JSON [--username NAME]
+  screenshots qr generate TEXT OUTPUT_PNG
+  screenshots qr scan INPUT
 
 Image input: PNG/JPEG/WebP, <=32 MiB encoded and <=256 MiB decoded.
 Output: PNG/JPEG/lossless WebP; existing files are never replaced.
@@ -68,6 +70,7 @@ pub fn run(args: Vec<OsString>) -> Result<bool> {
         "history" => history(&args[1..])?,
         "storage" => storage(&args[1..])?,
         "credentials" => credentials(&args[1..])?,
+        "qr" => crate::qr::run(&args[1..])?,
         "upload" => {
             ensure!(
                 args.len() == 3,
