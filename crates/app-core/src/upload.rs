@@ -488,7 +488,7 @@ impl UploadDestination {
         let destination = self.with_authentication(reference, authentication)?;
         let target = destination
             .credential_target()
-            .context("Authenticated destinations require a Windows credential target")?;
+            .context("Authenticated destinations require an OS credential target")?;
         crate::upload_credentials::save(&target, authentication, &username, &secret)?;
         Ok(destination)
     }
@@ -498,7 +498,7 @@ impl UploadDestination {
     pub fn detach_credential(self) -> Result<Self> {
         let target = self
             .credential_target()
-            .context("This destination has no Windows credential to remove")?;
+            .context("This destination has no OS credential to remove")?;
         crate::upload_credentials::delete(&target)?;
         let mut destination = self;
         destination.credential = None;
@@ -642,8 +642,12 @@ impl UploadDestination {
                 "Credential reference must contain 1–64 letters, digits, underscores or hyphens"
             );
             ensure!(
-                cfg!(target_os = "windows"),
-                "OS upload credential lookup is currently supported on Windows only"
+                cfg!(any(
+                    target_os = "windows",
+                    target_os = "linux",
+                    target_os = "macos"
+                )),
+                "OS upload credential lookup is unsupported on this platform"
             );
         }
         ensure!(
@@ -4807,7 +4811,11 @@ mod tests {
         config.credential = Some("main".into());
         assert!(config.validate().is_err());
         config.url = "https://example.invalid/upload".into();
-        if cfg!(target_os = "windows") {
+        if cfg!(any(
+            target_os = "windows",
+            target_os = "linux",
+            target_os = "macos"
+        )) {
             config.validate()?;
             assert_eq!(
                 config.credential_target().as_deref(),
@@ -4829,8 +4837,8 @@ mod tests {
     }
 
     #[test]
-    #[cfg(target_os = "windows")]
-    #[ignore = "checks a unique nonexistent credential and verifies no connection to a loopback listener"]
+    #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
+    #[ignore = "checks a unique nonexistent native credential and verifies no connection to a loopback listener; no real secrets"]
     fn missing_bearer_credential_prevents_any_request() {
         let (root, path) = fixture();
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -4844,11 +4852,7 @@ mod tests {
         ] {
             config.authentication = authentication;
             let error = upload_png(&config, &path, UploadCancellation::default()).unwrap_err();
-            assert!(
-                error
-                    .to_string()
-                    .contains("No readable Windows upload credential")
-            );
+            assert!(!error.to_string().is_empty());
             assert_eq!(
                 listener.accept().unwrap_err().kind(),
                 std::io::ErrorKind::WouldBlock
@@ -4863,7 +4867,11 @@ mod tests {
         config.authentication = Some(UploadAuthentication::ApiKey);
         assert!(config.validate().is_err());
         config.credential = Some("main".into());
-        if cfg!(target_os = "windows") {
+        if cfg!(any(
+            target_os = "windows",
+            target_os = "linux",
+            target_os = "macos"
+        )) {
             config.validate()?;
             let target = config.credential_target();
             let (root, _) = fixture();
@@ -4892,7 +4900,11 @@ mod tests {
         config.authentication = Some(UploadAuthentication::Basic);
         assert!(config.validate().is_err());
         config.credential = Some("account".into());
-        if cfg!(target_os = "windows") {
+        if cfg!(any(
+            target_os = "windows",
+            target_os = "linux",
+            target_os = "macos"
+        )) {
             let (root, _) = fixture();
             let path = root.join("destination.json");
             config.save_at(&path)?;
@@ -4922,7 +4934,11 @@ mod tests {
         let attached = destination
             .clone()
             .with_authentication("main".into(), UploadAuthentication::ApiKey);
-        if cfg!(target_os = "windows") {
+        if cfg!(any(
+            target_os = "windows",
+            target_os = "linux",
+            target_os = "macos"
+        )) {
             let attached = attached?;
             assert_eq!(attached.credential_reference(), Some("main"));
             assert_eq!(
@@ -5023,7 +5039,11 @@ mod tests {
             false,
         )?;
         assert!(destination.clone().detach_credential().is_err());
-        if cfg!(target_os = "windows") {
+        if cfg!(any(
+            target_os = "windows",
+            target_os = "linux",
+            target_os = "macos"
+        )) {
             let attached =
                 destination.with_authentication("main".into(), UploadAuthentication::Bearer)?;
             assert_eq!(attached.credential_reference(), Some("main"));

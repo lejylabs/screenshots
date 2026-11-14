@@ -1,23 +1,36 @@
 use crate::upload::UploadAuthentication;
 use anyhow::Result;
-#[cfg(any(target_os = "windows", test))]
 use anyhow::ensure;
-#[cfg(any(target_os = "windows", test))]
 use zeroize::Zeroizing;
 
-#[cfg(any(target_os = "windows", test))]
 fn validate_managed_target(target: &str) -> Result<()> {
     ensure!(
-        !target.is_empty()
-            && target.len() <= 4096
-            && !target.chars().any(char::is_control)
-            && target.starts_with("Screenshots/upload/https://"),
+        target.len() <= 4096 && !target.chars().any(char::is_control),
         "Credential target is invalid"
+    );
+    let remainder = target
+        .strip_prefix("Screenshots/upload/")
+        .ok_or_else(|| anyhow::anyhow!("Credential target is invalid"))?;
+    let (origin, reference) = remainder
+        .rsplit_once('/')
+        .ok_or_else(|| anyhow::anyhow!("Credential target is invalid"))?;
+    ensure!(
+        !reference.is_empty()
+            && reference.len() <= 64
+            && reference
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || b"_-".contains(&byte)),
+        "Credential reference is invalid"
+    );
+    let url =
+        reqwest::Url::parse(origin).map_err(|_| anyhow::anyhow!("Credential origin is invalid"))?;
+    ensure!(
+        url.scheme() == "https" && url.origin().ascii_serialization() == origin,
+        "Credential target requires a canonical HTTPS origin"
     );
     Ok(())
 }
 
-#[cfg(any(target_os = "windows", test))]
 fn bearer_header(token: &str) -> Result<reqwest::header::HeaderValue> {
     ensure!(
         !token.is_empty()
@@ -33,7 +46,39 @@ fn bearer_header(token: &str) -> Result<reqwest::header::HeaderValue> {
     Ok(header)
 }
 
-#[cfg(not(target_os = "windows"))]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[path = "upload_credentials_native.rs"]
+mod native;
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub(crate) fn read_header(
+    target: &str,
+    authentication: UploadAuthentication,
+) -> Result<reqwest::header::HeaderValue> {
+    validate_managed_target(target)?;
+    let payload = native::read(target)?;
+    header_from_payload(&payload, authentication)
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub(crate) fn save(
+    target: &str,
+    authentication: UploadAuthentication,
+    username: &str,
+    secret: &str,
+) -> Result<()> {
+    validate_managed_target(target)?;
+    let payload = credential_payload(authentication, username, secret)?;
+    native::write(target, &payload)
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub(crate) fn delete(target: &str) -> Result<()> {
+    validate_managed_target(target)?;
+    native::remove(target)
+}
+
+#[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
 pub(crate) fn read_header(
     _: &str,
     _: UploadAuthentication,
@@ -41,14 +86,76 @@ pub(crate) fn read_header(
     anyhow::bail!("Upload credential lookup is not implemented on this platform")
 }
 
-#[cfg(not(target_os = "windows"))]
+#[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
 pub(crate) fn save(_: &str, _: UploadAuthentication, _: &str, _: &str) -> Result<()> {
-    anyhow::bail!("Upload credential lookup is not implemented on this platform")
+    anyhow::bail!("Upload credential storage is not implemented on this platform")
 }
 
-#[cfg(not(target_os = "windows"))]
+#[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
 pub(crate) fn delete(_: &str) -> Result<()> {
-    anyhow::bail!("Upload credential lookup is not implemented on this platform")
+    anyhow::bail!("Upload credential storage is not implemented on this platform")
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos", test))]
+const PAYLOAD_PREFIX: &[u8] = b"screenshots-upload-v1\0";
+#[cfg(any(target_os = "linux", target_os = "macos", test))]
+const MAX_PAYLOAD_BYTES: usize = 8192;
+
+#[cfg(any(target_os = "linux", target_os = "macos", test))]
+fn credential_payload(
+    authentication: UploadAuthentication,
+    username: &str,
+    secret: &str,
+) -> Result<Zeroizing<Vec<u8>>> {
+    let username = if matches!(authentication, UploadAuthentication::Basic) {
+        username.trim()
+    } else {
+        "token"
+    };
+    if matches!(authentication, UploadAuthentication::Basic) {
+        let _ = basic_header(username, secret)?;
+    } else {
+        let _ = credential_header(secret, authentication)?;
+    }
+    let mut payload = Zeroizing::new(Vec::with_capacity(
+        PAYLOAD_PREFIX.len() + username.len() + 1 + secret.len(),
+    ));
+    payload.extend_from_slice(PAYLOAD_PREFIX);
+    payload.extend_from_slice(username.as_bytes());
+    payload.push(0);
+    payload.extend_from_slice(secret.as_bytes());
+    ensure!(
+        payload.len() <= MAX_PAYLOAD_BYTES,
+        "Upload credential exceeds its storage limit"
+    );
+    Ok(payload)
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos", test))]
+fn header_from_payload(
+    payload: &[u8],
+    authentication: UploadAuthentication,
+) -> Result<reqwest::header::HeaderValue> {
+    ensure!(
+        payload.len() <= MAX_PAYLOAD_BYTES,
+        "Stored upload credential exceeds its storage limit"
+    );
+    let body = payload
+        .strip_prefix(PAYLOAD_PREFIX)
+        .ok_or_else(|| anyhow::anyhow!("Stored upload credential has an unsupported format"))?;
+    let separator = body
+        .iter()
+        .position(|byte| *byte == 0)
+        .ok_or_else(|| anyhow::anyhow!("Stored upload credential has an invalid format"))?;
+    let username = std::str::from_utf8(&body[..separator])
+        .map_err(|_| anyhow::anyhow!("Stored upload username is not valid UTF-8"))?;
+    let secret = std::str::from_utf8(&body[separator + 1..])
+        .map_err(|_| anyhow::anyhow!("Stored upload secret is not valid UTF-8"))?;
+    if matches!(authentication, UploadAuthentication::Basic) {
+        basic_header(username, secret)
+    } else {
+        credential_header(secret, authentication)
+    }
 }
 
 #[cfg(target_os = "windows")]
@@ -58,6 +165,7 @@ pub(crate) fn read_header(
 ) -> Result<reqwest::header::HeaderValue> {
     use windows_sys::Win32::Security::Credentials::*;
     use zeroize::Zeroize;
+    validate_managed_target(target)?;
     struct Credential(*mut CREDENTIALW);
     impl Drop for Credential {
         fn drop(&mut self) {
@@ -165,10 +273,7 @@ pub(crate) fn save(
             let _ = basic_header(username, secret)?;
         }
     }
-    ensure!(
-        !target.is_empty() && target.len() <= 4096 && !target.chars().any(char::is_control),
-        "Credential target is invalid"
-    );
+    validate_managed_target(target)?;
     let mut name: Vec<u16> = target.encode_utf16().chain(Some(0)).collect();
     let mut password: Zeroizing<Vec<u16>> = Zeroizing::new(secret.encode_utf16().collect());
     ensure!(
@@ -223,7 +328,6 @@ pub(crate) fn delete(target: &str) -> Result<()> {
     )
 }
 
-#[cfg(any(target_os = "windows", test))]
 fn basic_header(username: &str, password: &str) -> Result<reqwest::header::HeaderValue> {
     use base64::Engine;
     ensure!(
@@ -251,7 +355,6 @@ fn basic_header(username: &str, password: &str) -> Result<reqwest::header::Heade
     Ok(header)
 }
 
-#[cfg(any(target_os = "windows", test))]
 fn credential_header(
     token: &str,
     authentication: UploadAuthentication,
@@ -277,6 +380,125 @@ fn credential_header(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn native_payload_round_trip_is_bounded_and_reuses_sensitive_headers() {
+        for (authentication, username, secret, expected) in [
+            (
+                UploadAuthentication::Bearer,
+                "ignored",
+                "token_123",
+                "Bearer token_123",
+            ),
+            (
+                UploadAuthentication::ApiKey,
+                "ignored",
+                "api:key!",
+                "api:key!",
+            ),
+            (
+                UploadAuthentication::Basic,
+                " user ",
+                "päss:word",
+                "Basic dXNlcjpww6Rzczp3b3Jk",
+            ),
+        ] {
+            let payload = credential_payload(authentication, username, secret).unwrap();
+            let header = header_from_payload(&payload, authentication).unwrap();
+            assert!(header.is_sensitive());
+            assert_eq!(header.to_str().unwrap(), expected);
+        }
+        for payload in [
+            Vec::new(),
+            b"invalid".to_vec(),
+            PAYLOAD_PREFIX.to_vec(),
+            vec![0; MAX_PAYLOAD_BYTES + 1],
+        ] {
+            assert!(header_from_payload(&payload, UploadAuthentication::Bearer).is_err());
+        }
+        let mut invalid_utf8 = PAYLOAD_PREFIX.to_vec();
+        invalid_utf8.extend_from_slice(b"token\0\xff");
+        assert!(header_from_payload(&invalid_utf8, UploadAuthentication::Bearer).is_err());
+        assert!(credential_payload(UploadAuthentication::Basic, "user", "bad\npassword").is_err());
+        assert!(
+            credential_payload(UploadAuthentication::Bearer, "token", &"x".repeat(2561)).is_err()
+        );
+    }
+
+    #[test]
+    fn native_payloads_can_be_scoped_in_a_fake_store_without_secret_output() {
+        let first = "Screenshots/upload/https://first.invalid/main";
+        let second = "Screenshots/upload/https://second.invalid/main";
+        let mut store = std::collections::HashMap::new();
+        store.insert(
+            first,
+            credential_payload(UploadAuthentication::Bearer, "", "synthetic").unwrap(),
+        );
+        assert!(!store.contains_key(second));
+        assert_eq!(
+            header_from_payload(&store[first], UploadAuthentication::Bearer)
+                .unwrap()
+                .to_str()
+                .unwrap(),
+            "Bearer synthetic"
+        );
+        assert!(store.remove(first).is_some());
+        assert!(store.remove(first).is_none());
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn invalid_native_inputs_stop_before_contacting_the_secret_store() {
+        assert!(read_header("unrelated", UploadAuthentication::Bearer).is_err());
+        assert!(delete("unrelated").is_err());
+        assert!(save("unrelated", UploadAuthentication::Bearer, "", "synthetic").is_err());
+        assert!(
+            save(
+                "Screenshots/upload/https://example.invalid/main",
+                UploadAuthentication::Bearer,
+                "",
+                "two words"
+            )
+            .is_err()
+        );
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    #[ignore = "creates and removes only a unique synthetic native secret; requires an already-unlocked store, never prompts"]
+    fn native_credential_round_trip_is_scoped_and_removed() {
+        let target = format!(
+            "Screenshots/upload/https://example.invalid/test-{}",
+            uuid::Uuid::new_v4()
+        );
+        struct Cleanup(String);
+        impl Drop for Cleanup {
+            fn drop(&mut self) {
+                let _ = delete(&self.0);
+            }
+        }
+        let _cleanup = Cleanup(target.clone());
+        save(&target, UploadAuthentication::Bearer, "", "synthetic-token").unwrap();
+        let header = read_header(&target, UploadAuthentication::Bearer).unwrap();
+        assert!(header.is_sensitive());
+        assert_eq!(header.to_str().unwrap(), "Bearer synthetic-token");
+        let missing = target.replace("example.invalid", "other.invalid");
+        assert!(read_header(&missing, UploadAuthentication::Bearer).is_err());
+        save(
+            &target,
+            UploadAuthentication::Basic,
+            "test-user",
+            "synthetic-password",
+        )
+        .unwrap();
+        assert_eq!(
+            read_header(&target, UploadAuthentication::Basic).unwrap(),
+            basic_header("test-user", "synthetic-password").unwrap()
+        );
+        delete(&target).unwrap();
+        delete(&target).unwrap();
+        assert!(read_header(&target, UploadAuthentication::Bearer).is_err());
+    }
     #[test]
     fn basic_credentials_encode_unicode_and_keep_header_sensitive() {
         use base64::Engine;
@@ -344,6 +566,11 @@ mod tests {
             "Windows/other",
             "Screenshots/upload/http://example.invalid/main",
             "Screenshots/upload/https://example.invalid/main\n",
+            "Screenshots/upload/https://user:secret@example.invalid/main",
+            "Screenshots/upload/https://example.invalid/path/main",
+            "Screenshots/upload/https://example.invalid:443/main",
+            "Screenshots/upload/https://example.invalid/",
+            "Screenshots/upload/https://example.invalid/bad ref",
             &format!(
                 "Screenshots/upload/https://example.invalid/{}",
                 "x".repeat(5000)
