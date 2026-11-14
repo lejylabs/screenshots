@@ -374,31 +374,70 @@ impl UploadDestination {
             serde_json::from_slice(&bytes).context("Invalid ShareX profile")?;
         profile.into_destination()
     }
+
+    /// Write a documented ShareX `.sxcu` subset without secrets or overwriting.
+    pub fn to_sharex(&self, path: &Path) -> Result<()> {
+        self.to_sharex_at(path, None)
+    }
+
+    fn to_sharex_at(&self, path: &Path, name: Option<&str>) -> Result<()> {
+        use std::io::Write;
+        let profile = ShareXCustomUploader::from_destination(self, name)?;
+        let bytes = serde_json::to_vec_pretty(&profile)?;
+        ensure!(bytes.len() <= 16384, "ShareX profile exceeds 16 KiB");
+        let parent = path.parent().context("Invalid ShareX profile path")?;
+        std::fs::create_dir_all(parent)?;
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(path)
+            .map_err(|error| {
+                if error.kind() == std::io::ErrorKind::AlreadyExists {
+                    anyhow::anyhow!(
+                        "The file already exists. Choose a new name; existing files are never overwritten."
+                    )
+                } else {
+                    error.into()
+                }
+            })?;
+        let result = (|| -> Result<()> {
+            file.write_all(&bytes)?;
+            file.sync_all()?;
+            Ok(())
+        })();
+        if result.is_err() {
+            drop(file);
+            let _ = std::fs::remove_file(path);
+        }
+        result
+    }
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 struct ShareXCustomUploader {
-    #[serde(rename = "Name", default)]
+    #[serde(rename = "Version", default, skip_serializing_if = "Option::is_none")]
+    version: Option<String>,
+    #[serde(rename = "Name", default, skip_serializing_if = "Option::is_none")]
     name: Option<String>,
     #[serde(rename = "DestinationType")]
     destination_type: String,
-    #[serde(rename = "RequestMethod", default)]
+    #[serde(rename = "RequestMethod", default, skip_serializing_if = "Option::is_none")]
     request_method: Option<String>,
     #[serde(rename = "RequestURL")]
     request_url: String,
-    #[serde(rename = "Body", default)]
+    #[serde(rename = "Body", default, skip_serializing_if = "Option::is_none")]
     body: Option<String>,
-    #[serde(rename = "FileFormName", default)]
+    #[serde(rename = "FileFormName", default, skip_serializing_if = "Option::is_none")]
     file_form_name: Option<String>,
-    #[serde(rename = "URL", default)]
+    #[serde(rename = "URL", default, skip_serializing_if = "Option::is_none")]
     url: Option<String>,
-    #[serde(rename = "Headers", default)]
+    #[serde(rename = "Headers", default, skip_serializing_if = "Option::is_none")]
     headers: Option<serde_json::Value>,
-    #[serde(rename = "Parameters", default)]
+    #[serde(rename = "Parameters", default, skip_serializing_if = "Option::is_none")]
     parameters: Option<serde_json::Value>,
-    #[serde(rename = "Arguments", default)]
+    #[serde(rename = "Arguments", default, skip_serializing_if = "Option::is_none")]
     arguments: Option<serde_json::Value>,
-    #[serde(rename = "Data", default)]
+    #[serde(rename = "Data", default, skip_serializing_if = "Option::is_none")]
     data: Option<serde_json::Value>,
 }
 
@@ -477,6 +516,54 @@ impl ShareXCustomUploader {
             None => None,
         };
         Ok((destination, name))
+    }
+
+    fn from_destination(destination: &UploadDestination, name: Option<&str>) -> Result<Self> {
+        let url = destination.validate()?;
+        ensure!(url.scheme() == "https", "ShareX export requires HTTPS");
+        let name = match name.map(str::trim).filter(|name| !name.is_empty()) {
+            Some(name) => {
+                ensure!(
+                    name.len() <= 64 && !name.chars().any(char::is_control),
+                    "ShareX profile name must be 1–64 bytes without control characters"
+                );
+                Some(name.to_owned())
+            }
+            None => None,
+        };
+        let url = match (&destination.response, destination.json_pointer.as_str()) {
+            (Some(UploadResponse::Text), "") => Some("{response}".into()),
+            (Some(UploadResponse::Header { name }), "") => Some(format!("{{header:{name}}}")),
+            (Some(UploadResponse::RequestUrl), "") => Some("{responseurl}".into()),
+            (None, pointer) if !pointer.is_empty() => {
+                Some(format!("{{json:{}}}", sharex_json_path(pointer)?))
+            }
+            _ => anyhow::bail!(
+                "ShareX export needs a JSON pointer, text, header or PUT request-URL response"
+            ),
+        };
+        Ok(Self {
+            version: Some("17.0.0".into()),
+            name,
+            destination_type: "ImageUploader".into(),
+            request_method: Some(destination.request_method().into()),
+            request_url: destination.url.clone(),
+            body: Some(
+                if destination.method == UploadMethod::Post {
+                    "MultipartFormData"
+                } else {
+                    "Binary"
+                }
+                .into(),
+            ),
+            file_form_name: (destination.method == UploadMethod::Post)
+                .then(|| destination.field.clone()),
+            url,
+            headers: None,
+            parameters: None,
+            arguments: None,
+            data: None,
+        })
     }
 }
 
@@ -578,6 +665,40 @@ fn sharex_json_pointer(path: &str) -> Result<String> {
     }
     ensure!(!pointer.is_empty(), "Unsupported ShareX JSON path");
     Ok(pointer)
+}
+
+fn sharex_json_path(pointer: &str) -> Result<String> {
+    ensure!(
+        pointer.starts_with('/') && pointer.len() > 1 && !pointer.contains('~'),
+        "JSON pointer escapes are not supported in ShareX export"
+    );
+    let mut path = String::new();
+    for segment in pointer[1..].split('/') {
+        ensure!(
+            !segment.is_empty() && !segment.chars().any(char::is_control),
+            "Unsupported ShareX JSON path"
+        );
+        if segment.bytes().all(|byte| byte.is_ascii_digit())
+            && !(segment.len() > 1 && segment.starts_with('0'))
+        {
+            path.push('[');
+            path.push_str(segment);
+            path.push(']');
+            continue;
+        }
+        ensure!(
+            segment
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_'),
+            "Unsupported ShareX JSON path"
+        );
+        if !path.is_empty() {
+            path.push('.');
+        }
+        path.push_str(segment);
+    }
+    ensure!(!path.is_empty(), "Unsupported ShareX JSON path");
+    Ok(path)
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -1630,6 +1751,129 @@ mod tests {
             std::fs::write(&path, profile)?;
             assert!(UploadDestination::from_sharex_at(&path).is_err(), "{profile}");
         }
+        assert_eq!(std::fs::read(&other)?, b"keep-settings");
+        std::fs::remove_dir_all(root)?;
+        Ok(())
+    }
+
+    #[test]
+    fn sharex_export_round_trips_supported_subset_without_secrets() -> Result<()> {
+        let root = std::env::temp_dir().join(format!(
+            "screenshots-sharex-export-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&root)?;
+        let path = root.join("host.sxcu");
+        let other = root.join("settings.json");
+        std::fs::write(&other, b"keep-settings")?;
+        let destination = UploadDestination::manual(
+            "https://example.invalid/upload".into(),
+            UploadMethod::Post,
+            "file".into(),
+            Some("/files/0/url".into()),
+            false,
+        )?;
+        destination.to_sharex_at(&path, Some("Host"))?;
+        let exported = std::fs::read_to_string(&path)?;
+        assert!(exported.contains("ImageUploader"));
+        assert!(exported.contains("{json:files[0].url}"));
+        assert!(exported.contains("Host"));
+        assert!(!exported.contains("secret"));
+        assert!(!exported.contains("credential"));
+        assert!(!exported.contains("authentication"));
+        let (imported, name) = UploadDestination::from_sharex_at(&path)?;
+        assert_eq!(name.as_deref(), Some("Host"));
+        assert_eq!(imported.origin(), destination.origin());
+        assert_eq!(imported.method, destination.method);
+        assert_eq!(imported.field, destination.field);
+        assert_eq!(imported.json_pointer, "/files/0/url");
+        assert!(imported.response.is_none());
+        assert!(imported.credential.is_none());
+        std::fs::remove_file(&path)?;
+        let mut header = UploadDestination::manual(
+            "https://example.invalid/upload".into(),
+            UploadMethod::Post,
+            "image".into(),
+            None,
+            false,
+        )?;
+        header.response = Some(UploadResponse::Header {
+            name: "Location".into(),
+        });
+        header.json_pointer.clear();
+        header.to_sharex_at(&path, None)?;
+        let exported = std::fs::read_to_string(&path)?;
+        assert!(exported.contains("{header:Location}"));
+        assert!(!exported.contains("\"Name\""));
+        let (imported, name) = UploadDestination::from_sharex_at(&path)?;
+        assert!(name.is_none());
+        assert_eq!(
+            imported.response,
+            Some(UploadResponse::Header {
+                name: "Location".into()
+            })
+        );
+        std::fs::remove_file(&path)?;
+        let mut put = UploadDestination::manual(
+            "https://example.invalid/image.png".into(),
+            UploadMethod::Put,
+            "file".into(),
+            None,
+            false,
+        )?;
+        put.response = Some(UploadResponse::RequestUrl);
+        put.json_pointer.clear();
+        put.to_sharex(&path)?;
+        let exported = std::fs::read_to_string(&path)?;
+        assert!(exported.contains("{responseurl}"));
+        assert!(exported.contains("\"PUT\""));
+        assert!(!exported.contains("FileFormName"));
+        let (imported, _) = UploadDestination::from_sharex_at(&path)?;
+        assert_eq!(imported.response, Some(UploadResponse::RequestUrl));
+        std::fs::remove_file(&path)?;
+        let text = UploadDestination::manual(
+            "https://example.invalid/upload".into(),
+            UploadMethod::Post,
+            "file".into(),
+            None,
+            false,
+        )?;
+        text.to_sharex(&path)?;
+        let exported = std::fs::read_to_string(&path)?;
+        assert!(exported.contains("{response}"));
+        let (imported, _) = UploadDestination::from_sharex_at(&path)?;
+        assert_eq!(imported.response, Some(UploadResponse::Text));
+        let existing = std::fs::read(&path)?;
+        assert!(text.to_sharex(&path).is_err());
+        assert_eq!(std::fs::read(&path)?, existing);
+        #[cfg(target_os = "windows")]
+        {
+            let authenticated = destination.clone().with_authentication(
+                "main".into(),
+                UploadAuthentication::Bearer,
+            )?;
+            let secret_path = root.join("auth.sxcu");
+            authenticated.to_sharex(&secret_path)?;
+            let exported = std::fs::read_to_string(&secret_path)?;
+            assert!(!exported.contains("main"));
+            assert!(!exported.contains("Bearer"));
+            assert!(!exported.contains("secret"));
+            let (imported, _) = UploadDestination::from_sharex_at(&secret_path)?;
+            assert!(imported.credential.is_none() && imported.authentication.is_none());
+        }
+        let http = UploadDestination::manual(
+            "http://127.0.0.1/upload".into(),
+            UploadMethod::Post,
+            "file".into(),
+            None,
+            true,
+        )?;
+        assert!(http.to_sharex(&root.join("http.sxcu")).is_err());
+        assert!(!root.join("http.sxcu").exists());
+        let mut escaped = destination.clone();
+        escaped.json_pointer = "/foo~1bar".into();
+        assert!(escaped.to_sharex(&root.join("escaped.sxcu")).is_err());
+        assert!(!root.join("escaped.sxcu").exists());
         assert_eq!(std::fs::read(&other)?, b"keep-settings");
         std::fs::remove_dir_all(root)?;
         Ok(())

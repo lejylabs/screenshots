@@ -127,7 +127,7 @@ pub enum UiTheme {
     Default,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct CaptureSettings {
     version: u32,
     pub output_directory: PathBuf,
@@ -307,15 +307,22 @@ impl CaptureSettings {
     }
 
     fn load_at(path: &Path, default: PathBuf) -> Result<Self> {
-        let file = match fs::File::open(path) {
-            Ok(file) => file,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                return Self::for_directory(default);
+        match Self::read_file(path) {
+            Ok(settings) => Ok(settings),
+            Err(error)
+                if error
+                    .downcast_ref::<std::io::Error>()
+                    .is_some_and(|error| error.kind() == std::io::ErrorKind::NotFound) =>
+            {
+                Self::for_directory(default)
             }
-            Err(error) => return Err(error.into()),
-        };
+            Err(error) => Err(error),
+        }
+    }
+
+    fn read_file(path: &Path) -> Result<Self> {
         let mut bytes = Vec::new();
-        file.take(65537).read_to_end(&mut bytes)?;
+        fs::File::open(path)?.take(65537).read_to_end(&mut bytes)?;
         ensure!(bytes.len() <= 65536, "Settings file is too large");
         let settings: Self = serde_json::from_slice(&bytes).context("Could not read settings")?;
         ensure!(settings.version == 1, "Unsupported settings version");
@@ -328,6 +335,82 @@ impl CaptureSettings {
             .with_export_format(settings.export_format)
             .with_filename_template(settings.filename_template)?
             .with_capture_delay(settings.capture_delay_seconds)?)
+    }
+
+    /// Write a settings backup without secrets, uploads or overwriting.
+    pub fn export(&self, path: &Path) -> Result<()> {
+        self.export_at(path)
+    }
+
+    fn export_at(&self, path: &Path) -> Result<()> {
+        self.validate_backup()?;
+        let bytes = serde_json::to_vec_pretty(self)?;
+        ensure!(bytes.len() <= 65536, "Settings backup exceeds 64 KiB");
+        let parent = path.parent().context("Invalid settings backup path")?;
+        fs::create_dir_all(parent)?;
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(path)
+            .map_err(|error| {
+                if error.kind() == std::io::ErrorKind::AlreadyExists {
+                    anyhow::anyhow!(
+                        "The file already exists. Choose a new name; existing files are never overwritten."
+                    )
+                } else {
+                    error.into()
+                }
+            })?;
+        let result = (|| -> Result<()> {
+            file.write_all(&bytes)?;
+            file.sync_all()?;
+            Ok(())
+        })();
+        if result.is_err() {
+            drop(file);
+            let _ = fs::remove_file(path);
+        }
+        result
+    }
+
+    /// Load a settings backup. If the saved folder is missing, keep `fallback`.
+    /// Returns `(settings, folder_kept)`.
+    pub fn import(path: &Path, fallback: PathBuf) -> Result<(Self, bool)> {
+        Self::import_at(path, fallback)
+    }
+
+    fn import_at(path: &Path, fallback: PathBuf) -> Result<(Self, bool)> {
+        let mut settings = Self::read_file(path)?;
+        settings.validate_backup()?;
+        if settings.output_directory.is_dir() {
+            return Ok((settings, false));
+        }
+        ensure!(
+            fallback.is_absolute(),
+            "The save folder must be an absolute path"
+        );
+        settings.output_directory = fallback;
+        Ok((settings, true))
+    }
+
+    fn validate_backup(&self) -> Result<()> {
+        ensure!(self.version == 1, "Unsupported settings version");
+        ensure!(
+            (1..=60).contains(&self.capture_delay_seconds),
+            "Capture delay must be between 1 and 60 seconds"
+        );
+        self.hotkeys.validated()?;
+        validate_region_presets(&self.region_presets)?;
+        crate::validate_capture_name_template(&self.filename_template)?;
+        ensure!(
+            (1..=100).contains(&self.jpeg_quality),
+            "JPEG quality must be between 1 and 100"
+        );
+        ensure!(
+            self.output_directory.is_absolute(),
+            "Invalid save folder"
+        );
+        Ok(())
     }
 
     pub fn save(&self) -> Result<()> {
@@ -792,6 +875,98 @@ mod tests {
             );
         }
         fs::remove_dir_all(dir)?;
+        Ok(())
+    }
+
+    #[test]
+    fn settings_backup_round_trips_without_secrets_or_overwrites() -> Result<()> {
+        let root = std::env::temp_dir().join(format!(
+            "screenshots-settings-backup-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let current = root.join("current");
+        let other = root.join("other");
+        let missing = root.join("gone");
+        fs::create_dir_all(&current)?;
+        fs::create_dir_all(&other)?;
+        let settings_path = current.join("settings.json");
+        let neighbor = current.join("upload-destination.json");
+        fs::write(&neighbor, b"keep-upload")?;
+        let preset = RegionPreset::new(
+            "Small",
+            crate::PixelRegion {
+                x: 1,
+                y: 2,
+                width: 3,
+                height: 4,
+            },
+        )?;
+        let original = CaptureSettings::for_directory(current.clone())?
+            .with_theme(UiTheme::Oldschool)
+            .with_hotkeys(CaptureHotkeys([
+                "Ctrl+Alt+Q".into(),
+                "".into(),
+                "Ctrl+F9".into(),
+                "".into(),
+                "".into(),
+                String::new(),
+            ]))?
+            .with_output_profile(CaptureOutputProfile::CopyOnly)
+            .with_region_presets(vec![preset.clone()])?
+            .with_jpeg_quality(73)?
+            .with_export_format(crate::ImageExportFormat::WebP)
+            .with_filename_template("Shot-{date}".into())?
+            .with_capture_delay(7)?;
+        original.save_at(&settings_path)?;
+        let backup = root.join("backup.json");
+        original.export_at(&backup)?;
+        let exported = fs::read_to_string(&backup)?;
+        assert!(!exported.contains("secret"));
+        assert!(!exported.contains("credential"));
+        assert!(!exported.contains("upload-destination"));
+        assert!(exported.contains("Shot-{date}"));
+        let (imported, kept) = CaptureSettings::import_at(&backup, current.clone())?;
+        assert!(!kept);
+        assert_eq!(imported.output_directory, current);
+        assert_eq!(imported.theme, UiTheme::Oldschool);
+        assert_eq!(imported.output_profile, CaptureOutputProfile::CopyOnly);
+        assert_eq!(imported.region_presets, vec![preset.clone()]);
+        assert_eq!(imported.jpeg_quality, 73);
+        assert_eq!(imported.export_format, crate::ImageExportFormat::WebP);
+        assert_eq!(imported.filename_template, "Shot-{date}");
+        assert_eq!(imported.capture_delay_seconds, 7);
+        assert_eq!(imported.hotkeys.0[0], "Ctrl+Alt+Q");
+        let moved = CaptureSettings::for_directory(other.clone())?
+            .with_theme(UiTheme::Default)
+            .with_output_profile(CaptureOutputProfile::SaveOnly)
+            .with_jpeg_quality(40)?
+            .with_capture_delay(4)?;
+        let other_backup = root.join("other.json");
+        moved.export_at(&other_backup)?;
+        let (imported, kept) = CaptureSettings::import_at(&other_backup, current.clone())?;
+        assert!(!kept);
+        assert_eq!(imported.output_directory, other);
+        let missing_settings = CaptureSettings::for_directory(missing.clone())?
+            .with_theme(UiTheme::Oldschool)
+            .with_jpeg_quality(55)?;
+        let missing_backup = root.join("missing.json");
+        missing_settings.export_at(&missing_backup)?;
+        let (imported, kept) = CaptureSettings::import_at(&missing_backup, current.clone())?;
+        assert!(kept);
+        assert_eq!(imported.output_directory, current);
+        assert_eq!(imported.jpeg_quality, 55);
+        let existing = fs::read(&backup)?;
+        assert!(original.export_at(&backup).is_err());
+        assert_eq!(fs::read(&backup)?, existing);
+        assert!(CaptureSettings::import_at(&neighbor, current.clone()).is_err());
+        fs::write(&backup, b"{\"version\":2}")?;
+        assert!(CaptureSettings::import_at(&backup, current.clone()).is_err());
+        assert_eq!(fs::read(&neighbor)?, b"keep-upload");
+        assert_eq!(
+            CaptureSettings::load_at(&settings_path, current.clone())?.jpeg_quality,
+            73
+        );
+        fs::remove_dir_all(root)?;
         Ok(())
     }
 }

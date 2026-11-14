@@ -902,6 +902,279 @@ impl CaptureWorkspace {
         cx.notify();
     }
 
+    fn export_settings(&mut self, cx: &mut Context<Self>) {
+        if self.settings_loading
+            || self.settings_saving
+            || self.quitting
+            || self.output_directory.is_none()
+        {
+            return;
+        }
+        let Some(directory) = self.output_directory.clone() else {
+            return;
+        };
+        self.settings_saving = true;
+        self.settings_status = "Choose a settings backup file…".into();
+        let dialog = cx.prompt_for_new_path(&directory, Some("screenshots-settings.json"));
+        let appearance = theme::selected(cx);
+        let hotkeys = self.hotkey_bindings.clone();
+        let profile = self.output_profile;
+        let presets = self.region_presets.clone();
+        let jpeg_quality = self.jpeg_quality;
+        let export_format = self.export_format;
+        let filename_template = self.filename_template.clone();
+        let capture_delay_seconds = self.capture_delay_seconds;
+        cx.spawn(async move |this, cx| {
+            let chosen = match dialog.await {
+                Ok(Ok(path)) => path,
+                error => {
+                    this.update(cx, |this, cx| {
+                        this.settings_saving = false;
+                        if !this.quitting {
+                            this.settings_status =
+                                format!("Settings unchanged · Export dialog failed: {error:?}");
+                        }
+                        this.finish_quit_if_idle(cx);
+                        cx.notify();
+                    })
+                    .ok();
+                    return;
+                }
+            };
+            let Some(mut path) = chosen else {
+                this.update(cx, |this, cx| {
+                    this.settings_saving = false;
+                    if !this.quitting {
+                        this.settings_status = "Settings unchanged · Export canceled".into();
+                    }
+                    this.finish_quit_if_idle(cx);
+                    cx.notify();
+                })
+                .ok();
+                return;
+            };
+            if path
+                .extension()
+                .is_none_or(|extension| extension.is_empty())
+            {
+                path.set_extension("json");
+            }
+            let result = cx
+                .background_spawn(async move {
+                    app_core::CaptureSettings::for_directory(directory)?
+                        .with_theme(appearance)
+                        .with_hotkeys(hotkeys)?
+                        .with_output_profile(profile)
+                        .with_region_presets(presets)?
+                        .with_jpeg_quality(jpeg_quality)?
+                        .with_export_format(export_format)
+                        .with_filename_template(filename_template)?
+                        .with_capture_delay(capture_delay_seconds)?
+                        .export(&path)?;
+                    Ok::<_, anyhow::Error>(path)
+                })
+                .await;
+            this.update(cx, |this, cx| {
+                this.settings_saving = false;
+                if !this.quitting {
+                    this.settings_status = match result {
+                        Ok(path) => format!(
+                            "Settings exported · upload destinations, history, images and secrets were not written · {}",
+                            path.display()
+                        ),
+                        Err(error) => format!("Settings unchanged: {error:#}"),
+                    };
+                }
+                this.finish_quit_if_idle(cx);
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+        cx.notify();
+    }
+
+    fn import_settings(&mut self, cx: &mut Context<Self>) {
+        if self.capturing
+            || self.copying
+            || self.saving
+            || self.quitting
+            || self.settings_loading
+            || self.settings_saving
+            || self.editor.is_some()
+            || self.editor_closing
+            || self.capture_delay.is_some()
+            || self.preview_active
+            || self.output_directory.is_none()
+        {
+            return;
+        }
+        let Some(fallback) = self.output_directory.clone() else {
+            return;
+        };
+        self.settings_saving = true;
+        self.settings_status = "Choose a settings backup (JSON, no secrets)…".into();
+        let dialog = cx.prompt_for_paths(gpui::PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: false,
+            prompt: Some("Import settings backup (JSON, no secrets)".into()),
+        });
+        cx.spawn(async move |this, cx| {
+            let selected = dialog.await;
+            let path = this
+                .update(cx, |this, cx| {
+                    if this.quitting {
+                        this.settings_saving = false;
+                        this.finish_quit_if_idle(cx);
+                        return None;
+                    }
+                    match selected {
+                        Ok(Ok(Some(mut paths))) if paths.len() == 1 => Some(paths.remove(0)),
+                        other => {
+                            this.settings_saving = false;
+                            this.settings_status = match other {
+                                Ok(Ok(None)) => "Settings unchanged · Import canceled".into(),
+                                error => format!(
+                                    "Settings unchanged · Import failed: {error:?}"
+                                ),
+                            };
+                            this.finish_quit_if_idle(cx);
+                            cx.notify();
+                            None
+                        }
+                    }
+                })
+                .ok()
+                .flatten();
+            let Some(path) = path else {
+                return;
+            };
+            let parsed = cx
+                .background_spawn(async move {
+                    app_core::CaptureSettings::import(&path, fallback)
+                })
+                .await;
+            let applied = this.update(cx, |this, cx| {
+                if this.quitting {
+                    this.settings_saving = false;
+                    this.finish_quit_if_idle(cx);
+                    return None;
+                }
+                let (settings, folder_kept) = match parsed {
+                    Ok(value) => value,
+                    Err(error) => {
+                        this.settings_saving = false;
+                        if !this.quitting {
+                            this.settings_status = format!("Settings unchanged: {error:#}");
+                        }
+                        this.finish_quit_if_idle(cx);
+                        cx.notify();
+                        return None;
+                    }
+                };
+                #[cfg(target_os = "windows")]
+                let prepared = if this.hotkey.is_some()
+                    && settings.hotkeys != this.hotkey_bindings
+                {
+                    match this.hotkey.as_mut().unwrap().prepare(&settings.hotkeys) {
+                        Ok(()) => true,
+                        Err(error) => {
+                            this.hotkey_status = this.hotkey.as_ref().unwrap().status().to_string();
+                            this.settings_saving = false;
+                            this.settings_status = format!("Settings unchanged: {error:#}");
+                            this.finish_quit_if_idle(cx);
+                            cx.notify();
+                            return None;
+                        }
+                    }
+                } else {
+                    false
+                };
+                #[cfg(not(target_os = "windows"))]
+                let prepared = false;
+                Some((settings, folder_kept, prepared))
+            });
+            let Ok(Some((settings, folder_kept, prepared))) = applied else {
+                return;
+            };
+            let persisted = settings.clone();
+            let result = cx
+                .background_spawn(async move {
+                    std::fs::create_dir_all(&persisted.output_directory)?;
+                    persisted.save()?;
+                    Ok::<_, anyhow::Error>(())
+                })
+                .await;
+            this.update(cx, |this, cx| {
+                #[cfg(target_os = "windows")]
+                let cleanup = if prepared {
+                    this.hotkey.as_mut().map(|hotkey| hotkey.finish(result.is_ok()))
+                } else {
+                    None
+                };
+                this.settings_saving = false;
+                if !this.quitting {
+                    this.settings_status = match result {
+                        Ok(()) => {
+                            this.backend = XcapBackend::new(&settings.output_directory);
+                            this.output_directory = Some(settings.output_directory.clone());
+                            this.hotkey_bindings = settings.hotkeys;
+                            this.output_profile = settings.output_profile;
+                            this.jpeg_quality = settings.jpeg_quality;
+                            this.export_format = settings.export_format;
+                            this.filename_template = settings.filename_template;
+                            this.capture_delay_seconds = settings.capture_delay_seconds;
+                            this.region_presets = settings.region_presets;
+                            this.jpeg_quality_input = None;
+                            this.filename_template_input = None;
+                            this.capture_delay_input = None;
+                            #[cfg(target_os = "windows")]
+                            {
+                                this.hotkey_inputs = None;
+                                if let Some(hotkey) = this.hotkey.as_ref() {
+                                    this.hotkey_status = hotkey.status().to_string();
+                                }
+                            }
+                            theme::apply(settings.theme, cx);
+                            let folder = if folder_kept {
+                                "save folder kept because the backup folder is missing"
+                            } else {
+                                "save folder applied"
+                            };
+                            #[cfg(target_os = "windows")]
+                            let status = match cleanup {
+                                Some(Err(error)) => format!(
+                                    "Settings imported · {folder} · shortcut cleanup failed: {error:#}. Active bindings are listed below; restart to retry cleanup."
+                                ),
+                                _ => format!(
+                                    "Settings imported · {folder} · upload destinations, history, images and secrets were not in this file"
+                                ),
+                            };
+                            #[cfg(not(target_os = "windows"))]
+                            let status = format!(
+                                "Settings imported · {folder} · upload destinations, history, images and secrets were not in this file"
+                            );
+                            status
+                        }
+                        Err(error) => {
+                            #[cfg(target_os = "windows")]
+                            if let Some(hotkey) = this.hotkey.as_ref() {
+                                this.hotkey_status = hotkey.status().to_string();
+                            }
+                            format!("Settings unchanged: {error:#}")
+                        }
+                    };
+                }
+                this.finish_quit_if_idle(cx);
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+        cx.notify();
+    }
+
     fn choose_theme(&mut self, selected: app_core::UiTheme, cx: &mut Context<Self>) {
         let capture_delay_seconds = self.capture_delay_seconds;
         if self.settings_loading || self.settings_saving || self.quitting || theme::selected(cx) == selected {
@@ -3684,6 +3957,106 @@ impl CaptureWorkspace {
                             this.upload_status = format!("Destination unchanged: {error}");
                         }
                     }
+                }
+                this.finish_quit_if_idle(cx);
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+        cx.notify();
+    }
+
+    fn export_sharex_destination(&mut self, cx: &mut Context<Self>) {
+        if self.quitting
+            || self.upload_config_loading
+            || self.upload_cancel.is_some()
+            || self.upload_destination.is_none()
+        {
+            return;
+        }
+        self.close_upload_forms();
+        self.upload_config_loading = true;
+        self.upload_status = "Choose a ShareX custom uploader file…".into();
+        let directory = self
+            .output_directory
+            .clone()
+            .unwrap_or_else(std::env::temp_dir);
+        let dialog = cx.prompt_for_new_path(&directory, Some("upload-destination.sxcu"));
+        let destination = self.upload_destination.clone();
+        cx.spawn(async move |this, cx| {
+            let chosen = match dialog.await {
+                Ok(Ok(path)) => path,
+                error => {
+                    this.update(cx, |this, cx| {
+                        this.upload_config_loading = false;
+                        if !this.quitting {
+                            this.upload_status = format!(
+                                "Destination unchanged · ShareX export dialog failed: {error:?}"
+                            );
+                        }
+                        this.finish_quit_if_idle(cx);
+                        cx.notify();
+                    })
+                    .ok();
+                    return;
+                }
+            };
+            let Some(mut path) = chosen else {
+                this.update(cx, |this, cx| {
+                    this.upload_config_loading = false;
+                    if !this.quitting {
+                        this.upload_status =
+                            "Destination unchanged · ShareX export canceled".into();
+                    }
+                    this.finish_quit_if_idle(cx);
+                    cx.notify();
+                })
+                .ok();
+                return;
+            };
+            if path
+                .extension()
+                .is_none_or(|extension| extension.is_empty())
+            {
+                path.set_extension("sxcu");
+            }
+            let Some(destination) = destination else {
+                this.update(cx, |this, cx| {
+                    this.upload_config_loading = false;
+                    if !this.quitting {
+                        this.upload_status =
+                            "Destination unchanged · ShareX export needs a destination".into();
+                    }
+                    this.finish_quit_if_idle(cx);
+                    cx.notify();
+                })
+                .ok();
+                return;
+            };
+            let origin = destination.origin();
+            let omitted_credential = destination.credential_reference().is_some();
+            let result = cx
+                .background_spawn(async move {
+                    destination.to_sharex(&path)?;
+                    Ok::<_, anyhow::Error>(path)
+                })
+                .await;
+            this.update(cx, |this, cx| {
+                this.upload_config_loading = false;
+                if !this.quitting {
+                    this.upload_status = match result {
+                        Ok(path) => format!(
+                            "ShareX profile exported · {origin} · {}secrets were not written · {}",
+                            if omitted_credential {
+                                "credential reference omitted · "
+                            } else {
+                                ""
+                            },
+                            path.display()
+                        ),
+                        Err(error) => format!("Destination unchanged: {error:#}"),
+                    };
                 }
                 this.finish_quit_if_idle(cx);
                 cx.notify();

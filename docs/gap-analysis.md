@@ -1,11 +1,27 @@
 # Functional gap analysis: screenshots and ShareX
 
+Implementation follow-up (2026-11-14, working tree): Settings can export and
+import a preferences backup JSON (appearance, folder, shortcuts, output profile,
+region presets, JPEG quality, Save as format, filename template and capture
+delay). A missing backup folder keeps the active save folder. Upload destinations,
+history, images and OS credentials stay out of the file. Per-task defaults,
+generic HTTP breadth and secret-store platforms other than Windows remain
+missing. See PLAN.md's full settings backup slice.
+
+Implementation follow-up (2026-11-14, working tree): Uploads can export the
+session destination as a documented ShareX .sxcu subset. Secrets and credential
+references are omitted; existing files are never overwritten. Full settings
+backup is implemented in the later 2026-11-14 follow-up. Per-task defaults,
+generic HTTP breadth and secret-store platforms other than Windows remain
+missing. See PLAN.md's ShareX custom-uploader export slice.
+
 Implementation follow-up (2026-11-14, working tree): Uploads can import a
 documented ShareX .sxcu subset as a session destination. Secrets, headers,
 query parameters and richer parsers are rejected. Remember and Save named stay
-explicit. Per-task defaults, ShareX export, generic HTTP breadth, full settings
-backup and secret-store platforms other than Windows remain missing. See
-PLAN.md's ShareX custom-uploader import slice.
+explicit. ShareX export is implemented in the later 2026-11-14 follow-up.
+Per-task defaults, generic HTTP breadth, full settings backup and secret-store
+platforms other than Windows remain missing. See PLAN.md's ShareX
+custom-uploader import slice.
 
 Implementation follow-up (2026-11-14, working tree): Uploads can export and
 import a destination backup JSON of the session destination plus named catalog.
@@ -283,9 +299,9 @@ files/URLs and configured tasks.
 
 | Capability | Current status and gap | Priority |
 | --- | --- | --- |
-| Destination setup | Partial: Uploads offers native credential-free POST/PUT setup with plain-text/JSON link responses, bounded validation and explicit HTTP opt-in; Use is session-only and Remember persists it. Windows Save credential writes Bearer/API-key/Basic secrets to Credential Manager and attaches only the reference to the session destination. Remove credential deletes that OS secret and clears the session reference; Forget destination still leaves the OS secret in place. JSON profiles retain advanced settings. Test destination sends a throwaway 1×1 PNG through the existing transfer path without recording history. Named destinations persist up to 16 profiles in a separate catalog. Export/Import configuration copies that catalog and the current destination without secrets; full settings backup remains missing. | A |
+| Destination setup | Partial: Uploads offers native credential-free POST/PUT setup with plain-text/JSON link responses, bounded validation and explicit HTTP opt-in; Use is session-only and Remember persists it. Windows Save credential writes Bearer/API-key/Basic secrets to Credential Manager and attaches only the reference to the session destination. Remove credential deletes that OS secret and clears the session reference; Forget destination still leaves the OS secret in place. JSON profiles retain advanced settings. Test destination sends a throwaway 1×1 PNG through the existing transfer path without recording history. Named destinations persist up to 16 profiles in a separate catalog. Export/Import configuration copies that catalog and the current destination without secrets. Settings Export/Import copies preferences without destinations, history, images or secrets. | A |
 | Multiple destinations | Partial: a named catalog of up to 16 destinations can be saved, switched into the session and removed. Export/Import configuration copies the catalog with the current destination. The remembered current destination remains one profile. Per-task defaults are missing. | A/B |
-| Existing ShareX profiles | Partial: Uploads can import a documented `.sxcu` subset (HTTPS ImageUploader POST multipart or PUT binary, `{json}`/`{header}`/`{response}`/`{responseurl}`) as a session destination. Headers, query/body arguments, secrets, HTTP and richer parsers are rejected. ShareX export and full custom-uploader parity remain missing. Our profile JSON is not the ShareX format. | B |
+| Existing ShareX profiles | Partial: Uploads can import and export a documented `.sxcu` subset (HTTPS ImageUploader POST multipart or PUT binary, `{json}`/`{header}`/`{response}`/`{responseurl}`). Headers, query/body arguments, secrets, HTTP and richer parsers are rejected. Full custom-uploader parity remains missing. Our profile JSON is not the ShareX format. | B |
 | Generic HTTP breadth | Partial: POST multipart/PUT PNG; no custom request headers/arguments/query templates, JSON/form bodies, richer response expressions or deletion/thumbnail result URLs. Compatibility must preserve origin-scoped secrets and response bounds. | B |
 | Service integrations | No dedicated S3/R2, SFTP/FTP, OAuth/provider integrations or remote file management. Some simple services can already work through our generic POST/PUT path; test service by service. | B/C |
 | Accepted input | PNG files only. No arbitrary file/folder/text/clipboard/URL uploads, batch upload UI, watched-folder workflow or capture-to-link chain. | B |
@@ -348,8 +364,9 @@ These gaps determine whether implemented features are convenient and dependable:
   workflows, rename/move and deliberate file deletion/retention are missing.
   Metadata-only removal correctly preserves user files and should remain explicit.
 - No app-owned Windows autostart setting, actionable completion notifications,
-  Explorer context/file associations, full settings backup/export or useful
-  task CLI. The current tray is a small fixed command set.
+  Explorer context/file associations or useful task CLI. Settings Export/Import
+  copies preferences without destinations, history, images or secrets. The
+  current tray is a small fixed command set.
 - No installer/portable distribution pipeline, upgrade/uninstall verification,
   published release artifacts/signing workflow or app update mechanism was found
   in the inspected repository. A documented manual update path is sufficient

@@ -1316,6 +1316,141 @@ fn sharex_import_applies_a_session_destination_without_writing_settings(cx: &mut
     std::fs::remove_dir_all(root).unwrap();
 }
 
+#[gpui::test]
+fn sharex_export_writes_a_chosen_file_without_secrets(cx: &mut TestAppContext) {
+    let handle = open_workspace(cx);
+    let root = std::env::temp_dir().join(format!("screenshots-sharex-export-ui-{}", std::process::id()));
+    std::fs::create_dir_all(&root).unwrap();
+    handle.update(cx, |this, _, cx| {
+        this.output_directory = Some(root.clone());
+        this.show_page(ControlPage::Uploads, cx);
+    }).unwrap();
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.try_find("export-sharex-destination").is_none());
+    }).unwrap();
+    handle.update(cx, |this, _, cx| {
+        this.upload_destination = Some(app_core::UploadDestination::manual(
+            "https://sharex.invalid/upload".into(),
+            app_core::UploadMethod::Post, "file".into(), Some("/url".into()), false).unwrap());
+        this.upload_url = Some("https://sharex.invalid/share/kept".into());
+        this.show_page(ControlPage::Uploads, cx);
+    }).unwrap();
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.click("export-sharex-destination", cx);
+    }).unwrap();
+    assert!(cx.did_prompt_for_new_path());
+    handle.update(cx, |this, _, cx| {
+        assert!(this.upload_config_loading);
+        this.export_sharex_destination(cx);
+    }).unwrap();
+    cx.simulate_new_path_selection(|_| None);
+    cx.run_until_parked();
+    handle.update(cx, |this, _, cx| {
+        assert!(!this.upload_config_loading);
+        assert!(this.upload_status.contains("ShareX export canceled"));
+        assert_eq!(this.upload_destination.as_ref().unwrap().origin(), "https://sharex.invalid");
+        assert_eq!(this.upload_url.as_deref(), Some("https://sharex.invalid/share/kept"));
+        this.export_sharex_destination(cx);
+    }).unwrap();
+    cx.simulate_new_path_selection(|_| Some(root.join("host")));
+    cx.run_until_parked();
+    let exported = std::fs::read_to_string(root.join("host.sxcu")).unwrap();
+    handle.update(cx, |this, _, cx| {
+        assert!(!this.upload_config_loading);
+        assert!(this.upload_status.contains("ShareX profile exported"));
+        assert!(this.upload_status.contains("secrets were not written"));
+        assert!(!exported.contains("secret"));
+        assert!(!exported.contains("credential"));
+        assert!(exported.contains("sharex.invalid") && exported.contains("{json:url}"));
+        assert_eq!(this.upload_destination.as_ref().unwrap().origin(), "https://sharex.invalid");
+        assert_eq!(this.upload_url.as_deref(), Some("https://sharex.invalid/share/kept"));
+        assert!(this.last_saved.is_none() && this.last_capture.is_none());
+        this.upload_cancel = Some(app_core::UploadCancellation::default());
+        this.export_sharex_destination(cx);
+        assert!(this.upload_cancel.is_some());
+        this.show_page(ControlPage::Sources, cx);
+    }).unwrap();
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[gpui::test]
+fn settings_backup_export_writes_a_chosen_file_without_importing(cx: &mut TestAppContext) {
+    let handle = open_workspace(cx);
+    let root = std::env::temp_dir().join(format!("screenshots-settings-backup-ui-{}", std::process::id()));
+    std::fs::create_dir_all(&root).unwrap();
+    handle.update(cx, |this, _, cx| {
+        this.output_directory = Some(root.clone());
+        this.jpeg_quality = 73;
+        this.filename_template = "Shot-{date}".into();
+        this.output_profile = CaptureOutputProfile::CopyOnly;
+        this.capture_delay_seconds = 7;
+        this.upload_destination = Some(app_core::UploadDestination::manual(
+            "https://kept.invalid/upload".into(),
+            app_core::UploadMethod::Post, "file".into(), None, false).unwrap());
+        this.upload_url = Some("https://kept.invalid/share".into());
+        this.show_page(ControlPage::Settings, cx);
+    }).unwrap();
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.scroll("choose-output-directory", gpui::ScrollDelta::Pixels(point(px(0.), px(-2400.))), cx);
+        window.render_frame(cx);
+        window.click("export-settings", cx);
+        window.click("import-settings", cx);
+    }).unwrap();
+    assert!(cx.did_prompt_for_new_path());
+    handle.update(cx, |this, _, cx| {
+        assert!(this.settings_saving);
+        this.export_settings(cx);
+        this.import_settings(cx);
+    }).unwrap();
+    cx.simulate_new_path_selection(|_| None);
+    cx.run_until_parked();
+    handle.update(cx, |this, _, cx| {
+        assert!(!this.settings_saving);
+        assert!(this.settings_status.contains("Export canceled"));
+        assert_eq!(this.jpeg_quality, 73);
+        assert_eq!(this.output_profile, CaptureOutputProfile::CopyOnly);
+        this.export_settings(cx);
+    }).unwrap();
+    cx.simulate_new_path_selection(|_| Some(root.join("backup")));
+    cx.run_until_parked();
+    let exported = std::fs::read_to_string(root.join("backup.json")).unwrap();
+    handle.update(cx, |this, _, cx| {
+        assert!(!this.settings_saving);
+        assert!(this.settings_status.contains("Settings exported"));
+        assert!(!exported.contains("secret"));
+        assert!(!exported.contains("kept.invalid"));
+        assert!(exported.contains("Shot-{date}") && exported.contains("copy_only"));
+        assert_eq!(this.jpeg_quality, 73);
+        assert_eq!(this.upload_destination.as_ref().unwrap().origin(), "https://kept.invalid");
+        assert_eq!(this.upload_url.as_deref(), Some("https://kept.invalid/share"));
+        assert!(this.last_saved.is_none() && this.last_capture.is_none());
+        this.import_settings(cx);
+    }).unwrap();
+    assert!(cx.did_prompt_for_paths());
+    handle.update(cx, |this, _, cx| this.import_settings(cx)).unwrap();
+    cx.simulate_path_prompt_response(|options| {
+        assert!(options.files && !options.directories && !options.multiple);
+        None
+    });
+    cx.run_until_parked();
+    handle.update(cx, |this, _, cx| {
+        assert!(!this.settings_saving);
+        assert!(this.settings_status.contains("Import canceled"));
+        assert_eq!(this.jpeg_quality, 73);
+        assert_eq!(this.output_profile, CaptureOutputProfile::CopyOnly);
+        this.settings_saving = true;
+        this.export_settings(cx);
+        this.import_settings(cx);
+        assert!(this.settings_saving);
+        this.settings_saving = false;
+        this.show_page(ControlPage::Sources, cx);
+    }).unwrap();
+    std::fs::remove_dir_all(root).unwrap();
+}
+
 #[cfg(target_os = "windows")]
 #[gpui::test]
 fn upload_remove_credential_stays_idle_without_an_attached_reference(cx: &mut TestAppContext) {

@@ -772,11 +772,66 @@ verify button presence, canceled pickers, busy guards and that a completed
 import updates only the session destination from a temp .sxcu, without writing
 user settings. A regular core fixture covers JSON-path mapping, PUT/header/text
 modes, secret/header/query rejection and that neighboring files stay untouched.
-Per-task destination defaults, ShareX export, generic HTTP breadth and full
-settings backup remain separate work.
+ShareX export is implemented below. Per-task destination defaults, generic HTTP
+breadth and full settings backup remain separate work.
 Native keyboard/IME/accessibility, packaged restart workflow and
 latency/process/GPU/resource acceptance remain open; no new performance
 measurement is claimed for this bounded import.
+
+#### Current feature slice: ShareX custom-uploader export
+
+Uploads offers Export ShareX after a session destination exists. The action
+writes one .sxcu file through the existing native save picker, mapping the
+documented subset: ImageUploader, HTTPS POST multipart or PUT binary,
+FileFormName, and URL parsers {json:path}, {header:name}, {response} or PUT
+{responseurl}. Secrets and credential references are omitted. HTTP destinations,
+JSON-pointer escapes and response modes outside that subset are rejected before
+any file is created. Existing files are never overwritten; a missing extension
+becomes .sxcu. Export does not change the session destination, named catalog,
+remembered files or OS credentials. Closing the page or window during the picker
+suppresses a pending result; Quit discards it. No connection, upload or image
+decode occurs while exporting.
+
+Resource cost is the existing native save picker and one admitted metadata
+future that reuses destination validation. There is no new dependency, worker,
+runtime, queue, image, cache, watcher or idle timer. Constructor and headless UI
+fixtures verify button presence, canceled pickers, busy guards and that a
+completed export writes only the chosen temp .sxcu, without writing user
+settings. A regular core fixture covers JSON-path reverse mapping, PUT/header/text
+modes, HTTPS-only export, overwrite rejection, omitted credentials and that
+neighboring files stay untouched.
+Full settings backup is implemented below. Per-task destination defaults and
+generic HTTP breadth remain separate work.
+Native keyboard/IME/accessibility, packaged restart workflow and
+latency/process/GPU/resource acceptance remain open; no new performance
+measurement is claimed for this bounded export.
+
+#### Current feature slice: full settings backup
+
+Settings offers Export settings and Import settings. Export writes the current
+appearance, save folder, shortcuts, output profile, region presets, JPEG quality,
+Save as format, filename template and capture delay into a user-chosen JSON file
+of at most 64 KiB. Import validates that backup, then replaces settings.json.
+If the backup folder is missing, the active save folder is kept and the rest of
+the preferences still apply. Windows shortcut import reuses the existing
+prepare/save/finish registration path; a failed reservation keeps the previous
+settings. Existing export files are never overwritten. Upload destinations,
+capture history, images and OS credentials are never copied. Closing the page or
+window during the native picker suppresses a pending result; Quit discards it.
+No connection, upload or image decode occurs while exporting or importing.
+
+Resource cost is the existing native save/open picker and one admitted metadata
+future that reuses settings validation, atomic settings.json writes and the
+existing shortcut apply path. There is no new dependency, worker, runtime, queue,
+image, cache, watcher or idle timer. Constructor and headless UI fixtures verify
+button presence, canceled pickers, busy guards and that a completed export writes
+only the chosen file, without importing into user settings. A regular core
+fixture covers round-trip fields, missing-folder fallback, overwrite rejection,
+invalid-backup preservation and that neighboring upload files stay untouched.
+Per-task destination defaults and generic HTTP breadth remain separate work.
+Native keyboard/IME/accessibility, packaged restart workflow and
+latency/process/GPU/resource acceptance remain open; no new performance
+measurement is claimed for this bounded backup.
 
 #### Current feature slice: configurable Windows global hotkeys
 

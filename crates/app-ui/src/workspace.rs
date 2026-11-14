@@ -380,7 +380,7 @@ impl Render for CaptureWorkspace {
                         .child(div().flex().flex_col().gap_1()
                             .child(div().font_weight(gpui::FontWeight::SEMIBOLD).child("Destination"))
                             .child(div().text_sm().text_color(colors.muted_foreground).child(if self.upload_destination.is_some() { "Ready for an explicit upload" } else { "Connect your own image hosting service" }))))
-                    .child(div().text_sm().text_color(colors.muted_foreground).child("Set up a destination or load a profile. Import ShareX loads a documented .sxcu subset without secrets. Save named stores up to 16 profiles. Export configuration copies destinations without secrets. Test destination sends a throwaway 1×1 PNG. Uploads of your screenshots start only when you choose an image and confirm."))
+                    .child(div().text_sm().text_color(colors.muted_foreground).child("Set up a destination or load a profile. Import ShareX loads a documented .sxcu subset without secrets. Export ShareX writes that subset for the session destination. Save named stores up to 16 profiles. Export configuration copies destinations without secrets. Test destination sends a throwaway 1×1 PNG. Uploads of your screenshots start only when you choose an image and confirm."))
                     .child(div().flex().flex_wrap().gap_2()
                         .child(capture_button(cx, "setup-upload-destination", if self.upload_form_open { "Cancel setup" } else { "Set up destination" },
                             self.upload_config_loading || self.upload_cancel.is_some(), cx.listener(|this, _, _, cx| {
@@ -398,6 +398,10 @@ impl Render for CaptureWorkspace {
                         .child(capture_button(cx, "import-sharex-destination", "Import ShareX…",
                             self.upload_config_loading || self.upload_cancel.is_some(),
                             cx.listener(|this, _, _, cx| this.import_sharex_destination(cx))))
+                        .when(self.upload_destination.is_some(), |row| row
+                            .child(capture_button(cx, "export-sharex-destination", "Export ShareX…",
+                                self.upload_config_loading || self.upload_cancel.is_some(),
+                                cx.listener(|this, _, _, cx| this.export_sharex_destination(cx)))))
                         .when(self.upload_destination.is_some(), |row| row
                             .child(quiet_button(cx, "remember-upload-destination", "Remember", self.upload_config_loading || self.upload_cancel.is_some(), false,
                                 cx.listener(|this, _, _, cx| this.persist_upload_destination(false, cx)))))
@@ -953,6 +957,16 @@ impl Render for CaptureWorkspace {
                 .child(capture_button(cx, "save-filename-template", "Save filename template", unavailable || self.preview_active,
                     cx.listener(|this, _, _, cx| this.save_filename_template(cx)))))
             .child(self.hotkey_settings(cx))
+            .child(div().flex_none().p_5().rounded(px(theme.panel_radius)).bg(colors.group_box).flex().flex_col().gap_3()
+                .child(div().font_weight(gpui::FontWeight::SEMIBOLD).child("Backup"))
+                .child(div().text_sm().text_color(colors.muted_foreground).child("Export copies appearance, folder, shortcuts, output profile, region presets, JPEG quality, Save as format, filename template and capture delay. Upload destinations, history, images and secrets stay out of the file. Import never starts an upload."))
+                .child(div().flex().flex_wrap().gap_2()
+                    .child(capture_button(cx, "export-settings", "Export settings",
+                        unavailable,
+                        cx.listener(|this, _, _, cx| this.export_settings(cx))))
+                    .child(capture_button(cx, "import-settings", "Import settings",
+                        unavailable,
+                        cx.listener(|this, _, _, cx| this.import_settings(cx))))))
             .child(capture_button(cx,
                 "toggle-diagnostics",
                 if self.diagnostics {
