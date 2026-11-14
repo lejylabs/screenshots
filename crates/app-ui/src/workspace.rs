@@ -585,9 +585,27 @@ impl Render for CaptureWorkspace {
                                     this.upload_status = "Upload link copied".into();
                                     this.clipboard_status = "Upload link copied to clipboard".into(); cx.notify();
                                 }
+                            }))))
+                        .when(self.upload_thumbnail.is_some(), |row| row.child(capture_button(cx, "copy-upload-thumbnail", "Copy thumbnail", false,
+                            cx.listener(|this, _, _, cx| {
+                                if let Some(url) = &this.upload_thumbnail {
+                                    cx.write_to_clipboard(gpui::ClipboardItem::new_string(url.clone()));
+                                    this.upload_status = "Thumbnail link copied".into();
+                                    this.clipboard_status = "Thumbnail link copied to clipboard".into(); cx.notify();
+                                }
+                            }))))
+                        .when(self.upload_deletion.is_some(), |row| row.child(capture_button(cx, "copy-upload-deletion", "Copy deletion", false,
+                            cx.listener(|this, _, _, cx| {
+                                if let Some(url) = &this.upload_deletion {
+                                    cx.write_to_clipboard(gpui::ClipboardItem::new_string(url.clone()));
+                                    this.upload_status = "Deletion link copied".into();
+                                    this.clipboard_status = "Deletion link copied to clipboard".into(); cx.notify();
+                                }
                             })))))
                     .child(div().text_sm().child(self.upload_status.clone()))
-                    .children(self.upload_url.clone().map(|url| div().text_sm().text_color(colors.caret).child(url))))
+                    .children(self.upload_url.clone().map(|url| div().text_sm().text_color(colors.caret).child(url)))
+                    .children(self.upload_thumbnail.clone().map(|url| div().text_sm().text_color(colors.caret).child(format!("Thumbnail: {url}"))))
+                    .children(self.upload_deletion.clone().map(|url| div().text_sm().text_color(colors.caret).child(format!("Deletion: {url}")))))
             .child(
                 div()
                     .flex()

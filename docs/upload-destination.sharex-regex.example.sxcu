@@ -1,0 +1,10 @@
+{
+  "Version": "17.0.0",
+  "Name": "Example regex",
+  "DestinationType": "ImageUploader",
+  "RequestMethod": "POST",
+  "RequestURL": "https://example.invalid/upload",
+  "Body": "MultipartFormData",
+  "FileFormName": "file",
+  "URL": "{regex:href=\"(.+)\"|1}"
+}

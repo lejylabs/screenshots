@@ -223,6 +223,7 @@ dependencies = [
  "directories",
  "global-hotkey",
  "image",
+ "regex",
  "reqwest",
  "rusqlite",
  "rusqlite_migration",

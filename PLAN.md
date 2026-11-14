@@ -1001,10 +1001,10 @@ or a JSON number rendered as decimal text. The composed link must stay within
 rejected. PUT request-URL results reject affixes. Suffix-only composition keeps
 the extracted URL origin. The setup form has no prefix/suffix rows; load JSON,
 Remember, named catalog, configuration export/import and ShareX URL templates
-such as `https://cdn.example/{json:id}.png` reuse the same validator. Regex, XML,
-multi-token templates and deletion/thumbnail URLs stay out of this slice.
-Origin-scoped secrets and the 1 MiB response cap stay unchanged. No connection or
-upload starts while loading or validating a profile.
+such as `https://cdn.example/{json:id}.png` reuse the same validator. Regex, XML
+and multi-token templates stay out of this slice. Thumbnail and deletion result
+URLs are implemented below. Origin-scoped secrets and the 1 MiB response cap stay
+unchanged. No connection or upload starts while loading or validating a profile.
 
 Resource cost is two short strings on the existing destination profile. There is
 no new dependency, worker, runtime, queue, image, cache, watcher or idle timer.
@@ -1012,11 +1012,73 @@ Constructor and headless UI fixtures verify that loading a temp JSON with
 prefix/suffix updates only this session, without Remember, named-catalog writes
 or an upload. A regular core fixture covers validation, persistence, origin
 preservation, PUT rejection and ShareX URL mapping. An ignored loopback fixture
-asserts a numeric JSON id composed onto a CDN prefix. Regex/XML parsers and
-deletion/thumbnail URLs remain separate work.
+asserts a numeric JSON id composed onto a CDN prefix. Thumbnail and deletion
+result URLs are implemented below. Regex/XML parsers remain separate work.
 Native keyboard/IME/accessibility, packaged restart workflow and
 latency/process/GPU/resource acceptance remain open; no new performance
 measurement is claimed for this bounded result-link composition.
+
+#### Current feature slice: thumbnail and deletion result URLs
+
+Destination JSON may include optional `thumbnail` and `deletion` parsers that reuse
+the existing JSON-pointer, plain-text or header subset, including the same
+`link_prefix`/`link_suffix` composition. Missing extras keep a single primary
+link. Extra parsers cannot use PUT `{responseurl}` / request-URL mode, and a
+request-URL primary rejects extras. ShareX import/export maps `ThumbnailURL` and
+`DeletionURL` through that same subset; `{regex}` stays rejected. The setup form
+has no extra-parser rows; load JSON, Remember, named catalog, configuration
+export/import and ShareX profiles reuse the same validator. When an extra parser
+is configured, a missing extra fails the upload the same way a missing primary
+pointer does. Extract extras from the already-buffered response; do not GET the
+thumbnail or POST the deletion URL. Session UI shows **Copy thumbnail** and
+**Copy deletion** after a successful upload or test. Upload history still stores
+only the primary URL, so this slice does not migrate SQLite. Regex result
+parsers are implemented below. XML parsers stay out. Origin-scoped secrets and
+the 1 MiB response cap stay unchanged. No connection or upload starts while
+loading or validating a profile.
+
+Resource cost is two optional nested parsers on the existing destination profile
+plus two optional session strings. There is no new dependency, worker, runtime,
+queue, image, cache, watcher or idle timer. Constructor and headless UI fixtures
+verify that loading a temp JSON with extra parsers updates only this session,
+without Remember, named-catalog writes or an upload. A regular core fixture
+covers validation, persistence, PUT request-URL rejection and ShareX
+ThumbnailURL/DeletionURL mapping. An ignored loopback fixture asserts extra URLs
+from one JSON body and that a missing extra fails the upload. Regex result
+parsers are implemented below. XML parsers remain separate work.
+Native keyboard/IME/accessibility, packaged restart workflow and
+latency/process/GPU/resource acceptance remain open; no new performance
+measurement is claimed for this bounded extra-result parse.
+
+#### Current feature slice: regex result URLs
+
+Destination JSON may include `response: { "type": "regex", "pattern": "...",
+"group": "1" }` to extract a link from the already-buffered UTF-8 body. Pattern
+is 1–256 bytes, compiled with the linear-time `regex` crate (64 KiB size limit,
+nest limit 32). Missing `group` uses the whole match; `group` is an index 0–8 or
+a 1–32 character `[A-Za-z_][A-Za-z0-9_]*` name. Empty matches fail the upload.
+The extracted value still goes through `link_prefix`/`link_suffix` and
+`validate_link`. Lookaround, backreferences and other non-linear features fail
+at compile. ShareX import/export maps `{regex:pattern}` and `{regex:pattern|group}`
+with `\{` `\}` `\|` `\\` escapes; `{regex}` RegexList, three-parameter
+`{regex:input|pattern|group}`, `{json:path|regex:}` and `{xml}` stay rejected.
+The same parser is available on thumbnail/deletion extras. The setup form has no
+regex rows; load JSON, Remember, named catalog, configuration export/import and
+ShareX profiles reuse the same validator. XML parsers stay out. Origin-scoped
+secrets and the 1 MiB response cap stay unchanged. No connection or upload starts
+while loading or validating a profile.
+
+Resource cost is one optional pattern string plus compiling a bounded regex on
+validate and extract. The new dependency is `regex` 1.12. There is no new worker,
+runtime, queue, image, cache, watcher or idle timer. Constructor and headless UI
+fixtures verify that loading a temp JSON with a regex parser updates only this
+session, without Remember, named-catalog writes or an upload. A regular core
+fixture covers validation, persistence, capture groups, lookaround rejection and
+ShareX `{regex}` mapping. An ignored loopback fixture asserts an HTML href
+capture and that a missing match fails the upload.
+Native keyboard/IME/accessibility, packaged restart workflow and
+latency/process/GPU/resource acceptance remain open; no new performance
+measurement is claimed for this bounded regex parse.
 
 #### Current feature slice: configurable Windows global hotkeys
 

@@ -33,6 +33,7 @@ chrono = { version = "0.4.45", features = ["serde"] }
 directories = "6.0.0"
 global-hotkey = "0.10.0"
 image = "0.25.10"
+regex = "1.12.2"
 reqwest = { version = "0.13.5", features = ["json", "multipart", "stream"] }
 rfd = "0.18.0"
 rusqlite = { version = "0.40.2", features = ["bundled", "chrono", "uuid", "hooks"] } # 0.40.x until rusqlite_migration publishes a 0.41-compatible release.

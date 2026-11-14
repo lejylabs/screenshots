@@ -215,6 +215,8 @@ pub struct CaptureWorkspace {
     upload_probe: bool,
     upload_status: String,
     upload_url: Option<String>,
+    upload_thumbnail: Option<String>,
+    upload_deletion: Option<String>,
     upload_history_visible: bool,
     upload_history_loading: bool,
     upload_history_revision: u64,
@@ -644,6 +646,8 @@ impl CaptureWorkspace {
             upload_probe: false,
             upload_status: "Uploads disabled · Load a destination to enable manual uploads".into(),
             upload_url: None,
+            upload_thumbnail: None,
+            upload_deletion: None,
             upload_history_visible: false,
             upload_history_loading: false,
             upload_history_revision: 0,
@@ -3363,6 +3367,12 @@ impl CaptureWorkspace {
         .detach();
     }
 
+    fn clear_upload_links(&mut self) {
+        self.upload_url = None;
+        self.upload_thumbnail = None;
+        self.upload_deletion = None;
+    }
+
     fn persist_upload_destination(&mut self, forget: bool, cx: &mut Context<Self>) {
         if self.quitting || self.upload_config_loading || self.upload_cancel.is_some() {
             return;
@@ -3375,7 +3385,7 @@ impl CaptureWorkspace {
         self.upload_config_loading = true;
         if forget {
             self.upload_destination = None;
-            self.upload_url = None;
+            self.clear_upload_links();
             self.close_upload_forms();
         }
         cx.spawn(async move |this,cx| {
@@ -3468,7 +3478,7 @@ impl CaptureWorkspace {
             return;
         };
         self.close_upload_forms();
-        self.upload_url = None;
+        self.clear_upload_links();
         self.upload_status = format!(
             "Destination: {} · Named {name} · Session only · Remember to persist as current",
             destination.origin()
@@ -3498,7 +3508,7 @@ impl CaptureWorkspace {
             return;
         };
         let label = app_core::CaptureHotkeys::LABELS[index];
-        self.upload_url = None;
+        self.clear_upload_links();
         self.upload_status = format!(
             "Destination: {} · Named {name} · Applied for {label} · Session only · Remember to persist as current",
             destination.origin()
@@ -3783,7 +3793,7 @@ impl CaptureWorkspace {
                     match result {
                         Ok(configuration) => {
                             let (current, destinations) = configuration.into_parts();
-                            this.upload_url = None;
+                            this.clear_upload_links();
                             this.upload_named = destinations;
                             this.upload_destination = current;
                             this.close_upload_forms();
@@ -3845,7 +3855,7 @@ impl CaptureWorkspace {
                         Ok(destination) => {
                             this.upload_status = format!("Destination: {} · Session only · Manual upload", destination.origin());
                             this.upload_destination = Some(destination);
-                            this.upload_url = None;
+                            this.clear_upload_links();
                             this.close_upload_forms();
                         }
                         Err(error) => this.upload_status = format!("Destination unchanged: {error:#}"),
@@ -3888,7 +3898,7 @@ impl CaptureWorkspace {
                                 destination.origin()
                             );
                             this.upload_destination = Some(destination);
-                            this.upload_url = None;
+                            this.clear_upload_links();
                             this.close_upload_forms();
                         }
                         Err(error) => this.upload_status = format!("Credential unchanged: {error:#}"),
@@ -3932,7 +3942,7 @@ impl CaptureWorkspace {
                                 destination.origin()
                             );
                             this.upload_destination = Some(destination);
-                            this.upload_url = None;
+                            this.clear_upload_links();
                         }
                         Err(error) => {
                             this.upload_status = format!("Credential unchanged: {error:#}");
@@ -3956,7 +3966,7 @@ impl CaptureWorkspace {
         self.upload_profile_checked = true;
         self.close_upload_forms();
         self.upload_destination = None;
-        self.upload_url = None;
+        self.clear_upload_links();
         self.upload_status = "Choose an upload destination configuration (JSON)".into();
         let dialog = cx.prompt_for_paths(gpui::PathPromptOptions {
             files: true,
@@ -4080,7 +4090,7 @@ impl CaptureWorkspace {
                 if !this.quitting {
                     match result {
                         Ok((destination, name)) => {
-                            this.upload_url = None;
+                            this.clear_upload_links();
                             this.upload_status = match name {
                                 Some(name) => format!(
                                     "Destination: {} · ShareX {name} · Session only · Remember to persist",
@@ -4365,7 +4375,7 @@ impl CaptureWorkspace {
                 destination.origin()
             );
         } else {
-            self.upload_url = None;
+            self.clear_upload_links();
             self.upload_status = format!(
                 "Uploading {filename} via {} to {}…",
                 destination.request_method(),
@@ -4420,7 +4430,7 @@ impl CaptureWorkspace {
                             cancel,
                             reporter,
                         )
-                        .map(|url| {
+                        .map(|outcome| {
                             let history_error = database
                                 .as_ref()
                                 .map(|database| {
@@ -4428,16 +4438,16 @@ impl CaptureWorkspace {
                                         database,
                                         &path,
                                         &destination.origin(),
-                                        &url,
+                                        &outcome.url,
                                     )
                                 })
                                 .transpose()
                                 .err()
                                 .map(|error| format!("{error:#}"));
-                            (url, history_error)
+                            (outcome, history_error)
                         }),
                         None => app_core::probe_upload(&destination, cancel, Some(reporter))
-                            .map(|url| (url, None)),
+                            .map(|outcome| (outcome, None)),
                     }
                     .map_err(|error| format!("{error:#}"))
                 })
@@ -4448,17 +4458,20 @@ impl CaptureWorkspace {
                 this.upload_probe = false;
                 if !this.quitting {
                     match result {
-                        Ok((url, history_error)) => {
+                        Ok((outcome, history_error)) => {
                             if probe {
                                 this.upload_status = format!(
-                                    "Destination responded · {url} · the server may keep this 1×1 test image · Clipboard unchanged"
+                                    "Destination responded · {} · the server may keep this 1×1 test image · Clipboard unchanged",
+                                    outcome.url
                                 );
                             } else {
                                 this.upload_status = format!(
                                     "Uploaded {filename} · Link ready · Clipboard unchanged"
                                 );
                             }
-                            this.upload_url = Some(url);
+                            this.upload_url = Some(outcome.url);
+                            this.upload_thumbnail = outcome.thumbnail;
+                            this.upload_deletion = outcome.deletion;
                             if !probe {
                                 if let Some(error) = history_error {
                                     this.upload_status

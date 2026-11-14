@@ -52,7 +52,7 @@ pub use selection::{
 pub use settings::{CaptureHotkeys, CaptureOutputProfile, CaptureSettings, RegionPreset, UiTheme, DEFAULT_JPEG_QUALITY};
 pub use upload::{
     NamedUploadDestination, UploadAuthentication, UploadCancellation, UploadConfiguration,
-    UploadDestination, UploadDestinationCatalog, UploadMethod, UploadProgress,
+    UploadDestination, UploadDestinationCatalog, UploadMethod, UploadOutcome, UploadProgress,
     UploadProgressReceiver,
     UploadProgressReporter, probe_upload, upload_png, upload_png_with_progress,
     upload_progress_channel,

@@ -1,0 +1,10 @@
+{
+  "url": "https://example.invalid/upload",
+  "field": "file",
+  "allow_http": false,
+  "response": {
+    "type": "regex",
+    "pattern": "href=\"([^\"]+)\"",
+    "group": "1"
+  }
+}

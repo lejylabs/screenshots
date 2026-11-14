@@ -1790,6 +1790,147 @@ fn load_destination_applies_composed_result_link_without_uploading_or_persisting
 }
 
 #[gpui::test]
+fn load_destination_applies_extra_result_urls_without_uploading_or_persisting(cx: &mut TestAppContext) {
+    let handle = open_workspace(cx);
+    let root = std::env::temp_dir().join(format!("screenshots-extra-links-ui-{}", std::process::id()));
+    std::fs::create_dir_all(&root).unwrap();
+    let profile = root.join("destination.json");
+    std::fs::write(
+        &profile,
+        r#"{
+            "url": "https://extras.invalid/upload",
+            "field": "file",
+            "json_pointer": "/url",
+            "thumbnail": { "json_pointer": "/thumbnail_url" },
+            "deletion": { "json_pointer": "/delete" }
+        }"#,
+    )
+    .unwrap();
+    handle.update(cx, |this, _, cx| {
+        this.upload_destination = Some(app_core::UploadDestination::manual(
+            "https://old.invalid/upload".into(),
+            app_core::UploadMethod::Post, "file".into(), None, false).unwrap());
+        this.upload_url = Some("https://old.invalid/share/kept".into());
+        this.upload_thumbnail = Some("https://old.invalid/t.png".into());
+        this.upload_deletion = Some("https://old.invalid/delete".into());
+        this.show_page(ControlPage::Uploads, cx);
+    }).unwrap();
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.try_find("copy-upload-thumbnail").is_some());
+        assert!(window.try_find("copy-upload-deletion").is_some());
+        window.click("load-upload-destination", cx);
+    }).unwrap();
+    assert!(cx.did_prompt_for_paths());
+    handle.update(cx, |this, _, cx| {
+        assert!(this.upload_config_loading);
+        assert!(this.upload_destination.is_none());
+        this.load_upload_destination(cx);
+    }).unwrap();
+    cx.simulate_path_prompt_response(|options| {
+        assert!(options.files && !options.directories && !options.multiple);
+        None
+    });
+    cx.run_until_parked();
+    handle.update(cx, |this, _, cx| {
+        assert!(!this.upload_config_loading);
+        assert!(this.upload_status.contains("canceled"));
+        assert!(this.upload_destination.is_none());
+        this.load_upload_destination(cx);
+    }).unwrap();
+    cx.simulate_path_prompt_response(|_| Some(vec![profile.clone()]));
+    cx.run_until_parked();
+    handle.update(cx, |this, _, cx| {
+        assert!(!this.upload_config_loading);
+        let destination = this.upload_destination.as_ref().unwrap();
+        assert_eq!(destination.origin(), "https://extras.invalid");
+        assert_eq!(
+            destination.thumbnail_template().as_deref(),
+            Some("{json:thumbnail_url}")
+        );
+        assert_eq!(destination.deletion_template().as_deref(), Some("{json:delete}"));
+        assert!(this.upload_status.contains("Session only"));
+        assert!(this.upload_url.is_none());
+        assert!(this.upload_thumbnail.is_none());
+        assert!(this.upload_deletion.is_none());
+        assert!(this.last_saved.is_none() && this.last_capture.is_none());
+        this.upload_cancel = Some(app_core::UploadCancellation::default());
+        this.load_upload_destination(cx);
+        assert_eq!(
+            this.upload_destination.as_ref().unwrap().origin(),
+            "https://extras.invalid"
+        );
+        this.show_page(ControlPage::Sources, cx);
+    }).unwrap();
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[gpui::test]
+fn load_destination_applies_regex_result_without_uploading_or_persisting(cx: &mut TestAppContext) {
+    let handle = open_workspace(cx);
+    let root = std::env::temp_dir().join(format!("screenshots-regex-link-ui-{}", std::process::id()));
+    std::fs::create_dir_all(&root).unwrap();
+    let profile = root.join("destination.json");
+    std::fs::write(
+        &profile,
+        r#"{
+            "url": "https://regex.invalid/upload",
+            "field": "file",
+            "response": { "type": "regex", "pattern": "href=\"([^\"]+)\"", "group": "1" }
+        }"#,
+    )
+    .unwrap();
+    handle.update(cx, |this, _, cx| {
+        this.upload_destination = Some(app_core::UploadDestination::manual(
+            "https://old.invalid/upload".into(),
+            app_core::UploadMethod::Post, "file".into(), None, false).unwrap());
+        this.upload_url = Some("https://old.invalid/share/kept".into());
+        this.show_page(ControlPage::Uploads, cx);
+    }).unwrap();
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.click("load-upload-destination", cx);
+    }).unwrap();
+    assert!(cx.did_prompt_for_paths());
+    handle.update(cx, |this, _, cx| {
+        assert!(this.upload_config_loading);
+        assert!(this.upload_destination.is_none());
+        this.load_upload_destination(cx);
+    }).unwrap();
+    cx.simulate_path_prompt_response(|options| {
+        assert!(options.files && !options.directories && !options.multiple);
+        None
+    });
+    cx.run_until_parked();
+    handle.update(cx, |this, _, cx| {
+        assert!(!this.upload_config_loading);
+        assert!(this.upload_status.contains("canceled"));
+        assert!(this.upload_destination.is_none());
+        this.load_upload_destination(cx);
+    }).unwrap();
+    cx.simulate_path_prompt_response(|_| Some(vec![profile.clone()]));
+    cx.run_until_parked();
+    handle.update(cx, |this, _, cx| {
+        assert!(!this.upload_config_loading);
+        let destination = this.upload_destination.as_ref().unwrap();
+        assert_eq!(destination.origin(), "https://regex.invalid");
+        assert_eq!(destination.regex_pattern(), Some(r#"href="([^"]+)""#));
+        assert_eq!(destination.regex_group(), Some("1"));
+        assert!(this.upload_status.contains("Session only"));
+        assert!(this.upload_url.is_none());
+        assert!(this.last_saved.is_none() && this.last_capture.is_none());
+        this.upload_cancel = Some(app_core::UploadCancellation::default());
+        this.load_upload_destination(cx);
+        assert_eq!(
+            this.upload_destination.as_ref().unwrap().origin(),
+            "https://regex.invalid"
+        );
+        this.show_page(ControlPage::Sources, cx);
+    }).unwrap();
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[gpui::test]
 fn settings_backup_export_writes_a_chosen_file_without_importing(cx: &mut TestAppContext) {
     let handle = open_workspace(cx);
     let root = std::env::temp_dir().join(format!("screenshots-settings-backup-ui-{}", std::process::id()));
