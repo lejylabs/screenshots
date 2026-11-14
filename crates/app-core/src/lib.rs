@@ -68,6 +68,10 @@ mod hotkey;
 pub use hotkey::{CaptureCommand, CaptureHotkey};
 
 #[cfg(target_os = "windows")]
+mod native_appearance;
+#[cfg(target_os = "windows")]
+pub use native_appearance::apply_native_menus;
+#[cfg(target_os = "windows")]
 mod tray;
 #[cfg(target_os = "windows")]
 pub use tray::{SpikeTray, TrayCommand};

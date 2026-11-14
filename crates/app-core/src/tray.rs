@@ -31,6 +31,7 @@ pub struct SpikeTray {
 
 impl SpikeTray {
     pub fn new() -> Result<Self> {
+        crate::apply_native_menus(crate::UiTheme::Default.is_dark());
         let menu = Menu::new();
         let capture = MenuItem::new("Capture primary", true, None);
         let region = MenuItem::new("Select region", true, None);

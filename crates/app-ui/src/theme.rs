@@ -61,6 +61,10 @@ pub fn init(cx: &mut App) {
 
 pub fn apply(theme: UiTheme, cx: &mut App) {
     cx.set_global(ActiveTheme(theme));
+    #[cfg(target_os = "windows")]
+    {
+        app_core::apply_native_menus(theme.is_dark());
+    }
     if cx.has_global::<KitReady>() {
         sync_kit(cx);
     } else {

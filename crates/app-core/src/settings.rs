@@ -138,6 +138,13 @@ pub enum UiTheme {
     Default,
 }
 
+impl UiTheme {
+    /// Every shipped appearance is dark; native Windows menus follow this flag.
+    pub fn is_dark(self) -> bool {
+        matches!(self, Self::Default | Self::Oldschool | Self::Classic)
+    }
+}
+
 #[derive(Clone, Serialize, Deserialize)]
 pub struct CaptureSettings {
     version: u32,
@@ -1083,6 +1090,7 @@ mod tests {
             UiTheme::Default
         );
         for theme in [UiTheme::Default, UiTheme::Oldschool, UiTheme::Classic] {
+            assert!(theme.is_dark());
             CaptureSettings::for_directory(dir.clone())?
                 .with_theme(theme)
                 .save_at(&path)?;
