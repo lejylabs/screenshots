@@ -1723,6 +1723,73 @@ fn load_destination_applies_json_body_without_uploading_or_persisting(cx: &mut T
 }
 
 #[gpui::test]
+fn load_destination_applies_composed_result_link_without_uploading_or_persisting(cx: &mut TestAppContext) {
+    let handle = open_workspace(cx);
+    let root = std::env::temp_dir().join(format!("screenshots-composed-link-ui-{}", std::process::id()));
+    std::fs::create_dir_all(&root).unwrap();
+    let profile = root.join("destination.json");
+    std::fs::write(
+        &profile,
+        r#"{
+            "url": "https://composed.invalid/upload",
+            "field": "file",
+            "json_pointer": "/id",
+            "link_prefix": "https://cdn.composed.invalid/",
+            "link_suffix": ".png"
+        }"#,
+    )
+    .unwrap();
+    handle.update(cx, |this, _, cx| {
+        this.upload_destination = Some(app_core::UploadDestination::manual(
+            "https://old.invalid/upload".into(),
+            app_core::UploadMethod::Post, "file".into(), None, false).unwrap());
+        this.upload_url = Some("https://old.invalid/share/kept".into());
+        this.show_page(ControlPage::Uploads, cx);
+    }).unwrap();
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.click("load-upload-destination", cx);
+    }).unwrap();
+    assert!(cx.did_prompt_for_paths());
+    handle.update(cx, |this, _, cx| {
+        assert!(this.upload_config_loading);
+        assert!(this.upload_destination.is_none());
+        this.load_upload_destination(cx);
+    }).unwrap();
+    cx.simulate_path_prompt_response(|options| {
+        assert!(options.files && !options.directories && !options.multiple);
+        None
+    });
+    cx.run_until_parked();
+    handle.update(cx, |this, _, cx| {
+        assert!(!this.upload_config_loading);
+        assert!(this.upload_status.contains("canceled"));
+        assert!(this.upload_destination.is_none());
+        this.load_upload_destination(cx);
+    }).unwrap();
+    cx.simulate_path_prompt_response(|_| Some(vec![profile.clone()]));
+    cx.run_until_parked();
+    handle.update(cx, |this, _, cx| {
+        assert!(!this.upload_config_loading);
+        let destination = this.upload_destination.as_ref().unwrap();
+        assert_eq!(destination.origin(), "https://composed.invalid");
+        assert_eq!(destination.link_prefix(), "https://cdn.composed.invalid/");
+        assert_eq!(destination.link_suffix(), ".png");
+        assert!(this.upload_status.contains("Session only"));
+        assert!(this.upload_url.is_none());
+        assert!(this.last_saved.is_none() && this.last_capture.is_none());
+        this.upload_cancel = Some(app_core::UploadCancellation::default());
+        this.load_upload_destination(cx);
+        assert_eq!(
+            this.upload_destination.as_ref().unwrap().origin(),
+            "https://composed.invalid"
+        );
+        this.show_page(ControlPage::Sources, cx);
+    }).unwrap();
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[gpui::test]
 fn settings_backup_export_writes_a_chosen_file_without_importing(cx: &mut TestAppContext) {
     let handle = open_workspace(cx);
     let root = std::env::temp_dir().join(format!("screenshots-settings-backup-ui-{}", std::process::id()));

@@ -1,9 +1,18 @@
 # Functional gap analysis: screenshots and ShareX
 
+Implementation follow-up (2026-11-14, working tree): Destination JSON
+`link_prefix`/`link_suffix` and ShareX URL templates such as
+`https://cdn.example/{json:id}.png` compose one existing parser onto a bounded
+HTTPS prefix and suffix. JSON numbers become decimal text. Origin hijacks,
+regex/XML, multi-token templates and deletion/thumbnail URLs stay rejected.
+Secret-store platforms other than Windows remain missing. See PLAN.md's composed
+result URLs slice.
+
 Implementation follow-up (2026-11-14, working tree): Destination JSON `json` and
 ShareX Body JSON Data string maps can carry up to 8 POST JSON object fields with
 exactly one `{base64}` PNG field. PUT destinations, extra form fields, reserved
-secret names and other templates stay rejected. Richer parsers and
+secret names and other templates stay rejected. Composed result URLs are
+implemented in the later 2026-11-14 follow-up. Regex/XML parsers and
 deletion/thumbnail URLs remain missing. Secret-store platforms other than
 Windows remain missing. See PLAN.md's JSON request bodies slice.
 
@@ -343,8 +352,8 @@ files/URLs and configured tasks.
 | --- | --- | --- |
 | Destination setup | Partial: Uploads offers native credential-free POST/PUT setup with plain-text/JSON link responses, bounded validation and explicit HTTP opt-in; Use is session-only and Remember persists it. Windows Save credential writes Bearer/API-key/Basic secrets to Credential Manager and attaches only the reference to the session destination. Remove credential deletes that OS secret and clears the session reference; Forget destination still leaves the OS secret in place. JSON profiles retain advanced settings, including up to 8 custom request headers, 8 query parameters, 8 extra POST form fields and 8 POST JSON body fields with one `{base64}` PNG field. Test destination sends a throwaway 1×1 PNG through the existing transfer path without recording history. Named destinations persist up to 16 profiles in a separate catalog. Per-task defaults apply a saved name when that capture starts, without uploading. Export/Import configuration copies that catalog and the current destination without secrets. Settings Export/Import copies preferences, including per-task destination names, without destination URLs, history, images or secrets. | A |
 | Multiple destinations | Partial: a named catalog of up to 16 destinations can be saved, switched into the session and removed. Export/Import configuration copies the catalog with the current destination. Per-task defaults apply a saved name when that capture starts, without uploading. The remembered current destination remains one profile. | A/B |
-| Existing ShareX profiles | Partial: Uploads can import and export a documented `.sxcu` subset (HTTPS ImageUploader POST multipart, POST JSON or PUT binary, `{json}`/`{header}`/`{response}`/`{responseurl}`, Headers, Parameters, Arguments and Body JSON Data string maps through the same validators). `{base64}` is the only JSON file placeholder; secrets, HTTP, `{input}`/`{filename}` and richer parsers are rejected. Full custom-uploader parity remains missing. Our profile JSON is not the ShareX format. | B |
-| Generic HTTP breadth | Partial: POST multipart/PUT PNG/POST JSON with up to 8 custom request headers, 8 query parameters, 8 extra POST form fields and 8 POST JSON body fields with one `{base64}` PNG field; no richer response expressions or deletion/thumbnail result URLs. Compatibility must preserve origin-scoped secrets and response bounds. | B |
+| Existing ShareX profiles | Partial: Uploads can import and export a documented `.sxcu` subset (HTTPS ImageUploader POST multipart, POST JSON or PUT binary, `{json}`/`{header}`/`{response}`/`{responseurl}` with one optional HTTPS prefix/suffix, Headers, Parameters, Arguments and Body JSON Data string maps through the same validators). `{base64}` is the only JSON file placeholder; secrets, HTTP, `{input}`/`{filename}`, regex/XML and multi-token parsers are rejected. Full custom-uploader parity remains missing. Our profile JSON is not the ShareX format. | B |
+| Generic HTTP breadth | Partial: POST multipart/PUT PNG/POST JSON with up to 8 custom request headers, 8 query parameters, 8 extra POST form fields, 8 POST JSON body fields with one `{base64}` PNG field, and composed result URLs from a JSON string/number, text or header plus prefix/suffix; no regex/XML expressions or deletion/thumbnail result URLs. Compatibility must preserve origin-scoped secrets and response bounds. | B |
 | Service integrations | No dedicated S3/R2, SFTP/FTP, OAuth/provider integrations or remote file management. Some simple services can already work through our generic POST/PUT path; test service by service. | B/C |
 | Accepted input | PNG files only. No arbitrary file/folder/text/clipboard/URL uploads, batch upload UI, watched-folder workflow or capture-to-link chain. | B |
 | Post-upload behavior | Explicit Copy link exists. Missing optional user-configured automatic copy, link templates/shortening/QR and follow-up tasks. No implicit network/browser action should be added. | A/B |

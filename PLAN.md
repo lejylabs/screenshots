@@ -758,7 +758,7 @@ Uploads offers Import ShareX after the destination panel is visible. The action
 loads one .sxcu file through the existing native picker and maps a documented
 subset onto the session destination: ImageUploader, HTTPS POST multipart, POST
 JSON or PUT binary, FileFormName, URL parsers {json:path}, {header:name}, {response} or
-PUT {responseurl}, and Headers string maps through the same custom-header
+PUT {responseurl}, optional HTTPS prefix/suffix around one of those tokens, and Headers string maps through the same custom-header
 validator. Empty URL uses the plain-text response. Unknown informational
 fields are ignored. Query parameters are implemented in the later 2026-11-14
 follow-up. Extra form fields are implemented in the later 2026-11-14
@@ -791,7 +791,7 @@ Uploads offers Export ShareX after a session destination exists. The action
 writes one .sxcu file through the existing native save picker, mapping the
 documented subset: ImageUploader, HTTPS POST multipart, POST JSON or PUT binary,
 FileFormName, URL parsers {json:path}, {header:name}, {response} or PUT
-{responseurl}, custom request headers as a Headers object, query parameters as a Parameters object, extra form fields as an Arguments object, and JSON bodies as a Data object with one {base64} field. Secrets and credential references are omitted. HTTP destinations,
+{responseurl} including an optional HTTPS prefix/suffix around one token, custom request headers as a Headers object, query parameters as a Parameters object, extra form fields as an Arguments object, and JSON bodies as a Data object with one {base64} field. Secrets and credential references are omitted. HTTP destinations,
 JSON-pointer escapes and response modes outside that subset are rejected before
 any file is created. Existing files are never overwritten; a missing extension
 becomes .sxcu. Export does not change the session destination, named catalog,
@@ -967,8 +967,9 @@ reject a nonempty `json` map. Empty `json` is omitted and keeps the existing
 multipart POST or PUT PNG path. The setup form has no JSON-body rows; load JSON,
 Remember, named catalog, configuration export/import and ShareX Body JSON Data
 string maps reuse the same validator. `{input}`, `{filename}` and other ShareX
-templates stay rejected. Richer parsers and deletion/thumbnail URLs stay out of
-this slice. Origin-scoped secrets and the 1 MiB response cap stay unchanged. No
+templates stay rejected. Composed result URLs are implemented below. Regex/XML
+parsers and deletion/thumbnail URLs stay out of this slice. Origin-scoped secrets
+and the 1 MiB response cap stay unchanged. No
 connection or upload starts while loading or validating a profile.
 
 Resource cost is one BTreeMap of at most 8 name/value strings plus a JSON request
@@ -981,11 +982,41 @@ fixtures verify that loading a temp JSON with a JSON body updates only this
 session, without Remember, named-catalog writes or an upload. A regular core
 fixture covers validation, persistence, reserved-name/template/PUT/form-field
 rejection and ShareX Data mapping. An ignored loopback fixture asserts
-Content-Type application/json and the `{base64}` field on the wire. Richer
-ShareX parsers remain separate work.
+Content-Type application/json and the `{base64}` field on the wire. Composed
+result URLs are implemented below. Regex/XML parsers remain separate work.
 Native keyboard/IME/accessibility, packaged restart workflow and
 latency/process/GPU/resource acceptance remain open; no new performance
 measurement is claimed for this bounded JSON body.
+
+#### Current feature slice: composed result URLs
+
+Destination JSON may include `link_prefix` (at most 256 bytes) and `link_suffix`
+(at most 64 bytes) around the existing JSON-pointer, plain-text or header parser.
+Empty affixes keep the current full-URL result. A nonempty prefix must be an
+absolute HTTP(S) URL with a host and without credentials, query, fragment or
+`{` `}` `$` templates; HTTP prefixes require allow_http. The extracted value is
+then a 1–512 byte path fragment without schemes, query, fragment or templates,
+or a JSON number rendered as decimal text. The composed link must stay within
+2,048 bytes and keep the prefix origin, so `https://` plus a foreign host is
+rejected. PUT request-URL results reject affixes. Suffix-only composition keeps
+the extracted URL origin. The setup form has no prefix/suffix rows; load JSON,
+Remember, named catalog, configuration export/import and ShareX URL templates
+such as `https://cdn.example/{json:id}.png` reuse the same validator. Regex, XML,
+multi-token templates and deletion/thumbnail URLs stay out of this slice.
+Origin-scoped secrets and the 1 MiB response cap stay unchanged. No connection or
+upload starts while loading or validating a profile.
+
+Resource cost is two short strings on the existing destination profile. There is
+no new dependency, worker, runtime, queue, image, cache, watcher or idle timer.
+Constructor and headless UI fixtures verify that loading a temp JSON with
+prefix/suffix updates only this session, without Remember, named-catalog writes
+or an upload. A regular core fixture covers validation, persistence, origin
+preservation, PUT rejection and ShareX URL mapping. An ignored loopback fixture
+asserts a numeric JSON id composed onto a CDN prefix. Regex/XML parsers and
+deletion/thumbnail URLs remain separate work.
+Native keyboard/IME/accessibility, packaged restart workflow and
+latency/process/GPU/resource acceptance remain open; no new performance
+measurement is claimed for this bounded result-link composition.
 
 #### Current feature slice: configurable Windows global hotkeys
 

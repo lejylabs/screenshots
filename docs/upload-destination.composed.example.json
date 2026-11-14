@@ -1,0 +1,8 @@
+{
+  "url": "https://example.invalid/upload",
+  "field": "file",
+  "json_pointer": "/id",
+  "allow_http": false,
+  "link_prefix": "https://cdn.example.invalid/",
+  "link_suffix": ".png"
+}

@@ -68,6 +68,9 @@ const MAX_QUERY_PARAMETERS: usize = 8;
 const MAX_FORM_FIELDS: usize = 8;
 const MAX_JSON_FIELDS: usize = 8;
 const JSON_BASE64_PLACEHOLDER: &str = "{base64}";
+const MAX_LINK_PREFIX: usize = 256;
+const MAX_LINK_SUFFIX: usize = 64;
+const MAX_LINK_FRAGMENT: usize = 512;
 const RESERVED_QUERY_NAMES: &[&str] = &[
     "password",
     "passwd",
@@ -132,6 +135,10 @@ pub struct UploadDestination {
     form: BTreeMap<String, String>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     json: BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    link_prefix: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    link_suffix: String,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
@@ -178,7 +185,8 @@ impl UploadDestination {
         let field = if method == UploadMethod::Post { field.trim().into() } else { default_field() };
         let destination = Self { url: url.trim().into(), method, field,
             json_pointer: json_pointer.unwrap_or_default().trim().into(), response, allow_http,
-            credential: None, authentication: None, headers: BTreeMap::new(), query: BTreeMap::new(), form: BTreeMap::new(), json: BTreeMap::new() };
+            credential: None, authentication: None, headers: BTreeMap::new(), query: BTreeMap::new(), form: BTreeMap::new(), json: BTreeMap::new(),
+            link_prefix: String::new(), link_suffix: String::new() };
         destination.validate()?;
         Ok(destination)
     }
@@ -257,6 +265,22 @@ impl UploadDestination {
 
     pub fn request_json(&self) -> &BTreeMap<String, String> {
         &self.json
+    }
+
+    /// Attach a bounded result-link prefix/suffix without networking or secrets.
+    pub fn with_link_affixes(mut self, prefix: impl AsRef<str>, suffix: impl AsRef<str>) -> Result<Self> {
+        self.link_prefix = prefix.as_ref().trim().to_owned();
+        self.link_suffix = suffix.as_ref().trim().to_owned();
+        self.validate()?;
+        Ok(self)
+    }
+
+    pub fn link_prefix(&self) -> &str {
+        &self.link_prefix
+    }
+
+    pub fn link_suffix(&self) -> &str {
+        &self.link_suffix
     }
 
     /// Attach a credential reference without reading or writing secrets.
@@ -474,6 +498,7 @@ impl UploadDestination {
         validate_custom_form(&self.form, self.method, &self.field)?;
         validate_custom_json(&self.json, self.method, &self.form)?;
         validate_custom_headers(&self.headers)?;
+        self.validate_link_affixes()?;
         let url = self.apply_query(url)?;
         if matches!(self.response, Some(UploadResponse::RequestUrl)) {
             validate_link(url.as_str())?;
@@ -496,6 +521,91 @@ impl UploadDestination {
             "Upload URL with query parameters exceeds 2048 bytes"
         );
         Ok(url)
+    }
+
+    fn validate_link_affixes(&self) -> Result<()> {
+        if matches!(self.response, Some(UploadResponse::RequestUrl)) {
+            ensure!(
+                self.link_prefix.is_empty() && self.link_suffix.is_empty(),
+                "PUT request-URL results cannot use a link prefix or suffix"
+            );
+            return Ok(());
+        }
+        ensure!(
+            self.link_prefix.trim() == self.link_prefix
+                && self.link_prefix.len() <= MAX_LINK_PREFIX
+                && !self.link_prefix.chars().any(char::is_control)
+                && !contains_upload_template(&self.link_prefix),
+            "Use a result link prefix of at most 256 bytes without templates or control characters"
+        );
+        ensure!(
+            self.link_suffix.trim() == self.link_suffix
+                && self.link_suffix.len() <= MAX_LINK_SUFFIX
+                && !self.link_suffix.chars().any(char::is_control)
+                && !contains_upload_template(&self.link_suffix)
+                && !self.link_suffix.contains("://"),
+            "Use a result link suffix of at most 64 bytes without templates, schemes or control characters"
+        );
+        if self.link_prefix.is_empty() {
+            return Ok(());
+        }
+        let prefix = reqwest::Url::parse(&self.link_prefix)
+            .context("Result link prefix is not an absolute URL")?;
+        ensure!(
+            prefix.host_str().is_some()
+                && prefix.username().is_empty()
+                && prefix.password().is_none()
+                && prefix.query().is_none()
+                && prefix.fragment().is_none(),
+            "Result link prefixes must have a host and no embedded credentials, query or fragment"
+        );
+        ensure!(
+            prefix.scheme() == "https" || (prefix.scheme() == "http" && self.allow_http),
+            "Use HTTPS for the result link prefix, or explicitly enable allow_http"
+        );
+        Ok(())
+    }
+
+    fn result_link(&self, value: &str) -> Result<String> {
+        let value = value.trim();
+        if self.link_prefix.is_empty() && self.link_suffix.is_empty() {
+            return validate_link(value);
+        }
+        if self.link_prefix.is_empty() {
+            let base = validate_link(value)?;
+            let composed = format!("{base}{}", self.link_suffix);
+            let link = validate_link(&composed)?;
+            let base_url = reqwest::Url::parse(&base)?;
+            let composed_url = reqwest::Url::parse(&link)?;
+            ensure!(
+                base_url.origin().ascii_serialization()
+                    == composed_url.origin().ascii_serialization(),
+                "Composed result link must keep the extracted URL origin"
+            );
+            return Ok(link);
+        }
+        ensure!(
+            !value.is_empty()
+                && value.len() <= MAX_LINK_FRAGMENT
+                && !value.chars().any(|character| character.is_whitespace() || character.is_control())
+                && !contains_upload_template(value)
+                && !value.contains("://")
+                && !value.contains('\\')
+                && !value.contains('?')
+                && !value.contains('#'),
+            "Use a result path of 1–512 bytes without templates, schemes, query, fragment or control characters"
+        );
+        let composed = format!("{}{value}{}", self.link_prefix, self.link_suffix);
+        let link = validate_link(&composed)?;
+        let prefix_url = reqwest::Url::parse(&self.link_prefix)
+            .context("Result link prefix is not an absolute URL")?;
+        let composed_url = reqwest::Url::parse(&link)?;
+        ensure!(
+            prefix_url.origin().ascii_serialization()
+                == composed_url.origin().ascii_serialization(),
+            "Composed result link must keep the configured prefix origin"
+        );
+        Ok(link)
     }
 
     pub fn origin(&self) -> String {
@@ -654,7 +764,8 @@ impl ShareXCustomUploader {
         } else {
             default_field()
         };
-        let (json_pointer, response) = sharex_response(self.url.as_deref().unwrap_or(""), method)?;
+        let (json_pointer, response, link_prefix, link_suffix) =
+            sharex_response(self.url.as_deref().unwrap_or(""), method)?;
         let destination = UploadDestination {
             url: self.request_url.trim().into(),
             method,
@@ -668,6 +779,8 @@ impl ShareXCustomUploader {
             query,
             form,
             json,
+            link_prefix,
+            link_suffix,
         };
         destination.validate()?;
         let name = match self.name.as_deref().map(str::trim).filter(|name| !name.is_empty()) {
@@ -696,17 +809,26 @@ impl ShareXCustomUploader {
             }
             None => None,
         };
-        let url = match (&destination.response, destination.json_pointer.as_str()) {
-            (Some(UploadResponse::Text), "") => Some("{response}".into()),
-            (Some(UploadResponse::Header { name }), "") => Some(format!("{{header:{name}}}")),
-            (Some(UploadResponse::RequestUrl), "") => Some("{responseurl}".into()),
+        let token = match (&destination.response, destination.json_pointer.as_str()) {
+            (Some(UploadResponse::Text), "") => "{response}".into(),
+            (Some(UploadResponse::Header { name }), "") => format!("{{header:{name}}}"),
+            (Some(UploadResponse::RequestUrl), "") => "{responseurl}".into(),
             (None, pointer) if !pointer.is_empty() => {
-                Some(format!("{{json:{}}}", sharex_json_path(pointer)?))
+                format!("{{json:{}}}", sharex_json_path(pointer)?)
             }
             _ => anyhow::bail!(
                 "ShareX export needs a JSON pointer, text, header or PUT request-URL response"
             ),
         };
+        let url = format!(
+            "{}{token}{}",
+            destination.link_prefix, destination.link_suffix
+        );
+        ensure!(
+            url.len() <= 256 && !url.chars().any(char::is_control),
+            "ShareX URL parser is invalid or exceeds 256 bytes"
+        );
+        let url = Some(url);
         Ok(Self {
             version: Some("17.0.0".into()),
             name,
@@ -998,23 +1120,63 @@ fn validate_custom_headers(headers: &BTreeMap<String, String>) -> Result<()> {
 fn sharex_response(
     url: &str,
     method: UploadMethod,
-) -> Result<(String, Option<UploadResponse>)> {
+) -> Result<(String, Option<UploadResponse>, String, String)> {
     let url = url.trim();
-    if url.is_empty() || url == "{response}" {
-        return Ok((String::new(), Some(UploadResponse::Text)));
+    if url.is_empty() {
+        return Ok((
+            String::new(),
+            Some(UploadResponse::Text),
+            String::new(),
+            String::new(),
+        ));
     }
     ensure!(
         url.len() <= 256 && !url.chars().any(char::is_control),
         "ShareX URL parser is invalid or exceeds 256 bytes"
     );
-    if url == "{responseurl}" {
+    let (prefix, token, suffix) = split_sharex_url_template(url)?;
+    let (pointer, response) = parse_sharex_url_token(&token, method)?;
+    if matches!(response, Some(UploadResponse::RequestUrl)) {
+        ensure!(
+            prefix.is_empty() && suffix.is_empty(),
+            "composed {{responseurl}} is not supported"
+        );
+    }
+    Ok((pointer, response, prefix, suffix))
+}
+
+fn split_sharex_url_template(url: &str) -> Result<(String, String, String)> {
+    let start = url
+        .find('{')
+        .context("This ShareX URL syntax is not supported")?;
+    let relative_end = url[start + 1..]
+        .find('}')
+        .context("This ShareX URL syntax is not supported")?;
+    let end = start + 1 + relative_end;
+    let prefix = &url[..start];
+    let suffix = &url[end + 1..];
+    ensure!(
+        !prefix.contains(['{', '}', '$']) && !suffix.contains(['{', '}', '$']),
+        "ShareX URL templates support one parser token"
+    );
+    Ok((prefix.into(), url[start..=end].into(), suffix.into()))
+}
+
+fn parse_sharex_url_token(
+    token: &str,
+    method: UploadMethod,
+) -> Result<(String, Option<UploadResponse>)> {
+    if token == "{response}" {
+        return Ok((String::new(), Some(UploadResponse::Text)));
+    }
+    if token == "{responseurl}" {
         ensure!(
             method == UploadMethod::Put,
             "{{responseurl}} requires a PUT ShareX profile"
         );
         return Ok((String::new(), Some(UploadResponse::RequestUrl)));
     }
-    if let Some(name) = url
+    if let Some(name) = token
         .strip_prefix("{header:")
         .and_then(|value| value.strip_suffix('}'))
     {
@@ -1028,7 +1190,7 @@ fn sharex_response(
             Some(UploadResponse::Header { name: name.into() }),
         ));
     }
-    if let Some(path) = url
+    if let Some(path) = token
         .strip_prefix("{json:")
         .and_then(|value| value.strip_suffix('}'))
     {
@@ -1661,7 +1823,7 @@ async fn transfer(
             values.next().is_none(),
             "Upload completed, but the response link header is repeated"
         );
-        return validate_link(
+        return destination.result_link(
             value
                 .to_str()
                 .context("Upload response header is not valid text")?
@@ -1682,7 +1844,7 @@ async fn transfer(
         bytes.extend_from_slice(&chunk);
     }
     if matches!(destination.response, Some(UploadResponse::Text)) {
-        return validate_link(
+        return destination.result_link(
             std::str::from_utf8(&bytes)
                 .context("Upload completed, but its response is not UTF-8 text")?
                 .trim(),
@@ -1692,9 +1854,17 @@ async fn transfer(
         .context("Upload completed, but its response is not valid JSON")?;
     let value = json
         .pointer(&destination.json_pointer)
-        .and_then(|value| value.as_str())
+        .and_then(json_pointer_text)
         .context("Upload completed, but the configured JSON pointer contains no link")?;
-    validate_link(value)
+    destination.result_link(&value)
+}
+
+fn json_pointer_text(value: &serde_json::Value) -> Option<String> {
+    match value {
+        serde_json::Value::String(text) => Some(text.clone()),
+        serde_json::Value::Number(number) => Some(number.to_string()),
+        _ => None,
+    }
 }
 
 pub(crate) fn validate_link(value: &str) -> Result<String> {
@@ -2226,6 +2396,109 @@ mod tests {
     }
 
     #[test]
+    fn composed_result_links_validate_persist_and_keep_origin() -> Result<()> {
+        let destination = UploadDestination::manual(
+            "https://example.invalid/upload".into(),
+            UploadMethod::Post,
+            "file".into(),
+            Some("/id".into()),
+            false,
+        )?;
+        assert!(destination.link_prefix().is_empty());
+        assert!(destination.link_suffix().is_empty());
+        let destination = destination.with_link_affixes(
+            " https://cdn.example.invalid/images/ ",
+            " .png ",
+        )?;
+        assert_eq!(destination.link_prefix(), "https://cdn.example.invalid/images/");
+        assert_eq!(destination.link_suffix(), ".png");
+        assert_eq!(
+            destination.result_link("abc")?,
+            "https://cdn.example.invalid/images/abc.png"
+        );
+        assert_eq!(
+            destination.result_link("123")?,
+            "https://cdn.example.invalid/images/123.png"
+        );
+        let root = std::env::temp_dir().join(format!(
+            "screenshots-composed-link-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&root)?;
+        let path = root.join("destination.json");
+        let other = root.join("settings.json");
+        std::fs::write(&other, b"keep-settings")?;
+        destination.save_at(&path)?;
+        let loaded = UploadDestination::load(&path)?;
+        assert_eq!(loaded.link_prefix(), destination.link_prefix());
+        assert_eq!(loaded.link_suffix(), destination.link_suffix());
+        let json = std::fs::read_to_string(&path)?;
+        assert!(json.contains("link_prefix"));
+        assert!(json.contains("link_suffix"));
+        assert!(!json.contains("api_key"));
+        std::fs::write(
+            &path,
+            r#"{"url":"https://example.invalid/upload","field":"file","json_pointer":"/id","link_prefix":"https://cdn.example.invalid/","link_suffix":".png"}"#,
+        )?;
+        let loaded = UploadDestination::load(&path)?;
+        assert_eq!(
+            loaded.result_link("abc")?,
+            "https://cdn.example.invalid/abc.png"
+        );
+        for (prefix, suffix) in [
+            ("https://cdn.example.invalid/{json:id}", ""),
+            ("https://user:secret@cdn.example.invalid/", ""),
+            ("https://cdn.example.invalid/?x=1", ""),
+            ("https://cdn.example.invalid/#frag", ""),
+            ("https://", ""),
+            ("http://cdn.example.invalid/", ""),
+            ("file:///tmp/", ""),
+            ("", "://png"),
+            ("https://cdn.example.invalid/", "{json:id}"),
+            ("https://cdn.example.invalid/", "a\nb"),
+        ] {
+            assert!(
+                destination
+                    .clone()
+                    .with_link_affixes(prefix, suffix)
+                    .is_err(),
+                "{prefix}{suffix}"
+            );
+        }
+        assert!(destination.result_link("https://evil.invalid/x").is_err());
+        assert!(destination.result_link("abc?x=1").is_err());
+        assert!(destination.result_link("abc#frag").is_err());
+        assert!(destination.result_link("").is_err());
+        assert!(destination.result_link(&"x".repeat(513)).is_err());
+        let suffix_only = UploadDestination::manual(
+            "https://example.invalid/upload".into(),
+            UploadMethod::Post,
+            "file".into(),
+            Some("/url".into()),
+            false,
+        )?
+        .with_link_affixes("", ".png")?;
+        assert_eq!(
+            suffix_only.result_link("https://cdn.example.invalid/image")?,
+            "https://cdn.example.invalid/image.png"
+        );
+        assert!(suffix_only.result_link("/relative").is_err());
+        let mut put = UploadDestination::manual(
+            "https://example.invalid/image.png".into(),
+            UploadMethod::Put,
+            "file".into(),
+            None,
+            false,
+        )?;
+        put.response = Some(UploadResponse::RequestUrl);
+        put.json_pointer.clear();
+        assert!(put.clone().with_link_affixes("https://cdn.example.invalid/", "").is_err());
+        assert_eq!(std::fs::read(&other)?, b"keep-settings");
+        std::fs::remove_dir_all(root)?;
+        Ok(())
+    }
+
+    #[test]
     fn progress_coalesces_closes_and_counts_only_consumed_png_bytes() {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -2720,6 +2993,18 @@ mod tests {
             Some("file")
         );
         assert!(destination.request_form().is_empty());
+        std::fs::write(
+            &path,
+            r#"{"DestinationType":"ImageUploader","RequestURL":"https://example.invalid/upload","URL":"https://cdn.example.invalid/{json:id}.png"}"#,
+        )?;
+        let (destination, _) = UploadDestination::from_sharex_at(&path)?;
+        assert_eq!(destination.json_pointer, "/id");
+        assert_eq!(destination.link_prefix(), "https://cdn.example.invalid/");
+        assert_eq!(destination.link_suffix(), ".png");
+        assert_eq!(
+            destination.result_link("abc")?,
+            "https://cdn.example.invalid/abc.png"
+        );
         for profile in [
             r#"{"DestinationType":"FileUploader","RequestURL":"https://example.invalid/upload"}"#,
             r#"{"DestinationType":"ImageUploader","RequestURL":"http://example.invalid/upload"}"#,
@@ -2740,6 +3025,9 @@ mod tests {
             r#"{"DestinationType":"ImageUploader","RequestMethod":"PUT","RequestURL":"https://example.invalid/image.png","Body":"JSON","Data":{"image":"{base64}"}}"#,
             r#"{"DestinationType":"ImageUploader","RequestURL":"https://example.invalid/upload","URL":"{regex:href}"}"#,
             r#"{"DestinationType":"ImageUploader","RequestURL":"https://example.invalid/{json:url}"}"#,
+            r#"{"DestinationType":"ImageUploader","RequestURL":"https://example.invalid/upload","URL":"https://cdn.example.invalid/{json:id}/{json:name}"}"#,
+            r#"{"DestinationType":"ImageUploader","RequestURL":"https://example.invalid/upload","URL":"https://cdn.example.invalid/{json:id|regex:.+}"}"#,
+            r#"{"DestinationType":"ImageUploader","RequestMethod":"PUT","RequestURL":"https://example.invalid/image.png","Body":"Binary","URL":"https://cdn.example.invalid/{responseurl}"}"#,
         ] {
             std::fs::write(&path, profile)?;
             assert!(UploadDestination::from_sharex_at(&path).is_err(), "{profile}");
@@ -2847,6 +3135,23 @@ mod tests {
             Some("file")
         );
         assert!(imported.request_form().is_empty());
+        std::fs::remove_file(&path)?;
+        let composed = UploadDestination::manual(
+            "https://example.invalid/upload".into(),
+            UploadMethod::Post,
+            "file".into(),
+            Some("/id".into()),
+            false,
+        )?
+        .with_link_affixes("https://cdn.example.invalid/", ".png")?;
+        composed.to_sharex_at(&path, Some("Host"))?;
+        let exported = std::fs::read_to_string(&path)?;
+        assert!(exported.contains("https://cdn.example.invalid/{json:id}.png"));
+        assert!(!exported.contains("api_key"));
+        let (imported, _) = UploadDestination::from_sharex_at(&path)?;
+        assert_eq!(imported.json_pointer, "/id");
+        assert_eq!(imported.link_prefix(), "https://cdn.example.invalid/");
+        assert_eq!(imported.link_suffix(), ".png");
         std::fs::remove_file(&path)?;
         let mut header = UploadDestination::manual(
             "https://example.invalid/upload".into(),
@@ -3561,6 +3866,27 @@ mod tests {
         assert!(!request.contains("multipart"));
         assert!(!request.contains("name=\"file\""));
         assert!(!lower.contains("api_key"));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    #[ignore = "uses a local loopback HTTP server and synthetic PNG; no external connections"]
+    fn upload_composes_result_link_from_json_id() {
+        let (root, path) = fixture();
+        let (url, server) = server(
+            response(r#"{"result":{"id":123}}"#),
+            None,
+            Duration::ZERO,
+        );
+        let mut destination = destination(url)
+            .with_link_affixes("https://cdn.example.invalid/", ".png")
+            .unwrap();
+        destination.json_pointer = "/result/id".into();
+        assert_eq!(
+            upload_png(&destination, &path, UploadCancellation::default()).unwrap(),
+            "https://cdn.example.invalid/123.png"
+        );
+        let _ = server.join().unwrap();
         std::fs::remove_dir_all(root).unwrap();
     }
 
