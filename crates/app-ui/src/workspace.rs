@@ -380,7 +380,7 @@ impl Render for CaptureWorkspace {
                         .child(div().flex().flex_col().gap_1()
                             .child(div().font_weight(gpui::FontWeight::SEMIBOLD).child("Destination"))
                             .child(div().text_sm().text_color(colors.muted_foreground).child(if self.upload_destination.is_some() { "Ready for an explicit upload" } else { "Connect your own image hosting service" }))))
-                    .child(div().text_sm().text_color(colors.muted_foreground).child("Set up a destination or load a profile. Save named stores up to 16 profiles. Test destination sends a throwaway 1×1 PNG. Uploads of your screenshots start only when you choose an image and confirm."))
+                    .child(div().text_sm().text_color(colors.muted_foreground).child("Set up a destination or load a profile. Save named stores up to 16 profiles. Export configuration copies destinations without secrets. Test destination sends a throwaway 1×1 PNG. Uploads of your screenshots start only when you choose an image and confirm."))
                     .child(div().flex().flex_wrap().gap_2()
                         .child(capture_button(cx, "setup-upload-destination", if self.upload_form_open { "Cancel setup" } else { "Set up destination" },
                             self.upload_config_loading || self.upload_cancel.is_some(), cx.listener(|this, _, _, cx| {
@@ -431,7 +431,13 @@ impl Render for CaptureWorkspace {
                             .child(capture_button(cx, "cancel-upload", "Cancel test", false,
                                 cx.listener(|this, _, _, cx| this.cancel_upload(cx)))))
                         .child(quiet_button(cx, "forget-upload-destination", "Forget destination", self.upload_config_loading || self.upload_cancel.is_some(), false,
-                            cx.listener(|this, _, _, cx| this.persist_upload_destination(true, cx)))))
+                            cx.listener(|this, _, _, cx| this.persist_upload_destination(true, cx))))
+                        .child(capture_button(cx, "export-upload-configuration", "Export configuration",
+                            self.upload_config_loading || self.upload_cancel.is_some(),
+                            cx.listener(|this, _, _, cx| this.export_upload_configuration(cx))))
+                        .child(capture_button(cx, "import-upload-configuration", "Import configuration",
+                            self.upload_config_loading || self.upload_cancel.is_some(),
+                            cx.listener(|this, _, _, cx| this.import_upload_configuration(cx)))))
                     .children(self.upload_form_inputs.as_ref().map(|inputs| {
                         let disabled = self.upload_config_loading || self.upload_cancel.is_some();
                         div().flex().flex_col().gap_2()

@@ -1184,6 +1184,80 @@ fn named_upload_destinations_switch_in_session_without_writing_catalog(cx: &mut 
     }).unwrap();
 }
 
+#[gpui::test]
+fn upload_configuration_export_writes_a_chosen_file_without_importing(cx: &mut TestAppContext) {
+    let handle = open_workspace(cx);
+    let root = std::env::temp_dir().join(format!("screenshots-upload-config-ui-{}", std::process::id()));
+    std::fs::create_dir_all(&root).unwrap();
+    handle.update(cx, |this, _, cx| {
+        this.output_directory = Some(root.clone());
+        this.show_page(ControlPage::Uploads, cx);
+    }).unwrap();
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.click("export-upload-configuration", cx);
+        window.click("import-upload-configuration", cx);
+    }).unwrap();
+    assert!(cx.did_prompt_for_new_path());
+    handle.update(cx, |this, _, cx| {
+        assert!(this.upload_config_loading);
+        this.export_upload_configuration(cx);
+        this.import_upload_configuration(cx);
+    }).unwrap();
+    cx.simulate_new_path_selection(|_| None);
+    cx.run_until_parked();
+    handle.update(cx, |this, _, cx| {
+        assert!(!this.upload_config_loading);
+        assert!(this.upload_status.contains("Configuration export canceled"));
+        assert!(this.upload_destination.is_none() && this.upload_named.is_empty());
+        this.upload_destination = Some(app_core::UploadDestination::manual(
+            "https://old.invalid/upload".into(),
+            app_core::UploadMethod::Post, "file".into(), None, false).unwrap()
+            .with_authentication("main".into(), app_core::UploadAuthentication::Bearer).unwrap());
+        this.upload_named = vec![app_core::NamedUploadDestination::new(
+            "Host".into(),
+            app_core::UploadDestination::manual(
+                "https://named.invalid/upload".into(),
+                app_core::UploadMethod::Post, "file".into(), None, false).unwrap(),
+        ).unwrap()];
+        this.upload_url = Some("https://old.invalid/share/kept".into());
+        this.export_upload_configuration(cx);
+    }).unwrap();
+    cx.simulate_new_path_selection(|_| Some(root.join("backup")));
+    cx.run_until_parked();
+    let exported = std::fs::read_to_string(root.join("backup.json")).unwrap();
+    handle.update(cx, |this, _, cx| {
+        assert!(!this.upload_config_loading);
+        assert!(this.upload_status.contains("Configuration exported"));
+        assert!(!exported.contains("secret"));
+        assert!(exported.contains("old.invalid") && exported.contains("Host") && exported.contains("main"));
+        assert_eq!(this.upload_destination.as_ref().unwrap().origin(), "https://old.invalid");
+        assert_eq!(this.upload_url.as_deref(), Some("https://old.invalid/share/kept"));
+        assert!(this.last_saved.is_none() && this.last_capture.is_none());
+        this.import_upload_configuration(cx);
+    }).unwrap();
+    assert!(cx.did_prompt_for_paths());
+    handle.update(cx, |this, _, cx| this.import_upload_configuration(cx)).unwrap();
+    cx.simulate_path_prompt_response(|options| {
+        assert!(options.files && !options.directories && !options.multiple);
+        None
+    });
+    cx.run_until_parked();
+    handle.update(cx, |this, _, cx| {
+        assert!(!this.upload_config_loading);
+        assert!(this.upload_status.contains("Configuration import canceled"));
+        assert_eq!(this.upload_destination.as_ref().unwrap().origin(), "https://old.invalid");
+        assert_eq!(this.upload_named[0].name(), "Host");
+        this.upload_cancel = Some(app_core::UploadCancellation::default());
+        this.export_upload_configuration(cx);
+        this.import_upload_configuration(cx);
+        assert!(this.upload_cancel.is_some());
+        this.show_page(ControlPage::Sources, cx);
+        assert!(!this.upload_named_open);
+    }).unwrap();
+    std::fs::remove_dir_all(root).unwrap();
+}
+
 #[cfg(target_os = "windows")]
 #[gpui::test]
 fn upload_remove_credential_stays_idle_without_an_attached_reference(cx: &mut TestAppContext) {

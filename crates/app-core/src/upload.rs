@@ -525,6 +525,129 @@ impl UploadDestinationCatalog {
     }
 }
 
+const UPLOAD_CONFIGURATION_MAX_BYTES: usize = 128 * 1024;
+
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct UploadConfiguration {
+    version: u32,
+    #[serde(default)]
+    current: Option<UploadDestination>,
+    #[serde(default)]
+    destinations: Vec<NamedUploadDestination>,
+}
+
+impl UploadConfiguration {
+    pub fn new(
+        current: Option<UploadDestination>,
+        destinations: Vec<NamedUploadDestination>,
+    ) -> Result<Self> {
+        let configuration = Self {
+            version: 1,
+            current,
+            destinations,
+        };
+        configuration.validate()?;
+        Ok(configuration)
+    }
+
+    pub fn current(&self) -> Option<&UploadDestination> {
+        self.current.as_ref()
+    }
+
+    pub fn destinations(&self) -> &[NamedUploadDestination] {
+        &self.destinations
+    }
+
+    pub fn into_parts(self) -> (Option<UploadDestination>, Vec<NamedUploadDestination>) {
+        (self.current, self.destinations)
+    }
+
+    pub fn load(path: &Path) -> Result<Self> {
+        Self::load_at(path)
+    }
+
+    fn load_at(path: &Path) -> Result<Self> {
+        let mut bytes = Vec::new();
+        std::fs::File::open(path)?
+            .take((UPLOAD_CONFIGURATION_MAX_BYTES + 1) as u64)
+            .read_to_end(&mut bytes)?;
+        ensure!(
+            bytes.len() <= UPLOAD_CONFIGURATION_MAX_BYTES,
+            "Destination backup exceeds 128 KiB"
+        );
+        let configuration: Self =
+            serde_json::from_slice(&bytes).context("Invalid destination backup")?;
+        configuration.validate()?;
+        Ok(configuration)
+    }
+
+    pub fn save(&self, path: &Path) -> Result<()> {
+        self.save_at(path)
+    }
+
+    fn save_at(&self, path: &Path) -> Result<()> {
+        use std::io::Write;
+        self.validate()?;
+        let bytes = serde_json::to_vec_pretty(self)?;
+        ensure!(
+            bytes.len() <= UPLOAD_CONFIGURATION_MAX_BYTES,
+            "Destination backup exceeds 128 KiB"
+        );
+        let parent = path.parent().context("Invalid destination backup path")?;
+        std::fs::create_dir_all(parent)?;
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(path)
+            .map_err(|error| {
+                if error.kind() == std::io::ErrorKind::AlreadyExists {
+                    anyhow::anyhow!(
+                        "The file already exists. Choose a new name; existing files are never overwritten."
+                    )
+                } else {
+                    error.into()
+                }
+            })?;
+        let result = (|| -> Result<()> {
+            file.write_all(&bytes)?;
+            file.sync_all()?;
+            Ok(())
+        })();
+        if result.is_err() {
+            drop(file);
+            let _ = std::fs::remove_file(path);
+        }
+        result
+    }
+
+    pub fn persist(&self) -> Result<()> {
+        let config = crate::CaptureSettings::config_path()?;
+        let directory = config.parent().context("Invalid upload settings path")?;
+        self.persist_at(directory)
+    }
+
+    fn persist_at(&self, directory: &Path) -> Result<()> {
+        self.validate()?;
+        let catalog = UploadDestinationCatalog::from_entries(self.destinations.clone())?;
+        catalog.save_at(&directory.join("upload-destinations.json"))?;
+        let remembered = directory.join("upload-destination.json");
+        match &self.current {
+            Some(destination) => destination.save_at(&remembered),
+            None => UploadDestination::remove_at(&remembered),
+        }
+    }
+
+    fn validate(&self) -> Result<()> {
+        ensure!(self.version == 1, "Unsupported destination backup version");
+        if let Some(current) = &self.current {
+            current.validate()?;
+        }
+        UploadDestinationCatalog::from_entries(self.destinations.clone())?;
+        Ok(())
+    }
+}
+
 #[derive(Clone, Default)]
 pub struct UploadCancellation(Arc<tokio::sync::Notify>);
 impl UploadCancellation {
@@ -1125,6 +1248,85 @@ mod tests {
         assert_eq!(std::fs::read(&remembered)?, b"keep-current");
         std::fs::write(&path, b"invalid JSON")?;
         assert!(UploadDestinationCatalog::load_at(&path).is_err());
+        std::fs::remove_dir_all(root)?;
+        Ok(())
+    }
+
+    #[test]
+    fn upload_configuration_round_trips_without_secrets_or_overwrites() -> Result<()> {
+        let root = std::env::temp_dir().join(format!(
+            "screenshots-upload-config-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&root)?;
+        let export = root.join("backup.json");
+        let live = root.join("live");
+        std::fs::create_dir_all(&live)?;
+        let remembered = live.join("upload-destination.json");
+        let other = live.join("settings.json");
+        std::fs::write(&other, b"keep-settings")?;
+        std::fs::write(&remembered, b"keep-current")?;
+        let current = destination("https://current.example.invalid/upload".into())
+            .with_authentication("main".into(), UploadAuthentication::Bearer)?;
+        let named = NamedUploadDestination::new(
+            " Host ".into(),
+            destination("https://named.example.invalid/upload".into()),
+        )?;
+        let configuration = UploadConfiguration::new(Some(current), vec![named])?;
+        configuration.save_at(&export)?;
+        let text = String::from_utf8(std::fs::read(&export)?)?;
+        assert!(text.contains("\"version\": 1"));
+        assert!(text.contains("main"));
+        assert!(text.contains("Host"));
+        assert!(!text.contains("secret"));
+        assert!(
+            UploadDestination::manual(
+                "https://user:secret@example.invalid/upload".into(),
+                UploadMethod::Post,
+                "file".into(),
+                Some("/result/url".into()),
+                true,
+            )
+            .is_err()
+        );
+        let loaded = UploadConfiguration::load_at(&export)?;
+        assert_eq!(
+            loaded.current().unwrap().origin(),
+            "https://current.example.invalid"
+        );
+        assert_eq!(loaded.destinations()[0].name(), "Host");
+        loaded.persist_at(&live)?;
+        assert_eq!(
+            UploadDestination::load_optional(&remembered)?
+                .unwrap()
+                .origin(),
+            "https://current.example.invalid"
+        );
+        assert_eq!(
+            UploadDestinationCatalog::load_at(&live.join("upload-destinations.json"))?
+                .entries()[0]
+                .name(),
+            "Host"
+        );
+        assert_eq!(std::fs::read(&other)?, b"keep-settings");
+        let empty = UploadConfiguration::new(None, Vec::new())?;
+        empty.persist_at(&live)?;
+        assert!(UploadDestination::load_optional(&remembered)?.is_none());
+        assert!(
+            UploadDestinationCatalog::load_at(&live.join("upload-destinations.json"))?
+                .entries()
+                .is_empty()
+        );
+        assert_eq!(std::fs::read(&other)?, b"keep-settings");
+        let existing = std::fs::read(&export)?;
+        assert!(configuration.save_at(&export).is_err());
+        assert_eq!(std::fs::read(&export)?, existing);
+        assert!(UploadConfiguration::load_at(&other).is_err());
+        std::fs::write(&export, b"{\"version\":2}")?;
+        assert!(UploadConfiguration::load_at(&export).is_err());
+        let blocked = other.join("backup.json");
+        assert!(configuration.save_at(&blocked).is_err());
+        assert_eq!(std::fs::read(&other)?, b"keep-settings");
         std::fs::remove_dir_all(root)?;
         Ok(())
     }

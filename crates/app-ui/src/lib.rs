@@ -3231,6 +3231,176 @@ impl CaptureWorkspace {
         cx.notify();
     }
 
+    fn export_upload_configuration(&mut self, cx: &mut Context<Self>) {
+        if self.quitting || self.upload_config_loading || self.upload_cancel.is_some() {
+            return;
+        }
+        self.close_upload_forms();
+        self.upload_config_loading = true;
+        self.upload_status = "Choose a destination backup file…".into();
+        let directory = self
+            .output_directory
+            .clone()
+            .unwrap_or_else(std::env::temp_dir);
+        let dialog = cx.prompt_for_new_path(&directory, Some("upload-configuration.json"));
+        let current = self.upload_destination.clone();
+        let destinations = self.upload_named.clone();
+        cx.spawn(async move |this, cx| {
+            let chosen = match dialog.await {
+                Ok(Ok(path)) => path,
+                error => {
+                    this.update(cx, |this, cx| {
+                        this.upload_config_loading = false;
+                        if !this.quitting {
+                            this.upload_status = format!(
+                                "Destinations unchanged · Export dialog failed: {error:?}"
+                            );
+                        }
+                        this.finish_quit_if_idle(cx);
+                        cx.notify();
+                    })
+                    .ok();
+                    return;
+                }
+            };
+            let Some(mut path) = chosen else {
+                this.update(cx, |this, cx| {
+                    this.upload_config_loading = false;
+                    if !this.quitting {
+                        this.upload_status =
+                            "Destinations unchanged · Configuration export canceled".into();
+                    }
+                    this.finish_quit_if_idle(cx);
+                    cx.notify();
+                })
+                .ok();
+                return;
+            };
+            if path
+                .extension()
+                .is_none_or(|extension| extension.is_empty())
+            {
+                path.set_extension("json");
+            }
+            let named = destinations.len();
+            let has_current = current.is_some();
+            let result = cx
+                .background_spawn(async move {
+                    app_core::UploadConfiguration::new(current, destinations)?.save(&path)?;
+                    Ok::<_, anyhow::Error>((path, named, has_current))
+                })
+                .await;
+            this.update(cx, |this, cx| {
+                this.upload_config_loading = false;
+                if !this.quitting {
+                    this.upload_status = match result {
+                        Ok((path, named, has_current)) => format!(
+                            "Configuration exported · {named} saved names · current destination {} · secrets were not written · {}",
+                            if has_current { "included" } else { "omitted" },
+                            path.display()
+                        ),
+                        Err(error) => format!("Destinations unchanged: {error:#}"),
+                    };
+                }
+                this.finish_quit_if_idle(cx);
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+        cx.notify();
+    }
+
+    fn import_upload_configuration(&mut self, cx: &mut Context<Self>) {
+        if self.quitting || self.upload_config_loading || self.upload_cancel.is_some() {
+            return;
+        }
+        self.close_upload_forms();
+        self.upload_config_loading = true;
+        self.upload_status = "Choose a destination backup (JSON, no secrets)".into();
+        let dialog = cx.prompt_for_paths(gpui::PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: false,
+            prompt: Some("Import destination backup (JSON, no secrets)".into()),
+        });
+        cx.spawn(async move |this, cx| {
+            let selected = dialog.await;
+            let path = this
+                .update(cx, |this, cx| {
+                    if this.quitting {
+                        this.upload_config_loading = false;
+                        this.finish_quit_if_idle(cx);
+                        return None;
+                    }
+                    match selected {
+                        Ok(Ok(Some(mut paths))) if paths.len() == 1 => Some(paths.remove(0)),
+                        other => {
+                            this.upload_config_loading = false;
+                            this.upload_status = match other {
+                                Ok(Ok(None)) => {
+                                    "Destinations unchanged · Configuration import canceled"
+                                        .into()
+                                }
+                                error => format!(
+                                    "Destinations unchanged · Configuration import failed: {error:?}"
+                                ),
+                            };
+                            this.finish_quit_if_idle(cx);
+                            cx.notify();
+                            None
+                        }
+                    }
+                })
+                .ok()
+                .flatten();
+            let Some(path) = path else {
+                return;
+            };
+            let result = cx
+                .background_spawn(async move {
+                    let configuration = app_core::UploadConfiguration::load(&path)?;
+                    configuration.persist()?;
+                    Ok::<_, anyhow::Error>(configuration)
+                })
+                .await;
+            this.update(cx, |this, cx| {
+                this.upload_config_loading = false;
+                if !this.quitting {
+                    match result {
+                        Ok(configuration) => {
+                            let (current, destinations) = configuration.into_parts();
+                            this.upload_url = None;
+                            this.upload_named = destinations;
+                            this.upload_destination = current;
+                            this.close_upload_forms();
+                            this.upload_status = match this.upload_destination.as_ref() {
+                                Some(destination) => format!(
+                                    "Configuration imported · {} saved names · Destination: {} · Remembered · secrets were not imported",
+                                    this.upload_named.len(),
+                                    destination.origin()
+                                ),
+                                None => format!(
+                                    "Configuration imported · {} saved names · current destination cleared · secrets were not imported",
+                                    this.upload_named.len()
+                                ),
+                            };
+                        }
+                        Err(error) => {
+                            this.upload_status =
+                                format!("Could not import destinations: {error:#}");
+                        }
+                    }
+                }
+                this.finish_quit_if_idle(cx);
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+        cx.notify();
+    }
+
     fn close_upload_forms(&mut self) {
         self.upload_form_open = false;
         self.upload_form_inputs = None;

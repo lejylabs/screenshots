@@ -1,0 +1,20 @@
+{
+  "version": 1,
+  "current": {
+    "url": "https://example.invalid/upload",
+    "field": "file",
+    "json_pointer": "/url",
+    "allow_http": false
+  },
+  "destinations": [
+    {
+      "name": "Host",
+      "profile": {
+        "url": "https://example.invalid/upload",
+        "field": "file",
+        "json_pointer": "/url",
+        "allow_http": false
+      }
+    }
+  ]
+}

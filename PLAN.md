@@ -719,11 +719,37 @@ catalog write, in-memory Use/stale/busy guards and form discard, without
 writing user settings. A regular core fixture covers round-trip replace,
 16-name admission, missing-file defaults, failed validation preservation and
 that the remembered current file stays untouched.
-Per-task destination defaults, configuration export/import and ShareX profile
-import remain separate work.
+Configuration export/import is implemented below. Per-task destination defaults
+and ShareX profile import remain separate work.
 Native keyboard/IME/accessibility, packaged restart workflow and
 latency/process/GPU/resource acceptance remain open; no new performance
 measurement is claimed for this bounded catalog.
+
+#### Current feature slice: destination configuration export and import
+
+Uploads offers Export configuration and Import configuration. Export writes the
+session destination and the named catalog into a user-chosen JSON file of at
+most 128 KiB. Import validates that backup, then replaces upload-destination.json
+and upload-destinations.json. Secrets, settings.json, capture history, images and
+OS credentials are never copied. Existing export files are never overwritten.
+Invalid backups keep the previous files until persist starts; catalog is written
+before the remembered current file. Closing the page or window during the native
+picker suppresses a pending result; Quit discards it. No connection, upload or
+image decode occurs while exporting or importing.
+
+Resource cost is the existing native save/open picker and one admitted metadata
+future that reuses destination/catalog validation and atomic file writes. There
+is no new dependency, worker, runtime, queue, image, cache, watcher or idle
+timer. Constructor and headless UI fixtures verify button presence, canceled
+pickers, busy guards and that a completed export writes only the chosen file,
+without importing into user settings. A regular core fixture covers round-trip
+replace, empty-current removal, secret-URL rejection, failed overwrite
+preservation and that settings.json stays untouched.
+Per-task destination defaults, ShareX profile import and full settings
+backup remain separate work.
+Native keyboard/IME/accessibility, packaged restart workflow and
+latency/process/GPU/resource acceptance remain open; no new performance
+measurement is claimed for this bounded backup.
 
 #### Current feature slice: configurable Windows global hotkeys
 
