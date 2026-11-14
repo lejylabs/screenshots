@@ -15,7 +15,7 @@ Despite its documentation saying “after rendering”, the pinned GPUI implemen
 
 The initial 101-cycle run produced invalid-HWND errors despite the functional test returning success. The controller now waits for GPUI's asynchronous native destruction before requesting headless mode, with a two-second operation-scoped worker deadline. No idle timer was added.
 
-A separate race remained in GPUI Windows: its VSync thread could call RedrawWindow on a destroyed HWND until a posted close notification removed it from the tracked list. The locally pinned Windows backend synchronously removes tracking during WM_DESTROY using the existing validated close handler and read/write lock. See [local patch](../vendor/gpui-windows-gpui-unofficial/LOCAL-PATCH.md). The vendored source adds about 0.53 MiB to the repository, with no additional runtime service or dependency version.
+A separate race remained in GPUI Windows: its VSync thread could call RedrawWindow on a destroyed HWND until a posted close notification removed it from the tracked list. The locally pinned Windows backend synchronously removes tracking during WM_DESTROY using the existing validated close handler and read/write lock. See [local patch](../vendor/gpui-pre-windows/LOCAL-PATCH.md). The vendored source adds about 0.53 MiB to the repository, with no additional runtime service or dependency version.
 
 The final 101-cycle measurement and five consecutive real capture/copy/save/reopen/cancel regressions passed with ERROR logs counted as failures. Ordinary core/UI tests and the release application build also pass. Measurements across preliminary builds are not a controlled performance comparison; this report preserves the final run, including its slower samples.
 

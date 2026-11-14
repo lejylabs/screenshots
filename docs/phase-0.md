@@ -1,5 +1,10 @@
 # Phase 0 spike status — 2026-11-08
 
+Historical evidence: the versions and early pending statements in this note
+describe its original spike. Current GPUI Kit uses GPUI 0.3.12, Cargo.lock is
+versioned, and later lifecycle/in-memory fixes supersede the original debt below.
+See PLAN.md and [the current delivery status](non-ui-delivery.md) for open work.
+
 Phase 0 is open. The Windows prototype is usable; the cross-platform exit gate has not passed.
 
 The first optimized Windows idle measurement is recorded in [performance-baseline.md](performance-baseline.md). It is a 30-second exploratory run, above the intended private-memory and short-run CPU targets; performance acceptance remains open.

@@ -1,5 +1,13 @@
 # Functional gap analysis: screenshots and ShareX
 
+Current non-UI follow-up: [delivery plan and test status](non-ui-delivery.md).
+Headless image composition/upscaling, QR generation/scanning, Unix Tesseract file
+OCR, explicit maintenance/backup and Linux/macOS credential adapters are being
+delivered separately from editor/native-platform acceptance. Historical
+implementation notes below can still describe those items as missing; the dated
+notes are not a current acceptance checklist. Recording, scrolling capture and
+full workflow/provider breadth remain open.
+
 Implementation follow-up (2026-11-14, working tree): Settings can save an
 optional output profile for each of the six capture commands. Starting that
 capture applies the choice without changing the session Capture output setting.
@@ -415,7 +423,7 @@ files/URLs and configured tasks.
 | Accepted input | PNG files only. No arbitrary file/folder/text/clipboard/URL uploads, batch upload UI, watched-folder workflow or capture-to-link chain. | B |
 | Post-upload behavior | Explicit Copy link exists. Missing optional user-configured automatic copy, link templates/shortening/QR and follow-up tasks. No implicit network/browser action should be added. | A/B |
 | Metadata handling | Partial: edited exports and editor/in-memory uploads encode pixels only. A saved **Strip metadata on upload** choice re-encodes saved PNG files before transfer and leaves originals unchanged. Library export still copies stored bytes; there is no metadata inspector or original-file sanitizer. | A before privacy claims; B for full tooling |
-| Secret stores | Windows Credential Manager lookup, native Save credential entry and Remove credential deletion exist; macOS Keychain and Linux Secret Service remain missing. | A for relevant platform releases |
+| Secret stores | Windows Credential Manager and native Save/Remove entry exist. Linux Secret Service and macOS Data Protection Keychain core adapters plus headless setup are implemented; platform runtime/signing acceptance remains open. | A for relevant platform releases |
 
 Evidence: [profile/method/response schema and validation](../crates/app-core/src/upload.rs),
 [credential implementation](../crates/app-core/src/upload_credentials.rs),
@@ -432,8 +440,9 @@ the requested parity target therefore requires a larger scope than that MVP.
 - **Scrolling capture:** capture/stitch long content, handle fixed headers and
   report imperfect matches; needs bounded image admission and cancellation.
   [ShareX scrolling capture](https://getsharex.com/docs/scrolling-screenshot)
-- **OCR and QR:** no region/image text recognition, language handling, text
-  result/copy workflow or QR scanning/generation.
+- **OCR and QR:** partial headless file tools now cover QR scanning/generation
+  and optional Unix Tesseract recognition with bounded text results. Region/editor
+  integration, Windows OCR and cross-platform native acceptance remain open.
   [ShareX OCR](https://getsharex.com/docs/ocr)
 - **Recording:** no screen-video/GIF recorder, start/stop controls, audio capture,
   device/settings selection, encoding or recording history/export. Further

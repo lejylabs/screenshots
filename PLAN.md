@@ -4,6 +4,15 @@
 
 **Status (2026-11-09):** This is a production delivery plan, not a claim that the current application is production-ready. Phase 0 remains open; see [the measured spike evidence](docs/phase-0.md). The performance contract below applies to the entire application and every future feature. Budgets are acceptance targets, not measurements of the current prototype.
 
+## Non-UI follow-up (2026-11-14)
+
+Implementation and verification for the unattended non-UI delivery are tracked in
+[the delivery plan](docs/non-ui-delivery.md). Read that before interpreting older
+pending statements below. The UI redesign is excluded from this task. Headless
+image/QR/OCR tools, storage maintenance, native credential adapters and packaging
+are separate slices; they do not close platform, editor workflow, resource or
+ShareX-parity acceptance gates. The complete requested backlog remains open.
+
 ## Session handoff — start here (2026-11-12)
 
 This section is the current continuation brief. The numbered sections below contain architecture, release requirements and detailed implementation evidence; their original bootstrap sequence is historical. Development has progressed through functional slices of Phases 1–5 while the cross-platform/performance release gates remain open. Do not restart the spike or treat implemented features as production acceptance.
