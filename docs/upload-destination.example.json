@@ -2,5 +2,8 @@
   "url": "https://example.invalid/upload",
   "field": "file",
   "json_pointer": "/url",
-  "allow_http": false
+  "allow_http": false,
+  "headers": {
+    "X-Client": "screenshots"
+  }
 }

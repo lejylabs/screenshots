@@ -6,5 +6,8 @@
   "RequestURL": "https://example.invalid/upload",
   "Body": "MultipartFormData",
   "FileFormName": "file",
+  "Headers": {
+    "X-Client": "screenshots"
+  },
   "URL": "{json:url}"
 }

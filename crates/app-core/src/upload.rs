@@ -1,6 +1,6 @@
 use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
-use std::{io::Read, path::Path, sync::Arc, time::Duration};
+use std::{collections::BTreeMap, io::Read, path::Path, sync::Arc, time::Duration};
 use tokio::io::{AsyncReadExt, AsyncSeekExt};
 
 #[derive(Clone, Copy, Default)]
@@ -63,6 +63,28 @@ impl<R: tokio::io::AsyncRead + Unpin> tokio::io::AsyncRead for ProgressReader<R>
 }
 
 const MAX_RESPONSE: usize = 1024 * 1024;
+const MAX_CUSTOM_HEADERS: usize = 8;
+const RESERVED_REQUEST_HEADERS: &[&str] = &[
+    "authorization",
+    "proxy-authorization",
+    "www-authenticate",
+    "x-api-key",
+    "cookie",
+    "set-cookie",
+    "host",
+    "content-length",
+    "content-type",
+    "transfer-encoding",
+    "connection",
+    "te",
+    "trailer",
+    "upgrade",
+    "keep-alive",
+    "expect",
+    "if-none-match",
+    "accept-encoding",
+    "proxy-authenticate",
+];
 
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -82,6 +104,8 @@ pub struct UploadDestination {
     credential: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     authentication: Option<UploadAuthentication>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    headers: BTreeMap<String, String>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
@@ -128,9 +152,28 @@ impl UploadDestination {
         let field = if method == UploadMethod::Post { field.trim().into() } else { default_field() };
         let destination = Self { url: url.trim().into(), method, field,
             json_pointer: json_pointer.unwrap_or_default().trim().into(), response, allow_http,
-            credential: None, authentication: None };
+            credential: None, authentication: None, headers: BTreeMap::new() };
         destination.validate()?;
         Ok(destination)
+    }
+
+    /// Attach bounded custom request headers without networking or secrets.
+    pub fn with_headers<I, N, V>(mut self, headers: I) -> Result<Self>
+    where
+        I: IntoIterator<Item = (N, V)>,
+        N: AsRef<str>,
+        V: AsRef<str>,
+    {
+        self.headers = headers
+            .into_iter()
+            .map(|(name, value)| (name.as_ref().trim().to_owned(), value.as_ref().trim().to_owned()))
+            .collect();
+        self.validate()?;
+        Ok(self)
+    }
+
+    pub fn request_headers(&self) -> &BTreeMap<String, String> {
+        &self.headers
     }
 
     /// Attach a credential reference without reading or writing secrets.
@@ -347,6 +390,7 @@ impl UploadDestination {
         if matches!(self.response, Some(UploadResponse::RequestUrl)) {
             validate_link(url.as_str())?;
         }
+        validate_custom_headers(&self.headers)?;
         Ok(url)
     }
 
@@ -449,7 +493,7 @@ impl ShareXCustomUploader {
                 .any(|kind| kind.trim().eq_ignore_ascii_case("ImageUploader")),
             "ShareX profile must include ImageUploader"
         );
-        sharex_reject_object(&self.headers, "headers")?;
+        let headers = sharex_headers(&self.headers)?;
         sharex_reject_object(&self.parameters, "query parameters")?;
         sharex_reject_object(&self.arguments, "body arguments")?;
         sharex_reject_object(&self.data, "JSON body fields")?;
@@ -503,6 +547,7 @@ impl ShareXCustomUploader {
             allow_http: false,
             credential: None,
             authentication: None,
+            headers,
         };
         destination.validate()?;
         let name = match self.name.as_deref().map(str::trim).filter(|name| !name.is_empty()) {
@@ -559,7 +604,11 @@ impl ShareXCustomUploader {
             file_form_name: (destination.method == UploadMethod::Post)
                 .then(|| destination.field.clone()),
             url,
-            headers: None,
+            headers: if destination.headers.is_empty() {
+                None
+            } else {
+                Some(serde_json::to_value(&destination.headers)?)
+            },
             parameters: None,
             arguments: None,
             data: None,
@@ -573,6 +622,68 @@ fn sharex_reject_object(value: &Option<serde_json::Value>, label: &str) -> Resul
         Some(serde_json::Value::Object(map)) if map.is_empty() => Ok(()),
         Some(_) => anyhow::bail!("{label} are not supported in this ShareX import subset"),
     }
+}
+
+fn sharex_headers(value: &Option<serde_json::Value>) -> Result<BTreeMap<String, String>> {
+    match value {
+        None | Some(serde_json::Value::Null) => Ok(BTreeMap::new()),
+        Some(serde_json::Value::Object(map)) => {
+            let mut headers = BTreeMap::new();
+            for (name, value) in map {
+                let Some(text) = value.as_str() else {
+                    anyhow::bail!("ShareX headers must be string pairs");
+                };
+                headers.insert(name.trim().to_owned(), text.trim().to_owned());
+            }
+            Ok(headers)
+        }
+        Some(_) => anyhow::bail!("ShareX headers must be an object of string pairs"),
+    }
+}
+
+fn contains_header_template(value: &str) -> bool {
+    value
+        .bytes()
+        .any(|byte| matches!(byte, b'{' | b'}' | b'$'))
+}
+
+fn validate_custom_headers(headers: &BTreeMap<String, String>) -> Result<()> {
+    ensure!(
+        headers.len() <= MAX_CUSTOM_HEADERS,
+        "At most 8 custom request headers"
+    );
+    let mut seen = Vec::with_capacity(headers.len());
+    for (name, value) in headers {
+        ensure!(
+            !name.is_empty()
+                && name.len() <= 64
+                && name.trim() == name
+                && !name.chars().any(char::is_control)
+                && !contains_header_template(name)
+                && reqwest::header::HeaderName::from_bytes(name.as_bytes()).is_ok(),
+            "Use a valid custom request header name of 1–64 bytes without templates"
+        );
+        let lower = name.to_ascii_lowercase();
+        ensure!(
+            !RESERVED_REQUEST_HEADERS.contains(&lower.as_str()),
+            "Custom request headers cannot set {name}"
+        );
+        ensure!(
+            !seen.iter().any(|existing| existing == &lower),
+            "Custom request header names must be unique ignoring case"
+        );
+        seen.push(lower);
+        ensure!(
+            !value.is_empty()
+                && value.len() <= 256
+                && value.trim() == value
+                && !value.chars().any(char::is_control)
+                && !contains_header_template(value)
+                && reqwest::header::HeaderValue::from_str(value).is_ok(),
+            "Use a valid custom request header value of 1–256 bytes without templates or control characters"
+        );
+    }
+    Ok(())
 }
 
 fn sharex_response(
@@ -1148,6 +1259,14 @@ async fn transfer(
             .header(reqwest::header::IF_NONE_MATCH, "*")
             .body(body),
     };
+    for (name, value) in &destination.headers {
+        request = request.header(
+            reqwest::header::HeaderName::from_bytes(name.as_bytes())
+                .map_err(|_| anyhow::anyhow!("Invalid custom request header name"))?,
+            reqwest::header::HeaderValue::from_str(value)
+                .map_err(|_| anyhow::anyhow!("Invalid custom request header value"))?,
+        );
+    }
     if let Some(target) = destination.credential_target() {
         let authentication = destination.authentication.unwrap_or_default();
         request = request.header(
@@ -1280,6 +1399,112 @@ mod tests {
         assert!(UploadDestination::manual("http://localhost/upload".into(), UploadMethod::Put, "file".into(), None, true).is_ok());
         assert!(UploadDestination::manual("https://example.invalid/".into(), UploadMethod::Post, "bad field".into(), None, false).is_err());
         assert!(UploadDestination::manual("https://example.invalid/".into(), UploadMethod::Post, "file".into(), Some("/bad~2".into()), false).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn custom_request_headers_validate_persist_and_reject_reserved_names() -> Result<()> {
+        let destination = UploadDestination::manual(
+            "https://example.invalid/upload".into(),
+            UploadMethod::Post,
+            "file".into(),
+            Some("/url".into()),
+            false,
+        )?;
+        assert!(destination.request_headers().is_empty());
+        let destination = destination.with_headers([
+            (" X-Client ", " screenshots "),
+            ("X-Request-Id", "abc-123"),
+        ])?;
+        assert_eq!(
+            destination.request_headers().get("X-Client").map(String::as_str),
+            Some("screenshots")
+        );
+        assert_eq!(
+            destination
+                .request_headers()
+                .get("X-Request-Id")
+                .map(String::as_str),
+            Some("abc-123")
+        );
+        let root = std::env::temp_dir().join(format!(
+            "screenshots-headers-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&root)?;
+        let path = root.join("destination.json");
+        let other = root.join("settings.json");
+        std::fs::write(&other, b"keep-settings")?;
+        destination.save_at(&path)?;
+        let loaded = UploadDestination::load(&path)?;
+        assert_eq!(loaded.request_headers(), destination.request_headers());
+        let json = std::fs::read_to_string(&path)?;
+        assert!(json.contains("X-Client"));
+        assert!(json.contains("screenshots"));
+        assert!(!json.contains("Authorization"));
+        assert!(!json.contains("secret"));
+        std::fs::write(
+            &path,
+            r#"{"url":"https://example.invalid/upload","field":"file","json_pointer":"/url","headers":{"X-Client":"screenshots"}}"#,
+        )?;
+        let loaded = UploadDestination::load(&path)?;
+        assert_eq!(
+            loaded.request_headers().get("X-Client").map(String::as_str),
+            Some("screenshots")
+        );
+        for (name, value) in [
+            ("Authorization", "Bearer secret"),
+            ("authorization", "x"),
+            ("X-API-Key", "secret"),
+            ("Content-Type", "text/plain"),
+            ("Accept-Encoding", "gzip"),
+            ("If-None-Match", "*"),
+            ("Host", "evil.example"),
+            ("Cookie", "a=b"),
+            ("X-Foo", "{json:token}"),
+            ("X-Foo", "$filename$"),
+            ("X-Foo", "a\nb"),
+            ("", "x"),
+            ("bad name", "x"),
+            ("X-Foo", ""),
+        ] {
+            assert!(
+                destination
+                    .clone()
+                    .with_headers([(name, value)])
+                    .is_err(),
+                "{name}={value}"
+            );
+        }
+        assert!(
+            destination
+                .clone()
+                .with_headers([("X-Foo", "x".repeat(257))])
+                .is_err()
+        );
+        assert!(
+            destination
+                .clone()
+                .with_headers([("x".repeat(65), "x")])
+                .is_err()
+        );
+        let many: Vec<(String, String)> = (0..9)
+            .map(|index| (format!("X-H{index}"), "v".into()))
+            .collect();
+        assert!(destination.clone().with_headers(many).is_err());
+        assert!(
+            destination
+                .clone()
+                .with_headers([("X-Foo", "a"), ("x-foo", "b")])
+                .is_err()
+        );
+        std::fs::write(
+            &path,
+            r#"{"url":"https://example.invalid/upload","field":"file","json_pointer":"/url","headers":{"Authorization":"Bearer secret"}}"#,
+        )?;
+        assert!(UploadDestination::load(&path).is_err());
+        assert_eq!(std::fs::read(&other)?, b"keep-settings");
+        std::fs::remove_dir_all(root)?;
         Ok(())
     }
 
@@ -1737,12 +1962,22 @@ mod tests {
         )?;
         let (destination, _) = UploadDestination::from_sharex_at(&path)?;
         assert_eq!(destination.response, Some(UploadResponse::Text));
+        std::fs::write(
+            &path,
+            r#"{"DestinationType":"ImageUploader","RequestURL":"https://example.invalid/upload","Headers":{"X-Client":"screenshots"},"URL":"{json:url}"}"#,
+        )?;
+        let (destination, _) = UploadDestination::from_sharex_at(&path)?;
+        assert_eq!(
+            destination.request_headers().get("X-Client").map(String::as_str),
+            Some("screenshots")
+        );
         for profile in [
             r#"{"DestinationType":"FileUploader","RequestURL":"https://example.invalid/upload"}"#,
             r#"{"DestinationType":"ImageUploader","RequestURL":"http://example.invalid/upload"}"#,
             r#"{"DestinationType":"ImageUploader","RequestURL":"https://user:secret@example.invalid/upload"}"#,
             r#"{"DestinationType":"ImageUploader","RequestMethod":"GET","RequestURL":"https://example.invalid/upload"}"#,
             r#"{"DestinationType":"ImageUploader","RequestURL":"https://example.invalid/upload","Headers":{"Authorization":"Bearer secret"}}"#,
+            r#"{"DestinationType":"ImageUploader","RequestURL":"https://example.invalid/upload","Headers":{"X-Client":"{json:token}"}}"#,
             r#"{"DestinationType":"ImageUploader","RequestURL":"https://example.invalid/upload","Parameters":{"api_key":"secret"}}"#,
             r#"{"DestinationType":"ImageUploader","RequestURL":"https://example.invalid/upload","Body":"JSON"}"#,
             r#"{"DestinationType":"ImageUploader","RequestURL":"https://example.invalid/upload","URL":"{regex:href}"}"#,
@@ -1789,6 +2024,20 @@ mod tests {
         assert_eq!(imported.json_pointer, "/files/0/url");
         assert!(imported.response.is_none());
         assert!(imported.credential.is_none());
+        std::fs::remove_file(&path)?;
+        let headed = destination
+            .clone()
+            .with_headers([("X-Client", "screenshots")])?;
+        headed.to_sharex_at(&path, Some("Host"))?;
+        let exported = std::fs::read_to_string(&path)?;
+        assert!(exported.contains("X-Client"));
+        assert!(exported.contains("screenshots"));
+        assert!(!exported.contains("Authorization"));
+        let (imported, _) = UploadDestination::from_sharex_at(&path)?;
+        assert_eq!(
+            imported.request_headers().get("X-Client").map(String::as_str),
+            Some("screenshots")
+        );
         std::fs::remove_file(&path)?;
         let mut header = UploadDestination::manual(
             "https://example.invalid/upload".into(),
@@ -2428,6 +2677,30 @@ mod tests {
         assert!(request.windows(8).any(|chunk| chunk == b"\x89PNG\r\n\x1a\n"));
         assert!(request.len() < 8192);
         assert_eq!(before, probe_temp_names());
+    }
+
+    #[test]
+    #[ignore = "uses a local loopback HTTP server and synthetic PNG; no external connections"]
+    fn upload_sends_custom_request_headers_on_the_wire() {
+        let (root, path) = fixture();
+        let (url, server) = server(
+            response(r#"{"result":{"url":"https://example.invalid/share/headers"}}"#),
+            None,
+            Duration::ZERO,
+        );
+        let destination = destination(url)
+            .with_headers([("X-Client", "screenshots")])
+            .unwrap();
+        assert_eq!(
+            upload_png(&destination, &path, UploadCancellation::default()).unwrap(),
+            "https://example.invalid/share/headers"
+        );
+        let request = String::from_utf8(server.join().unwrap()).unwrap();
+        let lower = request.to_ascii_lowercase();
+        assert!(lower.contains("x-client: screenshots"));
+        assert!(!lower.contains("authorization"));
+        assert!(!lower.contains("x-api-key"));
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
