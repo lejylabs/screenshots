@@ -2,19 +2,19 @@
 
 use gpui_kit as gpui;
 use gpui_kit::platform as gpui_platform;
-mod caption;
 mod assets;
-mod workspace;
-#[cfg(test)]
-mod ui_tests;
+mod caption;
 #[cfg(all(test, target_os = "linux"))]
 mod native_probe;
+#[cfg(test)]
+mod ui_tests;
+mod workspace;
 use workspace::{capture_button, ui_button};
 mod redaction_editor;
 mod theme;
 mod window;
-use window::{OpenKitWindow, UiWindow as WindowHandle};
 use redaction_editor::{OutputMode, RedactionEditor};
+use window::{OpenKitWindow, UiWindow as WindowHandle, app_window_options};
 
 use std::{
     collections::HashMap,
@@ -23,12 +23,13 @@ use std::{
 };
 
 use app_core::CaptureRequest as CaptureJob;
-use app_core::{CaptureBackend, CaptureOutputProfile, CapturedImage, DisplayInfo, WindowInfo, XcapBackend};
+use app_core::{
+    CaptureBackend, CaptureOutputProfile, CapturedImage, DisplayInfo, WindowInfo, XcapBackend,
+};
 use gpui::{
     AnyWindowHandle, App, Bounds, Context, DisplayId, FocusHandle, Focusable, IntoElement,
-    KeyBinding, Pixels, TitlebarOptions, Window, WindowBackgroundAppearance, WindowBounds,
-    WindowKind, WindowOptions, actions, div, img, point, prelude::*, px, rgb, rgba,
-    size,
+    KeyBinding, Pixels, Window, WindowBackgroundAppearance, WindowBounds, WindowKind,
+    WindowOptions, actions, div, img, point, prelude::*, px, rgb, rgba, size,
 };
 
 actions!(
@@ -321,12 +322,8 @@ impl CaptureWorkspace {
                 size(px(1060.0), px(760.0)),
                 cx,
             ))),
-            titlebar: Some(TitlebarOptions {
-                title: Some("screenshots".into()),
-                ..Default::default()
-            }),
             window_min_size: Some(size(px(680.), px(480.))),
-            ..Default::default()
+            ..app_window_options("screenshots")
         };
         self.switching_graphics = true;
         let completion = owner.clone();
@@ -408,7 +405,9 @@ impl CaptureWorkspace {
         self.close_upload_forms();
         self.exact_region_status.clear();
         #[cfg(target_os = "windows")]
-        { self.hotkey_inputs = None; }
+        {
+            self.hotkey_inputs = None;
+        }
         self.hide_history(cx);
         self.hide_upload_history();
         if self.page == ControlPage::History {
@@ -461,11 +460,16 @@ impl CaptureWorkspace {
                             this.switching_graphics = false;
                             this.control = windows
                                 .iter()
-                                .find(|handle| WindowHandle::<CaptureWorkspace>::from_handle(**handle, cx).is_some())
+                                .find(|handle| {
+                                    WindowHandle::<CaptureWorkspace>::from_handle(**handle, cx)
+                                        .is_some()
+                                })
                                 .copied();
                             this.overlays = windows
                                 .iter()
-                                .filter_map(|handle| WindowHandle::<Overlay>::from_handle(*handle, cx))
+                                .filter_map(|handle| {
+                                    WindowHandle::<Overlay>::from_handle(*handle, cx)
+                                })
                                 .collect();
                             this.capture_status = format!("Could not close UI: {error}");
                             this.restore_control(cx);
@@ -542,14 +546,38 @@ impl CaptureWorkspace {
     ) -> Self {
         let mac = cfg!(target_os = "macos");
         cx.bind_keys([
-            KeyBinding::new(if mac { "cmd-n" } else { "ctrl-n" }, NewScreenshot, Some("CaptureWorkspace")),
-            KeyBinding::new(if mac { "cmd-o" } else { "ctrl-o" }, OpenImage, Some("CaptureWorkspace")),
+            KeyBinding::new(
+                if mac { "cmd-n" } else { "ctrl-n" },
+                NewScreenshot,
+                Some("CaptureWorkspace"),
+            ),
+            KeyBinding::new(
+                if mac { "cmd-o" } else { "ctrl-o" },
+                OpenImage,
+                Some("CaptureWorkspace"),
+            ),
             #[cfg(target_os = "windows")]
             KeyBinding::new("ctrl-shift-v", PasteImage, Some("CaptureWorkspace")),
-            KeyBinding::new(if mac { "cmd-1" } else { "ctrl-1" }, ShowRecent, Some("CaptureWorkspace")),
-            KeyBinding::new(if mac { "cmd-2" } else { "ctrl-2" }, ShowLibrary, Some("CaptureWorkspace")),
-            KeyBinding::new(if mac { "cmd-3" } else { "ctrl-3" }, ShowSources, Some("CaptureWorkspace")),
-            KeyBinding::new(if mac { "cmd-," } else { "ctrl-," }, ShowSettings, Some("CaptureWorkspace")),
+            KeyBinding::new(
+                if mac { "cmd-1" } else { "ctrl-1" },
+                ShowRecent,
+                Some("CaptureWorkspace"),
+            ),
+            KeyBinding::new(
+                if mac { "cmd-2" } else { "ctrl-2" },
+                ShowLibrary,
+                Some("CaptureWorkspace"),
+            ),
+            KeyBinding::new(
+                if mac { "cmd-3" } else { "ctrl-3" },
+                ShowSources,
+                Some("CaptureWorkspace"),
+            ),
+            KeyBinding::new(
+                if mac { "cmd-," } else { "ctrl-," },
+                ShowSettings,
+                Some("CaptureWorkspace"),
+            ),
         ]);
         let backend = XcapBackend::new(app_core::capture_output_dir());
         let caps = backend.capabilities();
@@ -736,7 +764,8 @@ impl CaptureWorkspace {
                 Ok(tray) => {
                     shell.tray = Some(tray);
                     shell.tray_status =
-                        "Tray: capture / active-window countdown / Show control window / Quit".into();
+                        "Tray: capture / active-window countdown / Show control window / Quit"
+                            .into();
                     tracing::info!("tray icon created");
                 }
                 Err(error) => {
@@ -781,7 +810,9 @@ impl CaptureWorkspace {
                                         }
                                         Some(app_core::CaptureCommand::Region) => {
                                             #[cfg(all(test, target_os = "windows"))]
-                                            if let Some(probe) = cx.try_global::<RegionLatencyProbe>() {
+                                            if let Some(probe) =
+                                                cx.try_global::<RegionLatencyProbe>()
+                                            {
                                                 probe.mark("region_command_received");
                                             }
                                             this.open_overlays(OverlayMode::Fullscreen, cx)
@@ -789,9 +820,15 @@ impl CaptureWorkspace {
                                         Some(app_core::CaptureCommand::EditRegion) => {
                                             this.select_region_to_edit(cx)
                                         }
-                                        Some(app_core::CaptureCommand::ActiveWindow) => this.capture_active_window(cx),
-                                        Some(app_core::CaptureCommand::RepeatRegion) => this.repeat_last_region(cx),
-                                        Some(app_core::CaptureCommand::ActiveDisplay) => this.capture_active_display(cx),
+                                        Some(app_core::CaptureCommand::ActiveWindow) => {
+                                            this.capture_active_window(cx)
+                                        }
+                                        Some(app_core::CaptureCommand::RepeatRegion) => {
+                                            this.repeat_last_region(cx)
+                                        }
+                                        Some(app_core::CaptureCommand::ActiveDisplay) => {
+                                            this.capture_active_display(cx)
+                                        }
                                         None => {}
                                     }
                                 }
@@ -806,9 +843,19 @@ impl CaptureWorkspace {
                                         Some(app_core::TrayCommand::EditRegion) => {
                                             this.select_region_to_edit(cx)
                                         }
-                                        Some(app_core::TrayCommand::ActiveWindow) => this.start_delayed_capture(DelayedCapture::ActiveWindow, cx),
-                                        Some(app_core::TrayCommand::ActiveDisplay) => this.start_delayed_capture(DelayedCapture::ActiveDisplay, cx),
-                                        Some(app_core::TrayCommand::RepeatRegion) => this.repeat_last_region(cx),
+                                        Some(app_core::TrayCommand::ActiveWindow) => this
+                                            .start_delayed_capture(
+                                                DelayedCapture::ActiveWindow,
+                                                cx,
+                                            ),
+                                        Some(app_core::TrayCommand::ActiveDisplay) => this
+                                            .start_delayed_capture(
+                                                DelayedCapture::ActiveDisplay,
+                                                cx,
+                                            ),
+                                        Some(app_core::TrayCommand::RepeatRegion) => {
+                                            this.repeat_last_region(cx)
+                                        }
                                         Some(app_core::TrayCommand::Show) => this.show_control(cx),
                                         Some(app_core::TrayCommand::Quit) => {
                                             cx.defer(close_application)
@@ -877,14 +924,22 @@ impl CaptureWorkspace {
             let result = if let Some(path) = chosen {
                 cx.background_spawn(async move {
                     let settings = app_core::CaptureSettings::for_directory(path)
-                        .map_err(|error| format!("{error:#}"))?.with_theme(theme)
-                        .with_hotkeys(hotkeys).map_err(|error| format!("{error:#}"))?
-                        .with_output_profile(profile).with_region_presets(presets)
+                        .map_err(|error| format!("{error:#}"))?
+                        .with_theme(theme)
+                        .with_hotkeys(hotkeys)
+                        .map_err(|error| format!("{error:#}"))?
+                        .with_output_profile(profile)
+                        .with_region_presets(presets)
                         .and_then(|settings| settings.with_jpeg_quality(jpeg_quality))
                         .map(|settings| settings.with_export_format(export_format))
-                        .and_then(|settings| settings.with_filename_template(filename_template)).and_then(|settings| settings.with_capture_delay(capture_delay_seconds))
-                        .and_then(|settings| settings.with_upload_task_defaults(upload_task_defaults))
-                        .map(|settings| settings.with_strip_metadata_on_upload(strip_metadata_on_upload))
+                        .and_then(|settings| settings.with_filename_template(filename_template))
+                        .and_then(|settings| settings.with_capture_delay(capture_delay_seconds))
+                        .and_then(|settings| {
+                            settings.with_upload_task_defaults(upload_task_defaults)
+                        })
+                        .map(|settings| {
+                            settings.with_strip_metadata_on_upload(strip_metadata_on_upload)
+                        })
                         .map_err(|error| format!("{error:#}"))?;
                     settings.save().map_err(|error| format!("{error:#}"))?;
                     Ok::<_, String>(settings.output_directory)
@@ -1196,10 +1251,16 @@ impl CaptureWorkspace {
 
     fn choose_theme(&mut self, selected: app_core::UiTheme, cx: &mut Context<Self>) {
         let capture_delay_seconds = self.capture_delay_seconds;
-        if self.settings_loading || self.settings_saving || self.quitting || theme::selected(cx) == selected {
+        if self.settings_loading
+            || self.settings_saving
+            || self.quitting
+            || theme::selected(cx) == selected
+        {
             return;
         }
-        let Some(directory) = self.output_directory.clone() else { return; };
+        let Some(directory) = self.output_directory.clone() else {
+            return;
+        };
         let previous = theme::selected(cx);
         let jpeg_quality = self.jpeg_quality;
         let export_format = self.export_format;
@@ -1213,11 +1274,24 @@ impl CaptureWorkspace {
         self.settings_saving = true;
         self.settings_status = "Saving appearance…".into();
         cx.spawn(async move |this, cx| {
-            let result = cx.background_spawn(async move {
-                // The default capture folder may not exist before the first screenshot.
-                std::fs::create_dir_all(&directory)?;
-                app_core::CaptureSettings::for_directory(directory)?.with_theme(selected).with_hotkeys(hotkeys)?.with_output_profile(profile).with_region_presets(presets)?.with_jpeg_quality(jpeg_quality)?.with_export_format(export_format).with_filename_template(filename_template)?.with_capture_delay(capture_delay_seconds)?.with_upload_task_defaults(upload_task_defaults)?.with_strip_metadata_on_upload(strip_metadata_on_upload).save()
-            }).await;
+            let result = cx
+                .background_spawn(async move {
+                    // The default capture folder may not exist before the first screenshot.
+                    std::fs::create_dir_all(&directory)?;
+                    app_core::CaptureSettings::for_directory(directory)?
+                        .with_theme(selected)
+                        .with_hotkeys(hotkeys)?
+                        .with_output_profile(profile)
+                        .with_region_presets(presets)?
+                        .with_jpeg_quality(jpeg_quality)?
+                        .with_export_format(export_format)
+                        .with_filename_template(filename_template)?
+                        .with_capture_delay(capture_delay_seconds)?
+                        .with_upload_task_defaults(upload_task_defaults)?
+                        .with_strip_metadata_on_upload(strip_metadata_on_upload)
+                        .save()
+                })
+                .await;
             this.update(cx, |this, cx| {
                 this.settings_saving = false;
                 match result {
@@ -1229,8 +1303,10 @@ impl CaptureWorkspace {
                 }
                 this.finish_quit_if_idle(cx);
                 cx.notify();
-            }).ok();
-        }).detach();
+            })
+            .ok();
+        })
+        .detach();
         cx.notify();
     }
 
@@ -1240,11 +1316,24 @@ impl CaptureWorkspace {
         let export_format = self.export_format;
         let filename_template = self.filename_template.clone();
         let strip_metadata_on_upload = self.strip_metadata_on_upload;
-        if self.settings_loading || self.settings_saving || self.quitting || self.capturing
-            || self.copying || self.saving || self.preview_active || self.editor.is_some()
-            || self.editor_closing || self.switching_graphics || self.capture_delay.is_some()
-            || self.output_profile == selected { return; }
-        let Some(directory) = self.output_directory.clone() else { return; };
+        if self.settings_loading
+            || self.settings_saving
+            || self.quitting
+            || self.capturing
+            || self.copying
+            || self.saving
+            || self.preview_active
+            || self.editor.is_some()
+            || self.editor_closing
+            || self.switching_graphics
+            || self.capture_delay.is_some()
+            || self.output_profile == selected
+        {
+            return;
+        }
+        let Some(directory) = self.output_directory.clone() else {
+            return;
+        };
         let appearance = theme::selected(cx);
         let hotkeys = self.hotkey_bindings.clone();
         let presets = self.region_presets.clone();
@@ -1252,11 +1341,23 @@ impl CaptureWorkspace {
         self.settings_saving = true;
         self.settings_status = "Saving capture output…".into();
         cx.spawn(async move |this, cx| {
-            let result = cx.background_spawn(async move {
-                std::fs::create_dir_all(&directory)?;
-                app_core::CaptureSettings::for_directory(directory)?.with_theme(appearance)
-                    .with_hotkeys(hotkeys)?.with_output_profile(selected).with_region_presets(presets)?.with_jpeg_quality(jpeg_quality)?.with_export_format(export_format).with_filename_template(filename_template)?.with_capture_delay(capture_delay_seconds)?.with_upload_task_defaults(upload_task_defaults)?.with_strip_metadata_on_upload(strip_metadata_on_upload).save()
-            }).await;
+            let result = cx
+                .background_spawn(async move {
+                    std::fs::create_dir_all(&directory)?;
+                    app_core::CaptureSettings::for_directory(directory)?
+                        .with_theme(appearance)
+                        .with_hotkeys(hotkeys)?
+                        .with_output_profile(selected)
+                        .with_region_presets(presets)?
+                        .with_jpeg_quality(jpeg_quality)?
+                        .with_export_format(export_format)
+                        .with_filename_template(filename_template)?
+                        .with_capture_delay(capture_delay_seconds)?
+                        .with_upload_task_defaults(upload_task_defaults)?
+                        .with_strip_metadata_on_upload(strip_metadata_on_upload)
+                        .save()
+                })
+                .await;
             this.update(cx, |this, cx| {
                 this.settings_saving = false;
                 match result {
@@ -1264,12 +1365,16 @@ impl CaptureWorkspace {
                         this.output_profile = selected;
                         this.settings_status = "Capture output saved".into();
                     }
-                    Err(error) => this.settings_status = format!("Capture output unchanged: {error:#}"),
+                    Err(error) => {
+                        this.settings_status = format!("Capture output unchanged: {error:#}")
+                    }
                 }
                 this.finish_quit_if_idle(cx);
                 cx.notify();
-            }).ok();
-        }).detach();
+            })
+            .ok();
+        })
+        .detach();
         cx.notify();
     }
 
@@ -1278,11 +1383,21 @@ impl CaptureWorkspace {
         let export_format = self.export_format;
         let filename_template = self.filename_template.clone();
         let strip_metadata_on_upload = self.strip_metadata_on_upload;
-        if self.page != ControlPage::Settings || self.image_input_busy() { return; }
-        let Some(input) = &self.jpeg_quality_input else { return; };
-        let quality = input.read(cx).value().parse::<u8>().ok().filter(|quality| (1..=100).contains(quality));
+        if self.page != ControlPage::Settings || self.image_input_busy() {
+            return;
+        }
+        let Some(input) = &self.jpeg_quality_input else {
+            return;
+        };
+        let quality = input
+            .read(cx)
+            .value()
+            .parse::<u8>()
+            .ok()
+            .filter(|quality| (1..=100).contains(quality));
         let Some(quality) = quality else {
-            self.settings_status = "JPEG quality unchanged: enter a whole number from 1 to 100.".into();
+            self.settings_status =
+                "JPEG quality unchanged: enter a whole number from 1 to 100.".into();
             cx.notify();
             return;
         };
@@ -1291,7 +1406,9 @@ impl CaptureWorkspace {
             cx.notify();
             return;
         }
-        let Some(directory) = self.output_directory.clone() else { return; };
+        let Some(directory) = self.output_directory.clone() else {
+            return;
+        };
         let appearance = theme::selected(cx);
         let hotkeys = self.hotkey_bindings.clone();
         let profile = self.output_profile;
@@ -1300,31 +1417,59 @@ impl CaptureWorkspace {
         self.settings_saving = true;
         self.settings_status = "Saving JPEG quality…".into();
         cx.spawn(async move |this, cx| {
-            let result = cx.background_spawn(async move {
-                let settings = app_core::CaptureSettings::for_directory(directory)?.with_theme(appearance)
-                    .with_hotkeys(hotkeys)?.with_output_profile(profile).with_region_presets(presets)?
-                    .with_jpeg_quality(quality)?.with_export_format(export_format).with_filename_template(filename_template)?.with_capture_delay(capture_delay_seconds)?.with_upload_task_defaults(upload_task_defaults)?.with_strip_metadata_on_upload(strip_metadata_on_upload);
-                std::fs::create_dir_all(&settings.output_directory)?;
-                settings.save()
-            }).await;
+            let result = cx
+                .background_spawn(async move {
+                    let settings = app_core::CaptureSettings::for_directory(directory)?
+                        .with_theme(appearance)
+                        .with_hotkeys(hotkeys)?
+                        .with_output_profile(profile)
+                        .with_region_presets(presets)?
+                        .with_jpeg_quality(quality)?
+                        .with_export_format(export_format)
+                        .with_filename_template(filename_template)?
+                        .with_capture_delay(capture_delay_seconds)?
+                        .with_upload_task_defaults(upload_task_defaults)?
+                        .with_strip_metadata_on_upload(strip_metadata_on_upload);
+                    std::fs::create_dir_all(&settings.output_directory)?;
+                    settings.save()
+                })
+                .await;
             this.update(cx, |this, cx| {
                 this.settings_saving = false;
                 match result {
-                    Ok(()) => { this.jpeg_quality = quality; this.settings_status = format!("JPEG quality saved: {quality}"); }
-                    Err(error) => this.settings_status = format!("JPEG quality unchanged: {error:#}"),
+                    Ok(()) => {
+                        this.jpeg_quality = quality;
+                        this.settings_status = format!("JPEG quality saved: {quality}");
+                    }
+                    Err(error) => {
+                        this.settings_status = format!("JPEG quality unchanged: {error:#}")
+                    }
                 }
                 this.finish_quit_if_idle(cx);
                 cx.notify();
-            }).ok();
-        }).detach();
+            })
+            .ok();
+        })
+        .detach();
         cx.notify();
     }
 
-    fn choose_export_format(&mut self, format: app_core::ImageExportFormat, cx: &mut Context<Self>) {
+    fn choose_export_format(
+        &mut self,
+        format: app_core::ImageExportFormat,
+        cx: &mut Context<Self>,
+    ) {
         let capture_delay_seconds = self.capture_delay_seconds;
         let filename_template = self.filename_template.clone();
-        if self.page != ControlPage::Settings || self.image_input_busy() || self.export_format == format { return; }
-        let Some(directory) = self.output_directory.clone() else { return; };
+        if self.page != ControlPage::Settings
+            || self.image_input_busy()
+            || self.export_format == format
+        {
+            return;
+        }
+        let Some(directory) = self.output_directory.clone() else {
+            return;
+        };
         let appearance = theme::selected(cx);
         let hotkeys = self.hotkey_bindings.clone();
         let profile = self.output_profile;
@@ -1335,40 +1480,66 @@ impl CaptureWorkspace {
         self.settings_saving = true;
         self.settings_status = "Saving default export format…".into();
         cx.spawn(async move |this, cx| {
-            let result = cx.background_spawn(async move {
-                let settings = app_core::CaptureSettings::for_directory(directory)?.with_theme(appearance)
-                    .with_hotkeys(hotkeys)?.with_output_profile(profile).with_region_presets(presets)?
-                    .with_jpeg_quality(quality)?.with_export_format(format).with_filename_template(filename_template)?.with_capture_delay(capture_delay_seconds)?.with_upload_task_defaults(upload_task_defaults)?.with_strip_metadata_on_upload(strip_metadata_on_upload);
-                std::fs::create_dir_all(&settings.output_directory)?;
-                settings.save()
-            }).await;
+            let result = cx
+                .background_spawn(async move {
+                    let settings = app_core::CaptureSettings::for_directory(directory)?
+                        .with_theme(appearance)
+                        .with_hotkeys(hotkeys)?
+                        .with_output_profile(profile)
+                        .with_region_presets(presets)?
+                        .with_jpeg_quality(quality)?
+                        .with_export_format(format)
+                        .with_filename_template(filename_template)?
+                        .with_capture_delay(capture_delay_seconds)?
+                        .with_upload_task_defaults(upload_task_defaults)?
+                        .with_strip_metadata_on_upload(strip_metadata_on_upload);
+                    std::fs::create_dir_all(&settings.output_directory)?;
+                    settings.save()
+                })
+                .await;
             this.update(cx, |this, cx| {
                 this.settings_saving = false;
                 match result {
-                    Ok(()) => { this.export_format = format; this.settings_status = format!("Default export format saved: {}", format.label()); }
-                    Err(error) => this.settings_status = format!("Default export format unchanged: {error:#}"),
+                    Ok(()) => {
+                        this.export_format = format;
+                        this.settings_status =
+                            format!("Default export format saved: {}", format.label());
+                    }
+                    Err(error) => {
+                        this.settings_status = format!("Default export format unchanged: {error:#}")
+                    }
                 }
                 this.finish_quit_if_idle(cx);
                 cx.notify();
-            }).ok();
-        }).detach();
+            })
+            .ok();
+        })
+        .detach();
         cx.notify();
     }
 
     fn save_filename_template(&mut self, cx: &mut Context<Self>) {
         let capture_delay_seconds = self.capture_delay_seconds;
-        if self.page != ControlPage::Settings || self.image_input_busy() { return; }
-        let Some(input) = &self.filename_template_input else { return; };
+        if self.page != ControlPage::Settings || self.image_input_busy() {
+            return;
+        }
+        let Some(input) = &self.filename_template_input else {
+            return;
+        };
         let template = input.read(cx).value().trim().to_owned();
         if let Err(error) = app_core::validate_capture_name_template(&template) {
             self.settings_status = format!("Filename template unchanged: {error}");
-            cx.notify(); return;
+            cx.notify();
+            return;
         }
         if template == self.filename_template {
             self.settings_status = "Filename template already active.".into();
-            cx.notify(); return;
+            cx.notify();
+            return;
         }
-        let Some(directory) = self.output_directory.clone() else { return; };
+        let Some(directory) = self.output_directory.clone() else {
+            return;
+        };
         let appearance = theme::selected(cx);
         let hotkeys = self.hotkey_bindings.clone();
         let profile = self.output_profile;
@@ -1380,24 +1551,41 @@ impl CaptureWorkspace {
         self.settings_saving = true;
         self.settings_status = "Saving filename template…".into();
         cx.spawn(async move |this, cx| {
-            let result = cx.background_spawn(async move {
-                let settings = app_core::CaptureSettings::for_directory(directory)?.with_theme(appearance)
-                    .with_hotkeys(hotkeys)?.with_output_profile(profile).with_region_presets(presets)?
-                    .with_jpeg_quality(quality)?.with_export_format(format).with_filename_template(template)?.with_capture_delay(capture_delay_seconds)?.with_upload_task_defaults(upload_task_defaults)?.with_strip_metadata_on_upload(strip_metadata_on_upload);
-                std::fs::create_dir_all(&settings.output_directory)?;
-                settings.save()?;
-                Ok::<_, anyhow::Error>(settings.filename_template)
-            }).await;
+            let result = cx
+                .background_spawn(async move {
+                    let settings = app_core::CaptureSettings::for_directory(directory)?
+                        .with_theme(appearance)
+                        .with_hotkeys(hotkeys)?
+                        .with_output_profile(profile)
+                        .with_region_presets(presets)?
+                        .with_jpeg_quality(quality)?
+                        .with_export_format(format)
+                        .with_filename_template(template)?
+                        .with_capture_delay(capture_delay_seconds)?
+                        .with_upload_task_defaults(upload_task_defaults)?
+                        .with_strip_metadata_on_upload(strip_metadata_on_upload);
+                    std::fs::create_dir_all(&settings.output_directory)?;
+                    settings.save()?;
+                    Ok::<_, anyhow::Error>(settings.filename_template)
+                })
+                .await;
             this.update(cx, |this, cx| {
                 this.settings_saving = false;
                 match result {
-                    Ok(template) => { this.filename_template = template; this.settings_status = "Filename template saved.".into(); }
-                    Err(error) => this.settings_status = format!("Filename template unchanged: {error:#}"),
+                    Ok(template) => {
+                        this.filename_template = template;
+                        this.settings_status = "Filename template saved.".into();
+                    }
+                    Err(error) => {
+                        this.settings_status = format!("Filename template unchanged: {error:#}")
+                    }
                 }
                 this.finish_quit_if_idle(cx);
                 cx.notify();
-            }).ok();
-        }).detach();
+            })
+            .ok();
+        })
+        .detach();
         cx.notify();
     }
 
@@ -1418,16 +1606,22 @@ impl CaptureWorkspace {
         self.region_preset_name = None;
         self.exact_region_status.clear();
         #[cfg(target_os = "windows")]
-        { self.hotkey_inputs = None; }
+        {
+            self.hotkey_inputs = None;
+        }
         if page == ControlPage::History {
             self.history_visible = true;
             self.refresh_history(None, cx);
             if let Some(control) = self.control {
                 let owner = cx.entity().downgrade();
                 cx.defer(move |cx| {
-                    control.update(cx, |_, window, cx| {
-                        owner.update(cx, |this, cx| this.init_history_input(window, cx)).ok();
-                    }).ok();
+                    control
+                        .update(cx, |_, window, cx| {
+                            owner
+                                .update(cx, |this, cx| this.init_history_input(window, cx))
+                                .ok();
+                        })
+                        .ok();
                 });
             }
         }
@@ -1440,10 +1634,16 @@ impl CaptureWorkspace {
         let export_format = self.export_format;
         let filename_template = self.filename_template.clone();
         let strip_metadata_on_upload = self.strip_metadata_on_upload;
-        if self.page != ControlPage::Settings || self.settings_loading || self.settings_saving || self.quitting {
+        if self.page != ControlPage::Settings
+            || self.settings_loading
+            || self.settings_saving
+            || self.quitting
+        {
             return;
         }
-        let Some(directory) = self.output_directory.clone() else { return; };
+        let Some(directory) = self.output_directory.clone() else {
+            return;
+        };
         let bindings = match bindings.validated() {
             Ok(bindings) => bindings,
             Err(error) => {
@@ -1452,7 +1652,9 @@ impl CaptureWorkspace {
                 return;
             }
         };
-        let Some(hotkey) = self.hotkey.as_mut() else { return; };
+        let Some(hotkey) = self.hotkey.as_mut() else {
+            return;
+        };
         if let Err(error) = hotkey.prepare(&bindings) {
             self.hotkey_status = hotkey.status().to_string();
             self.settings_status = format!("Shortcuts unchanged: {error:#}");
@@ -1502,17 +1704,19 @@ impl CaptureWorkspace {
                 .clean_on_escape()
                 .validate(|value, _| workspace::valid_search(value))
         });
-        self.history_search_subscription = Some(cx.subscribe_in(
-            &input, window, |this, field, event, _, cx| {
-                if matches!(event, InputEvent::Change)
-                    && this.history_search_input.as_ref().is_some_and(|current| {
-                        current.entity_id() == field.entity_id()
-                    })
-                {
-                    this.set_history_query(field.read(cx).value().to_string(), cx);
-                }
-            },
-        ));
+        self.history_search_subscription =
+            Some(
+                cx.subscribe_in(&input, window, |this, field, event, _, cx| {
+                    if matches!(event, InputEvent::Change)
+                        && this
+                            .history_search_input
+                            .as_ref()
+                            .is_some_and(|current| current.entity_id() == field.entity_id())
+                    {
+                        this.set_history_query(field.read(cx).value().to_string(), cx);
+                    }
+                }),
+            );
         self.history_search_input = Some(input);
         cx.notify();
     }
@@ -1558,11 +1762,15 @@ impl CaptureWorkspace {
             HistoryCommand::Open => cx.open_with_system(&path),
             HistoryCommand::Reveal => cx.reveal_path(&path),
             HistoryCommand::CopyPath => {
-                if !self.history_loading { self.copy_file_reference(path, Some(revision), FileClipboardKind::Path, cx); }
+                if !self.history_loading {
+                    self.copy_file_reference(path, Some(revision), FileClipboardKind::Path, cx);
+                }
             }
             #[cfg(target_os = "windows")]
             HistoryCommand::CopyFile => {
-                if !self.history_loading { self.copy_file_reference(path, Some(revision), FileClipboardKind::File, cx); }
+                if !self.history_loading {
+                    self.copy_file_reference(path, Some(revision), FileClipboardKind::File, cx);
+                }
             }
             HistoryCommand::Upload => self.upload_history_image(id, revision, cx),
             HistoryCommand::Relink => self.relink_history_image(id, revision, cx),
@@ -1854,14 +2062,24 @@ impl CaptureWorkspace {
     }
 
     fn apply_capture_delay(&mut self, cx: &mut Context<Self>) {
-        if self.page != ControlPage::Captures || self.image_input_busy() { return; }
-        let seconds = self.capture_delay_input.as_ref().and_then(|input| input.read(cx).value().parse::<u8>().ok());
+        if self.page != ControlPage::Captures || self.image_input_busy() {
+            return;
+        }
+        let seconds = self
+            .capture_delay_input
+            .as_ref()
+            .and_then(|input| input.read(cx).value().parse::<u8>().ok());
         let Some(seconds) = seconds.filter(|seconds| (1..=60).contains(seconds)) else {
             self.capture_status = "Delay unchanged: enter whole seconds from 1 to 60.".into();
-            cx.notify(); return;
+            cx.notify();
+            return;
         };
-        if seconds == self.capture_delay_seconds { return; }
-        let Some(directory) = self.output_directory.clone() else { return; };
+        if seconds == self.capture_delay_seconds {
+            return;
+        }
+        let Some(directory) = self.output_directory.clone() else {
+            return;
+        };
         let appearance = theme::selected(cx);
         let hotkeys = self.hotkey_bindings.clone();
         let profile = self.output_profile;
@@ -1874,24 +2092,38 @@ impl CaptureWorkspace {
         self.settings_saving = true;
         self.capture_status = "Saving capture delay…".into();
         cx.spawn(async move |this, cx| {
-            let result = cx.background_spawn(async move {
-                let settings = app_core::CaptureSettings::for_directory(directory)?.with_theme(appearance)
-                    .with_hotkeys(hotkeys)?.with_output_profile(profile).with_region_presets(presets)?
-                    .with_jpeg_quality(quality)?.with_export_format(format).with_filename_template(template)?
-                    .with_capture_delay(seconds)?.with_upload_task_defaults(upload_task_defaults)?.with_strip_metadata_on_upload(strip_metadata_on_upload);
-                std::fs::create_dir_all(&settings.output_directory)?;
-                settings.save()
-            }).await;
+            let result = cx
+                .background_spawn(async move {
+                    let settings = app_core::CaptureSettings::for_directory(directory)?
+                        .with_theme(appearance)
+                        .with_hotkeys(hotkeys)?
+                        .with_output_profile(profile)
+                        .with_region_presets(presets)?
+                        .with_jpeg_quality(quality)?
+                        .with_export_format(format)
+                        .with_filename_template(template)?
+                        .with_capture_delay(seconds)?
+                        .with_upload_task_defaults(upload_task_defaults)?
+                        .with_strip_metadata_on_upload(strip_metadata_on_upload);
+                    std::fs::create_dir_all(&settings.output_directory)?;
+                    settings.save()
+                })
+                .await;
             this.update(cx, |this, cx| {
                 this.settings_saving = false;
                 this.capture_status = match result {
-                    Ok(()) => { this.capture_delay_seconds = seconds; format!("Capture delay saved: {seconds} s.") }
+                    Ok(()) => {
+                        this.capture_delay_seconds = seconds;
+                        format!("Capture delay saved: {seconds} s.")
+                    }
                     Err(error) => format!("Capture delay unchanged: {error:#}"),
                 };
                 this.finish_quit_if_idle(cx);
                 cx.notify();
-            }).ok();
-        }).detach();
+            })
+            .ok();
+        })
+        .detach();
         cx.notify();
     }
 
@@ -1912,8 +2144,20 @@ impl CaptureWorkspace {
         {
             return;
         }
-        let label = match target { DelayedCapture::Region => "Region", #[cfg(target_os = "windows")] DelayedCapture::ActiveWindow => "Active window", #[cfg(target_os = "windows")] DelayedCapture::ActiveDisplay => "Active display" };
-        let instruction = match target { DelayedCapture::Region => "Press Escape to cancel.", #[cfg(target_os = "windows")] DelayedCapture::ActiveWindow | DelayedCapture::ActiveDisplay => "Focus the target window. Escape in this app cancels." };
+        let label = match target {
+            DelayedCapture::Region => "Region",
+            #[cfg(target_os = "windows")]
+            DelayedCapture::ActiveWindow => "Active window",
+            #[cfg(target_os = "windows")]
+            DelayedCapture::ActiveDisplay => "Active display",
+        };
+        let instruction = match target {
+            DelayedCapture::Region => "Press Escape to cancel.",
+            #[cfg(target_os = "windows")]
+            DelayedCapture::ActiveWindow | DelayedCapture::ActiveDisplay => {
+                "Focus the target window. Escape in this app cancels."
+            }
+        };
         let seconds = self.capture_delay_seconds;
         self.capture_status = format!("{label} capture in {seconds} s… {instruction}");
         self.capture_delay = Some(cx.spawn(async move |this, cx| {
@@ -1930,7 +2174,9 @@ impl CaptureWorkspace {
                         if remaining == 0 {
                             this.capture_delay.take();
                             match target {
-                                DelayedCapture::Region => this.open_overlays(OverlayMode::Fullscreen, cx),
+                                DelayedCapture::Region => {
+                                    this.open_overlays(OverlayMode::Fullscreen, cx)
+                                }
                                 #[cfg(target_os = "windows")]
                                 DelayedCapture::ActiveWindow => this.capture_active_window(cx),
                                 #[cfg(target_os = "windows")]
@@ -2141,10 +2387,21 @@ impl CaptureWorkspace {
 
     #[cfg(target_os = "windows")]
     fn capture_active_window(&mut self, cx: &mut Context<Self>) {
-        if self.capturing || self.copying || self.saving || self.quitting || self.settings_loading
-            || self.settings_saving || self.switching_graphics || self.preview_active
-            || self.editor.is_some() || self.editor_closing || self.capture_delay.is_some()
-            || self.output_directory.is_none() { return; }
+        if self.capturing
+            || self.copying
+            || self.saving
+            || self.quitting
+            || self.settings_loading
+            || self.settings_saving
+            || self.switching_graphics
+            || self.preview_active
+            || self.editor.is_some()
+            || self.editor_closing
+            || self.capture_delay.is_some()
+            || self.output_directory.is_none()
+        {
+            return;
+        }
         self.apply_upload_task_default(3, cx);
         match app_core::foreground_window_capture() {
             Ok(request) => self.start_capture(vec![request], cx),
@@ -2158,7 +2415,9 @@ impl CaptureWorkspace {
 
     #[cfg(target_os = "windows")]
     fn capture_active_display(&mut self, cx: &mut Context<Self>) {
-        if self.image_input_busy() { return; }
+        if self.image_input_busy() {
+            return;
+        }
         self.apply_upload_task_default(5, cx);
         match app_core::foreground_display_capture() {
             Ok(request) => self.start_capture(vec![request], cx),
@@ -2173,14 +2432,27 @@ impl CaptureWorkspace {
     fn set_last_region(&mut self, region: Option<app_core::RememberedRegion>) {
         self.last_region = region;
         #[cfg(target_os = "windows")]
-        if let Some(tray) = &self.tray { tray.set_repeat_region_available(self.last_region.is_some()); }
+        if let Some(tray) = &self.tray {
+            tray.set_repeat_region_available(self.last_region.is_some());
+        }
     }
 
     fn repeat_last_region(&mut self, cx: &mut Context<Self>) {
-        if self.capturing || self.copying || self.saving || self.quitting || self.settings_loading
-            || self.settings_saving || self.switching_graphics || self.preview_active
-            || self.editor.is_some() || self.editor_closing || self.capture_delay.is_some()
-            || self.output_directory.is_none() { return; }
+        if self.capturing
+            || self.copying
+            || self.saving
+            || self.quitting
+            || self.settings_loading
+            || self.settings_saving
+            || self.switching_graphics
+            || self.preview_active
+            || self.editor.is_some()
+            || self.editor_closing
+            || self.capture_delay.is_some()
+            || self.output_directory.is_none()
+        {
+            return;
+        }
         let Some(region) = self.last_region.clone() else {
             self.capture_status = "Select a region on a stable display before repeating it. Regions are remembered for this app session only.".into();
             self.show_page(ControlPage::Captures, cx);
@@ -2235,9 +2507,16 @@ impl CaptureWorkspace {
     }
 
     fn capture_exact_region(&mut self, display: DisplayInfo, cx: &mut Context<Self>) {
-        if self.page != ControlPage::Sources || self.image_input_busy() || self.refreshing
-            || !self.backend.capabilities().capture_region { return; }
-        let Some(inputs) = &self.exact_region_inputs else { return; };
+        if self.page != ControlPage::Sources
+            || self.image_input_busy()
+            || self.refreshing
+            || !self.backend.capabilities().capture_region
+        {
+            return;
+        }
+        let Some(inputs) = &self.exact_region_inputs else {
+            return;
+        };
         let values = std::array::from_fn(|index| inputs[index].read(cx).value().to_string());
         match workspace::exact_region_request(&display, &values) {
             Ok(region) => {
@@ -2246,55 +2525,104 @@ impl CaptureWorkspace {
                 self.apply_upload_task_default(1, cx);
                 self.start_capture(vec![CaptureJob::ExactRegion(region)], cx);
             }
-            Err(error) => { self.exact_region_status = error; cx.notify(); }
+            Err(error) => {
+                self.exact_region_status = error;
+                cx.notify();
+            }
         }
     }
 
     fn save_region_preset(&mut self, display: DisplayInfo, cx: &mut Context<Self>) {
-        if self.page != ControlPage::Sources || self.image_input_busy() || self.refreshing { return; }
-        let (Some(inputs), Some(name)) = (&self.exact_region_inputs, &self.region_preset_name) else { return; };
+        if self.page != ControlPage::Sources || self.image_input_busy() || self.refreshing {
+            return;
+        }
+        let (Some(inputs), Some(name)) = (&self.exact_region_inputs, &self.region_preset_name)
+        else {
+            return;
+        };
         let values = std::array::from_fn(|index| inputs[index].read(cx).value().to_string());
-        let result = workspace::exact_region_request(&display, &values)
-            .and_then(|region| app_core::RegionPreset::new(&name.read(cx).value(), region.area()).map_err(|e| e.to_string()));
+        let result = workspace::exact_region_request(&display, &values).and_then(|region| {
+            app_core::RegionPreset::new(&name.read(cx).value(), region.area())
+                .map_err(|e| e.to_string())
+        });
         match result {
             Ok(preset) => {
                 let mut presets = self.region_presets.clone();
-                if let Some(previous) = presets.iter_mut().find(|old| old.name == preset.name) { *previous = preset; }
-                else { presets.push(preset); }
+                if let Some(previous) = presets.iter_mut().find(|old| old.name == preset.name) {
+                    *previous = preset;
+                } else {
+                    presets.push(preset);
+                }
                 self.persist_region_presets(presets, cx);
             }
-            Err(error) => { self.exact_region_status = error; cx.notify(); }
+            Err(error) => {
+                self.exact_region_status = error;
+                cx.notify();
+            }
         }
     }
 
-    fn use_region_preset(&mut self, preset: &app_core::RegionPreset, window: &mut Window, cx: &mut Context<Self>) {
-        if self.page != ControlPage::Sources || self.image_input_busy() || !self.region_presets.contains(preset) { return; }
-        let Some(inputs) = &self.exact_region_inputs else { return; };
-        for (input, value) in inputs.iter().zip([preset.x, preset.y, preset.width, preset.height]) {
-            input.update(cx, |input, cx| input.set_value(value.to_string(), window, cx));
+    fn use_region_preset(
+        &mut self,
+        preset: &app_core::RegionPreset,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.page != ControlPage::Sources
+            || self.image_input_busy()
+            || !self.region_presets.contains(preset)
+        {
+            return;
+        }
+        let Some(inputs) = &self.exact_region_inputs else {
+            return;
+        };
+        for (input, value) in inputs
+            .iter()
+            .zip([preset.x, preset.y, preset.width, preset.height])
+        {
+            input.update(cx, |input, cx| {
+                input.set_value(value.to_string(), window, cx)
+            });
         }
         if let Some(name) = &self.region_preset_name {
-            name.update(cx, |input, cx| input.set_value(preset.name.clone(), window, cx));
+            name.update(cx, |input, cx| {
+                input.set_value(preset.name.clone(), window, cx)
+            });
         }
         self.exact_region_status = "Preset loaded. Choose a display and capture explicitly.".into();
         cx.notify();
     }
 
     fn remove_region_preset(&mut self, preset: &app_core::RegionPreset, cx: &mut Context<Self>) {
-        if self.page != ControlPage::Sources || self.image_input_busy() { return; }
-        let Some(index) = self.region_presets.iter().position(|current| current == preset) else { return; };
+        if self.page != ControlPage::Sources || self.image_input_busy() {
+            return;
+        }
+        let Some(index) = self
+            .region_presets
+            .iter()
+            .position(|current| current == preset)
+        else {
+            return;
+        };
         let mut presets = self.region_presets.clone();
         presets.remove(index);
         self.persist_region_presets(presets, cx);
     }
 
-    fn persist_region_presets(&mut self, presets: Vec<app_core::RegionPreset>, cx: &mut Context<Self>) {
+    fn persist_region_presets(
+        &mut self,
+        presets: Vec<app_core::RegionPreset>,
+        cx: &mut Context<Self>,
+    ) {
         let capture_delay_seconds = self.capture_delay_seconds;
         let jpeg_quality = self.jpeg_quality;
         let export_format = self.export_format;
         let filename_template = self.filename_template.clone();
         let strip_metadata_on_upload = self.strip_metadata_on_upload;
-        let Some(directory) = self.output_directory.clone() else { return; };
+        let Some(directory) = self.output_directory.clone() else {
+            return;
+        };
         let appearance = theme::selected(cx);
         let hotkeys = self.hotkey_bindings.clone();
         let profile = self.output_profile;
@@ -2302,24 +2630,42 @@ impl CaptureWorkspace {
         self.settings_saving = true;
         self.exact_region_status = "Saving region presets…".into();
         cx.spawn(async move |this, cx| {
-            let result = cx.background_spawn(async move {
-                let settings = app_core::CaptureSettings::for_directory(directory)?.with_theme(appearance)
-                    .with_hotkeys(hotkeys)?.with_output_profile(profile).with_region_presets(presets)?.with_jpeg_quality(jpeg_quality)?.with_export_format(export_format).with_filename_template(filename_template)?.with_capture_delay(capture_delay_seconds)?.with_upload_task_defaults(upload_task_defaults)?.with_strip_metadata_on_upload(strip_metadata_on_upload);
-                std::fs::create_dir_all(&settings.output_directory)?;
-                settings.save()?;
-                Ok::<_, anyhow::Error>(settings.region_presets)
-            }).await;
+            let result = cx
+                .background_spawn(async move {
+                    let settings = app_core::CaptureSettings::for_directory(directory)?
+                        .with_theme(appearance)
+                        .with_hotkeys(hotkeys)?
+                        .with_output_profile(profile)
+                        .with_region_presets(presets)?
+                        .with_jpeg_quality(jpeg_quality)?
+                        .with_export_format(export_format)
+                        .with_filename_template(filename_template)?
+                        .with_capture_delay(capture_delay_seconds)?
+                        .with_upload_task_defaults(upload_task_defaults)?
+                        .with_strip_metadata_on_upload(strip_metadata_on_upload);
+                    std::fs::create_dir_all(&settings.output_directory)?;
+                    settings.save()?;
+                    Ok::<_, anyhow::Error>(settings.region_presets)
+                })
+                .await;
             this.update(cx, |this, cx| {
                 this.settings_saving = false;
                 match result {
-                    Ok(presets) => { this.region_presets = presets; this.exact_region_status = "Region presets saved.".into(); }
-                    Err(error) => this.exact_region_status = format!("Region presets unchanged: {error:#}"),
+                    Ok(presets) => {
+                        this.region_presets = presets;
+                        this.exact_region_status = "Region presets saved.".into();
+                    }
+                    Err(error) => {
+                        this.exact_region_status = format!("Region presets unchanged: {error:#}")
+                    }
                 }
                 this.settings_status = this.exact_region_status.clone();
                 this.finish_quit_if_idle(cx);
                 cx.notify();
-            }).ok();
-        }).detach();
+            })
+            .ok();
+        })
+        .detach();
         cx.notify();
     }
 
@@ -2379,9 +2725,14 @@ impl CaptureWorkspace {
     }
 
     fn open_redaction_editor(&mut self, cx: &mut Context<Self>) {
-        let source = self.last_capture.clone().map(EditorImage::Captured)
+        let source = self
+            .last_capture
+            .clone()
+            .map(EditorImage::Captured)
             .or_else(|| self.last_saved.clone().map(EditorImage::SavedPng));
-        if let Some(source) = source { self.open_redaction_source(source, cx); }
+        if let Some(source) = source {
+            self.open_redaction_source(source, cx);
+        }
     }
 
     fn open_history_editor(&mut self, path: PathBuf, cx: &mut Context<Self>) {
@@ -2389,10 +2740,19 @@ impl CaptureWorkspace {
     }
 
     fn image_input_busy(&self) -> bool {
-        self.editor.is_some() || self.editor_closing || self.capturing || self.copying
-            || self.saving || self.quitting || self.capture_delay.is_some()
-            || self.settings_loading || self.settings_saving || self.history_mutating
-            || self.switching_graphics || self.preview_active || self.output_directory.is_none()
+        self.editor.is_some()
+            || self.editor_closing
+            || self.capturing
+            || self.copying
+            || self.saving
+            || self.quitting
+            || self.capture_delay.is_some()
+            || self.settings_loading
+            || self.settings_saving
+            || self.history_mutating
+            || self.switching_graphics
+            || self.preview_active
+            || self.output_directory.is_none()
     }
 
     fn paste_image(&mut self, cx: &mut Context<Self>) {
@@ -2406,7 +2766,9 @@ impl CaptureWorkspace {
     }
 
     fn open_image(&mut self, cx: &mut Context<Self>) {
-        if self.image_input_busy() { return; }
+        if self.image_input_busy() {
+            return;
+        }
         self.show_page(ControlPage::Captures, cx);
         self.capturing = true;
         self.capture_status = "Choosing an image…".into();
@@ -2426,20 +2788,31 @@ impl CaptureWorkspace {
                 }
                 match selected {
                     Ok(Ok(Some(paths))) if paths.len() == 1 => {
-                        this.open_redaction_source(EditorImage::File(paths.into_iter().next().unwrap()), cx);
+                        this.open_redaction_source(
+                            EditorImage::File(paths.into_iter().next().unwrap()),
+                            cx,
+                        );
                     }
                     Ok(Ok(None)) => this.capture_status = "Image selection canceled.".into(),
-                    Ok(Ok(Some(_))) => this.capture_status = "Choose exactly one PNG, JPEG or WebP image.".into(),
-                    Err(_) | Ok(Err(_)) => this.capture_status = "Could not select an image.".into(),
+                    Ok(Ok(Some(_))) => {
+                        this.capture_status = "Choose exactly one PNG, JPEG or WebP image.".into()
+                    }
+                    Err(_) | Ok(Err(_)) => {
+                        this.capture_status = "Could not select an image.".into()
+                    }
                 }
                 cx.notify();
-            }).ok();
-        }).detach();
+            })
+            .ok();
+        })
+        .detach();
         cx.notify();
     }
 
     fn open_dropped_image(&mut self, paths: &[PathBuf], cx: &mut Context<Self>) {
-        if self.image_input_busy() { return; }
+        if self.image_input_busy() {
+            return;
+        }
         self.show_page(ControlPage::Captures, cx);
         let [path] = paths else {
             self.capture_status = "Drop exactly one PNG, JPEG or WebP image to edit a copy.".into();
@@ -2449,11 +2822,7 @@ impl CaptureWorkspace {
         self.open_redaction_source(EditorImage::File(path.clone()), cx);
     }
 
-    fn open_redaction_source(
-        &mut self,
-        source: EditorImage,
-        cx: &mut Context<Self>,
-    ) {
+    fn open_redaction_source(&mut self, source: EditorImage, cx: &mut Context<Self>) {
         if self.image_input_busy() {
             return;
         }
@@ -2474,7 +2843,8 @@ impl CaptureWorkspace {
                                 #[cfg(target_os = "windows")]
                                 EditorImage::Clipboard => app_core::read_clipboard_image(),
                                 EditorImage::Captured(_) => unreachable!(),
-                            }.map_err(|e| format!("{e:#}"))?;
+                            }
+                            .map_err(|e| format!("{e:#}"))?;
                             CapturedImage {
                                 width: pixels.width(),
                                 height: pixels.height(),
@@ -2539,11 +2909,7 @@ impl CaptureWorkspace {
             WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
                 window_min_size: Some(size(px(760.0), px(400.0))),
-                titlebar: Some(TitlebarOptions {
-                    title: Some("Edit a copy — screenshots".into()),
-                    ..Default::default()
-                }),
-                ..Default::default()
+                ..app_window_options("Edit a copy — screenshots")
             }
         };
         match cx.open_kit_window(options, |window, cx| {
@@ -2554,7 +2920,17 @@ impl CaptureWorkspace {
                 });
                 false
             });
-            cx.new(|cx| RedactionEditor::new(source, render, owner, direct_capture, upload_available, window, cx))
+            cx.new(|cx| {
+                RedactionEditor::new(
+                    source,
+                    render,
+                    owner,
+                    direct_capture,
+                    upload_available,
+                    window,
+                    cx,
+                )
+            })
         }) {
             Ok(handle) => {
                 self.editor = Some(handle);
@@ -2674,7 +3050,8 @@ impl CaptureWorkspace {
         if self.capturing || self.copying || self.saving || self.quitting {
             return;
         }
-        let remembered = crop.and_then(|area| app_core::RememberedRegion::from_snapshot(&source, area).ok());
+        let remembered =
+            crop.and_then(|area| app_core::RememberedRegion::from_snapshot(&source, area).ok());
         self.close_editor(cx);
         self.capturing = true;
         self.capture_status = "Applying image edits…".into();
@@ -2704,7 +3081,9 @@ impl CaptureWorkspace {
                 }
                 match result {
                     Ok((shot, thumbnail)) => {
-                        if let Some(region) = remembered { this.set_last_region(Some(region)); }
+                        if let Some(region) = remembered {
+                            this.set_last_region(Some(region));
+                        }
                         this.replace_last_render(thumbnail, cx);
                         this.last_saved = None;
                         this.last_capture = Some(shot.clone());
@@ -2720,7 +3099,11 @@ impl CaptureWorkspace {
                             };
                         }
                         this.output_captures(
-                            if mode.saves() { vec![shot.clone()] } else { Vec::new() },
+                            if mode.saves() {
+                                vec![shot.clone()]
+                            } else {
+                                Vec::new()
+                            },
                             mode.copies(),
                             cx,
                         );
@@ -2851,10 +3234,28 @@ impl CaptureWorkspace {
         }
     }
 
-    fn copy_file_reference(&mut self, path: PathBuf, history_revision: Option<u64>, kind: FileClipboardKind, cx: &mut Context<Self>) {
-        if self.capturing || self.capture_delay.is_some() || self.copying || self.saving
-            || self.quitting || self.settings_loading || self.settings_saving || self.history_mutating
-            || self.switching_graphics || self.preview_active || self.editor.is_some() || self.editor_closing { return; }
+    fn copy_file_reference(
+        &mut self,
+        path: PathBuf,
+        history_revision: Option<u64>,
+        kind: FileClipboardKind,
+        cx: &mut Context<Self>,
+    ) {
+        if self.capturing
+            || self.capture_delay.is_some()
+            || self.copying
+            || self.saving
+            || self.quitting
+            || self.settings_loading
+            || self.settings_saving
+            || self.history_mutating
+            || self.switching_graphics
+            || self.preview_active
+            || self.editor.is_some()
+            || self.editor_closing
+        {
+            return;
+        }
         let (label, success) = match kind {
             FileClipboardKind::Path => ("file path", "File path copied to clipboard"),
             #[cfg(target_os = "windows")]
@@ -2863,32 +3264,44 @@ impl CaptureWorkspace {
         let clipboard = self.clipboard.clone();
         self.copying = true;
         self.clipboard_status = format!("Copying {label}…");
-        if history_revision.is_some() { self.history_action_status = self.clipboard_status.clone(); }
+        if history_revision.is_some() {
+            self.history_action_status = self.clipboard_status.clone();
+        }
         cx.spawn(async move |this, cx| {
-            let result = cx.background_spawn(async move {
-                let mut clipboard = clipboard.lock().map_err(|_| anyhow::anyhow!("Clipboard state is unavailable"))?;
-                match kind {
-                    FileClipboardKind::Path => {
-                        let text = path.to_str().ok_or_else(|| anyhow::anyhow!("The path cannot be represented as Unicode text"))?;
-                        clipboard.copy_text(text.to_owned())
+            let result = cx
+                .background_spawn(async move {
+                    let mut clipboard = clipboard
+                        .lock()
+                        .map_err(|_| anyhow::anyhow!("Clipboard state is unavailable"))?;
+                    match kind {
+                        FileClipboardKind::Path => {
+                            let text = path.to_str().ok_or_else(|| {
+                                anyhow::anyhow!("The path cannot be represented as Unicode text")
+                            })?;
+                            clipboard.copy_text(text.to_owned())
+                        }
+                        #[cfg(target_os = "windows")]
+                        FileClipboardKind::File => clipboard.copy_file(&path),
                     }
-                    #[cfg(target_os = "windows")]
-                    FileClipboardKind::File => clipboard.copy_file(&path),
-                }
-            }).await;
+                })
+                .await;
             this.update(cx, |this, cx| {
                 this.copying = false;
                 this.clipboard_status = match result {
                     Ok(()) => success.into(),
                     Err(error) => format!("Could not copy {label}: {error:#}"),
                 };
-                if history_revision.is_some_and(|revision| this.history_visible && this.history_revision == revision) {
+                if history_revision.is_some_and(|revision| {
+                    this.history_visible && this.history_revision == revision
+                }) {
                     this.history_action_status = this.clipboard_status.clone();
                 }
                 this.finish_quit_if_idle(cx);
                 cx.notify();
-            }).ok();
-        }).detach();
+            })
+            .ok();
+        })
+        .detach();
         cx.notify();
     }
 
@@ -3733,8 +4146,7 @@ impl CaptureWorkspace {
                             );
                         }
                         Err(error) => {
-                            this.upload_status =
-                                format!("Named destinations unchanged: {error:#}");
+                            this.upload_status = format!("Named destinations unchanged: {error:#}");
                         }
                     }
                 }
@@ -3927,10 +4339,19 @@ impl CaptureWorkspace {
     }
 
     fn use_upload_form(&mut self, cx: &mut Context<Self>) {
-        if self.page != ControlPage::Uploads || !self.upload_form_open || self.quitting
-            || self.upload_config_loading || self.upload_cancel.is_some() { return; }
-        let Some(inputs) = &self.upload_form_inputs else { return; };
-        let [url, field, pointer] = std::array::from_fn(|index| inputs[index].read(cx).value().to_string());
+        if self.page != ControlPage::Uploads
+            || !self.upload_form_open
+            || self.quitting
+            || self.upload_config_loading
+            || self.upload_cancel.is_some()
+        {
+            return;
+        }
+        let Some(inputs) = &self.upload_form_inputs else {
+            return;
+        };
+        let [url, field, pointer] =
+            std::array::from_fn(|index| inputs[index].read(cx).value().to_string());
         let method = self.upload_form_method;
         let pointer = self.upload_form_json.then_some(pointer);
         let allow_http = self.upload_form_allow_http;
@@ -3938,26 +4359,35 @@ impl CaptureWorkspace {
         self.upload_profile_checked = true;
         self.upload_status = "Checking destination settings…".into();
         cx.spawn(async move |this, cx| {
-            let result = cx.background_spawn(async move {
-                app_core::UploadDestination::manual(url, method, field, pointer, allow_http)
-            }).await;
+            let result = cx
+                .background_spawn(async move {
+                    app_core::UploadDestination::manual(url, method, field, pointer, allow_http)
+                })
+                .await;
             this.update(cx, |this, cx| {
                 this.upload_config_loading = false;
                 if !this.quitting && this.page == ControlPage::Uploads && this.upload_form_open {
                     match result {
                         Ok(destination) => {
-                            this.upload_status = format!("Destination: {} · Session only · Manual upload", destination.origin());
+                            this.upload_status = format!(
+                                "Destination: {} · Session only · Manual upload",
+                                destination.origin()
+                            );
                             this.upload_destination = Some(destination);
                             this.clear_upload_links();
                             this.close_upload_forms();
                         }
-                        Err(error) => this.upload_status = format!("Destination unchanged: {error:#}"),
+                        Err(error) => {
+                            this.upload_status = format!("Destination unchanged: {error:#}")
+                        }
                     }
                 }
                 this.finish_quit_if_idle(cx);
                 cx.notify();
-            }).ok();
-        }).detach();
+            })
+            .ok();
+        })
+        .detach();
         cx.notify();
     }
 
@@ -3971,9 +4401,14 @@ impl CaptureWorkspace {
         {
             return;
         }
-        let Some(destination) = self.upload_destination.clone() else { return; };
-        let Some(inputs) = &self.upload_credential_inputs else { return; };
-        let [reference, username, secret] = std::array::from_fn(|index| inputs[index].read(cx).value().to_string());
+        let Some(destination) = self.upload_destination.clone() else {
+            return;
+        };
+        let Some(inputs) = &self.upload_credential_inputs else {
+            return;
+        };
+        let [reference, username, secret] =
+            std::array::from_fn(|index| inputs[index].read(cx).value().to_string());
         let authentication = self.upload_credential_auth;
         self.upload_config_loading = true;
         self.upload_status = "Saving Windows credential…".into();
@@ -4429,9 +4864,7 @@ impl CaptureWorkspace {
         {
             return;
         }
-        if !from_editor
-            && (self.capturing || self.editor.is_some() || self.editor_closing)
-        {
+        if !from_editor && (self.capturing || self.editor.is_some() || self.editor_closing) {
             return;
         }
         let Some(destination) = self.upload_destination.clone() else {
@@ -4492,9 +4925,7 @@ impl CaptureWorkspace {
         cx.spawn(async move |this, cx| {
             let result = cx
                 .background_spawn(async move {
-                    let png = shot
-                        .png_bytes()
-                        .map_err(|error| format!("{error:#}"))?;
+                    let png = shot.png_bytes().map_err(|error| format!("{error:#}"))?;
                     app_core::upload_png_bytes_with_progress(
                         &destination,
                         png,
@@ -4787,38 +5218,74 @@ impl CaptureWorkspace {
         if self.capture_delay.is_some() {
             return;
         }
-        if self.capturing || self.copying || self.saving || self.settings_saving || self.quitting
-            || self.editor.is_some() || self.editor_closing || self.preview_active || self.switching_graphics {
+        if self.capturing
+            || self.copying
+            || self.saving
+            || self.settings_saving
+            || self.quitting
+            || self.editor.is_some()
+            || self.editor_closing
+            || self.preview_active
+            || self.switching_graphics
+        {
             return;
         }
         let size = match self.export_size {
             app_core::ExportSize::Exact(_, _) => {
-                let width = self.export_dimension_input.as_ref().and_then(|input| input.read(cx).value().parse::<u32>().ok());
-                let height = self.export_height_input.as_ref().and_then(|input| input.read(cx).value().parse::<u32>().ok());
-                let (Some(width), Some(height)) = (width.filter(|value| *value > 0), height.filter(|value| *value > 0)) else {
-                    self.save_status = "Image not saved: enter positive whole-pixel export width and height.".into();
-                    cx.notify(); return;
+                let width = self
+                    .export_dimension_input
+                    .as_ref()
+                    .and_then(|input| input.read(cx).value().parse::<u32>().ok());
+                let height = self
+                    .export_height_input
+                    .as_ref()
+                    .and_then(|input| input.read(cx).value().parse::<u32>().ok());
+                let (Some(width), Some(height)) = (
+                    width.filter(|value| *value > 0),
+                    height.filter(|value| *value > 0),
+                ) else {
+                    self.save_status =
+                        "Image not saved: enter positive whole-pixel export width and height."
+                            .into();
+                    cx.notify();
+                    return;
                 };
                 app_core::ExportSize::Exact(width, height)
             }
             app_core::ExportSize::Width(_) | app_core::ExportSize::Height(_) => {
                 let height = matches!(self.export_size, app_core::ExportSize::Height(_));
-                let value = self.export_dimension_input.as_ref().and_then(|input| input.read(cx).value().parse::<u32>().ok());
+                let value = self
+                    .export_dimension_input
+                    .as_ref()
+                    .and_then(|input| input.read(cx).value().parse::<u32>().ok());
                 let Some(value) = value.filter(|value| *value > 0) else {
-                    self.save_status = format!("Image not saved: enter a positive whole-pixel export {}.", if height { "height" } else { "width" });
-                    cx.notify(); return;
+                    self.save_status = format!(
+                        "Image not saved: enter a positive whole-pixel export {}.",
+                        if height { "height" } else { "width" }
+                    );
+                    cx.notify();
+                    return;
                 };
-                if height { app_core::ExportSize::Height(value) } else { app_core::ExportSize::Width(value) }
+                if height {
+                    app_core::ExportSize::Height(value)
+                } else {
+                    app_core::ExportSize::Width(value)
+                }
             }
             size => size,
         };
-        if let Err(error) = size.validate() { self.save_status = format!("Image not saved: {error}"); cx.notify(); return; }
+        if let Err(error) = size.validate() {
+            self.save_status = format!("Image not saved: {error}");
+            cx.notify();
+            return;
+        }
         self.export_size = size;
         let shot = self.last_capture.clone();
         if let Some(shot) = &shot {
             if let Err(error) = size.dimensions(shot.pixels.width(), shot.pixels.height()) {
                 self.save_status = format!("Image not saved: {error}");
-                cx.notify(); return;
+                cx.notify();
+                return;
             }
         }
         let Some(source) = shot
@@ -4905,16 +5372,27 @@ impl CaptureWorkspace {
         self.output_captures(saves, true, cx);
     }
 
-    fn finish_quick_capture(&mut self, shots: Vec<CapturedImage>, render: Arc<gpui::RenderImage>, profile: CaptureOutputProfile, cx: &mut Context<Self>) {
-        let Some(shot) = shots.last().cloned() else { return; };
+    fn finish_quick_capture(
+        &mut self,
+        shots: Vec<CapturedImage>,
+        render: Arc<gpui::RenderImage>,
+        profile: CaptureOutputProfile,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(shot) = shots.last().cloned() else {
+            return;
+        };
         if profile.requires_single_image() && shots.len() != 1 {
-            self.capture_status = "Choose one display or window for Copy only or Annotate first.".into();
+            self.capture_status =
+                "Choose one display or window for Copy only or Annotate first.".into();
             cx.notify();
             return;
         }
         if profile == CaptureOutputProfile::AnnotateFirst {
             self.show_prepared_editor(shot, render, false, cx);
-            if self.editor.is_none() { self.show_control(cx); }
+            if self.editor.is_none() {
+                self.show_control(cx);
+            }
             self.finish_quit_if_idle(cx);
             cx.notify();
             return;
@@ -4922,13 +5400,25 @@ impl CaptureWorkspace {
         self.replace_last_render(render, cx);
         self.last_saved = None;
         self.last_capture = Some(shot);
-        if !profile.saves() { self.save_status = "Not saved · Image is kept in memory".into(); }
-        if !profile.copies() { self.clipboard_status = "Clipboard unchanged (Save only)".into(); }
-        self.output_captures(if profile.saves() { shots } else { Vec::new() }, profile.copies(), cx);
+        if !profile.saves() {
+            self.save_status = "Not saved · Image is kept in memory".into();
+        }
+        if !profile.copies() {
+            self.clipboard_status = "Clipboard unchanged (Save only)".into();
+        }
+        self.output_captures(
+            if profile.saves() { shots } else { Vec::new() },
+            profile.copies(),
+            cx,
+        );
     }
 
     fn output_captures(&mut self, saves: Vec<CapturedImage>, copy: bool, cx: &mut Context<Self>) {
-        let filename_template = if saves.is_empty() { String::new() } else { self.filename_template.clone() };
+        let filename_template = if saves.is_empty() {
+            String::new()
+        } else {
+            self.filename_template.clone()
+        };
         if self.capture_delay.is_some() || self.copying || self.saving || self.quitting {
             return;
         }
@@ -5001,10 +5491,14 @@ impl CaptureWorkspace {
                         saves
                             .into_iter()
                             .map(|mut shot| {
-                                let saved = app_core::capture_file_name(&filename_template).and_then(|name| {
-                                    if let Some(name) = name { shot.png_path.set_file_name(name); }
-                                    shot.save_png().map_err(anyhow::Error::from)
-                                }).map_err(|error| error.to_string());
+                                let saved = app_core::capture_file_name(&filename_template)
+                                    .and_then(|name| {
+                                        if let Some(name) = name {
+                                            shot.png_path.set_file_name(name);
+                                        }
+                                        shot.save_png().map_err(anyhow::Error::from)
+                                    })
+                                    .map_err(|error| error.to_string());
                                 let history_error = if saved.is_ok() {
                                     history_database
                                         .as_ref()
@@ -5145,12 +5639,16 @@ impl CaptureWorkspace {
             return;
         }
         let profile = self.output_profile;
-        let repeating_region = jobs.iter().any(|job| matches!(job, CaptureJob::RepeatRegion(_)));
+        let repeating_region = jobs
+            .iter()
+            .any(|job| matches!(job, CaptureJob::RepeatRegion(_)));
         let exact_region = jobs.iter().find_map(|job| match job {
-            CaptureJob::ExactRegion(region) => Some(region.clone()), _ => None,
+            CaptureJob::ExactRegion(region) => Some(region.clone()),
+            _ => None,
         });
         if !preview && profile.requires_single_image() && jobs.len() != 1 {
-            self.capture_status = "Choose one display or window for Copy only or Annotate first.".into();
+            self.capture_status =
+                "Choose one display or window for Copy only or Annotate first.".into();
             cx.notify();
             return;
         }
@@ -5304,7 +5802,9 @@ impl CaptureWorkspace {
                             cx.notify();
                             return;
                         };
-                        if let Some(region) = exact_region { this.set_last_region(Some(region)); }
+                        if let Some(region) = exact_region {
+                            this.set_last_region(Some(region));
+                        }
                         this.capture_status = format!(
                             "{}×{}  {} ms  {}",
                             shot.width,
@@ -5342,8 +5842,16 @@ impl CaptureWorkspace {
                         }
                     }
                     Err(error) => {
-                        if repeating_region { this.show_page(ControlPage::Captures, cx); }
-                        if repeating_region && matches!(&error, app_core::CaptureError::StaleRegion | app_core::CaptureError::DisplayNotFound(_)) {
+                        if repeating_region {
+                            this.show_page(ControlPage::Captures, cx);
+                        }
+                        if repeating_region
+                            && matches!(
+                                &error,
+                                app_core::CaptureError::StaleRegion
+                                    | app_core::CaptureError::DisplayNotFound(_)
+                            )
+                        {
                             this.set_last_region(None);
                         }
                         tracing::error!(%error, "capture failed");
@@ -5367,7 +5875,6 @@ impl Focusable for CaptureWorkspace {
         self.focus_handle.clone()
     }
 }
-
 
 fn render_frame(shot: &CapturedImage) -> Arc<gpui::RenderImage> {
     let mut bgra = shot.pixels.as_ref().clone();
@@ -5454,7 +5961,9 @@ impl Overlay {
         let profile = self.output_profile;
         cx.defer(move |cx| {
             owner
-                .update(cx, |this, cx| this.save_selection(snapshot, region, profile, cx))
+                .update(cx, |this, cx| {
+                    this.save_selection(snapshot, region, profile, cx)
+                })
                 .ok();
         });
     }
@@ -5497,13 +6006,16 @@ impl Render for Overlay {
             .justify_start()
             .bg(fill)
             .text_color(rgb(0xffffff))
-            .on_mouse_down(gpui::MouseButton::Left, cx.listener(|this, event: &gpui::MouseDownEvent, _, cx| {
-                if this.snapshot.is_some() {
-                    this.drag_start = Some(event.position);
-                    this.drag_end = event.position;
-                    cx.notify();
-                }
-            }))
+            .on_mouse_down(
+                gpui::MouseButton::Left,
+                cx.listener(|this, event: &gpui::MouseDownEvent, _, cx| {
+                    if this.snapshot.is_some() {
+                        this.drag_start = Some(event.position);
+                        this.drag_end = event.position;
+                        cx.notify();
+                    }
+                }),
+            )
             .on_mouse_move(cx.listener(|this, event: &gpui::MouseMoveEvent, _, cx| {
                 if this.drag_start.is_some() {
                     if !event.dragging() {
@@ -5515,12 +6027,18 @@ impl Render for Overlay {
                     cx.notify();
                 }
             }))
-            .on_mouse_up(gpui::MouseButton::Left, cx.listener(|this, event: &gpui::MouseUpEvent, window, cx| {
-                this.finish_drag(event.position, window, cx);
-            }))
-            .on_mouse_up_out(gpui::MouseButton::Left, cx.listener(|this, event: &gpui::MouseUpEvent, window, cx| {
-                this.finish_drag(event.position, window, cx);
-            }))
+            .on_mouse_up(
+                gpui::MouseButton::Left,
+                cx.listener(|this, event: &gpui::MouseUpEvent, window, cx| {
+                    this.finish_drag(event.position, window, cx);
+                }),
+            )
+            .on_mouse_up_out(
+                gpui::MouseButton::Left,
+                cx.listener(|this, event: &gpui::MouseUpEvent, window, cx| {
+                    this.finish_drag(event.position, window, cx);
+                }),
+            )
             .on_action(cx.listener(|this, _: &CloseOverlay, _, cx| {
                 tracing::info!(
                     display_id = u64::from(this.display_id),
@@ -5532,14 +6050,22 @@ impl Render for Overlay {
                     owner.update(cx, |this, cx| this.close_overlays(cx)).ok();
                 });
             }))
-            .children(self.render_image.clone().map(|render| {
-                img(render).absolute().top_0().left_0().size_full()
-            }))
+            .children(
+                self.render_image
+                    .clone()
+                    .map(|render| img(render).absolute().top_0().left_0().size_full()),
+            )
             .children(self.drag_start.map(|start| {
                 let end = self.drag_end;
-                div().absolute().left(start.x.min(end.x)).top(start.y.min(end.y))
-                    .w((end.x - start.x).abs()).h((end.y - start.y).abs())
-                    .border_2().border_color(rgb(theme.accent)).bg(rgba(theme.selection_fill))
+                div()
+                    .absolute()
+                    .left(start.x.min(end.x))
+                    .top(start.y.min(end.y))
+                    .w((end.x - start.x).abs())
+                    .h((end.y - start.y).abs())
+                    .border_2()
+                    .border_color(rgb(theme.accent))
+                    .bg(rgba(theme.selection_fill))
             }))
             .child(
                 div()
@@ -5552,19 +6078,33 @@ impl Render for Overlay {
                     .rounded(px(theme.panel_radius))
                     .bg(rgb(theme.surface))
                     .text_color(rgb(theme.text))
-                    .child(if self.mode == OverlayMode::Probe { format!("{label}  display {id}") } else { "Select a region".into() })
-                    .when(self.mode == OverlayMode::Probe, |panel| panel.child(div().text_sm().child(format!(
-                        "display origin=({}, {})  size={}×{}  scale={scale:.2}",
-                        self.bounds.origin.x,
-                        self.bounds.origin.y,
-                        self.bounds.size.width,
-                        self.bounds.size.height
-                    ))))
-                    .child(
-                        div().text_sm().text_color(rgb(theme.muted)).child(
-                            if self.edit_selection || self.output_profile == CaptureOutputProfile::AnnotateFirst { "Drag to capture & annotate. Esc to cancel." } else if self.output_profile == CaptureOutputProfile::CopyOnly { "Drag to copy only. Esc to cancel. No file is saved." } else if self.output_profile == CaptureOutputProfile::SaveOnly { "Drag to save only. Esc to cancel. Clipboard stays unchanged." } else { "Drag to copy & save. Esc to cancel. One display at a time." },
-                        ),
-                    ),
+                    .child(if self.mode == OverlayMode::Probe {
+                        format!("{label}  display {id}")
+                    } else {
+                        "Select a region".into()
+                    })
+                    .when(self.mode == OverlayMode::Probe, |panel| {
+                        panel.child(div().text_sm().child(format!(
+                            "display origin=({}, {})  size={}×{}  scale={scale:.2}",
+                            self.bounds.origin.x,
+                            self.bounds.origin.y,
+                            self.bounds.size.width,
+                            self.bounds.size.height
+                        )))
+                    })
+                    .child(div().text_sm().text_color(rgb(theme.muted)).child(
+                        if self.edit_selection
+                            || self.output_profile == CaptureOutputProfile::AnnotateFirst
+                        {
+                            "Drag to capture & annotate. Esc to cancel."
+                        } else if self.output_profile == CaptureOutputProfile::CopyOnly {
+                            "Drag to copy only. Esc to cancel. No file is saved."
+                        } else if self.output_profile == CaptureOutputProfile::SaveOnly {
+                            "Drag to save only. Esc to cancel. Clipboard stays unchanged."
+                        } else {
+                            "Drag to copy & save. Esc to cancel. One display at a time."
+                        },
+                    )),
             )
     }
 }
@@ -5739,43 +6279,53 @@ pub fn run() {
 
         let platform = gpui_platform::current_platform(false);
         let fonts = caption::CaptionFonts(platform.text_system());
-        gpui::Application::with_platform(platform).with_assets(assets::AppAssets).run(move |cx: &mut App| {
-            cx.set_global(fonts);
-            redaction_editor::bind_keys(cx);
-            cx.on_action(|_: &Quit, cx| cx.defer(close_application));
-            cx.bind_keys([
-                KeyBinding::new("escape", CloseOverlay, None),
-                KeyBinding::new("ctrl-shift-o", OpenProbeOverlays, Some("CaptureWorkspace")),
-                KeyBinding::new("ctrl-shift-f", OpenFullscreenOverlays, Some("CaptureWorkspace")),
-                KeyBinding::new("ctrl-shift-c", CapturePrimary, Some("CaptureWorkspace")),
-                KeyBinding::new(if cfg!(target_os = "macos") { "cmd-q" } else { "ctrl-q" }, Quit, None),
-            ]);
+        gpui::Application::with_platform(platform)
+            .with_assets(assets::AppAssets)
+            .run(move |cx: &mut App| {
+                cx.set_global(fonts);
+                redaction_editor::bind_keys(cx);
+                cx.on_action(|_: &Quit, cx| cx.defer(close_application));
+                cx.bind_keys([
+                    KeyBinding::new("escape", CloseOverlay, None),
+                    KeyBinding::new("ctrl-shift-o", OpenProbeOverlays, Some("CaptureWorkspace")),
+                    KeyBinding::new(
+                        "ctrl-shift-f",
+                        OpenFullscreenOverlays,
+                        Some("CaptureWorkspace"),
+                    ),
+                    KeyBinding::new("ctrl-shift-c", CapturePrimary, Some("CaptureWorkspace")),
+                    KeyBinding::new(
+                        if cfg!(target_os = "macos") {
+                            "cmd-q"
+                        } else {
+                            "ctrl-q"
+                        },
+                        Quit,
+                        None,
+                    ),
+                ]);
 
-            let bounds = Bounds::centered(None, size(px(1060.0), px(760.0)), cx);
-            cx.open_kit_window(
-                WindowOptions {
-                    window_min_size: Some(size(px(680.), px(480.))),
-                    window_bounds: Some(WindowBounds::Windowed(bounds)),
-                    titlebar: Some(TitlebarOptions {
-                        title: Some("screenshots".into()),
-                        ..Default::default()
-                    }),
-                    ..Default::default()
-                },
-                |window, cx| {
-                    let shell = cx.new(|cx| CaptureWorkspace::new(window, cx));
-                    window.on_window_should_close(cx, |_, cx| {
-                        cx.defer(close_application);
-                        false
-                    });
-                    let focus = shell.read(cx).focus_handle.clone();
-                    window.focus(&focus, cx);
-                    shell
-                },
-            )
-            .expect("failed to open spike window");
-            cx.activate(true);
-        });
+                let bounds = Bounds::centered(None, size(px(1060.0), px(760.0)), cx);
+                cx.open_kit_window(
+                    WindowOptions {
+                        window_min_size: Some(size(px(680.), px(480.))),
+                        window_bounds: Some(WindowBounds::Windowed(bounds)),
+                        ..app_window_options("screenshots")
+                    },
+                    |window, cx| {
+                        let shell = cx.new(|cx| CaptureWorkspace::new(window, cx));
+                        window.on_window_should_close(cx, |_, cx| {
+                            cx.defer(close_application);
+                            false
+                        });
+                        let focus = shell.read(cx).focus_handle.clone();
+                        window.focus(&focus, cx);
+                        shell
+                    },
+                )
+                .expect("failed to open spike window");
+                cx.activate(true);
+            });
     }
 }
 
@@ -5799,7 +6349,8 @@ fn run_resident() {
         .map(|seconds| seconds.clamp(10, 660));
     let platform = gpui_platform::current_platform(false);
     let fonts = caption::CaptionFonts(platform.text_system());
-    gpui::Application::with_platform(platform).with_assets(assets::AppAssets)
+    gpui::Application::with_platform(platform)
+        .with_assets(assets::AppAssets)
         .with_windowing(gpui::WindowingRequest::Headless)
         .run(move |cx| {
             cx.set_global(fonts);
@@ -5816,9 +6367,21 @@ fn run_resident() {
             cx.bind_keys([
                 KeyBinding::new("escape", CloseOverlay, None),
                 KeyBinding::new("ctrl-shift-o", OpenProbeOverlays, Some("CaptureWorkspace")),
-                KeyBinding::new("ctrl-shift-f", OpenFullscreenOverlays, Some("CaptureWorkspace")),
+                KeyBinding::new(
+                    "ctrl-shift-f",
+                    OpenFullscreenOverlays,
+                    Some("CaptureWorkspace"),
+                ),
                 KeyBinding::new("ctrl-shift-c", CapturePrimary, Some("CaptureWorkspace")),
-                KeyBinding::new(if cfg!(target_os = "macos") { "cmd-q" } else { "ctrl-q" }, Quit, None),
+                KeyBinding::new(
+                    if cfg!(target_os = "macos") {
+                        "cmd-q"
+                    } else {
+                        "ctrl-q"
+                    },
+                    Quit,
+                    None,
+                ),
             ]);
             controller.update(cx, |this, cx| {
                 if show || this.tray.is_none() {
@@ -5855,7 +6418,12 @@ fn run_resource_probe(mode: &str) {
     struct Empty;
     impl Render for Empty {
         fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-            div().size_full().bg(rgb(0x1a1a1a))
+            div()
+                .size_full()
+                .flex()
+                .flex_col()
+                .child(gpui::component::TitleBar::new().child("screenshots resource probe"))
+                .child(div().flex_1().bg(rgb(0x1a1a1a)))
         }
     }
     let application = gpui_platform::application().with_assets(assets::AppAssets);
@@ -5874,11 +6442,7 @@ fn run_resource_probe(mode: &str) {
                         size(px(1060.0), px(760.0)),
                         cx,
                     ))),
-                    titlebar: Some(TitlebarOptions {
-                        title: Some("screenshots resource probe".into()),
-                        ..Default::default()
-                    }),
-                    ..Default::default()
+                    ..app_window_options("screenshots resource probe")
                 },
                 |window, cx| {
                     window.on_window_should_close(cx, |_, cx| {
@@ -6419,7 +6983,8 @@ mod tests {
             unsafe { windows_sys::Win32::System::DataExchange::GetClipboardSequenceNumber() };
         let result = Arc::new(Mutex::new(None));
         let report = result.clone();
-        gpui::Application::with_platform(gpui_platform::current_platform(false)).with_assets(assets::AppAssets)
+        gpui::Application::with_platform(gpui_platform::current_platform(false))
+            .with_assets(assets::AppAssets)
             .with_windowing(gpui::WindowingRequest::Headless)
             .run(move |cx| {
                 cx.set_quit_mode(gpui::QuitMode::Explicit);
@@ -6594,7 +7159,10 @@ mod tests {
         let (application, fonts) = {
             let platform = gpui_platform::current_platform(false);
             let fonts = caption::CaptionFonts(platform.text_system());
-            (gpui::Application::with_platform(platform).with_assets(assets::AppAssets), fonts)
+            (
+                gpui::Application::with_platform(platform).with_assets(assets::AppAssets),
+                fonts,
+            )
         };
         application
             .with_windowing(gpui::WindowingRequest::Headless)
@@ -6778,7 +7346,8 @@ mod tests {
         let selected_original = std::fs::read(&selected_path).unwrap();
         let result = Arc::new(Mutex::new(None));
         let report = result.clone();
-        gpui_platform::application().with_assets(assets::AppAssets)
+        gpui_platform::application()
+            .with_assets(assets::AppAssets)
             .with_windowing(gpui::WindowingRequest::Headless)
             .run(move |cx| {
                 cx.set_quit_mode(gpui::QuitMode::Explicit);
@@ -6891,7 +7460,8 @@ mod tests {
         let errors = track_gui_errors();
         let result = Arc::new(Mutex::new(None));
         let report = result.clone();
-        gpui_platform::application().with_assets(assets::AppAssets)
+        gpui_platform::application()
+            .with_assets(assets::AppAssets)
             .with_windowing(gpui::WindowingRequest::Headless)
             .run(move |cx| {
                 cx.set_quit_mode(gpui::QuitMode::Explicit);
@@ -7272,7 +7842,8 @@ try {
         let report = result.clone();
         let platform = gpui_platform::current_platform(false);
         let fonts = caption::CaptionFonts(platform.text_system());
-        gpui::Application::with_platform(platform).with_assets(assets::AppAssets)
+        gpui::Application::with_platform(platform)
+            .with_assets(assets::AppAssets)
             .with_windowing(gpui::WindowingRequest::Headless)
             .run(move |cx| {
                 cx.set_global(fonts);
@@ -7414,7 +7985,8 @@ try {
         let errors = track_gui_errors();
         let result = Arc::new(Mutex::new(None));
         let report = result.clone();
-        gpui_platform::application().with_assets(assets::AppAssets)
+        gpui_platform::application()
+            .with_assets(assets::AppAssets)
             .with_windowing(gpui::WindowingRequest::Headless)
             .run(move |cx| {
                 cx.set_quit_mode(gpui::QuitMode::Explicit);
@@ -7519,7 +8091,11 @@ try {
                             .spawn(async move {
                                 let directory = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
                                     .join("../../target/ui-preview");
-                                save_ui_probe_window(&directory, "workspace-empty.png", &empty_window_id)
+                                save_ui_probe_window(
+                                    &directory,
+                                    "workspace-empty.png",
+                                    &empty_window_id,
+                                )
                             })
                             .await?;
                         for (width, height, filename, library) in [
@@ -7527,43 +8103,78 @@ try {
                             (680., 480., "workspace-library-compact.png", true),
                             (1000., 720., "workspace-capture-menu.png", false),
                         ] {
-                            owner.update(cx, |this, cx| {
-                                this.show_page(if library { ControlPage::History } else { ControlPage::Captures }, cx);
-                                if library {
-                                    this.history_entries = (1..=3).map(|id| app_core::HistoryEntry {
-                                        id,
-                                        path: PathBuf::from(format!("Example screenshot {id}.png")),
-                                        width: 1920,
-                                        height: 1080,
-                                        created_at: "2026-11-09 14:32".into(),
-                                    }).collect();
-                                    this.history_selected = vec![1];
-                                    this.history_status = "3 example images".into();
-                                }
-                                this.control.unwrap().update(cx, |_, window, _| window.resize(size(px(width), px(height)))).unwrap();
-                                cx.notify();
-                            }).map_err(|e| e.to_string())?;
-                            cx.background_executor().timer(std::time::Duration::from_millis(80)).await;
+                            owner
+                                .update(cx, |this, cx| {
+                                    this.show_page(
+                                        if library {
+                                            ControlPage::History
+                                        } else {
+                                            ControlPage::Captures
+                                        },
+                                        cx,
+                                    );
+                                    if library {
+                                        this.history_entries = (1..=3)
+                                            .map(|id| app_core::HistoryEntry {
+                                                id,
+                                                path: PathBuf::from(format!(
+                                                    "Example screenshot {id}.png"
+                                                )),
+                                                width: 1920,
+                                                height: 1080,
+                                                created_at: "2026-11-09 14:32".into(),
+                                            })
+                                            .collect();
+                                        this.history_selected = vec![1];
+                                        this.history_status = "3 example images".into();
+                                    }
+                                    this.control
+                                        .unwrap()
+                                        .update(cx, |_, window, _| {
+                                            window.resize(size(px(width), px(height)))
+                                        })
+                                        .unwrap();
+                                    cx.notify();
+                                })
+                                .map_err(|e| e.to_string())?;
+                            cx.background_executor()
+                                .timer(std::time::Duration::from_millis(80))
+                                .await;
                             let window_id = window_id.clone();
-                            cx.background_executor().spawn(async move {
-                                let directory = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/ui-preview");
-                                save_ui_probe_window(&directory, filename, &window_id)
-                            }).await?;
+                            cx.background_executor()
+                                .spawn(async move {
+                                    let directory = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                                        .join("../../target/ui-preview");
+                                    save_ui_probe_window(&directory, filename, &window_id)
+                                })
+                                .await?;
                         }
                         for (page, filename) in [
                             (ControlPage::Uploads, "workspace-uploads.png"),
                             (ControlPage::Settings, "workspace-settings.png"),
                         ] {
-                            owner.update(cx, |this, cx| {
-                                this.show_page(page, cx);
-                                this.control.unwrap().update(cx, |_, window, _| window.resize(size(px(1000.), px(720.)))).unwrap();
-                            }).map_err(|e| e.to_string())?;
-                            cx.background_executor().timer(std::time::Duration::from_millis(80)).await;
+                            owner
+                                .update(cx, |this, cx| {
+                                    this.show_page(page, cx);
+                                    this.control
+                                        .unwrap()
+                                        .update(cx, |_, window, _| {
+                                            window.resize(size(px(1000.), px(720.)))
+                                        })
+                                        .unwrap();
+                                })
+                                .map_err(|e| e.to_string())?;
+                            cx.background_executor()
+                                .timer(std::time::Duration::from_millis(80))
+                                .await;
                             let window_id = window_id.clone();
-                            cx.background_executor().spawn(async move {
-                                let directory = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/ui-preview");
-                                save_ui_probe_window(&directory, filename, &window_id)
-                            }).await?;
+                            cx.background_executor()
+                                .spawn(async move {
+                                    let directory = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                                        .join("../../target/ui-preview");
+                                    save_ui_probe_window(&directory, filename, &window_id)
+                                })
+                                .await?;
                         }
                         owner
                             .update(cx, |this, cx| this.retire_ui(cx))
@@ -7615,7 +8226,8 @@ try {
         let errors = track_gui_errors();
         let result = Arc::new(Mutex::new(None));
         let report = result.clone();
-        gpui_platform::application().with_assets(assets::AppAssets)
+        gpui_platform::application()
+            .with_assets(assets::AppAssets)
             .with_windowing(gpui::WindowingRequest::Headless)
             .run(move |cx| {
                 cx.set_quit_mode(gpui::QuitMode::Explicit);
@@ -7835,78 +8447,80 @@ try {
         let output = path.clone();
         let result = Arc::new(Mutex::new(None));
         let report = result.clone();
-        gpui_platform::application().with_assets(assets::AppAssets).run(move |cx| {
-            let control = cx
-                .open_kit_window(WindowOptions::default(), |window, cx| {
-                    cx.new(|cx| CaptureWorkspace::new(window, cx))
-                })
-                .unwrap();
-            let pixels = Arc::new(image::RgbaImage::from_pixel(
-                2,
-                2,
-                image::Rgba([12, 34, 56, 255]),
-            ));
-            let weak_pixels = Arc::downgrade(&pixels);
-            let shell = control
-                .update(cx, |this, _, cx| {
-                    let shot = CapturedImage {
-                        display_id: "test".into(),
-                        window_id: None,
-                        width: 2,
-                        height: 2,
-                        pixels,
-                        png_path: output,
-                        elapsed_ms: 0,
-                        source_format: app_core::PixelFormat::Rgba8UnormSrgb,
-                        display_geometry: None,
-                    };
-                    this.last_capture = Some(shot.clone());
-                    this.copy_and_save(vec![shot], cx);
-                    cx.entity().downgrade()
-                })
-                .unwrap();
-            cx.spawn(async move |cx| {
-                let check = async {
-                    for stage in 0..2 {
-                        let started = std::time::Instant::now();
-                        loop {
-                            cx.background_executor()
-                                .timer(std::time::Duration::from_millis(10))
-                                .await;
-                            let idle = shell
-                                .update(cx, |this, _| !this.copying && !this.saving)
-                                .map_err(|error| error.to_string())?;
-                            if idle {
-                                break;
+        gpui_platform::application()
+            .with_assets(assets::AppAssets)
+            .run(move |cx| {
+                let control = cx
+                    .open_kit_window(app_window_options("screenshots"), |window, cx| {
+                        cx.new(|cx| CaptureWorkspace::new(window, cx))
+                    })
+                    .unwrap();
+                let pixels = Arc::new(image::RgbaImage::from_pixel(
+                    2,
+                    2,
+                    image::Rgba([12, 34, 56, 255]),
+                ));
+                let weak_pixels = Arc::downgrade(&pixels);
+                let shell = control
+                    .update(cx, |this, _, cx| {
+                        let shot = CapturedImage {
+                            display_id: "test".into(),
+                            window_id: None,
+                            width: 2,
+                            height: 2,
+                            pixels,
+                            png_path: output,
+                            elapsed_ms: 0,
+                            source_format: app_core::PixelFormat::Rgba8UnormSrgb,
+                            display_geometry: None,
+                        };
+                        this.last_capture = Some(shot.clone());
+                        this.copy_and_save(vec![shot], cx);
+                        cx.entity().downgrade()
+                    })
+                    .unwrap();
+                cx.spawn(async move |cx| {
+                    let check = async {
+                        for stage in 0..2 {
+                            let started = std::time::Instant::now();
+                            loop {
+                                cx.background_executor()
+                                    .timer(std::time::Duration::from_millis(10))
+                                    .await;
+                                let idle = shell
+                                    .update(cx, |this, _| !this.copying && !this.saving)
+                                    .map_err(|error| error.to_string())?;
+                                if idle {
+                                    break;
+                                }
+                                if started.elapsed().as_secs() > 8 {
+                                    return Err("output timed out".to_string());
+                                }
                             }
-                            if started.elapsed().as_secs() > 8 {
-                                return Err("output timed out".to_string());
+                            let valid = shell
+                                .update(cx, |this, _| {
+                                    this.last_capture.is_none()
+                                        && this.last_saved.is_some()
+                                        && this.clipboard_status.contains("copied")
+                                })
+                                .map_err(|error| error.to_string())?;
+                            if !valid || weak_pixels.upgrade().is_some() {
+                                return Err("source pixels retained or copy/save failed".into());
+                            }
+                            if stage == 0 {
+                                shell
+                                    .update(cx, |this, cx| this.copy_last_capture(cx))
+                                    .map_err(|error| error.to_string())?;
                             }
                         }
-                        let valid = shell
-                            .update(cx, |this, _| {
-                                this.last_capture.is_none()
-                                    && this.last_saved.is_some()
-                                    && this.clipboard_status.contains("copied")
-                            })
-                            .map_err(|error| error.to_string())?;
-                        if !valid || weak_pixels.upgrade().is_some() {
-                            return Err("source pixels retained or copy/save failed".into());
-                        }
-                        if stage == 0 {
-                            shell
-                                .update(cx, |this, cx| this.copy_last_capture(cx))
-                                .map_err(|error| error.to_string())?;
-                        }
+                        Ok(())
                     }
-                    Ok(())
-                }
-                .await;
-                *report.lock().unwrap() = Some(check);
-                cx.update(close_application);
-            })
-            .detach();
-        });
+                    .await;
+                    *report.lock().unwrap() = Some(check);
+                    cx.update(close_application);
+                })
+                .detach();
+            });
         result
             .lock()
             .unwrap()
@@ -7954,48 +8568,50 @@ try {
         let output = path.clone();
         let waited = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let observed = waited.clone();
-        gpui_platform::application().with_assets(assets::AppAssets).run(move |cx| {
-            let control = cx
-                .open_kit_window(WindowOptions::default(), |window, cx| {
-                    cx.new(|cx| CaptureWorkspace::new(window, cx))
-                })
-                .unwrap();
-            control
-                .update(cx, |this, _, cx| {
-                    let shot = CapturedImage {
-                        display_id: "test".into(),
-                        window_id: None,
-                        width: 2,
-                        height: 2,
-                        png_path: output,
-                        pixels: Arc::new(image::RgbaImage::from_pixel(
-                            2,
-                            2,
-                            image::Rgba([12, 34, 56, 255]),
-                        )),
-                        elapsed_ms: 0,
-                        source_format: app_core::PixelFormat::Rgba8UnormSrgb,
-                        display_geometry: None,
-                    };
-                    this.last_capture = Some(shot.clone());
-                    this.copy_and_save(vec![shot], cx);
-                })
-                .unwrap();
-            close_application(cx);
-            observed.store(
+        gpui_platform::application()
+            .with_assets(assets::AppAssets)
+            .run(move |cx| {
+                let control = cx
+                    .open_kit_window(app_window_options("screenshots"), |window, cx| {
+                        cx.new(|cx| CaptureWorkspace::new(window, cx))
+                    })
+                    .unwrap();
                 control
-                    .read(cx)
-                    .is_ok_and(|shell| shell.quitting && shell.saving),
-                std::sync::atomic::Ordering::SeqCst,
-            );
-            cx.spawn(async move |cx| {
-                cx.background_executor()
-                    .timer(std::time::Duration::from_secs(10))
-                    .await;
-                cx.update(|cx| cx.quit());
-            })
-            .detach();
-        });
+                    .update(cx, |this, _, cx| {
+                        let shot = CapturedImage {
+                            display_id: "test".into(),
+                            window_id: None,
+                            width: 2,
+                            height: 2,
+                            png_path: output,
+                            pixels: Arc::new(image::RgbaImage::from_pixel(
+                                2,
+                                2,
+                                image::Rgba([12, 34, 56, 255]),
+                            )),
+                            elapsed_ms: 0,
+                            source_format: app_core::PixelFormat::Rgba8UnormSrgb,
+                            display_geometry: None,
+                        };
+                        this.last_capture = Some(shot.clone());
+                        this.copy_and_save(vec![shot], cx);
+                    })
+                    .unwrap();
+                close_application(cx);
+                observed.store(
+                    control
+                        .read(cx)
+                        .is_ok_and(|shell| shell.quitting && shell.saving),
+                    std::sync::atomic::Ordering::SeqCst,
+                );
+                cx.spawn(async move |cx| {
+                    cx.background_executor()
+                        .timer(std::time::Duration::from_secs(10))
+                        .await;
+                    cx.update(|cx| cx.quit());
+                })
+                .detach();
+            });
         assert!(
             waited.load(std::sync::atomic::Ordering::SeqCst),
             "quit did not wait for output"
@@ -8027,114 +8643,119 @@ try {
             .expect("initialize regression-test logging");
         let outcome = Arc::new(Mutex::new(None));
         let reported = outcome.clone();
-        gpui_platform::application().with_assets(assets::AppAssets).run(move |cx| {
-            let opened = cx.open_kit_window(WindowOptions::default(), |window, cx| {
-                cx.new(|cx| {
-                    let mut shell = CaptureWorkspace::new(window, cx);
-                    shell.backend = XcapBackend::new(
-                        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                            .join("../../target/captures/region-cancel-test"),
-                    );
-                    shell
-                })
-            });
-            let control = match opened {
-                Ok(handle) => handle,
-                Err(error) => {
-                    *reported.lock().unwrap() = Some(Err(format!("open control window: {error}")));
-                    cx.quit();
-                    return;
-                }
-            };
-            let shell = control
-                .update(cx, |_, _, cx| cx.entity().downgrade())
-                .unwrap();
-            cx.spawn(async move |cx| {
-                let result = async {
-                    let clipboard_before = unsafe { GetClipboardSequenceNumber() };
-                    let mut first_handles = None;
-                    for _ in 0..2 {
+        gpui_platform::application()
+            .with_assets(assets::AppAssets)
+            .run(move |cx| {
+                let opened = cx.open_kit_window(app_window_options("screenshots"), |window, cx| {
+                    cx.new(|cx| {
+                        let mut shell = CaptureWorkspace::new(window, cx);
+                        shell.backend = XcapBackend::new(
+                            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                                .join("../../target/captures/region-cancel-test"),
+                        );
                         shell
-                            .update(cx, |this, cx| {
-                                this.open_overlays(OverlayMode::Fullscreen, cx)
-                            })
-                            .map_err(|error| error.to_string())?;
-                        let started = std::time::Instant::now();
-                        loop {
-                            cx.background_executor()
-                                .timer(std::time::Duration::from_millis(25))
-                                .await;
-                            let (capturing, active, status, handles) = shell
-                                .update(cx, |this, _| {
-                                    (
-                                        this.capturing,
-                                        this.preview_active,
-                                        this.capture_status.clone(),
-                                        this.overlays
-                                            .iter()
-                                            .map(|handle| AnyWindowHandle::from(*handle).window_id())
-                                            .collect::<Vec<_>>(),
-                                    )
-                                })
-                                .map_err(|error| error.to_string())?;
-                            if !capturing {
-                                if !active {
-                                    return Err(format!("preview did not open: {status}"));
-                                }
-                                if let Some(first) = &first_handles {
-                                    if *first != handles {
-                                        return Err("overlay windows were recreated".into());
-                                    }
-                                } else {
-                                    first_handles = Some(handles);
-                                }
-                                break;
-                            }
-                            if started.elapsed() > std::time::Duration::from_secs(8) {
-                                return Err("capture timed out".into());
-                            }
-                        }
-                        // Same handler used by Escape; no physical mouse/keyboard input is injected.
-                        shell
-                            .update(cx, |this, cx| this.close_overlays(cx))
-                            .map_err(|error| error.to_string())?;
-                        let started = std::time::Instant::now();
-                        loop {
-                            cx.background_executor()
-                                .timer(std::time::Duration::from_millis(25))
-                                .await;
-                            let restored = control
-                                .update(cx, |this, window, cx| {
-                                    window.is_visible()
-                                        && !this.preview_active
-                                        && this.live_overlay_count(cx) == 0
-                                        && this.overlays.iter().all(|handle| {
-                                            handle.read(cx).is_ok_and(|overlay| {
-                                                overlay.snapshot.is_none()
-                                                    && overlay.drag_start.is_none()
-                                            })
-                                        })
-                                })
-                                .map_err(|error| error.to_string())?;
-                            if restored {
-                                break;
-                            }
-                            if started.elapsed() > std::time::Duration::from_secs(3) {
-                                return Err("cancel did not restore the control window".into());
-                            }
-                        }
-                        if unsafe { GetClipboardSequenceNumber() } != clipboard_before {
-                            return Err("cancel changed the clipboard sequence".into());
-                        }
+                    })
+                });
+                let control = match opened {
+                    Ok(handle) => handle,
+                    Err(error) => {
+                        *reported.lock().unwrap() =
+                            Some(Err(format!("open control window: {error}")));
+                        cx.quit();
+                        return;
                     }
-                    Ok(())
-                }
-                .await;
-                *reported.lock().unwrap() = Some(result);
-                cx.update(close_application);
-            })
-            .detach();
-        });
+                };
+                let shell = control
+                    .update(cx, |_, _, cx| cx.entity().downgrade())
+                    .unwrap();
+                cx.spawn(async move |cx| {
+                    let result = async {
+                        let clipboard_before = unsafe { GetClipboardSequenceNumber() };
+                        let mut first_handles = None;
+                        for _ in 0..2 {
+                            shell
+                                .update(cx, |this, cx| {
+                                    this.open_overlays(OverlayMode::Fullscreen, cx)
+                                })
+                                .map_err(|error| error.to_string())?;
+                            let started = std::time::Instant::now();
+                            loop {
+                                cx.background_executor()
+                                    .timer(std::time::Duration::from_millis(25))
+                                    .await;
+                                let (capturing, active, status, handles) = shell
+                                    .update(cx, |this, _| {
+                                        (
+                                            this.capturing,
+                                            this.preview_active,
+                                            this.capture_status.clone(),
+                                            this.overlays
+                                                .iter()
+                                                .map(|handle| {
+                                                    AnyWindowHandle::from(*handle).window_id()
+                                                })
+                                                .collect::<Vec<_>>(),
+                                        )
+                                    })
+                                    .map_err(|error| error.to_string())?;
+                                if !capturing {
+                                    if !active {
+                                        return Err(format!("preview did not open: {status}"));
+                                    }
+                                    if let Some(first) = &first_handles {
+                                        if *first != handles {
+                                            return Err("overlay windows were recreated".into());
+                                        }
+                                    } else {
+                                        first_handles = Some(handles);
+                                    }
+                                    break;
+                                }
+                                if started.elapsed() > std::time::Duration::from_secs(8) {
+                                    return Err("capture timed out".into());
+                                }
+                            }
+                            // Same handler used by Escape; no physical mouse/keyboard input is injected.
+                            shell
+                                .update(cx, |this, cx| this.close_overlays(cx))
+                                .map_err(|error| error.to_string())?;
+                            let started = std::time::Instant::now();
+                            loop {
+                                cx.background_executor()
+                                    .timer(std::time::Duration::from_millis(25))
+                                    .await;
+                                let restored = control
+                                    .update(cx, |this, window, cx| {
+                                        window.is_visible()
+                                            && !this.preview_active
+                                            && this.live_overlay_count(cx) == 0
+                                            && this.overlays.iter().all(|handle| {
+                                                handle.read(cx).is_ok_and(|overlay| {
+                                                    overlay.snapshot.is_none()
+                                                        && overlay.drag_start.is_none()
+                                                })
+                                            })
+                                    })
+                                    .map_err(|error| error.to_string())?;
+                                if restored {
+                                    break;
+                                }
+                                if started.elapsed() > std::time::Duration::from_secs(3) {
+                                    return Err("cancel did not restore the control window".into());
+                                }
+                            }
+                            if unsafe { GetClipboardSequenceNumber() } != clipboard_before {
+                                return Err("cancel changed the clipboard sequence".into());
+                            }
+                        }
+                        Ok(())
+                    }
+                    .await;
+                    *reported.lock().unwrap() = Some(result);
+                    cx.update(close_application);
+                })
+                .detach();
+            });
         outcome
             .lock()
             .unwrap()

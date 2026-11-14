@@ -29,13 +29,20 @@ pub fn foreground_display_capture() -> Result<crate::CaptureRequest> {
     })
 }
 
-fn display_capture_request(handle: windows_sys::Win32::Foundation::HWND) -> Result<crate::CaptureRequest> {
+fn display_capture_request(
+    handle: windows_sys::Win32::Foundation::HWND,
+) -> Result<crate::CaptureRequest> {
     capture_window_process(handle)?;
-    use windows_sys::Win32::Graphics::Gdi::{MonitorFromWindow, MONITOR_DEFAULTTONULL};
+    use windows_sys::Win32::Graphics::Gdi::{MONITOR_DEFAULTTONULL, MonitorFromWindow};
     let monitor = unsafe { MonitorFromWindow(handle, MONITOR_DEFAULTTONULL) };
-    ensure!(!monitor.is_null(), "The active window does not intersect an available display");
+    ensure!(
+        !monitor.is_null(),
+        "The active window does not intersect an available display"
+    );
     // XCap's Windows monitor ID is the low 32 bits of HMONITOR.
-    Ok(crate::CaptureRequest::Display((monitor as usize as u32).to_string()))
+    Ok(crate::CaptureRequest::Display(
+        (monitor as usize as u32).to_string(),
+    ))
 }
 
 fn capture_window_process(handle: windows_sys::Win32::Foundation::HWND) -> Result<u32> {
@@ -401,13 +408,20 @@ mod tests {
     #[test]
     #[ignore = "requires an explicitly supplied external foreground-window fixture and expected monitor ID; metadata only"]
     fn foreground_display_resolves_only_the_explicit_fixture_monitor() -> Result<()> {
-        let handle = std::env::var("SCREENSHOTS_ACTIVE_WINDOW_FIXTURE_HANDLE")?.parse::<isize>()? as HWND;
+        let handle =
+            std::env::var("SCREENSHOTS_ACTIVE_WINDOW_FIXTURE_HANDLE")?.parse::<isize>()? as HWND;
         let expected_monitor = std::env::var("SCREENSHOTS_ACTIVE_DISPLAY_FIXTURE_MONITOR_ID")?;
-        ensure!(unsafe { GetForegroundWindow() } == handle, "Explicit fixture is not foreground");
+        ensure!(
+            unsafe { GetForegroundWindow() } == handle,
+            "Explicit fixture is not foreground"
+        );
         let crate::CaptureRequest::Display(id) = foreground_display_capture()? else {
             anyhow::bail!("Unexpected capture request");
         };
-        ensure!(id == expected_monitor, "Unexpected display; no pixels captured");
+        ensure!(
+            id == expected_monitor,
+            "Unexpected display; no pixels captured"
+        );
         Ok(())
     }
 

@@ -173,9 +173,15 @@ mod tests {
         for (width, height) in [(5, 3), (5, 1), (1, 3), (1, 1)] {
             let size = ExportSize::Exact(width, height);
             assert_eq!(size.dimensions(5, 3).unwrap(), (width, height));
-            assert_eq!(downscale_export(&source, size).unwrap().dimensions(), (width, height));
+            assert_eq!(
+                downscale_export(&source, size).unwrap().dimensions(),
+                (width, height)
+            );
         }
-        assert_eq!(downscale_export(&source, ExportSize::Exact(5, 3)).unwrap(), source);
+        assert_eq!(
+            downscale_export(&source, ExportSize::Exact(5, 3)).unwrap(),
+            source
+        );
         let mut alpha = image::RgbaImage::from_pixel(5, 3, image::Rgba([0, 0, 255, 0]));
         alpha.put_pixel(0, 0, image::Rgba([255, 0, 0, 255]));
         let resized = downscale_export(&alpha, ExportSize::Exact(2, 1)).unwrap();
@@ -185,18 +191,27 @@ mod tests {
 
     #[test]
     fn custom_height_matches_transposed_width_for_pixels_alpha_and_skinny_images() {
-        assert_eq!(ExportSize::Height(360).dimensions(1920, 1080).unwrap(), (640, 360));
+        assert_eq!(
+            ExportSize::Height(360).dimensions(1920, 1080).unwrap(),
+            (640, 360)
+        );
         assert_eq!(ExportSize::Height(2).dimensions(5, 3).unwrap(), (4, 2));
         for invalid in [0, 4, u32::MAX] {
             assert!(ExportSize::Height(invalid).dimensions(5, 3).is_err());
         }
         for (width, height) in [(5, 3), (1, 9), (9, 1), (1, 1), (1, 100_000)] {
             let source = image::RgbaImage::from_fn(width, height, |x, y| {
-                image::Rgba([(x % 256) as u8, (y % 256) as u8, 100, if y % 2 == 0 { 255 } else { 0 }])
+                image::Rgba([
+                    (x % 256) as u8,
+                    (y % 256) as u8,
+                    100,
+                    if y % 2 == 0 { 255 } else { 0 },
+                ])
             });
             for target in [1, height.div_ceil(2), height] {
                 let resized = downscale_export(&source, ExportSize::Height(target)).unwrap();
-                let transposed = image::RgbaImage::from_fn(height, width, |x, y| *source.get_pixel(y, x));
+                let transposed =
+                    image::RgbaImage::from_fn(height, width, |x, y| *source.get_pixel(y, x));
                 let expected = downscale_export(&transposed, ExportSize::Width(target)).unwrap();
                 assert_eq!(resized.dimensions(), (expected.height(), expected.width()));
                 for (x, y, pixel) in resized.enumerate_pixels() {

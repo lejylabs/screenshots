@@ -16,7 +16,10 @@ struct EditorFile {
 
 impl std::io::Read for EditorFile {
     fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
-        let available = self.length.saturating_sub(self.position).min(buffer.len() as u64) as usize;
+        let available = self
+            .length
+            .saturating_sub(self.position)
+            .min(buffer.len() as u64) as usize;
         let read = self.file.read(&mut buffer[..available])?;
         self.position += read as u64;
         Ok(read)
@@ -43,11 +46,21 @@ impl std::io::Seek for EditorFile {
 pub fn load_editor_image(path: &std::path::Path) -> Result<image::RgbaImage> {
     let file = std::fs::File::open(path)?;
     let length = file.metadata()?.len();
-    anyhow::ensure!(length <= MAX_EDITOR_FILE_BYTES, "Image file exceeds the 32 MiB input limit");
-    let mut reader = image::ImageReader::new(std::io::BufReader::new(EditorFile { file, length, position: 0 }))
-        .with_guessed_format()?;
     anyhow::ensure!(
-        matches!(reader.format(), Some(image::ImageFormat::Png | image::ImageFormat::Jpeg | image::ImageFormat::WebP)),
+        length <= MAX_EDITOR_FILE_BYTES,
+        "Image file exceeds the 32 MiB input limit"
+    );
+    let mut reader = image::ImageReader::new(std::io::BufReader::new(EditorFile {
+        file,
+        length,
+        position: 0,
+    }))
+    .with_guessed_format()?;
+    anyhow::ensure!(
+        matches!(
+            reader.format(),
+            Some(image::ImageFormat::Png | image::ImageFormat::Jpeg | image::ImageFormat::WebP)
+        ),
         "Choose a PNG, JPEG or WebP image"
     );
     let mut limits = image::Limits::default();
@@ -56,13 +69,18 @@ pub fn load_editor_image(path: &std::path::Path) -> Result<image::RgbaImage> {
     decode_editor_pixels(reader.into_decoder()?)
 }
 
-pub(crate) fn decode_editor_pixels(mut decoder: impl image::ImageDecoder) -> Result<image::RgbaImage> {
+pub(crate) fn decode_editor_pixels(
+    mut decoder: impl image::ImageDecoder,
+) -> Result<image::RgbaImage> {
     let mut limits = image::Limits::default();
     limits.max_alloc = Some(crate::MAX_CAPTURE_BYTES);
     decoder.set_limits(limits)?;
     let (width, height) = decoder.dimensions();
     crate::validate_image_size(width, height)?;
-    anyhow::ensure!(decoder.total_bytes() <= crate::MAX_CAPTURE_BYTES, "Decoded image exceeds the memory limit");
+    anyhow::ensure!(
+        decoder.total_bytes() <= crate::MAX_CAPTURE_BYTES,
+        "Decoded image exceeds the memory limit"
+    );
     let orientation = decoder.orientation()?;
     let mut decoded = image::DynamicImage::from_decoder(decoder)?;
     decoded.apply_orientation(orientation);
@@ -107,11 +125,21 @@ impl ImageClipboard {
     #[cfg(target_os = "windows")]
     pub fn copy_file(&mut self, path: &std::path::Path) -> Result<()> {
         anyhow::ensure!(path.is_absolute(), "Saved file path must be absolute");
-        anyhow::ensure!(std::fs::metadata(path).context("Saved file is unavailable")?.is_file(), "Saved path is not a file");
+        anyhow::ensure!(
+            std::fs::metadata(path)
+                .context("Saved file is unavailable")?
+                .is_file(),
+            "Saved path is not a file"
+        );
         if self.clipboard.is_none() {
             self.clipboard = Some(arboard::Clipboard::new().context("open clipboard")?);
         }
-        self.clipboard.as_mut().unwrap().set().file_list(&[path]).context("copy file to clipboard")
+        self.clipboard
+            .as_mut()
+            .unwrap()
+            .set()
+            .file_list(&[path])
+            .context("copy file to clipboard")
     }
 
     /// Explicit text output; retain ownership using the same native clipboard instance.
@@ -119,7 +147,11 @@ impl ImageClipboard {
         if self.clipboard.is_none() {
             self.clipboard = Some(arboard::Clipboard::new().context("open clipboard")?);
         }
-        self.clipboard.as_mut().unwrap().set_text(text).context("copy text to clipboard")
+        self.clipboard
+            .as_mut()
+            .unwrap()
+            .set_text(text)
+            .context("copy text to clipboard")
     }
 
     /// Explicit recopy only; the live capture/selection pipeline stays in memory.
@@ -153,7 +185,11 @@ mod tests {
     fn file_copy_rejects_invalid_sources_before_opening_the_clipboard() -> Result<()> {
         let mut clipboard = ImageClipboard::default();
         let missing = std::env::temp_dir().join(format!("missing-{}.png", uuid::Uuid::new_v4()));
-        for path in [std::path::Path::new("relative.png"), missing.as_path(), std::env::temp_dir().as_path()] {
+        for path in [
+            std::path::Path::new("relative.png"),
+            missing.as_path(),
+            std::env::temp_dir().as_path(),
+        ] {
             assert!(clipboard.copy_file(path).is_err());
             assert!(clipboard.clipboard.is_none());
         }
@@ -164,7 +200,10 @@ mod tests {
     #[test]
     #[ignore = "uses the system clipboard and replaces its contents with a synthetic file reference"]
     fn copied_file_list_round_trip() -> Result<()> {
-        let root = std::env::temp_dir().join(format!("screenshots-file-clipboard-{}", uuid::Uuid::new_v4()));
+        let root = std::env::temp_dir().join(format!(
+            "screenshots-file-clipboard-{}",
+            uuid::Uuid::new_v4()
+        ));
         std::fs::create_dir_all(&root)?;
         let path = root.join("Grüße image.png");
         std::fs::write(&path, b"synthetic file reference, not decoded")?;
@@ -173,11 +212,18 @@ mod tests {
             clipboard.copy_file(&path)?;
             let paths = clipboard.clipboard.as_mut().unwrap().get().file_list()?;
             assert_eq!(paths.len(), 1);
-            assert_eq!(std::fs::canonicalize(&paths[0])?, std::fs::canonicalize(&path)?);
-            assert_eq!(std::fs::read(&path)?, b"synthetic file reference, not decoded");
+            assert_eq!(
+                std::fs::canonicalize(&paths[0])?,
+                std::fs::canonicalize(&path)?
+            );
+            assert_eq!(
+                std::fs::read(&path)?,
+                b"synthetic file reference, not decoded"
+            );
             Ok(())
         })();
-        std::fs::remove_file(path)?; std::fs::remove_dir(root)?;
+        std::fs::remove_file(path)?;
+        std::fs::remove_dir(root)?;
         result
     }
 
@@ -194,10 +240,20 @@ mod tests {
     #[test]
     fn editor_input_extent_is_bounded_even_when_the_file_grows() -> Result<()> {
         use std::io::{Read as _, Seek as _, Write as _};
-        let path = std::env::temp_dir().join(format!("screenshots-editor-extent-{}", uuid::Uuid::new_v4()));
+        let path = std::env::temp_dir().join(format!(
+            "screenshots-editor-extent-{}",
+            uuid::Uuid::new_v4()
+        ));
         std::fs::write(&path, b"abcd")?;
-        let mut input = EditorFile { file: std::fs::File::open(&path)?, length: 4, position: 0 };
-        std::fs::OpenOptions::new().append(true).open(&path)?.write_all(b"private trailing data")?;
+        let mut input = EditorFile {
+            file: std::fs::File::open(&path)?,
+            length: 4,
+            position: 0,
+        };
+        std::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)?
+            .write_all(b"private trailing data")?;
         let mut bytes = Vec::new();
         input.read_to_end(&mut bytes)?;
         assert_eq!(bytes, b"abcd");
@@ -214,7 +270,12 @@ mod tests {
         let file = std::fs::OpenOptions::new().write(true).open(&path)?;
         file.set_len(MAX_EDITOR_FILE_BYTES + 1)?;
         drop(file);
-        assert!(load_editor_image(&path).unwrap_err().to_string().contains("32 MiB"));
+        assert!(
+            load_editor_image(&path)
+                .unwrap_err()
+                .to_string()
+                .contains("32 MiB")
+        );
         std::fs::remove_file(path)?;
         Ok(())
     }
@@ -222,11 +283,16 @@ mod tests {
     #[test]
     fn editor_images_detect_content_preserve_files_and_apply_orientation() -> Result<()> {
         use image::ImageEncoder as _;
-        let root = std::env::temp_dir().join(format!("screenshots-editor-input-{}", uuid::Uuid::new_v4()));
+        let root =
+            std::env::temp_dir().join(format!("screenshots-editor-input-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&root)?;
         let path = root.join("misleading.extension");
         let source = image::RgbaImage::from_pixel(3, 2, image::Rgba([12, 34, 56, 78]));
-        for format in [image::ImageFormat::Png, image::ImageFormat::Jpeg, image::ImageFormat::WebP] {
+        for format in [
+            image::ImageFormat::Png,
+            image::ImageFormat::Jpeg,
+            image::ImageFormat::WebP,
+        ] {
             let mut encoded = std::io::Cursor::new(Vec::new());
             let image = image::DynamicImage::ImageRgba8(source.clone());
             if format == image::ImageFormat::Jpeg {
@@ -238,18 +304,27 @@ mod tests {
             std::fs::write(&path, &bytes)?;
             let loaded = load_editor_image(&path)?;
             assert_eq!(loaded.dimensions(), (3, 2));
-            if format != image::ImageFormat::Jpeg { assert_eq!(loaded, source); }
+            if format != image::ImageFormat::Jpeg {
+                assert_eq!(loaded, source);
+            }
             assert_eq!(std::fs::read(&path)?, bytes);
         }
         let mut jpeg = Vec::new();
         let mut encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut jpeg, 100);
         // TIFF orientation 6: rotate 90 degrees clockwise.
-        encoder.set_exif_metadata(vec![73,73,42,0,8,0,0,0,1,0,18,1,3,0,1,0,0,0,6,0,0,0,0,0,0,0])?;
-        let rgb = image::RgbImage::from_fn(3, 2, |x, y| image::Rgb([(x * 80) as u8, (y * 120) as u8, 40]));
+        encoder.set_exif_metadata(vec![
+            73, 73, 42, 0, 8, 0, 0, 0, 1, 0, 18, 1, 3, 0, 1, 0, 0, 0, 6, 0, 0, 0, 0, 0, 0, 0,
+        ])?;
+        let rgb = image::RgbImage::from_fn(3, 2, |x, y| {
+            image::Rgb([(x * 80) as u8, (y * 120) as u8, 40])
+        });
         encoder.write_image(rgb.as_raw(), 3, 2, image::ExtendedColorType::Rgb8)?;
         std::fs::write(&path, &jpeg)?;
         let unrotated = image::load_from_memory(&jpeg)?.into_rgba8();
-        assert_eq!(load_editor_image(&path)?, image::imageops::rotate90(&unrotated));
+        assert_eq!(
+            load_editor_image(&path)?,
+            image::imageops::rotate90(&unrotated)
+        );
         assert_eq!(std::fs::read(&path)?, jpeg);
         for bytes in [b"not an image".as_slice(), b"\x89PNG\r\n\x1a\n", b"GIF89a"] {
             std::fs::write(&path, bytes)?;
@@ -262,7 +337,10 @@ mod tests {
 
     #[test]
     fn editor_image_rejects_oversized_header_before_pixel_decode() -> Result<()> {
-        let path = std::env::temp_dir().join(format!("screenshots-editor-limit-{}.png", uuid::Uuid::new_v4()));
+        let path = std::env::temp_dir().join(format!(
+            "screenshots-editor-limit-{}.png",
+            uuid::Uuid::new_v4()
+        ));
         image::RgbaImage::new(1, 1).save(&path)?;
         let mut bytes = std::fs::read(&path)?;
         bytes[16..20].copy_from_slice(&100_000_u32.to_be_bytes());
@@ -270,7 +348,9 @@ mod tests {
         let mut crc = u32::MAX;
         for byte in &bytes[12..29] {
             crc ^= u32::from(*byte);
-            for _ in 0..8 { crc = (crc >> 1) ^ (0xedb88320 & (0_u32.wrapping_sub(crc & 1))); }
+            for _ in 0..8 {
+                crc = (crc >> 1) ^ (0xedb88320 & (0_u32.wrapping_sub(crc & 1)));
+            }
         }
         bytes[29..33].copy_from_slice(&(!crc).to_be_bytes());
         std::fs::write(&path, bytes)?;
@@ -355,7 +435,10 @@ mod tests {
         decode.sort_unstable();
         previews.sort_unstable();
         editor.sort_unstable();
-        eprintln!("4K editor image decode median={:?}; 5 synthetic warm samples", editor[2]);
+        eprintln!(
+            "4K editor image decode median={:?}; 5 synthetic warm samples",
+            editor[2]
+        );
         eprintln!(
             "4K PNG decode median={:?}; decode+thumbnail median={:?}; retained=360000 bytes; source RGBA=33177600 bytes; 5 synthetic warm samples",
             decode[2], previews[2]

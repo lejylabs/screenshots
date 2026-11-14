@@ -115,11 +115,7 @@ fn native_kit_workspace_and_editor() {
                             size(px(1060.), px(760.)),
                             cx,
                         ))),
-                        titlebar: Some(TitlebarOptions {
-                            title: Some("screenshots".into()),
-                            ..Default::default()
-                        }),
-                        ..Default::default()
+                        ..app_window_options("screenshots")
                     },
                     |window, cx| {
                         let view = cx.new(|cx| CaptureWorkspace::isolated_ui(window, cx));

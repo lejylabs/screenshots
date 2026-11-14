@@ -42,12 +42,7 @@ pub(crate) fn read_header(
 }
 
 #[cfg(not(target_os = "windows"))]
-pub(crate) fn save(
-    _: &str,
-    _: UploadAuthentication,
-    _: &str,
-    _: &str,
-) -> Result<()> {
+pub(crate) fn save(_: &str, _: UploadAuthentication, _: &str, _: &str) -> Result<()> {
     anyhow::bail!("Upload credential lookup is not implemented on this platform")
 }
 
@@ -171,9 +166,7 @@ pub(crate) fn save(
         }
     }
     ensure!(
-        !target.is_empty()
-            && target.len() <= 4096
-            && !target.chars().any(char::is_control),
+        !target.is_empty() && target.len() <= 4096 && !target.chars().any(char::is_control),
         "Credential target is invalid"
     );
     let mut name: Vec<u16> = target.encode_utf16().chain(Some(0)).collect();
@@ -358,9 +351,7 @@ mod tests {
         ] {
             assert!(validate_managed_target(target).is_err());
         }
-        assert!(
-            validate_managed_target("Screenshots/upload/https://example.invalid/main").is_ok()
-        );
+        assert!(validate_managed_target("Screenshots/upload/https://example.invalid/main").is_ok());
     }
     #[cfg(target_os = "windows")]
     #[test]

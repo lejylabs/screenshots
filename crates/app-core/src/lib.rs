@@ -9,8 +9,8 @@ mod capture;
 mod resample;
 pub use resample::ExportSize;
 mod filenames;
-pub use filenames::{capture_file_name, validate_capture_name_template};
 pub use arrows::ArrowAnnotation;
+pub use filenames::{capture_file_name, validate_capture_name_template};
 mod clipboard;
 #[cfg(target_os = "windows")]
 mod clipboard_windows;
@@ -49,13 +49,15 @@ pub use selection::{
     render_filtered_snapshot, render_ordered_snapshot, render_pixelated_snapshot,
     render_text_snapshot,
 };
-pub use settings::{CaptureHotkeys, CaptureOutputProfile, CaptureSettings, RegionPreset, UiTheme, DEFAULT_JPEG_QUALITY};
+pub use settings::{
+    CaptureHotkeys, CaptureOutputProfile, CaptureSettings, DEFAULT_JPEG_QUALITY, RegionPreset,
+    UiTheme,
+};
 pub use upload::{
     NamedUploadDestination, UploadAuthentication, UploadCancellation, UploadConfiguration,
     UploadDestination, UploadDestinationCatalog, UploadMethod, UploadOutcome, UploadProgress,
-    UploadProgressReceiver,
-    UploadProgressReporter, probe_upload, upload_png, upload_png_bytes_with_progress,
-    upload_png_with_progress, upload_progress_channel,
+    UploadProgressReceiver, UploadProgressReporter, probe_upload, upload_png,
+    upload_png_bytes_with_progress, upload_png_with_progress, upload_progress_channel,
 };
 
 pub use clipboard::{ImageClipboard, load_editor_image, load_png_thumbnail, load_saved_png};
@@ -73,12 +75,16 @@ pub use tray::{SpikeTray, TrayCommand};
 #[cfg(target_os = "windows")]
 mod desktop_window;
 #[cfg(target_os = "windows")]
-pub use desktop_window::{DesktopWindow, cursor_position, foreground_window_capture, foreground_display_capture, wait_for_desktop_compositor};
+pub use desktop_window::{
+    DesktopWindow, cursor_position, foreground_display_capture, foreground_window_capture,
+    wait_for_desktop_compositor,
+};
 
 pub use capture::{
-    CaptureBackend, CaptureCapabilities, CaptureError, CaptureRequest, CapturedImage, DisplayInfo, DisplayGeometry, RememberedRegion,
-    MAX_CAPTURE_BYTES, PixelFormat, WindowInfo, XcapBackend, capture_output_dir, export_saved_png, export_saved_png_as, ImageExportFormat,
-    png_without_metadata, validate_image_size,
+    CaptureBackend, CaptureCapabilities, CaptureError, CaptureRequest, CapturedImage,
+    DisplayGeometry, DisplayInfo, ImageExportFormat, MAX_CAPTURE_BYTES, PixelFormat,
+    RememberedRegion, WindowInfo, XcapBackend, capture_output_dir, export_saved_png,
+    export_saved_png_as, png_without_metadata, validate_image_size,
 };
 
 pub fn version() -> &'static str {

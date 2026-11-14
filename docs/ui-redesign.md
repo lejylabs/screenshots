@@ -2,7 +2,7 @@
 
 The full presentation layer now uses GPUI Kit 0.9.1 and its pinned GPUI 0.3.12
 snapshot. Dark remains the minimal default; Oldschool retains compact navigation
-and colorful function icons. The Rust capture/image/storage/upload core and its
+and colorful function icons; Classic is an opt-in One Dark chrome mapping. The Rust capture/image/storage/upload core and its
 explicit output/cancellation contracts are reused.
 
 ## Ownership
@@ -10,7 +10,9 @@ explicit output/cancellation contracts are reused.
 - `workspace.rs`: screen composition with Kit Sidebar, Button, Input, Checkbox,
   RadioGroup, PopupMenu and Kbd. Paged library rows use stable database identities.
 - `window.rs`: every window has a Kit Base Root; native jobs address its typed
-  content without bypassing the Root. Quit still waits for active work.
+  content without bypassing the Root. Decorated windows open with Kit
+  `TitleBar` options so the caption follows the appearance. Quit still waits
+  for active work.
 - `theme.rs`: product colors/density synchronized through Kit `Theme::update`.
 - `assets.rs`: default Kit assets plus selected capture/editor Lucide icons.
 - `redaction_editor.rs`: Kit controls around the existing in-memory image canvas.
@@ -39,7 +41,7 @@ controlled checkbox state, transparent overlay surfaces, Escape cancellation and
 waiting for work during Quit.
 
 The opt-in native X11 probe drives only this application's windows and a synthetic
-PNG. It covers the real menu, both appearances and persistence, compact layout,
+PNG. It covers the real menu, Dark and Oldschool appearances and persistence, compact layout,
 multiline labels with Unicode, Save only, original preservation and normal Quit.
 It never captures the desktop, uploads or copies image output to the clipboard.
 Its native window events bypass OS mouse/keyboard injection.

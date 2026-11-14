@@ -1,6 +1,19 @@
 //! Kit owns each window Root; native workflows address its typed content.
+use gpui::component::TitleBar;
 use gpui_kit::{self as gpui, base::Root, *};
 use std::marker::PhantomData;
+
+/// Decorated app windows paint Kit `TitleBar` from the active appearance.
+/// Capture overlays stay `titlebar: None` and do not use this helper.
+pub(crate) fn app_window_options(title: impl Into<SharedString>) -> WindowOptions {
+    WindowOptions {
+        titlebar: Some(TitlebarOptions {
+            title: Some(title.into()),
+            ..TitleBar::title_bar_options()
+        }),
+        ..TitleBar::window_options()
+    }
+}
 
 pub(super) struct UiWindow<V> {
     handle: AnyWindowHandle,

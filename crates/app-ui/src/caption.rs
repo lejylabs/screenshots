@@ -1,14 +1,14 @@
-use gpui_kit as gpui;
-use gpui::TestSupportExt as _;
-use crate::window::UiWindow as WindowHandle;
 use crate::redaction_editor::{RedactionEditor, RedoRedaction, UndoRedaction};
+use crate::window::UiWindow as WindowHandle;
+use gpui::TestSupportExt as _;
 use gpui::{
     App, Bounds, ClipboardItem, ContentMask, Context, ElementInputHandler, EntityInputHandler,
     FocusHandle, Font, FontRun, FontStyle, FontWeight, Global, KeyBinding, KeyDownEvent, Keystroke,
     MouseButton, MouseDownEvent, Pixels, PlatformTextSystem, Point, Render, RenderGlyphParams,
-    RenderImage, ShapedLine, SharedString, TextAlign, TextRun, UTF16Selection, Window,
-    actions, canvas, div, fill, point, prelude::*, px, rgb, rgba, size,
+    RenderImage, ShapedLine, SharedString, TextAlign, TextRun, UTF16Selection, Window, actions,
+    canvas, div, fill, point, prelude::*, px, rgb, rgba, size,
 };
+use gpui_kit as gpui;
 use std::{ops::Range, sync::Arc};
 use unicode_segmentation::UnicodeSegmentation;
 
@@ -74,9 +74,13 @@ impl TextAsset {
 
 fn source_font() -> &'static str {
     // Image label typography is independent of the current UI appearance.
-    if cfg!(target_os = "windows") { "Segoe UI" }
-    else if cfg!(target_os = "macos") { ".SystemUIFont" }
-    else { "DejaVu Sans" }
+    if cfg!(target_os = "windows") {
+        "Segoe UI"
+    } else if cfg!(target_os = "macos") {
+        ".SystemUIFont"
+    } else {
+        "DejaVu Sans"
+    }
 }
 
 pub(super) fn rasterize(
@@ -409,7 +413,9 @@ impl CaptionInput {
         }
         if resized {
             let owner = self.owner;
-            cx.defer(move |cx| { owner.update(cx, |_, _, cx| cx.notify()).ok(); });
+            cx.defer(move |cx| {
+                owner.update(cx, |_, _, cx| cx.notify()).ok();
+            });
         }
         window.notify_text_input_changed(&self.focus);
         cx.notify();
@@ -508,14 +514,23 @@ impl CaptionInput {
             return;
         }
         if key == "enter" && self.marked.is_none() {
-            if modifiers.shift { self.replace(self.selection.clone(), "\n"); }
-            else {
+            if modifiers.shift {
+                self.replace(self.selection.clone(), "\n");
+            } else {
                 let owner = self.owner;
-                cx.defer(move |cx| { owner.update(cx, |editor, window, cx| editor.commit_text(window, cx)).ok(); });
+                cx.defer(move |cx| {
+                    owner
+                        .update(cx, |editor, window, cx| editor.commit_text(window, cx))
+                        .ok();
+                });
             }
         } else if key == "escape" {
             let owner = self.owner;
-            cx.defer(move |cx| { owner.update(cx, |editor, window, cx| editor.cancel_text(window, cx)).ok(); });
+            cx.defer(move |cx| {
+                owner
+                    .update(cx, |editor, window, cx| editor.cancel_text(window, cx))
+                    .ok();
+            });
         } else if (modifiers.control || modifiers.platform) && !modifiers.alt {
             match key {
                 "home" | "end" => {
@@ -849,7 +864,12 @@ impl Render for CaptionInput {
                                 let run = TextRun {
                                     len: display.len(),
                                     font: ui_font.clone(),
-                                    color: rgb(if text.is_empty() { theme.muted } else { theme.text }).into(),
+                                    color: rgb(if text.is_empty() {
+                                        theme.muted
+                                    } else {
+                                        theme.text
+                                    })
+                                    .into(),
                                     background_color: None,
                                     underline: None,
                                     strikethrough: None,

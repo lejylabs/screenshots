@@ -8,8 +8,12 @@ use std::{
 };
 
 pub const DEFAULT_JPEG_QUALITY: u8 = 90;
-fn default_jpeg_quality() -> u8 { DEFAULT_JPEG_QUALITY }
-fn default_capture_delay() -> u8 { 3 }
+fn default_jpeg_quality() -> u8 {
+    DEFAULT_JPEG_QUALITY
+}
+fn default_capture_delay() -> u8 {
+    3
+}
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(from = "StoredCaptureHotkeys")]
@@ -34,9 +38,14 @@ impl From<StoredCaptureHotkeys> for CaptureHotkeys {
             StoredCaptureHotkeys::FourCommands([primary, region, edit, active]) => {
                 Self([primary, region, edit, active, String::new(), String::new()])
             }
-            StoredCaptureHotkeys::Legacy([primary, region, edit]) => {
-                Self([primary, region, edit, String::new(), String::new(), String::new()])
-            }
+            StoredCaptureHotkeys::Legacy([primary, region, edit]) => Self([
+                primary,
+                region,
+                edit,
+                String::new(),
+                String::new(),
+                String::new(),
+            ]),
         }
     }
 }
@@ -122,6 +131,8 @@ impl CaptureHotkeys {
 #[serde(rename_all = "snake_case")]
 pub enum UiTheme {
     Oldschool,
+    #[serde(alias = "zed")]
+    Classic,
     #[default]
     #[serde(other)]
     Default,
@@ -164,27 +175,54 @@ pub struct RegionPreset {
 
 impl RegionPreset {
     pub fn new(name: &str, area: crate::PixelRegion) -> Result<Self> {
-        let preset = Self { name: name.trim().into(), x: area.x, y: area.y, width: area.width, height: area.height };
+        let preset = Self {
+            name: name.trim().into(),
+            x: area.x,
+            y: area.y,
+            width: area.width,
+            height: area.height,
+        };
         preset.validate()?;
         Ok(preset)
     }
     pub fn area(&self) -> crate::PixelRegion {
-        crate::PixelRegion { x: self.x, y: self.y, width: self.width, height: self.height }
+        crate::PixelRegion {
+            x: self.x,
+            y: self.y,
+            width: self.width,
+            height: self.height,
+        }
     }
     fn validate(&self) -> Result<()> {
-        ensure!(!self.name.is_empty() && self.name.len() <= 64 && self.name.trim() == self.name
-            && !self.name.chars().any(char::is_control), "Use a preset name of 1–64 bytes without control characters");
+        ensure!(
+            !self.name.is_empty()
+                && self.name.len() <= 64
+                && self.name.trim() == self.name
+                && !self.name.chars().any(char::is_control),
+            "Use a preset name of 1–64 bytes without control characters"
+        );
         crate::validate_image_size(self.width, self.height)?;
-        ensure!(self.x.checked_add(self.width).is_some() && self.y.checked_add(self.height).is_some(), "Preset coordinates overflow");
+        ensure!(
+            self.x.checked_add(self.width).is_some() && self.y.checked_add(self.height).is_some(),
+            "Preset coordinates overflow"
+        );
         Ok(())
     }
 }
 
 fn validate_region_presets(presets: &[RegionPreset]) -> Result<()> {
-    ensure!(presets.len() <= 16, "At most 16 region presets can be saved");
+    ensure!(
+        presets.len() <= 16,
+        "At most 16 region presets can be saved"
+    );
     for (index, preset) in presets.iter().enumerate() {
         preset.validate()?;
-        ensure!(!presets[..index].iter().any(|other| other.name == preset.name), "Preset names must be unique");
+        ensure!(
+            !presets[..index]
+                .iter()
+                .any(|other| other.name == preset.name),
+            "Preset names must be unique"
+        );
     }
     Ok(())
 }
@@ -274,7 +312,10 @@ impl CaptureSettings {
     }
 
     pub fn with_capture_delay(mut self, seconds: u8) -> Result<Self> {
-        ensure!((1..=60).contains(&seconds), "Capture delay must be between 1 and 60 seconds");
+        ensure!(
+            (1..=60).contains(&seconds),
+            "Capture delay must be between 1 and 60 seconds"
+        );
         self.capture_delay_seconds = seconds;
         Ok(self)
     }
@@ -296,7 +337,10 @@ impl CaptureSettings {
     }
 
     pub fn with_jpeg_quality(mut self, quality: u8) -> Result<Self> {
-        ensure!((1..=100).contains(&quality), "JPEG quality must be between 1 and 100");
+        ensure!(
+            (1..=100).contains(&quality),
+            "JPEG quality must be between 1 and 100"
+        );
         self.jpeg_quality = quality;
         Ok(self)
     }
@@ -440,10 +484,7 @@ impl CaptureSettings {
             (1..=100).contains(&self.jpeg_quality),
             "JPEG quality must be between 1 and 100"
         );
-        ensure!(
-            self.output_directory.is_absolute(),
-            "Invalid save folder"
-        );
+        ensure!(self.output_directory.is_absolute(), "Invalid save folder");
         validate_upload_task_defaults(&self.upload_task_defaults)?;
         Ok(())
     }
@@ -453,11 +494,17 @@ impl CaptureSettings {
     }
 
     fn save_at(&self, path: &Path) -> Result<()> {
-        ensure!((1..=60).contains(&self.capture_delay_seconds), "Capture delay must be between 1 and 60 seconds");
+        ensure!(
+            (1..=60).contains(&self.capture_delay_seconds),
+            "Capture delay must be between 1 and 60 seconds"
+        );
         self.hotkeys.validated()?;
         validate_region_presets(&self.region_presets)?;
         crate::validate_capture_name_template(&self.filename_template)?;
-        ensure!((1..=100).contains(&self.jpeg_quality), "JPEG quality must be between 1 and 100");
+        ensure!(
+            (1..=100).contains(&self.jpeg_quality),
+            "JPEG quality must be between 1 and 100"
+        );
         ensure!(self.output_directory.is_absolute(), "Invalid save folder");
         validate_upload_task_defaults(&self.upload_task_defaults)?;
         ensure!(
@@ -491,15 +538,31 @@ mod tests {
 
     #[test]
     fn capture_delay_persists_preserves_preferences_and_rejects_invalid_settings() -> Result<()> {
-        let root = std::env::temp_dir().join(format!("screenshots-delay-settings-{}", uuid::Uuid::new_v4()));
+        let root = std::env::temp_dir().join(format!(
+            "screenshots-delay-settings-{}",
+            uuid::Uuid::new_v4()
+        ));
         fs::create_dir_all(&root)?;
         let path = root.join("settings.json");
-        let preset = RegionPreset::new("Small", crate::PixelRegion { x: 1, y: 2, width: 3, height: 4 })?;
+        let preset = RegionPreset::new(
+            "Small",
+            crate::PixelRegion {
+                x: 1,
+                y: 2,
+                width: 3,
+                height: 4,
+            },
+        )?;
         for seconds in [1, 5, 60] {
-            CaptureSettings::for_directory(root.clone())?.with_theme(UiTheme::Oldschool)
-                .with_output_profile(CaptureOutputProfile::CopyOnly).with_region_presets(vec![preset.clone()])?
-                .with_jpeg_quality(73)?.with_export_format(crate::ImageExportFormat::WebP)
-                .with_filename_template("Shot-{date}".into())?.with_capture_delay(seconds)?.save_at(&path)?;
+            CaptureSettings::for_directory(root.clone())?
+                .with_theme(UiTheme::Oldschool)
+                .with_output_profile(CaptureOutputProfile::CopyOnly)
+                .with_region_presets(vec![preset.clone()])?
+                .with_jpeg_quality(73)?
+                .with_export_format(crate::ImageExportFormat::WebP)
+                .with_filename_template("Shot-{date}".into())?
+                .with_capture_delay(seconds)?
+                .save_at(&path)?;
             let loaded = CaptureSettings::load_at(&path, root.clone())?;
             assert_eq!(loaded.capture_delay_seconds, seconds);
             assert_eq!(loaded.theme, UiTheme::Oldschool);
@@ -509,11 +572,18 @@ mod tests {
             assert_eq!(loaded.export_format, crate::ImageExportFormat::WebP);
             assert_eq!(loaded.filename_template, "Shot-{date}");
             loaded.with_theme(UiTheme::Default).save_at(&path)?;
-            assert_eq!(CaptureSettings::load_at(&path, root.clone())?.capture_delay_seconds, seconds);
+            assert_eq!(
+                CaptureSettings::load_at(&path, root.clone())?.capture_delay_seconds,
+                seconds
+            );
         }
         let before = fs::read(&path)?;
         for seconds in [0, 61, 255] {
-            assert!(CaptureSettings::for_directory(root.clone())?.with_capture_delay(seconds).is_err());
+            assert!(
+                CaptureSettings::for_directory(root.clone())?
+                    .with_capture_delay(seconds)
+                    .is_err()
+            );
             let mut invalid = CaptureSettings::for_directory(root.clone())?;
             invalid.capture_delay_seconds = seconds;
             assert!(invalid.save_at(&path).is_err());
@@ -525,26 +595,42 @@ mod tests {
             fs::write(&path, &before)?;
         }
         let mut legacy: serde_json::Value = serde_json::from_slice(&before)?;
-        legacy.as_object_mut().unwrap().remove("capture_delay_seconds");
+        legacy
+            .as_object_mut()
+            .unwrap()
+            .remove("capture_delay_seconds");
         fs::write(&path, serde_json::to_vec(&legacy)?)?;
-        assert_eq!(CaptureSettings::load_at(&path, root.clone())?.capture_delay_seconds, 3);
-        fs::remove_file(path)?; fs::remove_dir(root)?;
+        assert_eq!(
+            CaptureSettings::load_at(&path, root.clone())?.capture_delay_seconds,
+            3
+        );
+        fs::remove_file(path)?;
+        fs::remove_dir(root)?;
         Ok(())
     }
 
     #[test]
     fn filename_templates_persist_validate_and_default_for_legacy_settings() -> Result<()> {
-        let root = std::env::temp_dir().join(format!("screenshots-name-settings-{}", uuid::Uuid::new_v4()));
+        let root = std::env::temp_dir().join(format!(
+            "screenshots-name-settings-{}",
+            uuid::Uuid::new_v4()
+        ));
         fs::create_dir_all(&root)?;
         let path = root.join("settings.json");
-        CaptureSettings::for_directory(root.clone())?.with_jpeg_quality(73)?
-            .with_export_format(crate::ImageExportFormat::WebP).with_filename_template(" Shot-{date}_{time} ".into())?.save_at(&path)?;
+        CaptureSettings::for_directory(root.clone())?
+            .with_jpeg_quality(73)?
+            .with_export_format(crate::ImageExportFormat::WebP)
+            .with_filename_template(" Shot-{date}_{time} ".into())?
+            .save_at(&path)?;
         let loaded = CaptureSettings::load_at(&path, root.clone())?;
         assert_eq!(loaded.filename_template, "Shot-{date}_{time}");
         assert_eq!(loaded.jpeg_quality, 73);
         assert_eq!(loaded.export_format, crate::ImageExportFormat::WebP);
         loaded.with_theme(UiTheme::Oldschool).save_at(&path)?;
-        assert_eq!(CaptureSettings::load_at(&path, root.clone())?.filename_template, "Shot-{date}_{time}");
+        assert_eq!(
+            CaptureSettings::load_at(&path, root.clone())?.filename_template,
+            "Shot-{date}_{time}"
+        );
         let before = fs::read(&path)?;
         let mut invalid = CaptureSettings::load_at(&path, root.clone())?;
         invalid.filename_template = "../outside".into();
@@ -556,58 +642,104 @@ mod tests {
         assert!(CaptureSettings::load_at(&path, root.clone()).is_err());
         stored.as_object_mut().unwrap().remove("filename_template");
         fs::write(&path, serde_json::to_vec(&stored)?)?;
-        assert!(CaptureSettings::load_at(&path, root.clone())?.filename_template.is_empty());
-        fs::remove_file(path)?; fs::remove_dir(root)?;
+        assert!(
+            CaptureSettings::load_at(&path, root.clone())?
+                .filename_template
+                .is_empty()
+        );
+        fs::remove_file(path)?;
+        fs::remove_dir(root)?;
         Ok(())
     }
 
     #[test]
     fn export_format_round_trips_defaults_and_rejects_unknown_values() -> Result<()> {
-        let root = std::env::temp_dir().join(format!("screenshots-format-settings-{}", uuid::Uuid::new_v4()));
+        let root = std::env::temp_dir().join(format!(
+            "screenshots-format-settings-{}",
+            uuid::Uuid::new_v4()
+        ));
         fs::create_dir_all(&root)?;
         let path = root.join("settings.json");
         for format in crate::ImageExportFormat::ALL {
-            CaptureSettings::for_directory(root.clone())?.with_jpeg_quality(73)?
-                .with_output_profile(CaptureOutputProfile::CopyOnly).with_export_format(format).save_at(&path)?;
+            CaptureSettings::for_directory(root.clone())?
+                .with_jpeg_quality(73)?
+                .with_output_profile(CaptureOutputProfile::CopyOnly)
+                .with_export_format(format)
+                .save_at(&path)?;
             let loaded = CaptureSettings::load_at(&path, root.clone())?;
             assert_eq!(loaded.export_format, format);
             assert_eq!(loaded.jpeg_quality, 73);
             assert_eq!(loaded.output_profile, CaptureOutputProfile::CopyOnly);
             loaded.with_theme(UiTheme::Oldschool).save_at(&path)?;
-            assert_eq!(CaptureSettings::load_at(&path, root.clone())?.export_format, format);
-            assert_eq!(crate::ImageExportFormat::from_path(Path::new(&format!("image.{}", format.extension()))).unwrap(), format);
+            assert_eq!(
+                CaptureSettings::load_at(&path, root.clone())?.export_format,
+                format
+            );
+            assert_eq!(
+                crate::ImageExportFormat::from_path(Path::new(&format!(
+                    "image.{}",
+                    format.extension()
+                )))
+                .unwrap(),
+                format
+            );
         }
         let mut legacy: serde_json::Value = serde_json::from_slice(&fs::read(&path)?)?;
         legacy.as_object_mut().unwrap().remove("export_format");
         fs::write(&path, serde_json::to_vec(&legacy)?)?;
-        assert_eq!(CaptureSettings::load_at(&path, root.clone())?.export_format, crate::ImageExportFormat::Png);
+        assert_eq!(
+            CaptureSettings::load_at(&path, root.clone())?.export_format,
+            crate::ImageExportFormat::Png
+        );
         legacy["export_format"] = "gif".into();
         fs::write(&path, serde_json::to_vec(&legacy)?)?;
         assert!(CaptureSettings::load_at(&path, root.clone()).is_err());
-        fs::remove_file(path)?; fs::remove_dir(root)?;
+        fs::remove_file(path)?;
+        fs::remove_dir(root)?;
         Ok(())
     }
 
     #[test]
     fn jpeg_quality_persists_rejects_invalid_files_and_defaults_for_older_settings() -> Result<()> {
-        let root = std::env::temp_dir().join(format!("screenshots-jpeg-settings-{}", uuid::Uuid::new_v4()));
+        let root = std::env::temp_dir().join(format!(
+            "screenshots-jpeg-settings-{}",
+            uuid::Uuid::new_v4()
+        ));
         fs::create_dir_all(&root)?;
         let config = root.join("settings.json");
-        let preset = RegionPreset::new("Small", crate::PixelRegion { x: 0, y: 0, width: 3, height: 2 })?;
+        let preset = RegionPreset::new(
+            "Small",
+            crate::PixelRegion {
+                x: 0,
+                y: 0,
+                width: 3,
+                height: 2,
+            },
+        )?;
         for quality in [1, 73, 100] {
-            CaptureSettings::for_directory(root.clone())?.with_theme(UiTheme::Oldschool)
-                .with_output_profile(CaptureOutputProfile::CopyOnly).with_region_presets(vec![preset.clone()])?
-                .with_jpeg_quality(quality)?.save_at(&config)?;
+            CaptureSettings::for_directory(root.clone())?
+                .with_theme(UiTheme::Oldschool)
+                .with_output_profile(CaptureOutputProfile::CopyOnly)
+                .with_region_presets(vec![preset.clone()])?
+                .with_jpeg_quality(quality)?
+                .save_at(&config)?;
             let loaded = CaptureSettings::load_at(&config, root.clone())?;
             assert_eq!(loaded.jpeg_quality, quality);
             assert_eq!(loaded.region_presets, [preset.clone()]);
             assert_eq!(loaded.output_profile, CaptureOutputProfile::CopyOnly);
             loaded.with_theme(UiTheme::Default).save_at(&config)?;
-            assert_eq!(CaptureSettings::load_at(&config, root.clone())?.jpeg_quality, quality);
+            assert_eq!(
+                CaptureSettings::load_at(&config, root.clone())?.jpeg_quality,
+                quality
+            );
         }
         let before = fs::read(&config)?;
         for quality in [0, 101, 255] {
-            assert!(CaptureSettings::for_directory(root.clone())?.with_jpeg_quality(quality).is_err());
+            assert!(
+                CaptureSettings::for_directory(root.clone())?
+                    .with_jpeg_quality(quality)
+                    .is_err()
+            );
             let mut invalid = CaptureSettings::load_at(&config, root.clone())?;
             invalid.jpeg_quality = quality;
             assert!(invalid.save_at(&config).is_err());
@@ -621,7 +753,10 @@ mod tests {
         let mut legacy: serde_json::Value = serde_json::from_slice(&before)?;
         legacy.as_object_mut().unwrap().remove("jpeg_quality");
         fs::write(&config, serde_json::to_vec(&legacy)?)?;
-        assert_eq!(CaptureSettings::load_at(&config, root.clone())?.jpeg_quality, 90);
+        assert_eq!(
+            CaptureSettings::load_at(&config, root.clone())?.jpeg_quality,
+            90
+        );
         fs::remove_file(config)?;
         fs::remove_dir(root)?;
         Ok(())
@@ -629,18 +764,33 @@ mod tests {
 
     #[test]
     fn region_presets_round_trip_validate_and_keep_other_settings() -> Result<()> {
-        let root = std::env::temp_dir().join(format!("screenshots-preset-settings-{}", uuid::Uuid::new_v4()));
+        let root = std::env::temp_dir().join(format!(
+            "screenshots-preset-settings-{}",
+            uuid::Uuid::new_v4()
+        ));
         fs::create_dir_all(&root)?;
         let config = root.join("settings.json");
-        let preset = RegionPreset::new(" Small ", crate::PixelRegion { x: 10, y: 20, width: 30, height: 40 })?;
+        let preset = RegionPreset::new(
+            " Small ",
+            crate::PixelRegion {
+                x: 10,
+                y: 20,
+                width: 30,
+                height: 40,
+            },
+        )?;
         assert_eq!(preset.name, "Small");
-        CaptureSettings::for_directory(root.clone())?.with_output_profile(CaptureOutputProfile::CopyOnly)
-            .with_region_presets(vec![preset.clone()])?.save_at(&config)?;
+        CaptureSettings::for_directory(root.clone())?
+            .with_output_profile(CaptureOutputProfile::CopyOnly)
+            .with_region_presets(vec![preset.clone()])?
+            .save_at(&config)?;
         let loaded = CaptureSettings::load_at(&config, root.clone())?;
         assert_eq!(loaded.region_presets, [preset.clone()]);
         assert_eq!(loaded.output_profile, CaptureOutputProfile::CopyOnly);
         let presets = loaded.region_presets.clone();
-        loaded.with_theme(UiTheme::Oldschool).with_output_profile(CaptureOutputProfile::SaveOnly)
+        loaded
+            .with_theme(UiTheme::Oldschool)
+            .with_output_profile(CaptureOutputProfile::SaveOnly)
             .save_at(&config)?;
         let loaded = CaptureSettings::load_at(&config, root.clone())?;
         assert_eq!(loaded.region_presets, presets);
@@ -653,13 +803,28 @@ mod tests {
         for name in ["", "\n", "bad\nname", &"x".repeat(65)] {
             assert!(RegionPreset::new(name, preset.area()).is_err());
         }
-        for area in [crate::PixelRegion { width: 0, ..preset.area() },
-            crate::PixelRegion { x: u32::MAX, ..preset.area() },
-            crate::PixelRegion { width: u32::MAX, height: u32::MAX, ..preset.area() }] {
+        for area in [
+            crate::PixelRegion {
+                width: 0,
+                ..preset.area()
+            },
+            crate::PixelRegion {
+                x: u32::MAX,
+                ..preset.area()
+            },
+            crate::PixelRegion {
+                width: u32::MAX,
+                height: u32::MAX,
+                ..preset.area()
+            },
+        ] {
             assert!(RegionPreset::new("Invalid", area).is_err());
         }
-        let presets: Vec<_> = (0..16).map(|index| RegionPreset::new(&format!("Region {index}"), preset.area()).unwrap()).collect();
-        let mut settings = CaptureSettings::for_directory(root.clone())?.with_region_presets(presets)?;
+        let presets: Vec<_> = (0..16)
+            .map(|index| RegionPreset::new(&format!("Region {index}"), preset.area()).unwrap())
+            .collect();
+        let mut settings =
+            CaptureSettings::for_directory(root.clone())?.with_region_presets(presets)?;
         settings.save_at(&config)?;
         settings.region_presets.push(preset);
         assert!(settings.save_at(&config).is_err());
@@ -669,7 +834,11 @@ mod tests {
         assert!(CaptureSettings::load_at(&config, root.clone()).is_err());
         legacy.as_object_mut().unwrap().remove("region_presets");
         fs::write(&config, serde_json::to_vec(&legacy)?)?;
-        assert!(CaptureSettings::load_at(&config, root.clone())?.region_presets.is_empty());
+        assert!(
+            CaptureSettings::load_at(&config, root.clone())?
+                .region_presets
+                .is_empty()
+        );
         fs::remove_file(config)?;
         fs::remove_dir(root)?;
         Ok(())
@@ -680,7 +849,8 @@ mod tests {
         assert_eq!(legacy.0, ["Alt+Q", "", "Ctrl+F9", "", "", ""]);
         let four: CaptureHotkeys = serde_json::from_str(r#"["Alt+Q","","Ctrl+F9","Alt+W"]"#)?;
         assert_eq!(four.0, ["Alt+Q", "", "Ctrl+F9", "Alt+W", "", ""]);
-        let five: CaptureHotkeys = serde_json::from_str(r#"["Alt+Q","","Ctrl+F9","Alt+W","Alt+R"]"#)?;
+        let five: CaptureHotkeys =
+            serde_json::from_str(r#"["Alt+Q","","Ctrl+F9","Alt+W","Alt+R"]"#)?;
         assert_eq!(five.0, ["Alt+Q", "", "Ctrl+F9", "Alt+W", "Alt+R", ""]);
         assert!(CaptureHotkeys::default().0[4].is_empty());
         assert!(CaptureHotkeys::default().0[3].is_empty());
@@ -779,9 +949,16 @@ mod tests {
             "Ctrl+Enter",
         ] {
             assert!(
-                CaptureHotkeys([invalid.into(), "".into(), "".into(), "".into(), "".into(), String::new()])
-                    .validated()
-                    .is_err(),
+                CaptureHotkeys([
+                    invalid.into(),
+                    "".into(),
+                    "".into(),
+                    "".into(),
+                    "".into(),
+                    String::new()
+                ])
+                .validated()
+                .is_err(),
                 "{invalid}"
             );
         }
@@ -798,14 +975,28 @@ mod tests {
             .is_err()
         );
         assert!(
-            CaptureHotkeys([" ".repeat(65), "".into(), "".into(), "".into(), "".into(), String::new()])
-                .validated()
-                .is_err()
+            CaptureHotkeys([
+                " ".repeat(65),
+                "".into(),
+                "".into(),
+                "".into(),
+                "".into(),
+                String::new()
+            ])
+            .validated()
+            .is_err()
         );
         assert!(
-            CaptureHotkeys(["".into(), "".into(), "".into(), "".into(), "".into(), String::new()])
-                .validated()
-                .is_ok()
+            CaptureHotkeys([
+                "".into(),
+                "".into(),
+                "".into(),
+                "".into(),
+                "".into(),
+                String::new()
+            ])
+            .validated()
+            .is_ok()
         );
         Ok(())
     }
@@ -891,7 +1082,7 @@ mod tests {
             CaptureSettings::load_at(&path, dir.clone())?.theme,
             UiTheme::Default
         );
-        for theme in [UiTheme::Default, UiTheme::Oldschool] {
+        for theme in [UiTheme::Default, UiTheme::Oldschool, UiTheme::Classic] {
             CaptureSettings::for_directory(dir.clone())?
                 .with_theme(theme)
                 .save_at(&path)?;
@@ -899,6 +1090,15 @@ mod tests {
             assert_eq!(restored.theme, theme);
             assert_eq!(restored.output_directory, dir);
         }
+        let saved = serde_json::from_slice::<serde_json::Value>(&fs::read(&path)?)?;
+        assert_eq!(saved["theme"], "classic");
+        let mut alias = serde_json::json!({"version": 1, "output_directory": dir});
+        alias["theme"] = "zed".into();
+        fs::write(&path, serde_json::to_vec(&alias)?)?;
+        assert_eq!(
+            CaptureSettings::load_at(&path, dir.clone())?.theme,
+            UiTheme::Classic
+        );
         for theme in [None, Some("future_theme"), Some("safelight")] {
             let mut value = serde_json::json!({"version": 1, "output_directory": dir});
             if let Some(theme) = theme {
@@ -1075,7 +1275,10 @@ mod tests {
         stored["upload_task_defaults"][0] = "bad\nname".into();
         fs::write(&path, serde_json::to_vec(&stored)?)?;
         assert!(CaptureSettings::load_at(&path, root.clone()).is_err());
-        stored.as_object_mut().unwrap().remove("upload_task_defaults");
+        stored
+            .as_object_mut()
+            .unwrap()
+            .remove("upload_task_defaults");
         fs::write(&path, serde_json::to_vec(&stored)?)?;
         assert!(
             CaptureSettings::load_at(&path, root.clone())?
@@ -1110,7 +1313,9 @@ mod tests {
         assert!(loaded.strip_metadata_on_upload);
         assert_eq!(loaded.theme, UiTheme::Default);
         let backup = root.join("backup.json");
-        loaded.with_strip_metadata_on_upload(true).export_at(&backup)?;
+        loaded
+            .with_strip_metadata_on_upload(true)
+            .export_at(&backup)?;
         let (imported, kept) = CaptureSettings::import_at(&backup, root.clone())?;
         assert!(!kept);
         assert!(imported.strip_metadata_on_upload);

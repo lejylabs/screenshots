@@ -2,7 +2,7 @@
 use super::*;
 use gpui::TestSupportExt as _;
 use gpui::component::{
-    ActiveTheme as _, Disableable as _, Icon, Selectable as _, Sizable as _,
+    ActiveTheme as _, Disableable as _, Icon, Selectable as _, Sizable as _, TitleBar,
     button::{Button, ButtonVariants as _},
     menu::{DropdownMenu as _, PopupMenuItem},
     radio::RadioGroup,
@@ -14,15 +14,26 @@ pub(super) fn valid_search(value: &str) -> bool {
     value.len() <= 512 && !value.chars().any(char::is_control)
 }
 
-pub(super) fn exact_region_request(display: &DisplayInfo, values: &[String; 4]) -> Result<app_core::RememberedRegion, String> {
+pub(super) fn exact_region_request(
+    display: &DisplayInfo,
+    values: &[String; 4],
+) -> Result<app_core::RememberedRegion, String> {
     let mut numbers = [0; 4];
     for (value, number) in values.iter().zip(&mut numbers) {
-        if value.is_empty() || value.len() > 10 || !value.bytes().all(|byte| byte.is_ascii_digit()) {
+        if value.is_empty() || value.len() > 10 || !value.bytes().all(|byte| byte.is_ascii_digit())
+        {
             return Err("Enter X, Y, width and height as whole physical pixel values.".into());
         }
-        *number = value.parse::<u32>().map_err(|_| "A pixel value is too large.".to_string())?;
+        *number = value
+            .parse::<u32>()
+            .map_err(|_| "A pixel value is too large.".to_string())?;
     }
-    let area = app_core::PixelRegion { x: numbers[0], y: numbers[1], width: numbers[2], height: numbers[3] };
+    let area = app_core::PixelRegion {
+        x: numbers[0],
+        y: numbers[1],
+        width: numbers[2],
+        height: numbers[3],
+    };
     app_core::RememberedRegion::from_display(display, area)
         .map_err(|error| match error {
             app_core::CaptureError::MemoryLimit => "The display or region exceeds the 256 MiB image limit.".into(),
@@ -35,91 +46,195 @@ impl Render for CaptureWorkspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if self.page == ControlPage::Uploads && self.upload_form_open {
             if self.upload_form_inputs.is_none() {
-                self.upload_form_inputs = Some(std::array::from_fn(|index| cx.new(|cx|
-                    gpui::component::input::InputState::new(window, cx)
-                        .default_value(["", "file", "/url"][index])
-                        .placeholder(["https://host.example/upload", "file", "/url"][index])
-                        .validate(move |value, _| value.len() <= [2048, 64, 256][index] && !value.chars().any(char::is_control)))));
+                self.upload_form_inputs = Some(std::array::from_fn(|index| {
+                    cx.new(|cx| {
+                        gpui::component::input::InputState::new(window, cx)
+                            .default_value(["", "file", "/url"][index])
+                            .placeholder(["https://host.example/upload", "file", "/url"][index])
+                            .validate(move |value, _| {
+                                value.len() <= [2048, 64, 256][index]
+                                    && !value.chars().any(char::is_control)
+                            })
+                    })
+                }));
             }
-        } else { self.upload_form_inputs = None; }
+        } else {
+            self.upload_form_inputs = None;
+        }
         if self.page == ControlPage::Uploads && self.upload_credential_open {
             if self.upload_credential_inputs.is_none() {
-                let reference = self.upload_destination.as_ref().and_then(|destination| destination.credential_reference()).unwrap_or("main").to_string();
+                let reference = self
+                    .upload_destination
+                    .as_ref()
+                    .and_then(|destination| destination.credential_reference())
+                    .unwrap_or("main")
+                    .to_string();
                 self.upload_credential_inputs = Some([
-                    cx.new(|cx| gpui::component::input::InputState::new(window, cx)
-                        .default_value(reference.clone()).placeholder("main")
-                        .validate(|value, _| value.len() <= 64 && !value.chars().any(char::is_control))),
-                    cx.new(|cx| gpui::component::input::InputState::new(window, cx)
-                        .placeholder("username")
-                        .validate(|value, _| value.len() <= 256 && !value.chars().any(char::is_control))),
-                    cx.new(|cx| gpui::component::input::InputState::new(window, cx)
-                        .masked(true).placeholder("token or password")
-                        .validate(|value, _| value.len() <= 2560 && !value.chars().any(char::is_control))),
+                    cx.new(|cx| {
+                        gpui::component::input::InputState::new(window, cx)
+                            .default_value(reference.clone())
+                            .placeholder("main")
+                            .validate(|value, _| {
+                                value.len() <= 64 && !value.chars().any(char::is_control)
+                            })
+                    }),
+                    cx.new(|cx| {
+                        gpui::component::input::InputState::new(window, cx)
+                            .placeholder("username")
+                            .validate(|value, _| {
+                                value.len() <= 256 && !value.chars().any(char::is_control)
+                            })
+                    }),
+                    cx.new(|cx| {
+                        gpui::component::input::InputState::new(window, cx)
+                            .masked(true)
+                            .placeholder("token or password")
+                            .validate(|value, _| {
+                                value.len() <= 2560 && !value.chars().any(char::is_control)
+                            })
+                    }),
                 ]);
             }
-        } else { self.upload_credential_inputs = None; }
+        } else {
+            self.upload_credential_inputs = None;
+        }
         if self.page == ControlPage::Uploads && self.upload_named_open {
             if self.upload_named_input.is_none() {
-                self.upload_named_input = Some(cx.new(|cx|
+                self.upload_named_input = Some(cx.new(|cx| {
                     gpui::component::input::InputState::new(window, cx)
                         .placeholder("Host")
-                        .validate(|value, _| value.len() <= 64 && !value.chars().any(char::is_control))));
+                        .validate(|value, _| {
+                            value.len() <= 64 && !value.chars().any(char::is_control)
+                        })
+                }));
             }
-        } else { self.upload_named_input = None; }
+        } else {
+            self.upload_named_input = None;
+        }
         if self.page == ControlPage::Captures {
             if self.capture_delay_input.is_none() {
-                self.capture_delay_input = Some(cx.new(|cx| gpui::component::input::InputState::new(window, cx)
-                    .default_value(self.capture_delay_seconds.to_string())
-                    .validate(|value, _| value.len() <= 2 && value.bytes().all(|byte| byte.is_ascii_digit()))));
+                self.capture_delay_input = Some(cx.new(|cx| {
+                    gpui::component::input::InputState::new(window, cx)
+                        .default_value(self.capture_delay_seconds.to_string())
+                        .validate(|value, _| {
+                            value.len() <= 2 && value.bytes().all(|byte| byte.is_ascii_digit())
+                        })
+                }));
             }
-        } else { self.capture_delay_input = None; }
-        if self.page == ControlPage::Captures && (self.last_capture.is_some() || self.last_saved.is_some()) {
-            if let app_core::ExportSize::Width(value) | app_core::ExportSize::Height(value) | app_core::ExportSize::Exact(value, _) = self.export_size {
+        } else {
+            self.capture_delay_input = None;
+        }
+        if self.page == ControlPage::Captures
+            && (self.last_capture.is_some() || self.last_saved.is_some())
+        {
+            if let app_core::ExportSize::Width(value)
+            | app_core::ExportSize::Height(value)
+            | app_core::ExportSize::Exact(value, _) = self.export_size
+            {
                 if self.export_dimension_input.is_none() {
-                    self.export_dimension_input = Some(cx.new(|cx| gpui::component::input::InputState::new(window, cx)
-                        .default_value(value.to_string()).validate(|value, _| value.len() <= 10 && value.bytes().all(|byte| byte.is_ascii_digit()))));
+                    self.export_dimension_input = Some(cx.new(|cx| {
+                        gpui::component::input::InputState::new(window, cx)
+                            .default_value(value.to_string())
+                            .validate(|value, _| {
+                                value.len() <= 10 && value.bytes().all(|byte| byte.is_ascii_digit())
+                            })
+                    }));
                 }
-            } else { self.export_dimension_input = None; }
-        } else { self.export_dimension_input = None; }
-        if self.export_dimension_input.is_some() && let app_core::ExportSize::Exact(_, height) = self.export_size {
-            if self.export_height_input.is_none() {
-                self.export_height_input = Some(cx.new(|cx| gpui::component::input::InputState::new(window, cx)
-                    .default_value(height.to_string()).validate(|value, _| value.len() <= 10 && value.bytes().all(|byte| byte.is_ascii_digit()))));
+            } else {
+                self.export_dimension_input = None;
             }
-        } else { self.export_height_input = None; }
-        if self.page == ControlPage::Settings && !self.settings_loading && self.jpeg_quality_input.is_none() {
-            self.jpeg_quality_input = Some(cx.new(|cx| gpui::component::input::InputState::new(window, cx)
-                .default_value(self.jpeg_quality.to_string())
-                .validate(|value, _| value.len() <= 3 && value.bytes().all(|byte| byte.is_ascii_digit()))));
+        } else {
+            self.export_dimension_input = None;
         }
-        if self.page != ControlPage::Settings { self.jpeg_quality_input = None; }
-        if self.page == ControlPage::Settings && !self.settings_loading && self.filename_template_input.is_none() {
-            self.filename_template_input = Some(cx.new(|cx| gpui::component::input::InputState::new(window, cx)
-                .default_value(self.filename_template.clone()).placeholder("Default names")
-                .validate(|value, _| value.len() <= 96 && !value.chars().any(char::is_control))));
+        if self.export_dimension_input.is_some()
+            && let app_core::ExportSize::Exact(_, height) = self.export_size
+        {
+            if self.export_height_input.is_none() {
+                self.export_height_input = Some(cx.new(|cx| {
+                    gpui::component::input::InputState::new(window, cx)
+                        .default_value(height.to_string())
+                        .validate(|value, _| {
+                            value.len() <= 10 && value.bytes().all(|byte| byte.is_ascii_digit())
+                        })
+                }));
+            }
+        } else {
+            self.export_height_input = None;
         }
-        if self.page != ControlPage::Settings { self.filename_template_input = None; }
-        if self.page == ControlPage::Sources && self.backend.capabilities().capture_region && self.exact_region_inputs.is_none() {
-            self.exact_region_inputs = Some(std::array::from_fn(|index| cx.new(|cx|
+        if self.page == ControlPage::Settings
+            && !self.settings_loading
+            && self.jpeg_quality_input.is_none()
+        {
+            self.jpeg_quality_input = Some(cx.new(|cx| {
                 gpui::component::input::InputState::new(window, cx)
-                    .default_value(["0", "0", "400", "300"][index])
-                    .validate(|value, _| value.len() <= 10 && value.bytes().all(|byte| byte.is_ascii_digit())))));
-            self.region_preset_name = Some(cx.new(|cx| gpui::component::input::InputState::new(window, cx)
-                .placeholder("Preset name")
-                .validate(|value, _| value.len() <= 64 && !value.chars().any(char::is_control))));
+                    .default_value(self.jpeg_quality.to_string())
+                    .validate(|value, _| {
+                        value.len() <= 3 && value.bytes().all(|byte| byte.is_ascii_digit())
+                    })
+            }));
         }
-        if self.page != ControlPage::Sources { self.exact_region_inputs = None; self.region_preset_name = None; }
+        if self.page != ControlPage::Settings {
+            self.jpeg_quality_input = None;
+        }
+        if self.page == ControlPage::Settings
+            && !self.settings_loading
+            && self.filename_template_input.is_none()
+        {
+            self.filename_template_input = Some(cx.new(|cx| {
+                gpui::component::input::InputState::new(window, cx)
+                    .default_value(self.filename_template.clone())
+                    .placeholder("Default names")
+                    .validate(|value, _| value.len() <= 96 && !value.chars().any(char::is_control))
+            }));
+        }
+        if self.page != ControlPage::Settings {
+            self.filename_template_input = None;
+        }
+        if self.page == ControlPage::Sources
+            && self.backend.capabilities().capture_region
+            && self.exact_region_inputs.is_none()
+        {
+            self.exact_region_inputs = Some(std::array::from_fn(|index| {
+                cx.new(|cx| {
+                    gpui::component::input::InputState::new(window, cx)
+                        .default_value(["0", "0", "400", "300"][index])
+                        .validate(|value, _| {
+                            value.len() <= 10 && value.bytes().all(|byte| byte.is_ascii_digit())
+                        })
+                })
+            }));
+            self.region_preset_name = Some(cx.new(|cx| {
+                gpui::component::input::InputState::new(window, cx)
+                    .placeholder("Preset name")
+                    .validate(|value, _| value.len() <= 64 && !value.chars().any(char::is_control))
+            }));
+        }
+        if self.page != ControlPage::Sources {
+            self.exact_region_inputs = None;
+            self.region_preset_name = None;
+        }
         #[cfg(target_os = "windows")]
-        if self.page == ControlPage::Settings && !self.settings_loading && self.hotkey_inputs.is_none() {
+        if self.page == ControlPage::Settings
+            && !self.settings_loading
+            && self.hotkey_inputs.is_none()
+        {
             self.hotkey_inputs = Some(std::array::from_fn(|index| {
-                cx.new(|cx| gpui::component::input::InputState::new(window, cx)
-                    .default_value(self.hotkey_bindings.0[index].clone())
-                    .placeholder("Disabled")
-                    .validate(|value, _| value.len() <= 64 && value.is_ascii() && !value.chars().any(char::is_control)))
+                cx.new(|cx| {
+                    gpui::component::input::InputState::new(window, cx)
+                        .default_value(self.hotkey_bindings.0[index].clone())
+                        .placeholder("Disabled")
+                        .validate(|value, _| {
+                            value.len() <= 64
+                                && value.is_ascii()
+                                && !value.chars().any(char::is_control)
+                        })
+                })
             }));
         }
         #[cfg(target_os = "windows")]
-        if self.page != ControlPage::Settings { self.hotkey_inputs = None; }
+        if self.page != ControlPage::Settings {
+            self.hotkey_inputs = None;
+        }
         let theme = crate::theme::current(cx);
         let colors = cx.theme().colors;
         let compact = window.viewport_size().width < px(820.);
@@ -169,7 +284,7 @@ impl Render for CaptureWorkspace {
             .track_focus(&self.focus_handle)
             .key_context("CaptureWorkspace")
             .flex()
-            .flex_row()
+            .flex_col()
             .size_full()
             .bg(colors.background)
             .text_color(colors.foreground)
@@ -198,11 +313,16 @@ impl Render for CaptureWorkspace {
             .on_action(cx.listener(|this, _: &ShowSources, window, cx| { window.focus(&this.focus_handle, cx); this.show_page(ControlPage::Sources, cx); }))
             .on_action(cx.listener(|this, _: &ShowSettings, window, cx| { window.focus(&this.focus_handle, cx); this.show_page(ControlPage::Settings, cx); }))
             .on_action(|_: &Quit, _, cx| cx.defer(close_application))
+            .child(self.render_window_titlebar(cx))
+            .child(div().flex().flex_row().flex_1().min_h_0().min_w_0()
             .child(self.render_sidebar(unavailable, window, cx))
+            .child(div().flex().flex_col().flex_1().min_w_0().min_h_0()
+            .when(theme.workbench, |pane| pane.child(self.render_workbench_tabs(cx)))
             .child(div().id("control-content").flex_1().min_w_0().min_h_0().h_full().overflow_y_scrollbar()
-                .child(div().flex().flex_col().gap_4().p_4().when(!theme.classic && !compact, |content| content.p_6())
-                .when(theme.classic, |content| content.gap_2())
-                .child(div().flex_none().flex().items_start().justify_between().gap_3().pb_3()
+                .child(div().flex().flex_col().gap_4().p_4().when(!theme.classic && !theme.workbench && !compact, |content| content.p_6())
+                .when(theme.classic || theme.workbench, |content| content.gap_2())
+                .when(theme.workbench, |content| content.p_2())
+                .when(!theme.workbench, |content| content.child(div().flex_none().flex().items_start().justify_between().gap_3().pb_3()
                     .child(div().flex_1().min_w_0().flex().flex_col().gap_2()
                         .child(div().id("workspace-heading").role(gpui::Role::Heading).test_support().text_2xl().font_weight(gpui::FontWeight::SEMIBOLD)
                             .when(theme.classic, |heading| heading.text_size(px(14.)))
@@ -226,7 +346,8 @@ impl Render for CaptureWorkspace {
                             ControlPage::Settings => "Appearance and storage.",
                         }))))
                     .child(quiet_button(cx, "appearance-shortcut", theme::name(theme::selected(cx)), false, false,
-                        cx.listener(|this, _, _, cx| this.show_page(ControlPage::Settings, cx)))))
+                        cx.listener(|this, _, _, cx| this.show_page(ControlPage::Settings, cx))))))
+
                 .when(self.capture_delay.is_some(), |view| view.child(div().p_3().rounded(px(theme.radius)).bg(colors.button).flex().flex_wrap().items_center().gap_3()
                     .child("Screenshot scheduled · countdown active")
                     .child(capture_button(cx, "cancel-delayed-capture", "Cancel countdown", false,
@@ -246,8 +367,11 @@ impl Render for CaptureWorkspace {
                     .child("Drop one PNG, JPEG or WebP image into this window to edit a copy."))
                 .when(self.capture_status != "Ready", |view| view.child(div().text_sm().child(self.capture_status.clone())))
             .when(theme.classic && self.last_capture.is_none() && self.last_saved.is_none(), |view| view.child(classic_capture_home(cx)))
-            .when(!theme.classic && self.last_capture.is_none() && self.last_saved.is_none(), |view| view.child(
-                div().flex_none().p_5().rounded(px(theme.panel_radius))
+            .when(theme.workbench && self.last_capture.is_none() && self.last_saved.is_none(), |view| view.child(
+                div().flex_none().px_3().py_2().text_sm().text_color(colors.muted_foreground)
+                    .child("Capture a region to annotate, copy or save.")))
+            .when(!theme.classic && !theme.workbench && self.last_capture.is_none() && self.last_saved.is_none(), |view| view.child(
+                div().flex_none().p_5().when(theme.workbench, |panel| panel.p_3()).rounded(px(theme.panel_radius))
                     .border_1().border_color(colors.border).bg(colors.group_box)
                     .flex().flex_col().gap_3()
                     .child(div().text_lg().font_weight(gpui::FontWeight::MEDIUM).child("No screenshots yet"))
@@ -265,9 +389,10 @@ impl Render for CaptureWorkspace {
                     .flex_none()
                     .p_4()
                     .gap_2()
+                    .when(theme.workbench, |card| card.p_2().gap_1())
                     .border_1().border_color(colors.border)
                     .bg(colors.group_box)
-                    .rounded(px(theme.panel_radius)).child(div().text_lg().font_weight(gpui::FontWeight::SEMIBOLD).child("Latest screenshot"))
+                    .rounded(px(theme.panel_radius)).child(div().text_lg().font_weight(gpui::FontWeight::SEMIBOLD).when(theme.workbench, |t| t.text_sm()).child("Latest screenshot"))
                     .children(self.last_saved.as_ref().and_then(|path| path.file_name()).map(|name|
                         div().text_sm().text_color(colors.muted_foreground).child(name.to_string_lossy().into_owned())))
                     .children(
@@ -374,7 +499,7 @@ impl Render for CaptureWorkspace {
                 ))
             })
             .when(self.page == ControlPage::Uploads, |view| {
-                view.child(div().flex_none().p_5().rounded(px(theme.panel_radius)).bg(colors.group_box).flex().flex_col().gap_4()
+                view.child(div().flex_none().p_5().when(theme.workbench, |panel| panel.p_3()).rounded(px(theme.panel_radius)).bg(colors.group_box).flex().flex_col().gap_4()
                     .child(div().flex().items_center().gap_3()
                         .child(div().w(px(40.)).h(px(40.)).rounded(px(theme.radius)).bg(colors.button).flex().items_center().justify_center().child(ui_icon(cx, "nav-uploads", 20.)))
                         .child(div().flex().flex_col().gap_1()
@@ -567,7 +692,7 @@ impl Render for CaptureWorkspace {
                                         })))
                             })))
                     }))
-                .child(div().flex_none().p_5().rounded(px(theme.panel_radius)).bg(colors.group_box).flex().flex_col().gap_3()
+                .child(div().flex_none().p_5().when(theme.workbench, |panel| panel.p_3()).rounded(px(theme.panel_radius)).bg(colors.group_box).flex().flex_col().gap_3()
                     .child(div().font_weight(gpui::FontWeight::SEMIBOLD).child("Share your latest screenshot"))
                     .child(div().text_sm().text_color(colors.muted_foreground).child(
                         self.last_saved.as_ref().and_then(|path| path.file_name()).map(|name| name.to_string_lossy().into_owned())
@@ -889,7 +1014,7 @@ impl Render for CaptureWorkspace {
                                             let filename = entry.path.file_name().unwrap_or_default().to_string_lossy().into_owned();
                                             div().id(gpui::SharedString::from(format!("history-entry-{}", entry.id))).flex_none().flex().flex_col().gap_3()
                                                 .p_3().rounded(px(theme.panel_radius)).bg(colors.group_box)
-                                                .when(theme.classic, |row| row.p_2().gap_1())
+                                                .when(theme.classic || theme.workbench, |row| row.p_2().gap_1())
                                                 .border_1().border_color(if selected { colors.caret } else { colors.border })
                                                 .child(div().flex().flex_wrap().items_center().gap_2()
                                                     .child(div().flex_1().min_w_0().flex().flex_col().gap_1()
@@ -952,16 +1077,16 @@ impl Render for CaptureWorkspace {
             })
             .when(self.page == ControlPage::Settings, |view| {
                 view.child(
-                div().flex_none().p_5().rounded(px(theme.panel_radius)).border_1().border_color(colors.border)
+                div().flex_none().p_5().when(theme.workbench, |panel| panel.p_3()).rounded(px(theme.panel_radius)).border_1().border_color(colors.border)
                     .bg(colors.group_box).flex().flex_col().gap_4()
                     .child(div().font_weight(gpui::FontWeight::SEMIBOLD).child("Appearance"))
                     .child(div().text_sm().text_color(cx.theme().muted_foreground).child("Choose an appearance. Changes are saved automatically."))
                     .child(RadioGroup::new("appearance").layout(gpui::Axis::Vertical)
-                        .children(["Dark (default)", "Oldschool"])
-                        .selected_index(Some(if theme::selected(cx) == app_core::UiTheme::Default { 0 } else { 1 }))
+                        .children(["Dark (default)", "Oldschool", "Classic"])
+                        .selected_index(Some(theme::appearance_index(theme::selected(cx))))
                         .disabled(self.settings_loading || self.settings_saving || self.output_directory.is_none())
                         .on_change(cx.listener(|this, ix, _, cx| this.choose_theme(
-                            if *ix == 0 { app_core::UiTheme::Default } else { app_core::UiTheme::Oldschool }, cx))))
+                            theme::appearance_at(*ix), cx))))
                     .child(div().text_sm().text_color(colors.muted_foreground).child(self.settings_status.clone()))
             ).child(
                 div()
@@ -982,7 +1107,7 @@ impl Render for CaptureWorkspace {
                     ))
                     .child(div().text_xs().text_color(colors.muted_foreground).child("Existing files stay where they are.")),
             )
-            .child(div().flex_none().p_5().rounded(px(theme.panel_radius)).bg(colors.group_box).flex().flex_col().gap_3()
+            .child(div().flex_none().p_5().when(theme.workbench, |panel| panel.p_3()).rounded(px(theme.panel_radius)).bg(colors.group_box).flex().flex_col().gap_3()
                 .child(div().font_weight(gpui::FontWeight::SEMIBOLD).child("Capture output"))
                 .child(div().text_sm().child("Applies to quick region, delayed region, display and window captures, including tray and global shortcuts. New screenshot always opens the editor. Changes are saved automatically."))
                 .child(RadioGroup::new("capture-output-profile").layout(gpui::Axis::Vertical)
@@ -993,14 +1118,14 @@ impl Render for CaptureWorkspace {
                         if let Some(profile) = CaptureOutputProfile::ALL.get(*ix) { this.choose_output_profile(*profile, cx); }
                     })))
                 .child(div().text_sm().text_color(colors.muted_foreground).child("Copy only keeps one image in memory without saving. Annotate first produces no output until you choose Copy or Save in the editor. With either option, capture one display or window at a time. Uploads always require a separate action.")))
-            .child(div().flex_none().p_5().rounded(px(theme.panel_radius)).bg(colors.group_box).flex().flex_col().gap_3()
+            .child(div().flex_none().p_5().when(theme.workbench, |panel| panel.p_3()).rounded(px(theme.panel_radius)).bg(colors.group_box).flex().flex_col().gap_3()
                 .child(div().font_weight(gpui::FontWeight::SEMIBOLD).child("JPEG export quality"))
                 .child(div().text_sm().child(format!("Active quality: {} · Applies only to JPEG copies created with Save as. PNG and lossless WebP are unchanged. JPEG requires opaque pixels.", self.jpeg_quality)))
                 .children(self.jpeg_quality_input.iter().map(|input| gpui::component::input::Input::new(input)
                     .id("jpeg-export-quality").aria_label("JPEG quality (1–100)").disabled(unavailable || self.preview_active)))
                 .child(capture_button(cx, "save-jpeg-quality", "Save quality (1–100)", unavailable || self.preview_active,
                     cx.listener(|this, _, _, cx| this.save_jpeg_quality(cx)))))
-            .child(div().flex_none().p_5().rounded(px(theme.panel_radius)).bg(colors.group_box).flex().flex_col().gap_3()
+            .child(div().flex_none().p_5().when(theme.workbench, |panel| panel.p_3()).rounded(px(theme.panel_radius)).bg(colors.group_box).flex().flex_col().gap_3()
                 .child(div().font_weight(gpui::FontWeight::SEMIBOLD).child("Default Save as format"))
                 .child(RadioGroup::new("save-as-format").layout(gpui::Axis::Vertical)
                     .children(app_core::ImageExportFormat::ALL.map(app_core::ImageExportFormat::label))
@@ -1010,7 +1135,7 @@ impl Render for CaptureWorkspace {
                         if let Some(format) = app_core::ImageExportFormat::ALL.get(*index) { this.choose_export_format(*format, cx); }
                     })))
                 .child(div().text_sm().child("Changes are saved automatically. Save as suggests this format and uses it when the filename has no extension. An explicit extension overrides it. Direct Save and quick captures still use PNG.")))
-            .child(div().flex_none().p_5().rounded(px(theme.panel_radius)).bg(colors.group_box).flex().flex_col().gap_3()
+            .child(div().flex_none().p_5().when(theme.workbench, |panel| panel.p_3()).rounded(px(theme.panel_radius)).bg(colors.group_box).flex().flex_col().gap_3()
                 .child(div().font_weight(gpui::FontWeight::SEMIBOLD).child("Capture filename template"))
                 .child(div().text_sm().child("Automatic PNG saves only, including edited captures. Use letters, digits, spaces, - or _, and {date} / {time} for UTC save time. A unique suffix and .png are always added. Leave empty for default names; Save as keeps its manually chosen name."))
                 .child(div().text_sm().child(if self.filename_template.is_empty() { "Active: default names".to_owned() } else { format!("Active: {}", self.filename_template) }))
@@ -1019,7 +1144,7 @@ impl Render for CaptureWorkspace {
                 .child(capture_button(cx, "save-filename-template", "Save filename template", unavailable || self.preview_active,
                     cx.listener(|this, _, _, cx| this.save_filename_template(cx)))))
             .child(self.hotkey_settings(cx))
-            .child(div().flex_none().p_5().rounded(px(theme.panel_radius)).bg(colors.group_box).flex().flex_col().gap_3()
+            .child(div().flex_none().p_5().when(theme.workbench, |panel| panel.p_3()).rounded(px(theme.panel_radius)).bg(colors.group_box).flex().flex_col().gap_3()
                 .child(div().font_weight(gpui::FontWeight::SEMIBOLD).child("Backup"))
                 .child(div().text_sm().text_color(colors.muted_foreground).child("Export copies appearance, folder, shortcuts, output profile, region presets, JPEG quality, Save as format, filename template and capture delay. Upload destinations, history, images and secrets stay out of the file. Import never starts an upload."))
                 .child(div().flex().flex_wrap().gap_2()
@@ -1070,18 +1195,28 @@ impl Render for CaptureWorkspace {
                 )
             })
             })
-            ))
+            ))))
+            .when(theme.workbench, |shell| shell.child(self.render_workbench_status(cx)))
     }
 }
 impl CaptureWorkspace {
     fn hotkey_settings(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
-        let panel = div().flex_none().p_5().flex().flex_col().gap_3()
-            .child(div().font_weight(gpui::FontWeight::SEMIBOLD).child("Global shortcuts"));
+        let panel = div().flex_none().p_5().flex().flex_col().gap_3().child(
+            div()
+                .font_weight(gpui::FontWeight::SEMIBOLD)
+                .child("Global shortcuts"),
+        );
         #[cfg(not(target_os = "windows"))]
-        { panel.child("Global shortcut configuration is currently available on Windows only. Use your desktop's shortcut settings where supported.").into_any_element() }
+        {
+            panel.child("Global shortcut configuration is currently available on Windows only. Use your desktop's shortcut settings where supported.").into_any_element()
+        }
         #[cfg(target_os = "windows")]
         {
-            let disabled = self.settings_loading || self.settings_saving || self.quitting || self.hotkey.is_none() || self.output_directory.is_none();
+            let disabled = self.settings_loading
+                || self.settings_saving
+                || self.quitting
+                || self.hotkey.is_none()
+                || self.output_directory.is_none();
             panel.child(div().text_sm().child("Use Ctrl, Alt, Shift or Super (Windows key) + a letter, digit, F1–F24 or PrintScreen. Letters/digits need Ctrl, Alt or Super. Leave empty to disable."))
                 .children(self.hotkey_inputs.iter().flat_map(|inputs| inputs.iter().enumerate()).map(|(index, input)| {
                     div().flex().flex_col().gap_1()
@@ -1112,7 +1247,8 @@ impl CaptureWorkspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        let classic = theme::current(cx).classic;
+        let theme = theme::current(cx);
+        let classic = theme.classic;
         let navigation = SidebarMenu::new()
             .child(
                 SidebarMenuItem::new("Capture")
@@ -1136,21 +1272,37 @@ impl CaptureWorkspace {
                         #[cfg(target_os = "windows")]
                         SidebarMenuItem::new("Repeat last region")
                             .icon(ui_icon(cx, "select-region", 16.))
-                            .disable(unavailable || self.preview_active || self.last_region.is_none())
+                            .disable(
+                                unavailable || self.preview_active || self.last_region.is_none(),
+                            )
                             .on_click(cx.listener(|this, _, _, cx| this.repeat_last_region(cx))),
                         #[cfg(target_os = "windows")]
-                        SidebarMenuItem::new(format!("Active window in {} s", self.capture_delay_seconds))
-                            .icon(ui_icon(cx, "capture-primary", 16.))
-                            .disable(unavailable)
-                            .on_click(cx.listener(|this, _, _, cx| this.start_delayed_capture(DelayedCapture::ActiveWindow, cx))),
+                        SidebarMenuItem::new(format!(
+                            "Active window in {} s",
+                            self.capture_delay_seconds
+                        ))
+                        .icon(ui_icon(cx, "capture-primary", 16.))
+                        .disable(unavailable)
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.start_delayed_capture(DelayedCapture::ActiveWindow, cx)
+                        })),
                         #[cfg(target_os = "windows")]
-                        SidebarMenuItem::new(format!("Active display in {} s", self.capture_delay_seconds))
-                            .icon(ui_icon(cx, "capture-primary", 16.))
-                            .disable(unavailable)
-                            .on_click(cx.listener(|this, _, _, cx| this.start_delayed_capture(DelayedCapture::ActiveDisplay, cx))),
+                        SidebarMenuItem::new(format!(
+                            "Active display in {} s",
+                            self.capture_delay_seconds
+                        ))
+                        .icon(ui_icon(cx, "capture-primary", 16.))
+                        .disable(unavailable)
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.start_delayed_capture(DelayedCapture::ActiveDisplay, cx)
+                        })),
                         SidebarMenuItem::new("All displays")
                             .icon(ui_icon(cx, "capture-all", 16.))
-                            .disable(unavailable || (self.output_profile.requires_single_image() && self.xcap_displays.len() > 1))
+                            .disable(
+                                unavailable
+                                    || (self.output_profile.requires_single_image()
+                                        && self.xcap_displays.len() > 1),
+                            )
                             .on_click(cx.listener(|this, _, _, cx| this.capture_all(cx))),
                     ]),
             )
@@ -1217,15 +1369,18 @@ impl CaptureWorkspace {
             .h_full()
             .w(gpui::rems(13.))
             .when(classic, |sidebar| sidebar.w(gpui::rems(12.5)))
+            .when(theme.workbench, |sidebar| sidebar.w(px(240.)))
             .header(
                 div()
                     .flex()
                     .flex_col()
                     .gap_3()
+                    .when(theme.workbench, |header| header.gap_2())
                     .when(!classic, |header| {
                         header.child(
                             div()
                                 .font_weight(gpui::FontWeight::SEMIBOLD)
+                                .when(theme.workbench, |title| title.text_sm())
                                 .child("screenshots"),
                         )
                     })
@@ -1247,6 +1402,124 @@ impl CaptureWorkspace {
             )
             .child(navigation)
             .footer(footer)
+    }
+
+    fn render_window_titlebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let colors = cx.theme().colors;
+        let workbench = crate::theme::current(cx).workbench;
+        TitleBar::new().child(
+            div()
+                .flex()
+                .items_center()
+                .gap_2()
+                .flex_1()
+                .min_w_0()
+                .h_full()
+                .child(
+                    div()
+                        .text_sm()
+                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                        .child("screenshots"),
+                )
+                .when(workbench, |bar| {
+                    bar.child(
+                        div()
+                            .id("workspace-heading")
+                            .role(gpui::Role::Heading)
+                            .test_support()
+                            .flex_1()
+                            .min_w_0()
+                            .text_sm()
+                            .text_color(colors.muted_foreground)
+                            .text_ellipsis()
+                            .aria_label(page_title(self.page))
+                            .child(page_title(self.page)),
+                    )
+                    .child(quiet_button(
+                        cx,
+                        "appearance-shortcut",
+                        theme::name(theme::selected(cx)),
+                        false,
+                        false,
+                        cx.listener(|this, _, _, cx| this.show_page(ControlPage::Settings, cx)),
+                    ))
+                }),
+        )
+    }
+
+    fn render_workbench_tabs(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let colors = cx.theme().colors;
+        let page = self.page;
+        div()
+            .id("workbench-tab-bar")
+            .test_support()
+            .flex_none()
+            .h(px(32.))
+            .w_full()
+            .px_1()
+            .bg(colors.tab_bar)
+            .border_b_1()
+            .border_color(colors.border)
+            .flex()
+            .items_end()
+            .gap_1()
+            .children(
+                [
+                    (ControlPage::Captures, "Recent capture"),
+                    (ControlPage::History, "Library"),
+                    (ControlPage::Sources, "Displays & windows"),
+                    (ControlPage::Uploads, "Uploads"),
+                    (ControlPage::Settings, "Settings"),
+                ]
+                .into_iter()
+                .enumerate()
+                .map(move |(index, (target, label))| {
+                    let active = page == target;
+                    Button::new(("workbench-tab", index))
+                        .ghost()
+                        .small()
+                        .label(label)
+                        .selected(active)
+                        .when(active, |tab| {
+                            tab.bg(colors.tab_active)
+                                .text_color(colors.tab_active_foreground)
+                        })
+                        .when(!active, |tab| tab.text_color(colors.tab_foreground))
+                        .on_click(cx.listener(move |this, _, _, cx| this.show_page(target, cx)))
+                }),
+            )
+    }
+
+    fn render_workbench_status(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let colors = cx.theme().colors;
+        let folder = self
+            .output_directory
+            .as_ref()
+            .map(|path| path.display().to_string())
+            .unwrap_or_else(|| "Loading save folder…".into());
+        div()
+            .id("workbench-status-bar")
+            .test_support()
+            .flex_none()
+            .h(px(24.))
+            .w_full()
+            .px_3()
+            .bg(colors.status_bar)
+            .border_t_1()
+            .border_color(colors.status_bar_border)
+            .flex()
+            .items_center()
+            .gap_3()
+            .text_xs()
+            .text_color(colors.muted_foreground)
+            .child(
+                div()
+                    .min_w_0()
+                    .text_ellipsis()
+                    .child(self.capture_status.clone()),
+            )
+            .child(div().flex_1())
+            .child(div().min_w_0().text_ellipsis().child(folder))
     }
 
     fn history_menu_button(
@@ -1320,6 +1593,16 @@ fn key_hint(key: &str, cx: &App) -> gpui::component::kbd::Kbd {
         gpui::Keystroke::parse_with_os(&key, cx.platform_info().os)
             .expect("fixed application shortcut"),
     )
+}
+
+fn page_title(page: ControlPage) -> &'static str {
+    match page {
+        ControlPage::Captures => "Recent capture",
+        ControlPage::History => "Library",
+        ControlPage::Sources => "Displays & windows",
+        ControlPage::Uploads => "Uploads",
+        ControlPage::Settings => "Settings",
+    }
 }
 
 fn classic_capture_home(cx: &App) -> impl IntoElement {

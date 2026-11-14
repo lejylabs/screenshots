@@ -207,7 +207,9 @@ pub enum UploadMethod {
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 enum UploadResponse {
     Text,
-    Header { name: String },
+    Header {
+        name: String,
+    },
     RequestUrl,
     Regex {
         pattern: String,
@@ -228,13 +230,37 @@ enum XmlPathStep {
 
 impl UploadDestination {
     /// Build a credential-free manual destination without performing IO or networking.
-    pub fn manual(url: String, method: UploadMethod, field: String, json_pointer: Option<String>, allow_http: bool) -> Result<Self> {
+    pub fn manual(
+        url: String,
+        method: UploadMethod,
+        field: String,
+        json_pointer: Option<String>,
+        allow_http: bool,
+    ) -> Result<Self> {
         let response = json_pointer.is_none().then_some(UploadResponse::Text);
-        let field = if method == UploadMethod::Post { field.trim().into() } else { default_field() };
-        let destination = Self { url: url.trim().into(), method, field,
-            json_pointer: json_pointer.unwrap_or_default().trim().into(), response, allow_http,
-            credential: None, authentication: None, headers: BTreeMap::new(), query: BTreeMap::new(), form: BTreeMap::new(), json: BTreeMap::new(),
-            link_prefix: String::new(), link_suffix: String::new(), thumbnail: None, deletion: None };
+        let field = if method == UploadMethod::Post {
+            field.trim().into()
+        } else {
+            default_field()
+        };
+        let destination = Self {
+            url: url.trim().into(),
+            method,
+            field,
+            json_pointer: json_pointer.unwrap_or_default().trim().into(),
+            response,
+            allow_http,
+            credential: None,
+            authentication: None,
+            headers: BTreeMap::new(),
+            query: BTreeMap::new(),
+            form: BTreeMap::new(),
+            json: BTreeMap::new(),
+            link_prefix: String::new(),
+            link_suffix: String::new(),
+            thumbnail: None,
+            deletion: None,
+        };
         destination.validate()?;
         Ok(destination)
     }
@@ -248,7 +274,12 @@ impl UploadDestination {
     {
         self.headers = headers
             .into_iter()
-            .map(|(name, value)| (name.as_ref().trim().to_owned(), value.as_ref().trim().to_owned()))
+            .map(|(name, value)| {
+                (
+                    name.as_ref().trim().to_owned(),
+                    value.as_ref().trim().to_owned(),
+                )
+            })
             .collect();
         self.validate()?;
         Ok(self)
@@ -267,7 +298,12 @@ impl UploadDestination {
     {
         self.query = query
             .into_iter()
-            .map(|(name, value)| (name.as_ref().trim().to_owned(), value.as_ref().trim().to_owned()))
+            .map(|(name, value)| {
+                (
+                    name.as_ref().trim().to_owned(),
+                    value.as_ref().trim().to_owned(),
+                )
+            })
             .collect();
         self.validate()?;
         Ok(self)
@@ -286,7 +322,12 @@ impl UploadDestination {
     {
         self.form = form
             .into_iter()
-            .map(|(name, value)| (name.as_ref().trim().to_owned(), value.as_ref().trim().to_owned()))
+            .map(|(name, value)| {
+                (
+                    name.as_ref().trim().to_owned(),
+                    value.as_ref().trim().to_owned(),
+                )
+            })
             .collect();
         self.validate()?;
         Ok(self)
@@ -305,7 +346,12 @@ impl UploadDestination {
     {
         self.json = json
             .into_iter()
-            .map(|(name, value)| (name.as_ref().trim().to_owned(), value.as_ref().trim().to_owned()))
+            .map(|(name, value)| {
+                (
+                    name.as_ref().trim().to_owned(),
+                    value.as_ref().trim().to_owned(),
+                )
+            })
             .collect();
         self.validate()?;
         Ok(self)
@@ -316,7 +362,11 @@ impl UploadDestination {
     }
 
     /// Attach a bounded result-link prefix/suffix without networking or secrets.
-    pub fn with_link_affixes(mut self, prefix: impl AsRef<str>, suffix: impl AsRef<str>) -> Result<Self> {
+    pub fn with_link_affixes(
+        mut self,
+        prefix: impl AsRef<str>,
+        suffix: impl AsRef<str>,
+    ) -> Result<Self> {
         self.link_prefix = prefix.as_ref().trim().to_owned();
         self.link_suffix = suffix.as_ref().trim().to_owned();
         self.validate()?;
@@ -401,11 +451,15 @@ impl UploadDestination {
     }
 
     pub fn thumbnail_template(&self) -> Option<String> {
-        self.thumbnail.as_ref().and_then(|parser| parser.to_sharex().ok())
+        self.thumbnail
+            .as_ref()
+            .and_then(|parser| parser.to_sharex().ok())
     }
 
     pub fn deletion_template(&self) -> Option<String> {
-        self.deletion.as_ref().and_then(|parser| parser.to_sharex().ok())
+        self.deletion
+            .as_ref()
+            .and_then(|parser| parser.to_sharex().ok())
     }
 
     /// Attach a credential reference without reading or writing secrets.
@@ -680,13 +734,23 @@ impl UploadDestination {
     }
 
     fn extra_needs_json(&self) -> bool {
-        self.thumbnail.as_ref().is_some_and(UploadResultParser::needs_json)
-            || self.deletion.as_ref().is_some_and(UploadResultParser::needs_json)
+        self.thumbnail
+            .as_ref()
+            .is_some_and(UploadResultParser::needs_json)
+            || self
+                .deletion
+                .as_ref()
+                .is_some_and(UploadResultParser::needs_json)
     }
 
     fn extra_needs_text(&self) -> bool {
-        self.thumbnail.as_ref().is_some_and(UploadResultParser::needs_text)
-            || self.deletion.as_ref().is_some_and(UploadResultParser::needs_text)
+        self.thumbnail
+            .as_ref()
+            .is_some_and(UploadResultParser::needs_text)
+            || self
+                .deletion
+                .as_ref()
+                .is_some_and(UploadResultParser::needs_text)
     }
 
     pub fn origin(&self) -> String {
@@ -705,10 +769,7 @@ impl UploadDestination {
         std::fs::File::open(path)?
             .take(16385)
             .read_to_end(&mut bytes)?;
-        ensure!(
-            bytes.len() <= 16384,
-            "ShareX profile exceeds 16 KiB"
-        );
+        ensure!(bytes.len() <= 16384, "ShareX profile exceeds 16 KiB");
         let profile: ShareXCustomUploader =
             serde_json::from_slice(&bytes).context("Invalid ShareX profile")?;
         profile.into_destination()
@@ -760,23 +821,43 @@ struct ShareXCustomUploader {
     name: Option<String>,
     #[serde(rename = "DestinationType")]
     destination_type: String,
-    #[serde(rename = "RequestMethod", default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "RequestMethod",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
     request_method: Option<String>,
     #[serde(rename = "RequestURL")]
     request_url: String,
     #[serde(rename = "Body", default, skip_serializing_if = "Option::is_none")]
     body: Option<String>,
-    #[serde(rename = "FileFormName", default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "FileFormName",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
     file_form_name: Option<String>,
     #[serde(rename = "URL", default, skip_serializing_if = "Option::is_none")]
     url: Option<String>,
-    #[serde(rename = "ThumbnailURL", default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "ThumbnailURL",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
     thumbnail_url: Option<String>,
-    #[serde(rename = "DeletionURL", default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "DeletionURL",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
     deletion_url: Option<String>,
     #[serde(rename = "Headers", default, skip_serializing_if = "Option::is_none")]
     headers: Option<serde_json::Value>,
-    #[serde(rename = "Parameters", default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "Parameters",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
     parameters: Option<serde_json::Value>,
     #[serde(rename = "Arguments", default, skip_serializing_if = "Option::is_none")]
     arguments: Option<serde_json::Value>,
@@ -851,7 +932,12 @@ impl ShareXCustomUploader {
         };
         let (json_pointer, response, link_prefix, link_suffix) =
             sharex_response(self.url.as_deref().unwrap_or(""), method)?;
-        let thumbnail = match self.thumbnail_url.as_deref().map(str::trim).filter(|value| !value.is_empty()) {
+        let thumbnail = match self
+            .thumbnail_url
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
             Some(template) => Some(UploadResultParser::from_sharex(
                 template,
                 method,
@@ -860,12 +946,14 @@ impl ShareXCustomUploader {
             )?),
             None => None,
         };
-        let deletion = match self.deletion_url.as_deref().map(str::trim).filter(|value| !value.is_empty()) {
+        let deletion = match self
+            .deletion_url
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
             Some(template) => Some(UploadResultParser::from_sharex(
-                template,
-                method,
-                false,
-                "deletion",
+                template, method, false, "deletion",
             )?),
             None => None,
         };
@@ -888,7 +976,12 @@ impl ShareXCustomUploader {
             deletion,
         };
         destination.validate()?;
-        let name = match self.name.as_deref().map(str::trim).filter(|name| !name.is_empty()) {
+        let name = match self
+            .name
+            .as_deref()
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+        {
             Some(name) => {
                 ensure!(
                     name.len() <= 64 && !name.chars().any(char::is_control),
@@ -982,7 +1075,10 @@ fn sharex_reject_object(value: &Option<serde_json::Value>, label: &str) -> Resul
     }
 }
 
-fn sharex_string_map(value: &Option<serde_json::Value>, label: &str) -> Result<BTreeMap<String, String>> {
+fn sharex_string_map(
+    value: &Option<serde_json::Value>,
+    label: &str,
+) -> Result<BTreeMap<String, String>> {
     match value {
         None | Some(serde_json::Value::Null) => Ok(BTreeMap::new()),
         Some(serde_json::Value::Object(map)) => {
@@ -1000,9 +1096,7 @@ fn sharex_string_map(value: &Option<serde_json::Value>, label: &str) -> Result<B
 }
 
 fn contains_upload_template(value: &str) -> bool {
-    value
-        .bytes()
-        .any(|byte| matches!(byte, b'{' | b'}' | b'$'))
+    value.bytes().any(|byte| matches!(byte, b'{' | b'}' | b'$'))
 }
 
 fn validate_custom_query(query: &BTreeMap<String, String>) -> Result<()> {
@@ -1054,10 +1148,7 @@ fn validate_custom_form(
         form.is_empty() || matches!(method, UploadMethod::Post),
         "Extra form fields require POST multipart"
     );
-    ensure!(
-        form.len() <= MAX_FORM_FIELDS,
-        "At most 8 extra form fields"
-    );
+    ensure!(form.len() <= MAX_FORM_FIELDS, "At most 8 extra form fields");
     let mut seen = Vec::with_capacity(form.len());
     for (name, value) in form {
         ensure!(
@@ -1113,10 +1204,7 @@ fn validate_custom_json(
         form.is_empty(),
         "JSON bodies cannot be combined with extra form fields"
     );
-    ensure!(
-        json.len() <= MAX_JSON_FIELDS,
-        "At most 8 JSON body fields"
-    );
+    ensure!(json.len() <= MAX_JSON_FIELDS, "At most 8 JSON body fields");
     let mut seen = Vec::with_capacity(json.len());
     let mut base64_fields = 0usize;
     for (name, value) in json {
@@ -1299,10 +1387,7 @@ fn parse_sharex_url_token(
         .and_then(|value| value.strip_suffix('}'))
     {
         let parts = split_sharex_escaped(inner, '|')?;
-        ensure!(
-            parts.len() == 1,
-            "ShareX xml input syntax is not supported"
-        );
+        ensure!(parts.len() == 1, "ShareX xml input syntax is not supported");
         let path = parts[0].trim();
         validate_xml_response(path, "result")?;
         return Ok((
@@ -1377,9 +1462,7 @@ fn sharex_json_pointer(path: &str) -> Result<String> {
     let mut rest = path;
     while !rest.is_empty() {
         if let Some(stripped) = rest.strip_prefix('[') {
-            let end = stripped
-                .find(']')
-                .context("Unsupported ShareX JSON path")?;
+            let end = stripped.find(']').context("Unsupported ShareX JSON path")?;
             let index = &stripped[..end];
             ensure!(
                 !index.is_empty()
@@ -1752,7 +1835,13 @@ pub fn upload_png(
     path: &Path,
     cancel: UploadCancellation,
 ) -> Result<String> {
-    Ok(run_upload(destination, UploadPng::Path(path.to_path_buf()), cancel, None)?.url)
+    Ok(run_upload(
+        destination,
+        UploadPng::Path(path.to_path_buf()),
+        cancel,
+        None,
+    )?
+    .url)
 }
 
 pub fn upload_png_with_progress(
@@ -1761,7 +1850,12 @@ pub fn upload_png_with_progress(
     cancel: UploadCancellation,
     progress: UploadProgressReporter,
 ) -> Result<UploadOutcome> {
-    run_upload(destination, UploadPng::Path(path.to_path_buf()), cancel, Some(progress))
+    run_upload(
+        destination,
+        UploadPng::Path(path.to_path_buf()),
+        cancel,
+        Some(progress),
+    )
 }
 
 /// Upload an already-encoded PNG buffer. Does not write a library file.
@@ -1781,10 +1875,8 @@ pub fn probe_upload(
     cancel: UploadCancellation,
     progress: Option<UploadProgressReporter>,
 ) -> Result<UploadOutcome> {
-    let root = std::env::temp_dir().join(format!(
-        "screenshots-upload-probe-{}",
-        uuid::Uuid::new_v4()
-    ));
+    let root =
+        std::env::temp_dir().join(format!("screenshots-upload-probe-{}", uuid::Uuid::new_v4()));
     struct Cleanup(std::path::PathBuf);
     impl Drop for Cleanup {
         fn drop(&mut self) {
@@ -1864,11 +1956,13 @@ async fn transfer(
         }
         UploadPng::Bytes(png) => {
             ensure!(
-                png.len() >= 8
-                    && (png.len() as u64) <= crate::MAX_CAPTURE_BYTES + 16 * 1024 * 1024,
+                png.len() >= 8 && (png.len() as u64) <= crate::MAX_CAPTURE_BYTES + 16 * 1024 * 1024,
                 "PNG file exceeds the upload size limit or is not a regular file"
             );
-            ensure!(png.starts_with(&PNG_SIGNATURE), "Upload source is not a PNG");
+            ensure!(
+                png.starts_with(&PNG_SIGNATURE),
+                "Upload source is not a PNG"
+            );
             (png.len() as u64, Some(png), None)
         }
     };
@@ -1911,10 +2005,9 @@ async fn transfer(
         drop(png);
         let total = json_bytes.len() as u64;
         if let Some(progress) = &progress {
-            progress.0.send_replace(UploadProgress {
-                prepared: 0,
-                total,
-            });
+            progress
+                .0
+                .send_replace(UploadProgress { prepared: 0, total });
         }
         let reader = ProgressReader {
             reader: std::io::Cursor::new(json_bytes),
@@ -2032,8 +2125,8 @@ async fn transfer(
         });
     }
     let need_json = destination.response.is_none() || destination.extra_needs_json();
-    let need_text = response_needs_text(destination.response.as_ref())
-        || destination.extra_needs_text();
+    let need_text =
+        response_needs_text(destination.response.as_ref()) || destination.extra_needs_text();
     let mut json: Option<serde_json::Value> = None;
     let mut text: Option<String> = None;
     if need_json || need_text {
@@ -2126,12 +2219,8 @@ impl UploadResultParser {
         label: &str,
     ) -> Result<Self> {
         let template = template.trim();
-        ensure!(
-            !template.is_empty(),
-            "Use a {label} ShareX URL template"
-        );
-        let (json_pointer, response, link_prefix, link_suffix) =
-            sharex_response(template, method)?;
+        ensure!(!template.is_empty(), "Use a {label} ShareX URL template");
+        let (json_pointer, response, link_prefix, link_suffix) = sharex_response(template, method)?;
         let parser = Self {
             json_pointer,
             response,
@@ -2226,9 +2315,7 @@ impl UploadResultParser {
                 &self.link_prefix,
                 &self.link_suffix,
                 text.with_context(|| {
-                    format!(
-                        "Upload completed, but the configured {label} text response is missing"
-                    )
+                    format!("Upload completed, but the configured {label} text response is missing")
                 })?,
             );
         }
@@ -2270,7 +2357,9 @@ impl UploadResultParser {
             .pointer(&self.json_pointer)
             .and_then(json_pointer_text)
             .with_context(|| {
-                format!("Upload completed, but the configured {label} JSON pointer contains no link")
+                format!(
+                    "Upload completed, but the configured {label} JSON pointer contains no link"
+                )
             })?;
         compose_result_link(&self.link_prefix, &self.link_suffix, &value)
     }
@@ -2359,7 +2448,9 @@ fn regex_capture(text: &str, pattern: &str, group: Option<&str>, label: &str) ->
             }
         }
     }
-    .with_context(|| format!("Upload completed, but the configured {label} regex group is empty"))?;
+    .with_context(|| {
+        format!("Upload completed, but the configured {label} regex group is empty")
+    })?;
     ensure!(
         !value.is_empty(),
         "Upload completed, but the configured {label} regex group is empty"
@@ -2372,7 +2463,8 @@ fn is_xml_name(name: &str) -> bool {
     matches!(
         bytes.next(),
         Some(byte) if byte.is_ascii_alphabetic() || byte == b'_'
-    ) && bytes.all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-' || byte == b'.')
+    ) && bytes
+        .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-' || byte == b'.')
         && name.len() <= 64
 }
 
@@ -2412,7 +2504,9 @@ fn parse_xml_path(path: &str, label: &str) -> Result<Vec<XmlPathStep>> {
             && path.trim() == path
             && path.starts_with('/')
             && !path.contains("//")
-            && !path.chars().any(|character| character.is_whitespace() || character.is_control()),
+            && !path
+                .chars()
+                .any(|character| character.is_whitespace() || character.is_control()),
         "Use a {label} XML path of 1–256 bytes starting with /"
     );
     let mut steps = Vec::new();
@@ -2486,9 +2580,7 @@ fn xml_capture(text: &str, path: &str, label: &str) -> Result<String> {
             ..roxmltree::ParsingOptions::default()
         },
     )
-    .with_context(|| {
-        format!("Upload completed, but the configured {label} XML is invalid")
-    })?;
+    .with_context(|| format!("Upload completed, but the configured {label} XML is invalid"))?;
     let mut current = document.root();
     let last = steps.len() - 1;
     for (index, step) in steps.iter().enumerate() {
@@ -2510,7 +2602,9 @@ fn xml_capture(text: &str, path: &str, label: &str) -> Result<String> {
                     "Use @attribute only as the last {label} XML step"
                 );
                 let value = current.attribute(name.as_str()).with_context(|| {
-                    format!("Upload completed, but the configured {label} XML path contains no link")
+                    format!(
+                        "Upload completed, but the configured {label} XML path contains no link"
+                    )
                 })?;
                 let value = value.trim();
                 ensure!(
@@ -2623,7 +2717,8 @@ fn validate_parser_affixes(
     if prefix.is_empty() {
         return Ok(());
     }
-    let parsed = reqwest::Url::parse(prefix).context("Result link prefix is not an absolute URL")?;
+    let parsed =
+        reqwest::Url::parse(prefix).context("Result link prefix is not an absolute URL")?;
     ensure!(
         parsed.host_str().is_some()
             && parsed.username().is_empty()
@@ -2651,8 +2746,7 @@ fn compose_result_link(prefix: &str, suffix: &str, value: &str) -> Result<String
         let base_url = reqwest::Url::parse(&base)?;
         let composed_url = reqwest::Url::parse(&link)?;
         ensure!(
-            base_url.origin().ascii_serialization()
-                == composed_url.origin().ascii_serialization(),
+            base_url.origin().ascii_serialization() == composed_url.origin().ascii_serialization(),
             "Composed result link must keep the extracted URL origin"
         );
         return Ok(link);
@@ -2660,7 +2754,9 @@ fn compose_result_link(prefix: &str, suffix: &str, value: &str) -> Result<String
     ensure!(
         !value.is_empty()
             && value.len() <= MAX_LINK_FRAGMENT
-            && !value.chars().any(|character| character.is_whitespace() || character.is_control())
+            && !value
+                .chars()
+                .any(|character| character.is_whitespace() || character.is_control())
             && !contains_upload_template(value)
             && !value.contains("://")
             && !value.contains('\\')
@@ -2674,8 +2770,7 @@ fn compose_result_link(prefix: &str, suffix: &str, value: &str) -> Result<String
         reqwest::Url::parse(prefix).context("Result link prefix is not an absolute URL")?;
     let composed_url = reqwest::Url::parse(&link)?;
     ensure!(
-        prefix_url.origin().ascii_serialization()
-            == composed_url.origin().ascii_serialization(),
+        prefix_url.origin().ascii_serialization() == composed_url.origin().ascii_serialization(),
         "Composed result link must keep the configured prefix origin"
     );
     Ok(link)
@@ -2691,10 +2786,22 @@ fn sharex_url_template(
         (Some(UploadResponse::Text), "") => "{response}".into(),
         (Some(UploadResponse::Header { name }), "") => format!("{{header:{name}}}"),
         (Some(UploadResponse::RequestUrl), "") => "{responseurl}".into(),
-        (Some(UploadResponse::Regex { pattern, group: None }), "") => {
+        (
+            Some(UploadResponse::Regex {
+                pattern,
+                group: None,
+            }),
+            "",
+        ) => {
             format!("{{regex:{}}}", sharex_escape(pattern))
         }
-        (Some(UploadResponse::Regex { pattern, group: Some(group) }), "") => {
+        (
+            Some(UploadResponse::Regex {
+                pattern,
+                group: Some(group),
+            }),
+            "",
+        ) => {
             format!("{{regex:{}|{}}}", sharex_escape(pattern), group)
         }
         (Some(UploadResponse::Xml { path }), "") => {
@@ -2745,15 +2852,31 @@ mod tests {
     fn manual_destinations_validate_and_reuse_saved_profile_policy() -> Result<()> {
         for method in [UploadMethod::Post, UploadMethod::Put] {
             for pointer in [None, Some("/result/url".to_string()), Some(String::new())] {
-                let config = UploadDestination::manual(" https://example.invalid/upload ".into(), method,
-                    " file ".into(), pointer.clone(), false)?;
+                let config = UploadDestination::manual(
+                    " https://example.invalid/upload ".into(),
+                    method,
+                    " file ".into(),
+                    pointer.clone(),
+                    false,
+                )?;
                 assert_eq!(config.url, "https://example.invalid/upload");
                 assert_eq!(config.field, "file");
                 assert!(config.credential_target().is_none() && config.authentication.is_none());
-                assert_eq!(config.request_method(), if method == UploadMethod::Post { "POST" } else { "PUT" });
+                assert_eq!(
+                    config.request_method(),
+                    if method == UploadMethod::Post {
+                        "POST"
+                    } else {
+                        "PUT"
+                    }
+                );
                 assert_eq!(config.json_pointer, pointer.clone().unwrap_or_default());
-                assert_eq!(matches!(config.response, Some(UploadResponse::Text)), pointer.is_none());
-                let root = std::env::temp_dir().join(format!("manual-destination-{}", uuid::Uuid::new_v4()));
+                assert_eq!(
+                    matches!(config.response, Some(UploadResponse::Text)),
+                    pointer.is_none()
+                );
+                let root = std::env::temp_dir()
+                    .join(format!("manual-destination-{}", uuid::Uuid::new_v4()));
                 std::fs::create_dir_all(&root)?;
                 let path = root.join("destination.json");
                 config.save_at(&path)?;
@@ -2761,15 +2884,59 @@ mod tests {
                 assert_eq!(loaded.request_method(), config.request_method());
                 assert_eq!(loaded.json_pointer, config.json_pointer);
                 assert!(loaded.credential_target().is_none());
-                std::fs::remove_file(path)?; std::fs::remove_dir(root)?;
+                std::fs::remove_file(path)?;
+                std::fs::remove_dir(root)?;
             }
         }
-        for url in ["", "file:///tmp/image", "http://localhost/upload", "https://user:pass@example.invalid/", "https://example.invalid/?token=x", "https://example.invalid/#fragment"] {
-            assert!(UploadDestination::manual(url.into(), UploadMethod::Post, "file".into(), None, false).is_err());
+        for url in [
+            "",
+            "file:///tmp/image",
+            "http://localhost/upload",
+            "https://user:pass@example.invalid/",
+            "https://example.invalid/?token=x",
+            "https://example.invalid/#fragment",
+        ] {
+            assert!(
+                UploadDestination::manual(
+                    url.into(),
+                    UploadMethod::Post,
+                    "file".into(),
+                    None,
+                    false
+                )
+                .is_err()
+            );
         }
-        assert!(UploadDestination::manual("http://localhost/upload".into(), UploadMethod::Put, "file".into(), None, true).is_ok());
-        assert!(UploadDestination::manual("https://example.invalid/".into(), UploadMethod::Post, "bad field".into(), None, false).is_err());
-        assert!(UploadDestination::manual("https://example.invalid/".into(), UploadMethod::Post, "file".into(), Some("/bad~2".into()), false).is_err());
+        assert!(
+            UploadDestination::manual(
+                "http://localhost/upload".into(),
+                UploadMethod::Put,
+                "file".into(),
+                None,
+                true
+            )
+            .is_ok()
+        );
+        assert!(
+            UploadDestination::manual(
+                "https://example.invalid/".into(),
+                UploadMethod::Post,
+                "bad field".into(),
+                None,
+                false
+            )
+            .is_err()
+        );
+        assert!(
+            UploadDestination::manual(
+                "https://example.invalid/".into(),
+                UploadMethod::Post,
+                "file".into(),
+                Some("/bad~2".into()),
+                false
+            )
+            .is_err()
+        );
         Ok(())
     }
 
@@ -2783,12 +2950,13 @@ mod tests {
             false,
         )?;
         assert!(destination.request_headers().is_empty());
-        let destination = destination.with_headers([
-            (" X-Client ", " screenshots "),
-            ("X-Request-Id", "abc-123"),
-        ])?;
+        let destination = destination
+            .with_headers([(" X-Client ", " screenshots "), ("X-Request-Id", "abc-123")])?;
         assert_eq!(
-            destination.request_headers().get("X-Client").map(String::as_str),
+            destination
+                .request_headers()
+                .get("X-Client")
+                .map(String::as_str),
             Some("screenshots")
         );
         assert_eq!(
@@ -2798,10 +2966,8 @@ mod tests {
                 .map(String::as_str),
             Some("abc-123")
         );
-        let root = std::env::temp_dir().join(format!(
-            "screenshots-headers-{}",
-            uuid::Uuid::new_v4()
-        ));
+        let root =
+            std::env::temp_dir().join(format!("screenshots-headers-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&root)?;
         let path = root.join("destination.json");
         let other = root.join("settings.json");
@@ -2840,10 +3006,7 @@ mod tests {
             ("X-Foo", ""),
         ] {
             assert!(
-                destination
-                    .clone()
-                    .with_headers([(name, value)])
-                    .is_err(),
+                destination.clone().with_headers([(name, value)]).is_err(),
                 "{name}={value}"
             );
         }
@@ -2889,12 +3052,13 @@ mod tests {
             false,
         )?;
         assert!(destination.request_query().is_empty());
-        let destination = destination.with_query([
-            (" format ", " json "),
-            ("client_id", "public-app"),
-        ])?;
+        let destination =
+            destination.with_query([(" format ", " json "), ("client_id", "public-app")])?;
         assert_eq!(
-            destination.request_query().get("format").map(String::as_str),
+            destination
+                .request_query()
+                .get("format")
+                .map(String::as_str),
             Some("json")
         );
         assert_eq!(
@@ -2907,10 +3071,7 @@ mod tests {
         let composed = destination.validate()?;
         assert_eq!(composed.query(), Some("client_id=public-app&format=json"));
         assert_eq!(destination.origin(), "https://example.invalid");
-        let root = std::env::temp_dir().join(format!(
-            "screenshots-query-{}",
-            uuid::Uuid::new_v4()
-        ));
+        let root = std::env::temp_dir().join(format!("screenshots-query-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&root)?;
         let path = root.join("destination.json");
         let other = root.join("settings.json");
@@ -2984,9 +3145,15 @@ mod tests {
         assert!(UploadDestination::load(&path).is_err());
         let long = format!("https://example.invalid/{}", "a".repeat(2020));
         assert!(
-            UploadDestination::manual(long, UploadMethod::Post, "file".into(), Some("/url".into()), false)?
-                .with_query([("format", "json")])
-                .is_err()
+            UploadDestination::manual(
+                long,
+                UploadMethod::Post,
+                "file".into(),
+                Some("/url".into()),
+                false
+            )?
+            .with_query([("format", "json")])
+            .is_err()
         );
         assert_eq!(std::fs::read(&other)?, b"keep-settings");
         std::fs::remove_dir_all(root)?;
@@ -3003,10 +3170,7 @@ mod tests {
             false,
         )?;
         assert!(destination.request_form().is_empty());
-        let destination = destination.with_form([
-            (" title ", " screenshot "),
-            ("type", "file"),
-        ])?;
+        let destination = destination.with_form([(" title ", " screenshot "), ("type", "file")])?;
         assert_eq!(
             destination.request_form().get("title").map(String::as_str),
             Some("screenshot")
@@ -3015,10 +3179,7 @@ mod tests {
             destination.request_form().get("type").map(String::as_str),
             Some("file")
         );
-        let root = std::env::temp_dir().join(format!(
-            "screenshots-form-{}",
-            uuid::Uuid::new_v4()
-        ));
+        let root = std::env::temp_dir().join(format!("screenshots-form-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&root)?;
         let path = root.join("destination.json");
         let other = root.join("settings.json");
@@ -3110,10 +3271,7 @@ mod tests {
             false,
         )?;
         assert!(destination.request_json().is_empty());
-        let destination = destination.with_json([
-            (" image ", " {base64} "),
-            ("type", "file"),
-        ])?;
+        let destination = destination.with_json([(" image ", " {base64} "), ("type", "file")])?;
         assert_eq!(
             destination.request_json().get("image").map(String::as_str),
             Some("{base64}")
@@ -3122,10 +3280,8 @@ mod tests {
             destination.request_json().get("type").map(String::as_str),
             Some("file")
         );
-        let root = std::env::temp_dir().join(format!(
-            "screenshots-json-body-{}",
-            uuid::Uuid::new_v4()
-        ));
+        let root =
+            std::env::temp_dir().join(format!("screenshots-json-body-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&root)?;
         let path = root.join("destination.json");
         let other = root.join("settings.json");
@@ -3254,11 +3410,12 @@ mod tests {
         )?;
         assert!(destination.link_prefix().is_empty());
         assert!(destination.link_suffix().is_empty());
-        let destination = destination.with_link_affixes(
-            " https://cdn.example.invalid/images/ ",
-            " .png ",
-        )?;
-        assert_eq!(destination.link_prefix(), "https://cdn.example.invalid/images/");
+        let destination =
+            destination.with_link_affixes(" https://cdn.example.invalid/images/ ", " .png ")?;
+        assert_eq!(
+            destination.link_prefix(),
+            "https://cdn.example.invalid/images/"
+        );
         assert_eq!(destination.link_suffix(), ".png");
         assert_eq!(
             destination.result_link("abc")?,
@@ -3340,7 +3497,11 @@ mod tests {
         )?;
         put.response = Some(UploadResponse::RequestUrl);
         put.json_pointer.clear();
-        assert!(put.clone().with_link_affixes("https://cdn.example.invalid/", "").is_err());
+        assert!(
+            put.clone()
+                .with_link_affixes("https://cdn.example.invalid/", "")
+                .is_err()
+        );
         assert_eq!(std::fs::read(&other)?, b"keep-settings");
         std::fs::remove_dir_all(root)?;
         Ok(())
@@ -3365,24 +3526,20 @@ mod tests {
             destination.deletion_template().as_deref(),
             Some("{json:delete}")
         );
-        let composed = destination.clone().with_thumbnail(
-            "https://cdn.example.invalid/{json:thumb}.png",
-        )?;
+        let composed = destination
+            .clone()
+            .with_thumbnail("https://cdn.example.invalid/{json:thumb}.png")?;
         assert_eq!(
             composed.thumbnail_template().as_deref(),
             Some("https://cdn.example.invalid/{json:thumb}.png")
         );
-        let headed = destination
-            .clone()
-            .with_deletion("{header:X-Delete}")?;
+        let headed = destination.clone().with_deletion("{header:X-Delete}")?;
         assert_eq!(
             headed.deletion_template().as_deref(),
             Some("{header:X-Delete}")
         );
-        let root = std::env::temp_dir().join(format!(
-            "screenshots-extra-links-{}",
-            uuid::Uuid::new_v4()
-        ));
+        let root =
+            std::env::temp_dir().join(format!("screenshots-extra-links-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&root)?;
         let path = root.join("destination.json");
         let other = root.join("settings.json");
@@ -3480,13 +3637,16 @@ mod tests {
         let composed = destination.clone().with_regex("id=([0-9]+)", Some("1"))?;
         let composed = composed.with_link_affixes("https://cdn.example.invalid/", ".png")?;
         assert_eq!(
-            composed.result_link(&regex_capture("id=123", "id=([0-9]+)", Some("1"), "result")?)?,
+            composed.result_link(&regex_capture(
+                "id=123",
+                "id=([0-9]+)",
+                Some("1"),
+                "result"
+            )?)?,
             "https://cdn.example.invalid/123.png"
         );
-        let root = std::env::temp_dir().join(format!(
-            "screenshots-regex-link-{}",
-            uuid::Uuid::new_v4()
-        ));
+        let root =
+            std::env::temp_dir().join(format!("screenshots-regex-link-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&root)?;
         let path = root.join("destination.json");
         let other = root.join("settings.json");
@@ -3508,10 +3668,25 @@ mod tests {
         assert_eq!(loaded.regex_group(), Some("1"));
         assert!(destination.clone().with_regex("", None).is_err());
         assert!(destination.clone().with_regex("(", None).is_err());
-        assert!(destination.clone().with_regex(r#"(?<=href=").+"#, None).is_err());
+        assert!(
+            destination
+                .clone()
+                .with_regex(r#"(?<=href=").+"#, None)
+                .is_err()
+        );
         assert!(destination.clone().with_regex("href", Some("9")).is_err());
-        assert!(destination.clone().with_regex("href", Some("missing")).is_err());
-        assert!(destination.clone().with_regex(&"a".repeat(257), None).is_err());
+        assert!(
+            destination
+                .clone()
+                .with_regex("href", Some("missing"))
+                .is_err()
+        );
+        assert!(
+            destination
+                .clone()
+                .with_regex(&"a".repeat(257), None)
+                .is_err()
+        );
         let extras = destination
             .clone()
             .with_thumbnail(r#"{regex:thumb="(.+)"|1}"#)?;
@@ -3567,10 +3742,8 @@ mod tests {
             composed.result_link(&xml_capture(body, "/files/file[1]/name", "result")?)?,
             "https://cdn.example.invalid/image.png"
         );
-        let root = std::env::temp_dir().join(format!(
-            "screenshots-xml-link-{}",
-            uuid::Uuid::new_v4()
-        ));
+        let root =
+            std::env::temp_dir().join(format!("screenshots-xml-link-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&root)?;
         let path = root.join("destination.json");
         let other = root.join("settings.json");
@@ -3593,7 +3766,12 @@ mod tests {
         assert!(destination.clone().with_xml("//files/file/url").is_err());
         assert!(destination.clone().with_xml("/files/*").is_err());
         assert!(destination.clone().with_xml("/files/file[0]/url").is_err());
-        assert!(destination.clone().with_xml("/files/file[257]/url").is_err());
+        assert!(
+            destination
+                .clone()
+                .with_xml("/files/file[257]/url")
+                .is_err()
+        );
         assert!(destination.clone().with_xml("/@href").is_err());
         assert!(destination.clone().with_xml("/text()").is_err());
         assert!(destination.clone().with_xml("/a/b/c/d/e/f/g/h/i").is_err());
@@ -3606,7 +3784,9 @@ mod tests {
         )
         .is_err());
         assert!(xml_capture(body, "/files/file[3]/url", "result").is_err());
-        let extras = destination.clone().with_thumbnail("{xml:/files/file[1]/name}")?;
+        let extras = destination
+            .clone()
+            .with_thumbnail("{xml:/files/file[1]/name}")?;
         assert_eq!(
             extras.thumbnail_template().as_deref(),
             Some("{xml:/files/file[1]/name}")
@@ -3676,7 +3856,14 @@ mod tests {
         (root, path)
     }
     fn destination(url: String) -> UploadDestination {
-        UploadDestination::manual(url, UploadMethod::Post, "file".into(), Some("/result/url".into()), true).unwrap()
+        UploadDestination::manual(
+            url,
+            UploadMethod::Post,
+            "file".into(),
+            Some("/result/url".into()),
+            true,
+        )
+        .unwrap()
     }
     fn read_request(stream: &mut TcpStream) -> Vec<u8> {
         // Accepted sockets can inherit the listener's nonblocking mode on Windows.
@@ -3828,13 +4015,16 @@ mod tests {
 
     #[test]
     fn named_destinations_round_trip_replace_remove_and_keep_other_files() -> Result<()> {
-        let root =
-            std::env::temp_dir().join(format!("screenshots-named-{}", uuid::Uuid::new_v4()));
+        let root = std::env::temp_dir().join(format!("screenshots-named-{}", uuid::Uuid::new_v4()));
         let path = root.join("upload-destinations.json");
         let remembered = root.join("upload-destination.json");
         std::fs::create_dir_all(&root)?;
         std::fs::write(&remembered, b"keep-current")?;
-        assert!(UploadDestinationCatalog::load_at(&path)?.entries().is_empty());
+        assert!(
+            UploadDestinationCatalog::load_at(&path)?
+                .entries()
+                .is_empty()
+        );
         let mut catalog = UploadDestinationCatalog::default();
         catalog.upsert(
             " Host ".into(),
@@ -3887,11 +4077,13 @@ mod tests {
             .unwrap_err();
         assert_eq!(std::fs::read(&path)?, bytes);
         for name in ["", "bad\nname", &"x".repeat(65)] {
-            assert!(NamedUploadDestination::new(
-                name.into(),
-                destination("https://example.invalid/upload".into())
-            )
-            .is_err());
+            assert!(
+                NamedUploadDestination::new(
+                    name.into(),
+                    destination("https://example.invalid/upload".into())
+                )
+                .is_err()
+            );
         }
         let mut catalog = UploadDestinationCatalog::default();
         for index in 0..16 {
@@ -3900,12 +4092,14 @@ mod tests {
                 destination("https://example.invalid/upload".into()),
             )?;
         }
-        assert!(catalog
-            .upsert(
-                "Overflow".into(),
-                destination("https://example.invalid/upload".into()),
-            )
-            .is_err());
+        assert!(
+            catalog
+                .upsert(
+                    "Overflow".into(),
+                    destination("https://example.invalid/upload".into()),
+                )
+                .is_err()
+        );
         catalog.upsert(
             "Host 0".into(),
             destination("https://replaced.example.invalid/upload".into()),
@@ -3980,8 +4174,7 @@ mod tests {
             "https://current.example.invalid"
         );
         assert_eq!(
-            UploadDestinationCatalog::load_at(&live.join("upload-destinations.json"))?
-                .entries()[0]
+            UploadDestinationCatalog::load_at(&live.join("upload-destinations.json"))?.entries()[0]
                 .name(),
             "Host"
         );
@@ -4010,10 +4203,8 @@ mod tests {
 
     #[test]
     fn sharex_profiles_map_supported_subset_and_reject_secrets() -> Result<()> {
-        let root = std::env::temp_dir().join(format!(
-            "screenshots-sharex-{}",
-            uuid::Uuid::new_v4()
-        ));
+        let root =
+            std::env::temp_dir().join(format!("screenshots-sharex-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&root)?;
         let path = root.join("host.sxcu");
         let other = root.join("settings.json");
@@ -4081,7 +4272,10 @@ mod tests {
         )?;
         let (destination, _) = UploadDestination::from_sharex_at(&path)?;
         assert_eq!(
-            destination.request_headers().get("X-Client").map(String::as_str),
+            destination
+                .request_headers()
+                .get("X-Client")
+                .map(String::as_str),
             Some("screenshots")
         );
         std::fs::write(
@@ -4090,7 +4284,10 @@ mod tests {
         )?;
         let (destination, _) = UploadDestination::from_sharex_at(&path)?;
         assert_eq!(
-            destination.request_query().get("format").map(String::as_str),
+            destination
+                .request_query()
+                .get("format")
+                .map(String::as_str),
             Some("json")
         );
         std::fs::write(
@@ -4133,10 +4330,7 @@ mod tests {
             r#"{"DestinationType":"ImageUploader","RequestURL":"https://example.invalid/upload","URL":"{regex:href=\"(.+)\"|1}"}"#,
         )?;
         let (destination, _) = UploadDestination::from_sharex_at(&path)?;
-        assert_eq!(
-            destination.regex_pattern(),
-            Some(r#"href="(.+)""#)
-        );
+        assert_eq!(destination.regex_pattern(), Some(r#"href="(.+)""#));
         assert_eq!(destination.regex_group(), Some("1"));
         std::fs::write(
             &path,
@@ -4194,7 +4388,10 @@ mod tests {
             r#"{"DestinationType":"ImageUploader","RequestMethod":"PUT","RequestURL":"https://example.invalid/image.png","Body":"Binary","URL":"{responseurl}","DeletionURL":"{json:delete}"}"#,
         ] {
             std::fs::write(&path, profile)?;
-            assert!(UploadDestination::from_sharex_at(&path).is_err(), "{profile}");
+            assert!(
+                UploadDestination::from_sharex_at(&path).is_err(),
+                "{profile}"
+            );
         }
         assert_eq!(std::fs::read(&other)?, b"keep-settings");
         std::fs::remove_dir_all(root)?;
@@ -4245,13 +4442,14 @@ mod tests {
         assert!(!exported.contains("Authorization"));
         let (imported, _) = UploadDestination::from_sharex_at(&path)?;
         assert_eq!(
-            imported.request_headers().get("X-Client").map(String::as_str),
+            imported
+                .request_headers()
+                .get("X-Client")
+                .map(String::as_str),
             Some("screenshots")
         );
         std::fs::remove_file(&path)?;
-        let queried = destination
-            .clone()
-            .with_query([("format", "json")])?;
+        let queried = destination.clone().with_query([("format", "json")])?;
         queried.to_sharex_at(&path, Some("Host"))?;
         let exported = std::fs::read_to_string(&path)?;
         assert!(exported.contains("format"));
@@ -4264,9 +4462,7 @@ mod tests {
             Some("json")
         );
         std::fs::remove_file(&path)?;
-        let formed = destination
-            .clone()
-            .with_form([("title", "screenshot")])?;
+        let formed = destination.clone().with_form([("title", "screenshot")])?;
         formed.to_sharex_at(&path, Some("Host"))?;
         let exported = std::fs::read_to_string(&path)?;
         assert!(exported.contains("title"));
@@ -4331,7 +4527,10 @@ mod tests {
             imported.thumbnail_template().as_deref(),
             Some("{json:thumbnail_url}")
         );
-        assert_eq!(imported.deletion_template().as_deref(), Some("{json:delete}"));
+        assert_eq!(
+            imported.deletion_template().as_deref(),
+            Some("{json:delete}")
+        );
         std::fs::remove_file(&path)?;
         let regexed = UploadDestination::manual(
             "https://example.invalid/upload".into(),
@@ -4422,10 +4621,9 @@ mod tests {
         assert_eq!(std::fs::read(&path)?, existing);
         #[cfg(target_os = "windows")]
         {
-            let authenticated = destination.clone().with_authentication(
-                "main".into(),
-                UploadAuthentication::Bearer,
-            )?;
+            let authenticated = destination
+                .clone()
+                .with_authentication("main".into(), UploadAuthentication::Bearer)?;
             let secret_path = root.join("auth.sxcu");
             authenticated.to_sharex(&secret_path)?;
             let exported = std::fs::read_to_string(&secret_path)?;
@@ -4727,7 +4925,10 @@ mod tests {
         if cfg!(target_os = "windows") {
             let attached = attached?;
             assert_eq!(attached.credential_reference(), Some("main"));
-            assert_eq!(attached.authentication(), Some(UploadAuthentication::ApiKey));
+            assert_eq!(
+                attached.authentication(),
+                Some(UploadAuthentication::ApiKey)
+            );
             assert_eq!(
                 attached.credential_target().as_deref(),
                 Some("Screenshots/upload/https://example.invalid/main")
@@ -4823,10 +5024,8 @@ mod tests {
         )?;
         assert!(destination.clone().detach_credential().is_err());
         if cfg!(target_os = "windows") {
-            let attached = destination.with_authentication(
-                "main".into(),
-                UploadAuthentication::Bearer,
-            )?;
+            let attached =
+                destination.with_authentication("main".into(), UploadAuthentication::Bearer)?;
             assert_eq!(attached.credential_reference(), Some("main"));
             let text = String::from_utf8(serde_json::to_vec(&attached)?)?;
             assert!(text.contains("main"));
@@ -5002,7 +5201,11 @@ mod tests {
             started.elapsed()
         );
         let request = server.join().unwrap();
-        assert!(request.windows(8).any(|chunk| chunk == b"\x89PNG\r\n\x1a\n"));
+        assert!(
+            request
+                .windows(8)
+                .any(|chunk| chunk == b"\x89PNG\r\n\x1a\n")
+        );
         assert!(request.len() < 8192);
         assert_eq!(before, probe_temp_names());
     }
@@ -5016,9 +5219,7 @@ mod tests {
             None,
             Duration::ZERO,
         );
-        let destination = destination(url)
-            .with_query([("format", "json")])
-            .unwrap();
+        let destination = destination(url).with_query([("format", "json")]).unwrap();
         assert_eq!(
             upload_png(&destination, &path, UploadCancellation::default()).unwrap(),
             "https://example.invalid/share/query"
@@ -5087,11 +5288,7 @@ mod tests {
     #[ignore = "uses a local loopback HTTP server and synthetic PNG; no external connections"]
     fn upload_composes_result_link_from_json_id() {
         let (root, path) = fixture();
-        let (url, server) = server(
-            response(r#"{"result":{"id":123}}"#),
-            None,
-            Duration::ZERO,
-        );
+        let (url, server) = server(response(r#"{"result":{"id":123}}"#), None, Duration::ZERO);
         let mut destination = destination(url)
             .with_link_affixes("https://cdn.example.invalid/", ".png")
             .unwrap();
@@ -5189,9 +5386,7 @@ mod tests {
             None,
             Duration::ZERO,
         );
-        let parsed = destination(url)
-            .with_xml("/files/file[1]/url")
-            .unwrap();
+        let parsed = destination(url).with_xml("/files/file[1]/url").unwrap();
         assert_eq!(
             upload_png(&parsed, &path, UploadCancellation::default()).unwrap(),
             "https://example.invalid/share/abc"
@@ -5219,7 +5414,9 @@ mod tests {
             false,
         )?;
         let cancel = UploadCancellation::default();
-        assert!(upload_png_bytes_with_progress(&destination, Vec::new(), cancel.clone(), None).is_err());
+        assert!(
+            upload_png_bytes_with_progress(&destination, Vec::new(), cancel.clone(), None).is_err()
+        );
         assert!(
             upload_png_bytes_with_progress(&destination, b"not a png".to_vec(), cancel, None)
                 .is_err()

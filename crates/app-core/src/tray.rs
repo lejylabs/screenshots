@@ -162,7 +162,9 @@ mod tests {
             Some(TrayCommand::ActiveWindow)
         );
         assert_eq!(
-            tray.command(MenuEvent { id: tray.active_display.id().clone() }),
+            tray.command(MenuEvent {
+                id: tray.active_display.id().clone()
+            }),
             Some(TrayCommand::ActiveDisplay)
         );
         drop(tray);

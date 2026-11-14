@@ -1,6 +1,6 @@
 # screenshots design system
 
-A native GPUI Kit workbench with two appearances. The image is the work; the
+A native GPUI Kit workbench with three appearances. The image is the work; the
 interface helps it move from capture to annotation to explicit output.
 
 ## Appearances
@@ -9,11 +9,12 @@ interface helps it move from capture to annotation to explicit output.
 | --- | --- | --- | --- |
 | Dark (default) | Neutral charcoal, grayscale controls, restrained borders | 6px controls / 8px panels | Segoe UI / system / Cantarell |
 | Oldschool | Compact task menu, blue selection, colorful function icons | Square controls, Kit small tools | Segoe UI / DejaVu Sans |
+| Classic | One Dark workbench: Kit TitleBar, page tabs, 240px dock, status bar; editor `#282c33`, panels `#2f343e`, accent `#74ade8` | 4px controls / 4px panels, 34/32/24 chrome | Segoe UI / system / Cantarell |
 
 Dark is the startup and settings fallback. Retired or unknown saved values fall
-back to Dark; an explicit Oldschool choice remains Oldschool. Both options share
-the same capture, history, editor and output behavior. UI appearance never changes
-annotation colors, masks or exported pixels.
+back to Dark; an explicit Oldschool or Classic choice remains that appearance. All
+options share the same capture, history, editor and output behavior. UI appearance
+never changes annotation colors, masks or exported pixels.
 
 ## Structure
 
@@ -29,12 +30,14 @@ annotation colors, masks or exported pixels.
 ## Components, tokens and interaction
 
 GPUI Kit 0.9.1 owns standard control behavior. Use its Sidebar, Button, Input,
-Checkbox, RadioGroup, PopupMenu and Kbd components for application commands and
-forms. Every native window mounts the Kit Base Root. The application retains
+Checkbox, RadioGroup, PopupMenu, Kbd and TitleBar components for application
+commands, forms and the window caption. Every native window mounts the Kit Base
+Root. Decorated windows use `TitleBar::window_options()` so the caption follows
+the appearance. Capture overlays stay undecorated. The application retains
 explicit typed access to the content inside that Root for native lifecycle jobs.
 
 `theme.rs` applies product palettes through `Theme::update`, keeping styled tokens
-and Base projections synchronized. Dark and Oldschool remain app preferences;
+and Base projections synchronized. Dark, Oldschool and Classic remain app preferences;
 annotation colors are document data. Kit initialization is deferred until a UI
 window is needed, preserving resident startup readiness. Optional script, speech,
 syntax and profiling runtimes are not enabled.
