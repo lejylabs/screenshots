@@ -2,7 +2,7 @@
 use anyhow::Result;
 use tray_icon::{
     Icon, TrayIcon, TrayIconBuilder,
-    menu::{Menu, MenuEvent, MenuItem},
+    menu::{ContextMenu, Menu, MenuEvent, MenuItem},
 };
 
 #[derive(Debug, PartialEq, Eq)]
@@ -18,6 +18,7 @@ pub enum TrayCommand {
 }
 
 pub struct SpikeTray {
+    chrome: Option<crate::native_appearance::TrayMenuChrome>,
     _icon: TrayIcon,
     capture: MenuItem,
     region: MenuItem,
@@ -67,9 +68,15 @@ impl SpikeTray {
         let icon = TrayIconBuilder::new()
             .with_tooltip("screenshots — phase 0")
             .with_icon(Icon::from_rgba(pixels, 32, 32)?)
-            .with_menu(Box::new(menu))
+            .with_menu(Box::new(menu.clone()))
             .build()?;
+        let chrome = crate::native_appearance::TrayMenuChrome::install(
+            icon.window_handle(),
+            menu.hpopupmenu() as _,
+            crate::UiTheme::Default,
+        );
         Ok(Self {
+            chrome,
             _icon: icon,
             capture,
             region,
@@ -111,6 +118,14 @@ impl SpikeTray {
 
     pub fn set_repeat_region_available(&self, available: bool) {
         self.repeat_region.set_enabled(available);
+    }
+
+    pub fn set_appearance(&self, theme: crate::UiTheme) {
+        if let Some(chrome) = &self.chrome {
+            chrome.set_appearance(theme);
+        } else {
+            crate::apply_native_menus(theme.is_dark());
+        }
     }
 
     pub fn command(&self, event: MenuEvent) -> Option<TrayCommand> {

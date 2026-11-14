@@ -233,7 +233,7 @@ See [Phase 0 evidence and remaining checks](docs/phase-0.md).
 - Escape or Close overlays dismisses overlay windows.
 - On Windows, Ctrl+Shift+S captures the primary display even when another app has focus. Registration failures (for example, a shortcut already in use) appear in the control window. The capture is saved and copied automatically.
 - On Windows, Ctrl+Shift+R starts region selection even when another app has focus. Ctrl+Shift+F remains a local shortcut in the control window. Each global shortcut registers independently: a conflict with one does not disable the other. The status line reports unavailable keys.
-- On Windows, right-click the blue camera icon in the system tray (possibly under hidden icons): Select region, Capture primary, Show control window, or Quit. The tray popup follows the dark appearance. Region selection uses the same frozen-image workflow as the button. Capture primary uses the same save-and-copy path as the buttons and hotkey. Closing the control window returns to the resident tray state.
+- On Windows, right-click the blue camera icon in the system tray (possibly under hidden icons): Select region, Capture primary, Show control window, or Quit. The tray popup uses the current appearance colors. Region selection uses the same frozen-image workflow as the button. Capture primary uses the same save-and-copy path as the buttons and hotkey. Closing the control window returns to the resident tray state.
 
 The clipboard button and its result appear near the top, above the diagnostic lists and thumbnail. On Windows, closing the control window releases its windows and renderer; Ctrl+Q quits through the output-safe cleanup path. Native WM_CLOSE is intercepted so Windows does not destroy the window ahead of GPUI cleanup.
 

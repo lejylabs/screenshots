@@ -545,4 +545,17 @@ mod tests {
             );
         }
     }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn native_tray_menu_colors_match_palette_tokens() {
+        for theme in APPEARANCES {
+            let p = palette(theme);
+            let menu = app_core::NativeMenuColors::for_theme(theme);
+            assert_eq!(menu.background, p.surface, "{theme:?} surface");
+            assert_eq!(menu.text, p.text, "{theme:?} text");
+            assert_eq!(menu.muted, p.muted, "{theme:?} muted");
+            assert_eq!(menu.hover, p.hover, "{theme:?} hover");
+        }
+    }
 }
