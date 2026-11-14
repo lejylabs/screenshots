@@ -1258,6 +1258,64 @@ fn upload_configuration_export_writes_a_chosen_file_without_importing(cx: &mut T
     std::fs::remove_dir_all(root).unwrap();
 }
 
+#[gpui::test]
+fn sharex_import_applies_a_session_destination_without_writing_settings(cx: &mut TestAppContext) {
+    let handle = open_workspace(cx);
+    let root = std::env::temp_dir().join(format!("screenshots-sharex-ui-{}", std::process::id()));
+    std::fs::create_dir_all(&root).unwrap();
+    let profile = root.join("host.sxcu");
+    std::fs::write(&profile, r#"{
+        "Name": "Host",
+        "DestinationType": "ImageUploader",
+        "RequestURL": "https://sharex.invalid/upload",
+        "URL": "{json:url}"
+    }"#).unwrap();
+    handle.update(cx, |this, _, cx| {
+        this.upload_destination = Some(app_core::UploadDestination::manual(
+            "https://old.invalid/upload".into(),
+            app_core::UploadMethod::Post, "file".into(), None, false).unwrap());
+        this.upload_url = Some("https://old.invalid/share/kept".into());
+        this.show_page(ControlPage::Uploads, cx);
+    }).unwrap();
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.click("import-sharex-destination", cx);
+    }).unwrap();
+    assert!(cx.did_prompt_for_paths());
+    handle.update(cx, |this, _, cx| {
+        assert!(this.upload_config_loading);
+        this.import_sharex_destination(cx);
+    }).unwrap();
+    cx.simulate_path_prompt_response(|options| {
+        assert!(options.files && !options.directories && !options.multiple);
+        None
+    });
+    cx.run_until_parked();
+    handle.update(cx, |this, _, cx| {
+        assert!(!this.upload_config_loading);
+        assert!(this.upload_status.contains("ShareX import canceled"));
+        assert_eq!(this.upload_destination.as_ref().unwrap().origin(), "https://old.invalid");
+        assert_eq!(this.upload_url.as_deref(), Some("https://old.invalid/share/kept"));
+        this.import_sharex_destination(cx);
+    }).unwrap();
+    cx.simulate_path_prompt_response(|_| Some(vec![profile.clone()]));
+    cx.run_until_parked();
+    handle.update(cx, |this, _, cx| {
+        assert!(!this.upload_config_loading);
+        assert_eq!(this.upload_destination.as_ref().unwrap().origin(), "https://sharex.invalid");
+        assert!(this.upload_status.contains("ShareX Host"));
+        assert!(this.upload_status.contains("Session only"));
+        assert!(this.upload_url.is_none());
+        assert!(this.last_saved.is_none() && this.last_capture.is_none());
+        assert!(this.upload_named.is_empty());
+        this.upload_cancel = Some(app_core::UploadCancellation::default());
+        this.import_sharex_destination(cx);
+        assert_eq!(this.upload_destination.as_ref().unwrap().origin(), "https://sharex.invalid");
+        this.show_page(ControlPage::Sources, cx);
+    }).unwrap();
+    std::fs::remove_dir_all(root).unwrap();
+}
+
 #[cfg(target_os = "windows")]
 #[gpui::test]
 fn upload_remove_credential_stays_idle_without_an_attached_reference(cx: &mut TestAppContext) {

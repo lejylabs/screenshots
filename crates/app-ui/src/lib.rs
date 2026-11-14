@@ -3611,6 +3611,89 @@ impl CaptureWorkspace {
         cx.notify();
     }
 
+    fn import_sharex_destination(&mut self, cx: &mut Context<Self>) {
+        if self.quitting || self.upload_config_loading || self.upload_cancel.is_some() {
+            return;
+        }
+        self.close_upload_forms();
+        self.upload_config_loading = true;
+        self.upload_status = "Choose a ShareX custom uploader (.sxcu, no secrets)".into();
+        let dialog = cx.prompt_for_paths(gpui::PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: false,
+            prompt: Some("Import ShareX custom uploader (.sxcu, no secrets)".into()),
+        });
+        cx.spawn(async move |this, cx| {
+            let selected = dialog.await;
+            let path = this
+                .update(cx, |this, cx| {
+                    if this.quitting {
+                        this.upload_config_loading = false;
+                        this.finish_quit_if_idle(cx);
+                        return None;
+                    }
+                    match selected {
+                        Ok(Ok(Some(mut paths))) if paths.len() == 1 => Some(paths.remove(0)),
+                        other => {
+                            this.upload_config_loading = false;
+                            this.upload_status = match other {
+                                Ok(Ok(None)) => {
+                                    "Destination unchanged · ShareX import canceled".into()
+                                }
+                                error => format!(
+                                    "Destination unchanged · ShareX import failed: {error:?}"
+                                ),
+                            };
+                            this.finish_quit_if_idle(cx);
+                            cx.notify();
+                            None
+                        }
+                    }
+                })
+                .ok()
+                .flatten();
+            let Some(path) = path else {
+                return;
+            };
+            let result = cx
+                .background_spawn(async move {
+                    app_core::UploadDestination::from_sharex(&path)
+                        .map_err(|error| format!("{error:#}"))
+                })
+                .await;
+            this.update(cx, |this, cx| {
+                this.upload_config_loading = false;
+                if !this.quitting {
+                    match result {
+                        Ok((destination, name)) => {
+                            this.upload_url = None;
+                            this.upload_status = match name {
+                                Some(name) => format!(
+                                    "Destination: {} · ShareX {name} · Session only · Remember to persist",
+                                    destination.origin()
+                                ),
+                                None => format!(
+                                    "Destination: {} · ShareX profile · Session only · Remember to persist",
+                                    destination.origin()
+                                ),
+                            };
+                            this.upload_destination = Some(destination);
+                        }
+                        Err(error) => {
+                            this.upload_status = format!("Destination unchanged: {error}");
+                        }
+                    }
+                }
+                this.finish_quit_if_idle(cx);
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+        cx.notify();
+    }
+
     fn hide_upload_history(&mut self) {
         self.upload_history_visible = false;
         self.upload_history_revision = self.upload_history_revision.wrapping_add(1);

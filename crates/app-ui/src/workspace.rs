@@ -380,7 +380,7 @@ impl Render for CaptureWorkspace {
                         .child(div().flex().flex_col().gap_1()
                             .child(div().font_weight(gpui::FontWeight::SEMIBOLD).child("Destination"))
                             .child(div().text_sm().text_color(colors.muted_foreground).child(if self.upload_destination.is_some() { "Ready for an explicit upload" } else { "Connect your own image hosting service" }))))
-                    .child(div().text_sm().text_color(colors.muted_foreground).child("Set up a destination or load a profile. Save named stores up to 16 profiles. Export configuration copies destinations without secrets. Test destination sends a throwaway 1×1 PNG. Uploads of your screenshots start only when you choose an image and confirm."))
+                    .child(div().text_sm().text_color(colors.muted_foreground).child("Set up a destination or load a profile. Import ShareX loads a documented .sxcu subset without secrets. Save named stores up to 16 profiles. Export configuration copies destinations without secrets. Test destination sends a throwaway 1×1 PNG. Uploads of your screenshots start only when you choose an image and confirm."))
                     .child(div().flex().flex_wrap().gap_2()
                         .child(capture_button(cx, "setup-upload-destination", if self.upload_form_open { "Cancel setup" } else { "Set up destination" },
                             self.upload_config_loading || self.upload_cancel.is_some(), cx.listener(|this, _, _, cx| {
@@ -395,6 +395,9 @@ impl Render for CaptureWorkspace {
                             })))
                         .child(capture_button(cx, "load-upload-destination", if self.upload_destination.is_some() { "Change destination…" } else { "Choose destination…" },
                             self.upload_config_loading || self.upload_cancel.is_some(), cx.listener(|this, _, _, cx| this.load_upload_destination(cx))))
+                        .child(capture_button(cx, "import-sharex-destination", "Import ShareX…",
+                            self.upload_config_loading || self.upload_cancel.is_some(),
+                            cx.listener(|this, _, _, cx| this.import_sharex_destination(cx))))
                         .when(self.upload_destination.is_some(), |row| row
                             .child(quiet_button(cx, "remember-upload-destination", "Remember", self.upload_config_loading || self.upload_cancel.is_some(), false,
                                 cx.listener(|this, _, _, cx| this.persist_upload_destination(false, cx)))))

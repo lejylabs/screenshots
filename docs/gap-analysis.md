@@ -1,11 +1,19 @@
 # Functional gap analysis: screenshots and ShareX
 
+Implementation follow-up (2026-11-14, working tree): Uploads can import a
+documented ShareX .sxcu subset as a session destination. Secrets, headers,
+query parameters and richer parsers are rejected. Remember and Save named stay
+explicit. Per-task defaults, ShareX export, generic HTTP breadth, full settings
+backup and secret-store platforms other than Windows remain missing. See
+PLAN.md's ShareX custom-uploader import slice.
+
 Implementation follow-up (2026-11-14, working tree): Uploads can export and
 import a destination backup JSON of the session destination plus named catalog.
 Secrets, settings.json, history and OS credentials stay out of the file.
-Per-task defaults, ShareX profile import, full settings backup and secret-store
-platforms other than Windows remain missing. See PLAN.md's destination
-configuration export/import slice.
+ShareX profile import is implemented in the later 2026-11-14 follow-up.
+Per-task defaults, full settings backup and secret-store platforms other than
+Windows remain missing. See PLAN.md's destination configuration export/import
+slice.
 
 Implementation follow-up (2026-11-14, working tree): Uploads can save up to 16
 named destinations, switch the session destination with Use, and Remove a name
@@ -277,7 +285,7 @@ files/URLs and configured tasks.
 | --- | --- | --- |
 | Destination setup | Partial: Uploads offers native credential-free POST/PUT setup with plain-text/JSON link responses, bounded validation and explicit HTTP opt-in; Use is session-only and Remember persists it. Windows Save credential writes Bearer/API-key/Basic secrets to Credential Manager and attaches only the reference to the session destination. Remove credential deletes that OS secret and clears the session reference; Forget destination still leaves the OS secret in place. JSON profiles retain advanced settings. Test destination sends a throwaway 1×1 PNG through the existing transfer path without recording history. Named destinations persist up to 16 profiles in a separate catalog. Export/Import configuration copies that catalog and the current destination without secrets; full settings backup remains missing. | A |
 | Multiple destinations | Partial: a named catalog of up to 16 destinations can be saved, switched into the session and removed. Export/Import configuration copies the catalog with the current destination. The remembered current destination remains one profile. Per-task defaults are missing. | A/B |
-| Existing ShareX profiles | Missing `.sxcu` import/export or a documented compatibility subset. Our profile JSON is not the ShareX format. | B |
+| Existing ShareX profiles | Partial: Uploads can import a documented `.sxcu` subset (HTTPS ImageUploader POST multipart or PUT binary, `{json}`/`{header}`/`{response}`/`{responseurl}`) as a session destination. Headers, query/body arguments, secrets, HTTP and richer parsers are rejected. ShareX export and full custom-uploader parity remain missing. Our profile JSON is not the ShareX format. | B |
 | Generic HTTP breadth | Partial: POST multipart/PUT PNG; no custom request headers/arguments/query templates, JSON/form bodies, richer response expressions or deletion/thumbnail result URLs. Compatibility must preserve origin-scoped secrets and response bounds. | B |
 | Service integrations | No dedicated S3/R2, SFTP/FTP, OAuth/provider integrations or remote file management. Some simple services can already work through our generic POST/PUT path; test service by service. | B/C |
 | Accepted input | PNG files only. No arbitrary file/folder/text/clipboard/URL uploads, batch upload UI, watched-folder workflow or capture-to-link chain. | B |

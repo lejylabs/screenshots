@@ -105,7 +105,7 @@ fn default_field() -> String {
     "file".into()
 }
 
-#[derive(Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "UPPERCASE")]
 pub enum UploadMethod {
     #[default]
@@ -113,7 +113,7 @@ pub enum UploadMethod {
     Put,
 }
 
-#[derive(Clone, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 enum UploadResponse {
     Text,
@@ -355,6 +355,229 @@ impl UploadDestination {
             .map(|url| url.origin().ascii_serialization())
             .unwrap_or_default()
     }
+
+    /// Load a documented ShareX `.sxcu` subset without networking or secrets.
+    pub fn from_sharex(path: &Path) -> Result<(Self, Option<String>)> {
+        Self::from_sharex_at(path)
+    }
+
+    fn from_sharex_at(path: &Path) -> Result<(Self, Option<String>)> {
+        let mut bytes = Vec::new();
+        std::fs::File::open(path)?
+            .take(16385)
+            .read_to_end(&mut bytes)?;
+        ensure!(
+            bytes.len() <= 16384,
+            "ShareX profile exceeds 16 KiB"
+        );
+        let profile: ShareXCustomUploader =
+            serde_json::from_slice(&bytes).context("Invalid ShareX profile")?;
+        profile.into_destination()
+    }
+}
+
+#[derive(Deserialize)]
+struct ShareXCustomUploader {
+    #[serde(rename = "Name", default)]
+    name: Option<String>,
+    #[serde(rename = "DestinationType")]
+    destination_type: String,
+    #[serde(rename = "RequestMethod", default)]
+    request_method: Option<String>,
+    #[serde(rename = "RequestURL")]
+    request_url: String,
+    #[serde(rename = "Body", default)]
+    body: Option<String>,
+    #[serde(rename = "FileFormName", default)]
+    file_form_name: Option<String>,
+    #[serde(rename = "URL", default)]
+    url: Option<String>,
+    #[serde(rename = "Headers", default)]
+    headers: Option<serde_json::Value>,
+    #[serde(rename = "Parameters", default)]
+    parameters: Option<serde_json::Value>,
+    #[serde(rename = "Arguments", default)]
+    arguments: Option<serde_json::Value>,
+    #[serde(rename = "Data", default)]
+    data: Option<serde_json::Value>,
+}
+
+impl ShareXCustomUploader {
+    fn into_destination(self) -> Result<(UploadDestination, Option<String>)> {
+        ensure!(
+            self.destination_type
+                .split(',')
+                .any(|kind| kind.trim().eq_ignore_ascii_case("ImageUploader")),
+            "ShareX profile must include ImageUploader"
+        );
+        sharex_reject_object(&self.headers, "headers")?;
+        sharex_reject_object(&self.parameters, "query parameters")?;
+        sharex_reject_object(&self.arguments, "body arguments")?;
+        sharex_reject_object(&self.data, "JSON body fields")?;
+        ensure!(
+            !self.request_url.contains('{') && !self.request_url.contains('}'),
+            "ShareX request URL syntax is not supported"
+        );
+        let method_name = self
+            .request_method
+            .as_deref()
+            .unwrap_or("POST")
+            .trim()
+            .to_ascii_uppercase();
+        let method = match method_name.as_str() {
+            "POST" => UploadMethod::Post,
+            "PUT" => UploadMethod::Put,
+            _ => anyhow::bail!("ShareX request method {method_name} is not supported"),
+        };
+        let body = self
+            .body
+            .as_deref()
+            .unwrap_or(if method == UploadMethod::Post {
+                "MultipartFormData"
+            } else {
+                "Binary"
+            })
+            .trim();
+        match (method, body) {
+            (UploadMethod::Post, "MultipartFormData") => {}
+            (UploadMethod::Put, "Binary") => {}
+            _ => anyhow::bail!(
+                "ShareX import supports POST multipart or PUT binary bodies only"
+            ),
+        }
+        let field = if method == UploadMethod::Post {
+            self.file_form_name
+                .as_deref()
+                .unwrap_or("file")
+                .trim()
+                .to_owned()
+        } else {
+            default_field()
+        };
+        let (json_pointer, response) = sharex_response(self.url.as_deref().unwrap_or(""), method)?;
+        let destination = UploadDestination {
+            url: self.request_url.trim().into(),
+            method,
+            field,
+            json_pointer,
+            response,
+            allow_http: false,
+            credential: None,
+            authentication: None,
+        };
+        destination.validate()?;
+        let name = match self.name.as_deref().map(str::trim).filter(|name| !name.is_empty()) {
+            Some(name) => {
+                ensure!(
+                    name.len() <= 64 && !name.chars().any(char::is_control),
+                    "ShareX profile name must be 1–64 bytes without control characters"
+                );
+                Some(name.to_owned())
+            }
+            None => None,
+        };
+        Ok((destination, name))
+    }
+}
+
+fn sharex_reject_object(value: &Option<serde_json::Value>, label: &str) -> Result<()> {
+    match value {
+        None | Some(serde_json::Value::Null) => Ok(()),
+        Some(serde_json::Value::Object(map)) if map.is_empty() => Ok(()),
+        Some(_) => anyhow::bail!("{label} are not supported in this ShareX import subset"),
+    }
+}
+
+fn sharex_response(
+    url: &str,
+    method: UploadMethod,
+) -> Result<(String, Option<UploadResponse>)> {
+    let url = url.trim();
+    if url.is_empty() || url == "{response}" {
+        return Ok((String::new(), Some(UploadResponse::Text)));
+    }
+    ensure!(
+        url.len() <= 256 && !url.chars().any(char::is_control),
+        "ShareX URL parser is invalid or exceeds 256 bytes"
+    );
+    if url == "{responseurl}" {
+        ensure!(
+            method == UploadMethod::Put,
+            "{{responseurl}} requires a PUT ShareX profile"
+        );
+        return Ok((String::new(), Some(UploadResponse::RequestUrl)));
+    }
+    if let Some(name) = url
+        .strip_prefix("{header:")
+        .and_then(|value| value.strip_suffix('}'))
+    {
+        let name = name.trim();
+        ensure!(
+            !name.is_empty() && name.len() <= 64 && !name.chars().any(char::is_control),
+            "Use a ShareX response header of 1–64 bytes"
+        );
+        return Ok((
+            String::new(),
+            Some(UploadResponse::Header { name: name.into() }),
+        ));
+    }
+    if let Some(path) = url
+        .strip_prefix("{json:")
+        .and_then(|value| value.strip_suffix('}'))
+    {
+        ensure!(
+            !path.contains('|'),
+            "ShareX json input syntax is not supported"
+        );
+        return Ok((sharex_json_pointer(path)?, None));
+    }
+    anyhow::bail!("This ShareX URL syntax is not supported")
+}
+
+fn sharex_json_pointer(path: &str) -> Result<String> {
+    let path = path.trim();
+    ensure!(
+        !path.is_empty() && path.len() <= 256 && !path.chars().any(char::is_control),
+        "Unsupported ShareX JSON path"
+    );
+    let mut pointer = String::new();
+    let mut rest = path;
+    while !rest.is_empty() {
+        if let Some(stripped) = rest.strip_prefix('[') {
+            let end = stripped
+                .find(']')
+                .context("Unsupported ShareX JSON path")?;
+            let index = &stripped[..end];
+            ensure!(
+                !index.is_empty()
+                    && index.bytes().all(|byte| byte.is_ascii_digit())
+                    && !(index.len() > 1 && index.starts_with('0')),
+                "Unsupported ShareX JSON path"
+            );
+            pointer.push('/');
+            pointer.push_str(index);
+            rest = &stripped[end + 1..];
+            continue;
+        }
+        if let Some(stripped) = rest.strip_prefix('.') {
+            rest = stripped;
+            continue;
+        }
+        let end = rest.find(['.', '[']).unwrap_or(rest.len());
+        let key = &rest[..end];
+        ensure!(
+            !key.is_empty()
+                && key
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_'),
+            "Unsupported ShareX JSON path"
+        );
+        pointer.push('/');
+        pointer.push_str(key);
+        rest = &rest[end..];
+    }
+    ensure!(!pointer.is_empty(), "Unsupported ShareX JSON path");
+    Ok(pointer)
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -1326,6 +1549,87 @@ mod tests {
         assert!(UploadConfiguration::load_at(&export).is_err());
         let blocked = other.join("backup.json");
         assert!(configuration.save_at(&blocked).is_err());
+        assert_eq!(std::fs::read(&other)?, b"keep-settings");
+        std::fs::remove_dir_all(root)?;
+        Ok(())
+    }
+
+    #[test]
+    fn sharex_profiles_map_supported_subset_and_reject_secrets() -> Result<()> {
+        let root = std::env::temp_dir().join(format!(
+            "screenshots-sharex-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&root)?;
+        let path = root.join("host.sxcu");
+        let other = root.join("settings.json");
+        std::fs::write(&other, b"keep-settings")?;
+        std::fs::write(
+            &path,
+            r#"{
+                "Version": "17.0.0",
+                "Name": " Host ",
+                "DestinationType": "ImageUploader, FileUploader",
+                "RequestMethod": "POST",
+                "RequestURL": "https://example.invalid/upload",
+                "Body": "MultipartFormData",
+                "FileFormName": "file",
+                "URL": "{json:url}",
+                "ThumbnailURL": "{json:thumbnail_url}"
+            }"#,
+        )?;
+        let (destination, name) = UploadDestination::from_sharex_at(&path)?;
+        assert_eq!(name.as_deref(), Some("Host"));
+        assert_eq!(destination.origin(), "https://example.invalid");
+        assert_eq!(destination.method, UploadMethod::Post);
+        assert_eq!(destination.field, "file");
+        assert_eq!(destination.json_pointer, "/url");
+        assert!(destination.response.is_none());
+        std::fs::write(
+            &path,
+            r#"{"DestinationType":"ImageUploader","RequestURL":"https://example.invalid/upload","URL":"{json:files[0].url}"}"#,
+        )?;
+        let (destination, name) = UploadDestination::from_sharex_at(&path)?;
+        assert!(name.is_none());
+        assert_eq!(destination.json_pointer, "/files/0/url");
+        std::fs::write(
+            &path,
+            r#"{"DestinationType":"ImageUploader","RequestMethod":"PUT","RequestURL":"https://example.invalid/image.png","Body":"Binary","URL":"{responseurl}"}"#,
+        )?;
+        let (destination, _) = UploadDestination::from_sharex_at(&path)?;
+        assert_eq!(destination.method, UploadMethod::Put);
+        assert_eq!(destination.response, Some(UploadResponse::RequestUrl));
+        std::fs::write(
+            &path,
+            r#"{"DestinationType":"ImageUploader","RequestURL":"https://example.invalid/upload","URL":"{header:Location}"}"#,
+        )?;
+        let (destination, _) = UploadDestination::from_sharex_at(&path)?;
+        assert_eq!(
+            destination.response,
+            Some(UploadResponse::Header {
+                name: "Location".into()
+            })
+        );
+        std::fs::write(
+            &path,
+            r#"{"DestinationType":"ImageUploader","RequestURL":"https://example.invalid/upload"}"#,
+        )?;
+        let (destination, _) = UploadDestination::from_sharex_at(&path)?;
+        assert_eq!(destination.response, Some(UploadResponse::Text));
+        for profile in [
+            r#"{"DestinationType":"FileUploader","RequestURL":"https://example.invalid/upload"}"#,
+            r#"{"DestinationType":"ImageUploader","RequestURL":"http://example.invalid/upload"}"#,
+            r#"{"DestinationType":"ImageUploader","RequestURL":"https://user:secret@example.invalid/upload"}"#,
+            r#"{"DestinationType":"ImageUploader","RequestMethod":"GET","RequestURL":"https://example.invalid/upload"}"#,
+            r#"{"DestinationType":"ImageUploader","RequestURL":"https://example.invalid/upload","Headers":{"Authorization":"Bearer secret"}}"#,
+            r#"{"DestinationType":"ImageUploader","RequestURL":"https://example.invalid/upload","Parameters":{"api_key":"secret"}}"#,
+            r#"{"DestinationType":"ImageUploader","RequestURL":"https://example.invalid/upload","Body":"JSON"}"#,
+            r#"{"DestinationType":"ImageUploader","RequestURL":"https://example.invalid/upload","URL":"{regex:href}"}"#,
+            r#"{"DestinationType":"ImageUploader","RequestURL":"https://example.invalid/{json:url}"}"#,
+        ] {
+            std::fs::write(&path, profile)?;
+            assert!(UploadDestination::from_sharex_at(&path).is_err(), "{profile}");
+        }
         assert_eq!(std::fs::read(&other)?, b"keep-settings");
         std::fs::remove_dir_all(root)?;
         Ok(())

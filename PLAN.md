@@ -745,11 +745,38 @@ pickers, busy guards and that a completed export writes only the chosen file,
 without importing into user settings. A regular core fixture covers round-trip
 replace, empty-current removal, secret-URL rejection, failed overwrite
 preservation and that settings.json stays untouched.
-Per-task destination defaults, ShareX profile import and full settings
-backup remain separate work.
+ShareX profile import is implemented below. Per-task destination defaults and
+full settings backup remain separate work.
 Native keyboard/IME/accessibility, packaged restart workflow and
 latency/process/GPU/resource acceptance remain open; no new performance
 measurement is claimed for this bounded backup.
+
+#### Current feature slice: ShareX custom-uploader import
+
+Uploads offers Import ShareX after the destination panel is visible. The action
+loads one .sxcu file through the existing native picker and maps a documented
+subset onto the session destination: ImageUploader, HTTPS POST multipart or PUT
+binary, FileFormName, and URL parsers {json:path}, {header:name}, {response} or
+PUT {responseurl}. Empty URL uses the plain-text response. Unknown informational
+fields are ignored. Headers, query parameters, body arguments, JSON/XML bodies,
+HTTP, embedded secrets, request-URL syntax and richer parsers are rejected
+before any network or credential write. Import is session-only; Remember and
+Save named remain explicit. Invalid files keep the previous destination.
+Closing the page or window during the picker suppresses a pending result; Quit
+discards it. No connection, upload or image decode occurs while importing.
+
+Resource cost is the existing native picker and one admitted metadata future
+that reuses destination validation. There is no new dependency, worker, runtime,
+queue, image, cache, watcher or idle timer. Constructor and headless UI fixtures
+verify button presence, canceled pickers, busy guards and that a completed
+import updates only the session destination from a temp .sxcu, without writing
+user settings. A regular core fixture covers JSON-path mapping, PUT/header/text
+modes, secret/header/query rejection and that neighboring files stay untouched.
+Per-task destination defaults, ShareX export, generic HTTP breadth and full
+settings backup remain separate work.
+Native keyboard/IME/accessibility, packaged restart workflow and
+latency/process/GPU/resource acceptance remain open; no new performance
+measurement is claimed for this bounded import.
 
 #### Current feature slice: configurable Windows global hotkeys
 
