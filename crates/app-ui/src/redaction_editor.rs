@@ -13,13 +13,16 @@ use gpui::{
 use gpui_kit as gpui;
 use std::sync::Arc;
 
-fn editor_title_bar() -> TitleBar {
-    TitleBar::new().child(
-        div()
-            .text_sm()
-            .font_weight(gpui::FontWeight::SEMIBOLD)
-            .child("Edit a copy"),
-    )
+fn editor_title_bar(cx: &App) -> TitleBar {
+    let workbench = crate::theme::current(cx).workbench;
+    TitleBar::new()
+        .when(workbench, |bar| bar.h(px(33.)).bg(cx.theme().title_bar))
+        .child(
+            div()
+                .text_sm()
+                .font_weight(gpui::FontWeight::SEMIBOLD)
+                .child("Edit a copy"),
+        )
 }
 
 fn pen_point(position: [f32; 2], scale: f32, image: [u32; 2]) -> [u32; 2] {
@@ -2430,7 +2433,9 @@ impl Render for RedactionEditor {
                 .flex_col()
                 .track_focus(&self.focus)
                 .on_action(cx.listener(|this, _: &CloseOverlay, _, cx| this.cancel(cx)))
-                .when(!self.direct_capture, |view| view.child(editor_title_bar()))
+                .when(!self.direct_capture, |view| {
+                    view.child(editor_title_bar(cx))
+                })
                 .child(
                     div()
                         .flex()
@@ -2455,6 +2460,8 @@ impl Render for RedactionEditor {
         }
         let titlebar_h = if self.direct_capture {
             0.0
+        } else if theme.workbench {
+            33.0
         } else {
             f32::from(TITLE_BAR_HEIGHT)
         };
@@ -2707,7 +2714,7 @@ impl Render for RedactionEditor {
             .text_color(rgb(theme.text))
             .track_focus(&self.focus)
             .key_context("RedactionEditor")
-            .when(!self.direct_capture, |view| view.child(editor_title_bar()))
+            .when(!self.direct_capture, |view| view.child(editor_title_bar(cx)))
             .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, _, cx| {
                 if this.text_draft.is_some() || this.text_loading {return;}
                 let modifiers = event.keystroke.modifiers;

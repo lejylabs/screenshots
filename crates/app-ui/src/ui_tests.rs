@@ -69,6 +69,7 @@ fn classic_appearance_projects_one_dark_onto_kit_and_does_not_stick_to_dark(
         assert_eq!(theme.colors.list_active_border, rgb(0x74ade8).into());
         assert_eq!(theme.colors.danger, rgb(0xd07277).into());
         assert_eq!(theme.window_radius, px(10.));
+        assert_eq!(theme.font_size, px(14.));
         assert_eq!(theme.radius, px(4.));
         assert_eq!(theme.radius_lg, px(4.));
         assert!(theme.shadow && theme.focus_ring);
@@ -82,6 +83,7 @@ fn classic_appearance_projects_one_dark_onto_kit_and_does_not_stick_to_dark(
         assert_eq!(theme.colors.background, rgb(0x141414).into());
         assert_eq!(theme.colors.primary, rgb(0xdedede).into());
         assert_eq!(theme.colors.title_bar, rgb(0x1b1b1b).into());
+        assert_eq!(theme.font_size, px(16.));
         assert_ne!(theme.window_radius, px(10.));
         assert_ne!(theme.highlight_theme.name, "Classic");
         theme::apply(app_core::UiTheme::Oldschool, cx);
@@ -113,6 +115,12 @@ fn classic_workbench_lays_out_title_tabs_and_status(cx: &mut TestAppContext) {
             window.find("workspace-heading").label(),
             Some("Recent capture")
         );
+        assert_eq!(
+            window.find("workbench-status-page").label(),
+            Some("Recent capture")
+        );
+        window.find("workbench-status-message");
+        window.find("workbench-status-folder");
         theme::apply(app_core::UiTheme::Default, cx);
         window.render_frame(cx);
         window.find("title-bar");

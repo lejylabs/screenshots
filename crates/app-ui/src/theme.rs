@@ -14,7 +14,7 @@ struct ActiveTheme(UiTheme);
 #[non_exhaustive]
 pub struct Palette {
     pub classic: bool,
-    /// Classic appearance: Zed-like workbench chrome (titlebar, tabs, status, density).
+    /// Classic appearance: Zed-like workbench chrome (33px titlebar, tabs, status, density).
     pub workbench: bool,
     pub background: u32,
     pub surface: u32,
@@ -94,7 +94,7 @@ fn sync_kit(cx: &mut App) {
     KitTheme::change(ThemeMode::Dark, None, cx);
     KitTheme::update(cx, |theme| {
         theme.font_family = font.into();
-        theme.font_size = px(16.);
+        theme.font_size = px(if p.workbench { 14. } else { 16. });
         theme.radius = px(p.radius);
         theme.radius_lg = px(p.panel_radius);
         apply_product_colors(&mut theme.colors, p);

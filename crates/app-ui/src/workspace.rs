@@ -8,6 +8,7 @@ use gpui::component::{
     radio::RadioGroup,
     scroll::ScrollableElement as _,
     sidebar::{Sidebar, SidebarItem as _, SidebarMenu, SidebarMenuItem},
+    tab::{Tab, TabBar},
 };
 
 pub(super) fn valid_search(value: &str) -> bool {
@@ -1249,121 +1250,150 @@ impl CaptureWorkspace {
     ) -> impl IntoElement {
         let theme = theme::current(cx);
         let classic = theme.classic;
-        let navigation = SidebarMenu::new()
-            .child(
-                SidebarMenuItem::new("Capture")
-                    .icon(ui_icon(cx, "capture-options", 16.))
-                    .click_to_toggle(true)
-                    .children([
+        let workbench = theme.workbench;
+        let icon = if workbench { 14. } else { 16. };
+        let navigation = if workbench {
+            SidebarMenu::new().gap_1()
+        } else {
+            SidebarMenu::new()
+        }
+        .child(dock_item(
+            SidebarMenuItem::new("Capture")
+                .icon(ui_icon(cx, "capture-options", icon))
+                .click_to_toggle(true)
+                .children([
+                    dock_item(
                         SidebarMenuItem::new("Quick region")
-                            .icon(ui_icon(cx, "select-region", 16.))
+                            .icon(ui_icon(cx, "select-region", icon))
                             .disable(unavailable)
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.open_overlays(OverlayMode::Fullscreen, cx)
                             })),
+                        workbench,
+                    ),
+                    dock_item(
                         SidebarMenuItem::new(format!("Region in {} s", self.capture_delay_seconds))
-                            .icon(ui_icon(cx, "delayed-region", 16.))
+                            .icon(ui_icon(cx, "delayed-region", icon))
                             .disable(unavailable)
                             .on_click(cx.listener(|this, _, _, cx| this.start_delayed_region(cx))),
+                        workbench,
+                    ),
+                    dock_item(
                         SidebarMenuItem::new("Primary display")
-                            .icon(ui_icon(cx, "capture-primary", 16.))
+                            .icon(ui_icon(cx, "capture-primary", icon))
                             .disable(unavailable)
                             .on_click(cx.listener(|this, _, _, cx| this.capture_primary(cx))),
-                        #[cfg(target_os = "windows")]
+                        workbench,
+                    ),
+                    #[cfg(target_os = "windows")]
+                    dock_item(
                         SidebarMenuItem::new("Repeat last region")
-                            .icon(ui_icon(cx, "select-region", 16.))
+                            .icon(ui_icon(cx, "select-region", icon))
                             .disable(
                                 unavailable || self.preview_active || self.last_region.is_none(),
                             )
                             .on_click(cx.listener(|this, _, _, cx| this.repeat_last_region(cx))),
-                        #[cfg(target_os = "windows")]
+                        workbench,
+                    ),
+                    #[cfg(target_os = "windows")]
+                    dock_item(
                         SidebarMenuItem::new(format!(
                             "Active window in {} s",
                             self.capture_delay_seconds
                         ))
-                        .icon(ui_icon(cx, "capture-primary", 16.))
+                        .icon(ui_icon(cx, "capture-primary", icon))
                         .disable(unavailable)
                         .on_click(cx.listener(|this, _, _, cx| {
                             this.start_delayed_capture(DelayedCapture::ActiveWindow, cx)
                         })),
-                        #[cfg(target_os = "windows")]
+                        workbench,
+                    ),
+                    #[cfg(target_os = "windows")]
+                    dock_item(
                         SidebarMenuItem::new(format!(
                             "Active display in {} s",
                             self.capture_delay_seconds
                         ))
-                        .icon(ui_icon(cx, "capture-primary", 16.))
+                        .icon(ui_icon(cx, "capture-primary", icon))
                         .disable(unavailable)
                         .on_click(cx.listener(|this, _, _, cx| {
                             this.start_delayed_capture(DelayedCapture::ActiveDisplay, cx)
                         })),
+                        workbench,
+                    ),
+                    dock_item(
                         SidebarMenuItem::new("All displays")
-                            .icon(ui_icon(cx, "capture-all", 16.))
+                            .icon(ui_icon(cx, "capture-all", icon))
                             .disable(
                                 unavailable
                                     || (self.output_profile.requires_single_image()
                                         && self.xcap_displays.len() > 1),
                             )
                             .on_click(cx.listener(|this, _, _, cx| this.capture_all(cx))),
-                    ]),
-            )
-            .child(
-                SidebarMenuItem::new("Recent capture")
-                    .icon(ui_icon(cx, "nav-captures", 16.))
-                    .active(self.page == ControlPage::Captures)
-                    .on_click(
-                        cx.listener(|this, _, _, cx| this.show_page(ControlPage::Captures, cx)),
+                        workbench,
                     ),
-            )
-            .child(
-                SidebarMenuItem::new("Library")
-                    .icon(ui_icon(cx, "nav-library", 16.))
-                    .active(self.page == ControlPage::History)
-                    .on_click(
-                        cx.listener(|this, _, _, cx| this.show_page(ControlPage::History, cx)),
-                    ),
-            )
-            .child(
-                SidebarMenuItem::new("Displays & windows")
-                    .icon(ui_icon(cx, "nav-sources", 16.))
-                    .active(self.page == ControlPage::Sources)
-                    .on_click(
-                        cx.listener(|this, _, _, cx| this.show_page(ControlPage::Sources, cx)),
-                    ),
-            )
-            .child(
-                SidebarMenuItem::new("Uploads")
-                    .icon(ui_icon(cx, "nav-uploads", 16.))
-                    .active(self.page == ControlPage::Uploads)
-                    .on_click(
-                        cx.listener(|this, _, _, cx| this.show_page(ControlPage::Uploads, cx)),
-                    ),
-            );
-        let footer = SidebarMenu::new()
-            .child(
-                SidebarMenuItem::new("Settings")
-                    .icon(ui_icon(cx, "nav-settings", 16.))
-                    .active(self.page == ControlPage::Settings)
-                    .on_click(
-                        cx.listener(|this, _, _, cx| this.show_page(ControlPage::Settings, cx)),
-                    ),
-            )
-            .child(
-                SidebarMenuItem::new("Open folder")
-                    .icon(ui_icon(cx, "sidebar-folder", 16.))
-                    .disable(self.output_directory.is_none())
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        if let Some(path) = &this.output_directory {
-                            cx.reveal_path(path);
-                        }
-                    })),
-            )
-            .child(
-                SidebarMenuItem::new("Quit")
-                    .icon(ui_icon(cx, "sidebar-quit", 16.))
-                    .on_click(|_, _, cx| cx.defer(close_application)),
-            )
-            .render("workspace-footer", window, cx)
-            .into_any_element();
+                ]),
+            workbench,
+        ))
+        .child(dock_item(
+            SidebarMenuItem::new("Recent capture")
+                .icon(ui_icon(cx, "nav-captures", icon))
+                .active(self.page == ControlPage::Captures)
+                .on_click(cx.listener(|this, _, _, cx| this.show_page(ControlPage::Captures, cx))),
+            workbench,
+        ))
+        .child(dock_item(
+            SidebarMenuItem::new("Library")
+                .icon(ui_icon(cx, "nav-library", icon))
+                .active(self.page == ControlPage::History)
+                .on_click(cx.listener(|this, _, _, cx| this.show_page(ControlPage::History, cx))),
+            workbench,
+        ))
+        .child(dock_item(
+            SidebarMenuItem::new("Displays & windows")
+                .icon(ui_icon(cx, "nav-sources", icon))
+                .active(self.page == ControlPage::Sources)
+                .on_click(cx.listener(|this, _, _, cx| this.show_page(ControlPage::Sources, cx))),
+            workbench,
+        ))
+        .child(dock_item(
+            SidebarMenuItem::new("Uploads")
+                .icon(ui_icon(cx, "nav-uploads", icon))
+                .active(self.page == ControlPage::Uploads)
+                .on_click(cx.listener(|this, _, _, cx| this.show_page(ControlPage::Uploads, cx))),
+            workbench,
+        ));
+        let footer = if workbench {
+            SidebarMenu::new().gap_1()
+        } else {
+            SidebarMenu::new()
+        }
+        .child(dock_item(
+            SidebarMenuItem::new("Settings")
+                .icon(ui_icon(cx, "nav-settings", icon))
+                .active(self.page == ControlPage::Settings)
+                .on_click(cx.listener(|this, _, _, cx| this.show_page(ControlPage::Settings, cx))),
+            workbench,
+        ))
+        .child(dock_item(
+            SidebarMenuItem::new("Open folder")
+                .icon(ui_icon(cx, "sidebar-folder", icon))
+                .disable(self.output_directory.is_none())
+                .on_click(cx.listener(|this, _, _, cx| {
+                    if let Some(path) = &this.output_directory {
+                        cx.reveal_path(path);
+                    }
+                })),
+            workbench,
+        ))
+        .child(dock_item(
+            SidebarMenuItem::new("Quit")
+                .icon(ui_icon(cx, "sidebar-quit", icon))
+                .on_click(|_, _, cx| cx.defer(close_application)),
+            workbench,
+        ))
+        .render("workspace-footer", window, cx)
+        .into_any_element();
         Sidebar::new("workspace-sidebar")
             .collapsible(false)
             .h_full()
@@ -1375,7 +1405,7 @@ impl CaptureWorkspace {
                     .flex()
                     .flex_col()
                     .gap_3()
-                    .when(theme.workbench, |header| header.gap_2())
+                    .when(theme.workbench, |header| header.gap_1())
                     .when(!classic, |header| {
                         header.child(
                             div()
@@ -1407,86 +1437,78 @@ impl CaptureWorkspace {
     fn render_window_titlebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let colors = cx.theme().colors;
         let workbench = crate::theme::current(cx).workbench;
-        TitleBar::new().child(
-            div()
-                .flex()
-                .items_center()
-                .gap_2()
-                .flex_1()
-                .min_w_0()
-                .h_full()
-                .child(
-                    div()
-                        .text_sm()
-                        .font_weight(gpui::FontWeight::SEMIBOLD)
-                        .child("screenshots"),
-                )
-                .when(workbench, |bar| {
-                    bar.child(
+        TitleBar::new()
+            .when(workbench, |bar| bar.h(px(33.)).bg(colors.title_bar))
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .flex_1()
+                    .min_w_0()
+                    .h_full()
+                    .child(
                         div()
-                            .id("workspace-heading")
-                            .role(gpui::Role::Heading)
-                            .test_support()
-                            .flex_1()
-                            .min_w_0()
                             .text_sm()
-                            .text_color(colors.muted_foreground)
-                            .text_ellipsis()
-                            .aria_label(page_title(self.page))
-                            .child(page_title(self.page)),
+                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                            .child("screenshots"),
                     )
-                    .child(quiet_button(
-                        cx,
-                        "appearance-shortcut",
-                        theme::name(theme::selected(cx)),
-                        false,
-                        false,
-                        cx.listener(|this, _, _, cx| this.show_page(ControlPage::Settings, cx)),
-                    ))
-                }),
-        )
+                    .when(workbench, |bar| {
+                        bar.child(
+                            div()
+                                .id("workspace-heading")
+                                .role(gpui::Role::Heading)
+                                .test_support()
+                                .flex_1()
+                                .min_w_0()
+                                .text_sm()
+                                .text_color(colors.muted_foreground)
+                                .text_ellipsis()
+                                .aria_label(page_title(self.page))
+                                .child(page_title(self.page)),
+                        )
+                        .child(quiet_button(
+                            cx,
+                            "appearance-shortcut",
+                            theme::name(theme::selected(cx)),
+                            false,
+                            false,
+                            cx.listener(|this, _, _, cx| this.show_page(ControlPage::Settings, cx)),
+                        ))
+                    }),
+            )
     }
 
     fn render_workbench_tabs(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let colors = cx.theme().colors;
         let page = self.page;
+        let selected = WORKBENCH_TABS
+            .iter()
+            .position(|(target, _)| *target == page)
+            .unwrap_or(0);
+        let owner = cx.entity().downgrade();
         div()
             .id("workbench-tab-bar")
             .test_support()
             .flex_none()
             .h(px(32.))
             .w_full()
-            .px_1()
-            .bg(colors.tab_bar)
-            .border_b_1()
-            .border_color(colors.border)
-            .flex()
-            .items_end()
-            .gap_1()
-            .children(
-                [
-                    (ControlPage::Captures, "Recent capture"),
-                    (ControlPage::History, "Library"),
-                    (ControlPage::Sources, "Displays & windows"),
-                    (ControlPage::Uploads, "Uploads"),
-                    (ControlPage::Settings, "Settings"),
-                ]
-                .into_iter()
-                .enumerate()
-                .map(move |(index, (target, label))| {
-                    let active = page == target;
-                    Button::new(("workbench-tab", index))
-                        .ghost()
-                        .small()
-                        .label(label)
-                        .selected(active)
-                        .when(active, |tab| {
-                            tab.bg(colors.tab_active)
-                                .text_color(colors.tab_active_foreground)
-                        })
-                        .when(!active, |tab| tab.text_color(colors.tab_foreground))
-                        .on_click(cx.listener(move |this, _, _, cx| this.show_page(target, cx)))
-                }),
+            .child(
+                TabBar::new("workbench-tabs")
+                    .w_full()
+                    .h(px(32.))
+                    .selected_index(selected)
+                    .last_empty_space(div().flex_1())
+                    .on_click(move |index, _, cx| {
+                        if let Some((target, _)) = WORKBENCH_TABS.get(*index) {
+                            let page = *target;
+                            owner.update(cx, |this, cx| this.show_page(page, cx)).ok();
+                        }
+                    })
+                    .children(
+                        WORKBENCH_TABS
+                            .into_iter()
+                            .map(|(_, label)| Tab::new().label(label)),
+                    ),
             )
     }
 
@@ -1503,23 +1525,27 @@ impl CaptureWorkspace {
             .flex_none()
             .h(px(24.))
             .w_full()
-            .px_3()
+            .px_1()
             .bg(colors.status_bar)
             .border_t_1()
             .border_color(colors.status_bar_border)
             .flex()
             .items_center()
-            .gap_3()
+            .gap_1()
             .text_xs()
             .text_color(colors.muted_foreground)
-            .child(
-                div()
-                    .min_w_0()
-                    .text_ellipsis()
-                    .child(self.capture_status.clone()),
-            )
+            .child(status_segment(
+                "workbench-status-message",
+                self.capture_status.clone(),
+            ))
+            .child(status_divider(colors.status_bar_border))
+            .child(status_segment(
+                "workbench-status-page",
+                page_title(self.page),
+            ))
             .child(div().flex_1())
-            .child(div().min_w_0().text_ellipsis().child(folder))
+            .child(status_divider(colors.status_bar_border))
+            .child(status_segment("workbench-status-folder", folder))
     }
 
     fn history_menu_button(
@@ -1532,7 +1558,8 @@ impl CaptureWorkspace {
         let owner = cx.entity().downgrade();
         Button::new("history-more-actions")
             .ghost()
-            .small()
+            .when(theme::current(cx).workbench, |button| button.xsmall())
+            .when(!theme::current(cx).workbench, |button| button.small())
             .label("More")
             .icon(ui_icon(cx, "history-more-actions", 16.))
             .disabled(disabled)
@@ -1595,6 +1622,14 @@ fn key_hint(key: &str, cx: &App) -> gpui::component::kbd::Kbd {
     )
 }
 
+const WORKBENCH_TABS: [(ControlPage, &'static str); 5] = [
+    (ControlPage::Captures, "Recent capture"),
+    (ControlPage::History, "Library"),
+    (ControlPage::Sources, "Displays & windows"),
+    (ControlPage::Uploads, "Uploads"),
+    (ControlPage::Settings, "Settings"),
+];
+
 fn page_title(page: ControlPage) -> &'static str {
     match page {
         ControlPage::Captures => "Recent capture",
@@ -1603,6 +1638,26 @@ fn page_title(page: ControlPage) -> &'static str {
         ControlPage::Uploads => "Uploads",
         ControlPage::Settings => "Settings",
     }
+}
+
+fn status_divider(color: gpui::Hsla) -> impl IntoElement {
+    div().w(px(1.)).h(px(12.)).flex_shrink_0().bg(color)
+}
+
+fn status_segment(id: &'static str, text: impl Into<gpui::SharedString>) -> impl IntoElement {
+    let text = text.into();
+    div()
+        .id(id)
+        .test_support()
+        .min_w_0()
+        .px_2()
+        .text_ellipsis()
+        .aria_label(text.clone())
+        .child(text)
+}
+
+fn dock_item(item: SidebarMenuItem, workbench: bool) -> SidebarMenuItem {
+    item.when(workbench, |item| item.py_0().px_2().h(px(22.)))
 }
 
 fn classic_capture_home(cx: &App) -> impl IntoElement {
@@ -1750,7 +1805,8 @@ fn quiet_button(
 ) -> Button {
     Button::new(id)
         .ghost()
-        .small()
+        .when(theme::current(cx).workbench, |button| button.xsmall())
+        .when(!theme::current(cx).workbench, |button| button.small())
         .label(label)
         .disabled(disabled)
         .selected(selected)
@@ -1790,7 +1846,7 @@ pub(super) fn capture_button(
 }
 
 pub(super) fn ui_button(
-    _cx: &App,
+    cx: &App,
     id: &'static str,
     label: &'static str,
     disabled: bool,
@@ -1798,7 +1854,8 @@ pub(super) fn ui_button(
     on_click: impl Fn(&gpui::ClickEvent, &mut Window, &mut App) + 'static,
 ) -> Button {
     Button::new(id)
-        .small()
+        .when(theme::current(cx).workbench, |button| button.xsmall())
+        .when(!theme::current(cx).workbench, |button| button.small())
         .label(label)
         .disabled(disabled)
         .when(accented, |button| button.primary())
