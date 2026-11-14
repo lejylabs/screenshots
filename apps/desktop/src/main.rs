@@ -1,4 +1,5 @@
 mod cli;
+mod image_tools;
 
 fn main() {
     match cli::run(std::env::args_os().skip(1).collect()) {

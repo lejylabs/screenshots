@@ -11,6 +11,9 @@ Headless commands (no desktop UI, clipboard writes or implicit uploads):
   screenshots image convert INPUT OUTPUT [--width N] [--height N]
       [--rotate 90|180|270] [--flip-horizontal] [--flip-vertical]
       [--jpeg-quality 1..100]
+  screenshots image compose INPUT OUTPUT [--padding N] [--background RRGGBB|RRGGBBAA]
+      [--watermark FILE --at X Y]
+  screenshots image resize INPUT OUTPUT WIDTH HEIGHT
   screenshots list displays|windows
   screenshots capture display|window ID OUTPUT
   screenshots capture region DISPLAY X Y WIDTH HEIGHT OUTPUT
@@ -23,7 +26,7 @@ Headless commands (no desktop UI, clipboard writes or implicit uploads):
 
 Image input: PNG/JPEG/WebP, <=32 MiB encoded and <=256 MiB decoded.
 Output: PNG/JPEG/lossless WebP; existing files are never replaced.
-Convert resize does not upscale.
+Convert resize does not upscale; image resize permits nearest-neighbour upscaling.
 Convert width alone or height alone keeps the aspect ratio.
 Capture reads desktop pixels only when explicitly requested; it saves one image
 without history or clipboard output. Window capture is unavailable on Linux.
@@ -51,6 +54,13 @@ pub fn run(args: Vec<OsString>) -> Result<bool> {
         "--version" | "-V" => {
             ensure!(args.len() == 1, "--version takes no arguments");
             println!("screenshots {}", app_core::version());
+        }
+        "image"
+            if args
+                .get(1)
+                .is_some_and(|arg| arg == "compose" || arg == "resize") =>
+        {
+            crate::image_tools::run(&args[1..])?
         }
         "image" => convert(&args[1..])?,
         "list" => list(&args[1..])?,
