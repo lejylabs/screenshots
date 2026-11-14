@@ -1,23 +1,32 @@
 # Functional gap analysis: screenshots and ShareX
 
+Implementation follow-up (2026-11-14, working tree): Uploads can save up to 16
+named destinations, switch the session destination with Use, and Remove a name
+from the catalog. The remembered current destination file stays separate.
+Secrets stay out of JSON. Per-task defaults, configuration export/import and
+secret-store platforms other than Windows remain missing. See PLAN.md's named
+upload destinations slice.
+
 Implementation follow-up (2026-11-14, working tree): Windows Uploads Remove
 credential deletes the origin-scoped Generic Credential for the attached
 reference and returns a credential-free session destination. Forget destination
-still leaves the OS secret in place. Named destinations and secret-store
-platforms other than Windows remain missing. See PLAN.md's credential-removal
-slice.
+still leaves the OS secret in place. Named destinations are implemented in the
+later 2026-11-14 follow-up. Secret-store platforms other than Windows remain
+missing. See PLAN.md's credential-removal slice.
 
 Implementation follow-up (2026-11-14, working tree): Uploads Test destination
 sends a throwaway 1×1 PNG through the existing upload path. It is explicit and
 cancellable, does not record upload history, and does not change the last
-capture. Named destinations and secret-store platforms other than Windows
-remain missing. See PLAN.md's destination connection-test slice.
+capture. Named destinations are implemented in the later 2026-11-14 follow-up.
+Secret-store platforms other than Windows remain missing. See PLAN.md's
+destination connection-test slice.
 
 Implementation follow-up (2026-11-13, working tree): Windows Uploads can save a
 Bearer/API-key/Basic credential for the current HTTPS destination into Credential
 Manager. The secret never enters destination JSON. Connection testing is
-implemented in the 2026-11-14 follow-up. Named destinations and secret-store
-platforms other than Windows remain missing. See PLAN.md's credential-entry slice.
+implemented in the 2026-11-14 follow-up. Named destinations are implemented
+in the later 2026-11-14 follow-up. Secret-store platforms other than Windows
+remain missing. See PLAN.md's credential-entry slice.
 
 Implementation follow-up (2026-11-12, working tree): configurable Windows bindings
 for the three existing capture commands are now implemented. See [scope and
@@ -259,8 +268,8 @@ files/URLs and configured tasks.
 
 | Capability | Current status and gap | Priority |
 | --- | --- | --- |
-| Destination setup | Partial: Uploads offers native credential-free POST/PUT setup with plain-text/JSON link responses, bounded validation and explicit HTTP opt-in; Use is session-only and Remember persists it. Windows Save credential writes Bearer/API-key/Basic secrets to Credential Manager and attaches only the reference to the session destination. Remove credential deletes that OS secret and clears the session reference; Forget destination still leaves the OS secret in place. JSON profiles retain advanced settings. Test destination sends a throwaway 1×1 PNG through the existing transfer path without recording history. Named destinations and configuration export remain missing. | A |
-| Multiple destinations | Missing saved named destination list, destination switching and per-task defaults. Only one profile is remembered. | A/B |
+| Destination setup | Partial: Uploads offers native credential-free POST/PUT setup with plain-text/JSON link responses, bounded validation and explicit HTTP opt-in; Use is session-only and Remember persists it. Windows Save credential writes Bearer/API-key/Basic secrets to Credential Manager and attaches only the reference to the session destination. Remove credential deletes that OS secret and clears the session reference; Forget destination still leaves the OS secret in place. JSON profiles retain advanced settings. Test destination sends a throwaway 1×1 PNG through the existing transfer path without recording history. Named destinations persist up to 16 profiles in a separate catalog; configuration export remains missing. | A |
+| Multiple destinations | Partial: a named catalog of up to 16 destinations can be saved, switched into the session and removed. The remembered current destination remains one profile. Per-task defaults are missing. | A/B |
 | Existing ShareX profiles | Missing `.sxcu` import/export or a documented compatibility subset. Our profile JSON is not the ShareX format. | B |
 | Generic HTTP breadth | Partial: POST multipart/PUT PNG; no custom request headers/arguments/query templates, JSON/form bodies, richer response expressions or deletion/thumbnail result URLs. Compatibility must preserve origin-scoped secrets and response bounds. | B |
 | Service integrations | No dedicated S3/R2, SFTP/FTP, OAuth/provider integrations or remote file management. Some simple services can already work through our generic POST/PUT path; test service by service. | B/C |

@@ -58,6 +58,14 @@ impl Render for CaptureWorkspace {
                 ]);
             }
         } else { self.upload_credential_inputs = None; }
+        if self.page == ControlPage::Uploads && self.upload_named_open {
+            if self.upload_named_input.is_none() {
+                self.upload_named_input = Some(cx.new(|cx|
+                    gpui::component::input::InputState::new(window, cx)
+                        .placeholder("Host")
+                        .validate(|value, _| value.len() <= 64 && !value.chars().any(char::is_control))));
+            }
+        } else { self.upload_named_input = None; }
         if self.page == ControlPage::Captures {
             if self.capture_delay_input.is_none() {
                 self.capture_delay_input = Some(cx.new(|cx| gpui::component::input::InputState::new(window, cx)
@@ -372,7 +380,7 @@ impl Render for CaptureWorkspace {
                         .child(div().flex().flex_col().gap_1()
                             .child(div().font_weight(gpui::FontWeight::SEMIBOLD).child("Destination"))
                             .child(div().text_sm().text_color(colors.muted_foreground).child(if self.upload_destination.is_some() { "Ready for an explicit upload" } else { "Connect your own image hosting service" }))))
-                    .child(div().text_sm().text_color(colors.muted_foreground).child("Set up a destination or load a profile. Test destination sends a throwaway 1×1 PNG. Uploads of your screenshots start only when you choose an image and confirm."))
+                    .child(div().text_sm().text_color(colors.muted_foreground).child("Set up a destination or load a profile. Save named stores up to 16 profiles. Test destination sends a throwaway 1×1 PNG. Uploads of your screenshots start only when you choose an image and confirm."))
                     .child(div().flex().flex_wrap().gap_2()
                         .child(capture_button(cx, "setup-upload-destination", if self.upload_form_open { "Cancel setup" } else { "Set up destination" },
                             self.upload_config_loading || self.upload_cancel.is_some(), cx.listener(|this, _, _, cx| {
@@ -390,6 +398,15 @@ impl Render for CaptureWorkspace {
                         .when(self.upload_destination.is_some(), |row| row
                             .child(quiet_button(cx, "remember-upload-destination", "Remember", self.upload_config_loading || self.upload_cancel.is_some(), false,
                                 cx.listener(|this, _, _, cx| this.persist_upload_destination(false, cx)))))
+                        .when(self.upload_destination.is_some(), |row| row
+                            .child(capture_button(cx, "save-named-upload-destination", if self.upload_named_open { "Cancel name" } else { "Save named…" },
+                                self.upload_config_loading || self.upload_cancel.is_some(), cx.listener(|this, _, _, cx| {
+                                    if this.upload_config_loading || this.upload_cancel.is_some() || this.quitting || this.upload_destination.is_none() { return; }
+                                    let open = !this.upload_named_open;
+                                    this.close_upload_forms();
+                                    this.upload_named_open = open;
+                                    cx.notify();
+                                }))))
                         .when(cfg!(target_os = "windows") && self.upload_destination.is_some(), |row| row
                             .child(capture_button(cx, "save-upload-credential", if self.upload_credential_open { "Cancel credential" } else { "Save credential" },
                                 self.upload_config_loading || self.upload_cancel.is_some(), cx.listener(|this, _, _, cx| {
@@ -468,6 +485,16 @@ impl Render for CaptureWorkspace {
                                 cx.listener(|this, _, _, cx| this.save_upload_credential(cx))))
                             .child(div().text_sm().child(self.upload_status.clone()))
                     }))
+                    .children(self.upload_named_input.as_ref().map(|input| {
+                        let disabled = self.upload_config_loading || self.upload_cancel.is_some();
+                        div().flex().flex_col().gap_2()
+                            .child("Save up to 16 named destinations. Saving the same name replaces it. Secrets stay in Credential Manager.")
+                            .child("Destination name")
+                            .child(gpui::component::input::Input::new(input).id("upload-named-name").aria_label("Named destination name").disabled(disabled))
+                            .child(capture_button(cx, "use-named-upload-save", "Save named destination", disabled,
+                                cx.listener(|this, _, _, cx| this.save_named_upload_destination(cx))))
+                            .child(div().text_sm().child(self.upload_status.clone()))
+                    }))
                     .children(self.upload_destination.as_ref().and_then(|value| value.credential_target()).map(|target| {
                         div().pt_3().border_t_1().border_color(colors.border).flex().flex_col().gap_2()
                             .child(div().text_xs().text_color(colors.muted_foreground).child(format!("Credential Manager target: {target}")))
@@ -476,7 +503,24 @@ impl Render for CaptureWorkspace {
                                     cx.write_to_clipboard(gpui::ClipboardItem::new_string(target.clone()));
                                     this.clipboard_status = "Credential target copied (no token)".into(); cx.notify();
                                 })))
-                    })))
+                    }))
+                    .when(!self.upload_named.is_empty(), |view| {
+                        let disabled = self.upload_config_loading || self.upload_cancel.is_some();
+                        view.child(div().pt_3().border_t_1().border_color(colors.border).flex().flex_col().gap_2()
+                            .child(div().text_sm().text_color(colors.muted_foreground).child("Saved destinations · Use applies to this session · Remove deletes only the name"))
+                            .children(self.upload_named.iter().cloned().enumerate().map(|(index, entry)| {
+                                let name = entry.name().to_string();
+                                let remove = name.clone();
+                                div().flex().flex_wrap().items_center().gap_2()
+                                    .child(format!("{} · {}", entry.name(), entry.profile().origin()))
+                                    .child(Button::new(("use-named-upload", index)).small().label("Use").disabled(disabled)
+                                        .accessibility_label(format!("Use named destination {}", name))
+                                        .on_click(cx.listener(move |this, _, _, cx| this.use_named_upload_destination(&name, cx))))
+                                    .child(Button::new(("remove-named-upload", index)).small().label("Remove").disabled(disabled)
+                                        .accessibility_label(format!("Remove named destination {remove}"))
+                                        .on_click(cx.listener(move |this, _, _, cx| this.remove_named_upload_destination(&remove, cx))))
+                            })))
+                    }))
                 .child(div().flex_none().p_5().rounded(px(theme.panel_radius)).bg(colors.group_box).flex().flex_col().gap_3()
                     .child(div().font_weight(gpui::FontWeight::SEMIBOLD).child("Share your latest screenshot"))
                     .child(div().text_sm().text_color(colors.muted_foreground).child(

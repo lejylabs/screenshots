@@ -357,6 +357,174 @@ impl UploadDestination {
     }
 }
 
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct NamedUploadDestination {
+    name: String,
+    profile: UploadDestination,
+}
+
+impl NamedUploadDestination {
+    pub fn new(name: String, profile: UploadDestination) -> Result<Self> {
+        let entry = Self {
+            name: name.trim().into(),
+            profile,
+        };
+        entry.validate()?;
+        Ok(entry)
+    }
+
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    pub fn profile(&self) -> &UploadDestination {
+        &self.profile
+    }
+
+    fn validate(&self) -> Result<()> {
+        ensure!(
+            !self.name.is_empty()
+                && self.name.len() <= 64
+                && self.name.trim() == self.name
+                && !self.name.chars().any(char::is_control),
+            "Use a destination name of 1–64 bytes without control characters"
+        );
+        self.profile.validate()?;
+        Ok(())
+    }
+}
+
+#[derive(Clone, Default, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct UploadDestinationCatalog {
+    destinations: Vec<NamedUploadDestination>,
+}
+
+impl UploadDestinationCatalog {
+    fn path() -> Result<std::path::PathBuf> {
+        Ok(crate::CaptureSettings::config_path()?.with_file_name("upload-destinations.json"))
+    }
+
+    pub fn load() -> Result<Self> {
+        Self::load_at(&Self::path()?)
+    }
+
+    fn load_at(path: &Path) -> Result<Self> {
+        match std::fs::File::open(path) {
+            Ok(file) => {
+                let mut bytes = Vec::new();
+                file.take(65537).read_to_end(&mut bytes)?;
+                ensure!(
+                    bytes.len() <= 65536,
+                    "Named destination list exceeds 64 KiB"
+                );
+                let catalog: Self =
+                    serde_json::from_slice(&bytes).context("Invalid named destination list")?;
+                catalog.validate()?;
+                Ok(catalog)
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Self::default()),
+            Err(error) => Err(error.into()),
+        }
+    }
+
+    pub fn save(&self) -> Result<()> {
+        self.save_at(&Self::path()?)
+    }
+
+    fn save_at(&self, path: &Path) -> Result<()> {
+        use std::io::Write;
+        self.validate()?;
+        let bytes = serde_json::to_vec_pretty(self)?;
+        ensure!(
+            bytes.len() <= 65536,
+            "Named destination list exceeds 64 KiB"
+        );
+        let parent = path.parent().context("Invalid upload settings path")?;
+        std::fs::create_dir_all(parent)?;
+        let temporary = parent.join(format!("upload-named-{}.part", uuid::Uuid::new_v4()));
+        let result = (|| -> Result<()> {
+            let mut file = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&temporary)?;
+            file.write_all(&bytes)?;
+            file.sync_all()?;
+            drop(file);
+            std::fs::rename(&temporary, path)?;
+            Ok(())
+        })();
+        if result.is_err() {
+            let _ = std::fs::remove_file(&temporary);
+        }
+        result
+    }
+
+    pub fn from_entries(destinations: Vec<NamedUploadDestination>) -> Result<Self> {
+        let catalog = Self { destinations };
+        catalog.validate()?;
+        Ok(catalog)
+    }
+
+    pub fn entries(&self) -> &[NamedUploadDestination] {
+        &self.destinations
+    }
+
+    pub fn into_entries(self) -> Vec<NamedUploadDestination> {
+        self.destinations
+    }
+
+    pub fn upsert(&mut self, name: String, destination: UploadDestination) -> Result<()> {
+        let entry = NamedUploadDestination::new(name, destination)?;
+        if let Some(existing) = self
+            .destinations
+            .iter_mut()
+            .find(|item| item.name == entry.name)
+        {
+            *existing = entry;
+        } else {
+            ensure!(
+                self.destinations.len() < 16,
+                "At most 16 named destinations can be saved"
+            );
+            self.destinations.push(entry);
+        }
+        self.validate()?;
+        Ok(())
+    }
+
+    pub fn remove(&mut self, name: &str) -> bool {
+        let before = self.destinations.len();
+        self.destinations.retain(|item| item.name != name);
+        before != self.destinations.len()
+    }
+
+    pub fn get(&self, name: &str) -> Option<&UploadDestination> {
+        self.destinations
+            .iter()
+            .find(|item| item.name == name)
+            .map(|item| &item.profile)
+    }
+
+    fn validate(&self) -> Result<()> {
+        ensure!(
+            self.destinations.len() <= 16,
+            "At most 16 named destinations can be saved"
+        );
+        for (index, entry) in self.destinations.iter().enumerate() {
+            entry.validate()?;
+            ensure!(
+                !self.destinations[..index]
+                    .iter()
+                    .any(|other| other.name == entry.name),
+                "Destination names must be unique"
+            );
+        }
+        Ok(())
+    }
+}
+
 #[derive(Clone, Default)]
 pub struct UploadCancellation(Arc<tokio::sync::Notify>);
 impl UploadCancellation {
@@ -854,6 +1022,109 @@ mod tests {
         let blocked = other.join("upload-destination.json");
         assert!(second.save_at(&blocked).is_err());
         assert_eq!(std::fs::read(&other)?, b"keep");
+        std::fs::remove_dir_all(root)?;
+        Ok(())
+    }
+
+    #[test]
+    fn named_destinations_round_trip_replace_remove_and_keep_other_files() -> Result<()> {
+        let root =
+            std::env::temp_dir().join(format!("screenshots-named-{}", uuid::Uuid::new_v4()));
+        let path = root.join("upload-destinations.json");
+        let remembered = root.join("upload-destination.json");
+        std::fs::create_dir_all(&root)?;
+        std::fs::write(&remembered, b"keep-current")?;
+        assert!(UploadDestinationCatalog::load_at(&path)?.entries().is_empty());
+        let mut catalog = UploadDestinationCatalog::default();
+        catalog.upsert(
+            " Host ".into(),
+            destination("https://first.example.invalid/upload".into()),
+        )?;
+        assert_eq!(catalog.entries()[0].name(), "Host");
+        catalog.save_at(&path)?;
+        let loaded = UploadDestinationCatalog::load_at(&path)?;
+        assert_eq!(loaded.entries().len(), 1);
+        assert_eq!(loaded.entries()[0].name(), "Host");
+        assert_eq!(
+            loaded.get("Host").unwrap().origin(),
+            "https://first.example.invalid"
+        );
+        let mut catalog = loaded;
+        catalog.upsert(
+            "Host".into(),
+            destination("https://second.example.invalid/upload".into()),
+        )?;
+        catalog.upsert(
+            "Other".into(),
+            destination("https://other.example.invalid/upload".into()),
+        )?;
+        catalog.save_at(&path)?;
+        let loaded = UploadDestinationCatalog::load_at(&path)?;
+        assert_eq!(loaded.entries().len(), 2);
+        assert_eq!(
+            loaded.get("Host").unwrap().origin(),
+            "https://second.example.invalid"
+        );
+        let text = String::from_utf8(std::fs::read(&path)?)?;
+        assert!(!text.contains("secret"));
+        assert!(
+            UploadDestination::manual(
+                "https://user:secret@example.invalid/upload".into(),
+                UploadMethod::Post,
+                "file".into(),
+                Some("/result/url".into()),
+                true,
+            )
+            .is_err()
+        );
+        let bytes = std::fs::read(&path)?;
+        let mut catalog = UploadDestinationCatalog::load_at(&path)?;
+        catalog
+            .upsert(
+                "".into(),
+                destination("https://third.example.invalid/upload".into()),
+            )
+            .unwrap_err();
+        assert_eq!(std::fs::read(&path)?, bytes);
+        for name in ["", "bad\nname", &"x".repeat(65)] {
+            assert!(NamedUploadDestination::new(
+                name.into(),
+                destination("https://example.invalid/upload".into())
+            )
+            .is_err());
+        }
+        let mut catalog = UploadDestinationCatalog::default();
+        for index in 0..16 {
+            catalog.upsert(
+                format!("Host {index}"),
+                destination("https://example.invalid/upload".into()),
+            )?;
+        }
+        assert!(catalog
+            .upsert(
+                "Overflow".into(),
+                destination("https://example.invalid/upload".into()),
+            )
+            .is_err());
+        catalog.upsert(
+            "Host 0".into(),
+            destination("https://replaced.example.invalid/upload".into()),
+        )?;
+        assert_eq!(catalog.entries().len(), 16);
+        assert_eq!(
+            catalog.get("Host 0").unwrap().origin(),
+            "https://replaced.example.invalid"
+        );
+        assert!(catalog.remove("Host 0"));
+        assert!(!catalog.remove("Host 0"));
+        assert_eq!(catalog.entries().len(), 15);
+        catalog.save_at(&path)?;
+        assert_eq!(std::fs::read(&remembered)?, b"keep-current");
+        let blocked = remembered.join("upload-destinations.json");
+        assert!(catalog.save_at(&blocked).is_err());
+        assert_eq!(std::fs::read(&remembered)?, b"keep-current");
+        std::fs::write(&path, b"invalid JSON")?;
+        assert!(UploadDestinationCatalog::load_at(&path).is_err());
         std::fs::remove_dir_all(root)?;
         Ok(())
     }

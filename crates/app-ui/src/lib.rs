@@ -203,6 +203,9 @@ pub struct CaptureWorkspace {
     upload_credential_open: bool,
     upload_credential_inputs: Option<[gpui::Entity<gpui::component::input::InputState>; 3]>,
     upload_credential_auth: app_core::UploadAuthentication,
+    upload_named_open: bool,
+    upload_named_input: Option<gpui::Entity<gpui::component::input::InputState>>,
+    upload_named: Vec<app_core::NamedUploadDestination>,
     upload_config_loading: bool,
     upload_profile_checked: bool,
     upload_cancel: Option<app_core::UploadCancellation>,
@@ -628,6 +631,9 @@ impl CaptureWorkspace {
             upload_credential_open: false,
             upload_credential_inputs: None,
             upload_credential_auth: app_core::UploadAuthentication::Bearer,
+            upload_named_open: false,
+            upload_named_input: None,
+            upload_named: Vec::new(),
             upload_config_loading: false,
             upload_profile_checked: cfg!(test),
             upload_cancel: None,
@@ -3004,25 +3010,53 @@ impl CaptureWorkspace {
         cx.spawn(async move |this, cx| {
             let result = cx
                 .background_spawn(async {
-                    app_core::UploadDestination::load_remembered()
-                        .map_err(|error| format!("{error:#}"))
+                    let remembered = app_core::UploadDestination::load_remembered()
+                        .map_err(|error| format!("{error:#}"));
+                    let named = app_core::UploadDestinationCatalog::load()
+                        .map(|catalog| catalog.into_entries())
+                        .map_err(|error| format!("{error:#}"));
+                    (remembered, named)
                 })
                 .await;
             this.update(cx, |this, cx| {
                 this.upload_config_loading = false;
                 if !this.quitting {
-                    match result {
+                    let (remembered, named) = result;
+                    let named_error = match named {
+                        Ok(entries) => {
+                            this.upload_named = entries;
+                            None
+                        }
+                        Err(error) => Some(error),
+                    };
+                    match remembered {
                         Ok(Some(destination)) => {
                             this.upload_status = format!(
                                 "Destination: {} · Remembered · Manual upload",
                                 destination.origin()
                             );
                             this.upload_destination = Some(destination);
+                            if let Some(error) = named_error {
+                                this.upload_status.push_str(&format!(
+                                    " · Named destinations unavailable: {error}"
+                                ));
+                            }
                         }
-                        Ok(None) => {}
+                        Ok(None) => {
+                            if let Some(error) = named_error {
+                                this.upload_status =
+                                    format!("Named destinations unavailable: {error}");
+                            }
+                        }
                         Err(error) => {
-                            this.upload_status =
-                                format!("Uploads disabled · Could not restore destination: {error}")
+                            this.upload_status = format!(
+                                "Uploads disabled · Could not restore destination: {error}"
+                            );
+                            if let Some(named) = named_error {
+                                this.upload_status.push_str(&format!(
+                                    " · Named destinations unavailable: {named}"
+                                ));
+                            }
                         }
                     }
                 }
@@ -3067,11 +3101,143 @@ impl CaptureWorkspace {
         cx.notify();
     }
 
+    fn save_named_upload_destination(&mut self, cx: &mut Context<Self>) {
+        if self.page != ControlPage::Uploads
+            || !self.upload_named_open
+            || self.quitting
+            || self.upload_config_loading
+            || self.upload_cancel.is_some()
+        {
+            return;
+        }
+        let Some(destination) = self.upload_destination.clone() else {
+            return;
+        };
+        let Some(input) = &self.upload_named_input else {
+            return;
+        };
+        let name = input.read(cx).value().to_string();
+        let entries = self.upload_named.clone();
+        self.upload_config_loading = true;
+        self.upload_status = "Saving named destination…".into();
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_spawn(async move {
+                    let mut catalog = app_core::UploadDestinationCatalog::from_entries(entries)?;
+                    catalog.upsert(name, destination)?;
+                    catalog.save()?;
+                    Ok::<_, anyhow::Error>(catalog.into_entries())
+                })
+                .await;
+            this.update(cx, |this, cx| {
+                this.upload_config_loading = false;
+                if !this.quitting && this.page == ControlPage::Uploads && this.upload_named_open {
+                    match result {
+                        Ok(entries) => {
+                            this.upload_named = entries;
+                            this.close_upload_forms();
+                            this.upload_status = format!(
+                                "Named destination saved · {} saved names · current destination unchanged",
+                                this.upload_named.len()
+                            );
+                        }
+                        Err(error) => {
+                            this.upload_status =
+                                format!("Named destinations unchanged: {error:#}");
+                        }
+                    }
+                }
+                this.finish_quit_if_idle(cx);
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+        cx.notify();
+    }
+
+    fn use_named_upload_destination(&mut self, name: &str, cx: &mut Context<Self>) {
+        if self.page != ControlPage::Uploads
+            || self.quitting
+            || self.upload_config_loading
+            || self.upload_cancel.is_some()
+        {
+            return;
+        }
+        let Some(destination) = self
+            .upload_named
+            .iter()
+            .find(|entry| entry.name() == name)
+            .map(|entry| entry.profile().clone())
+        else {
+            return;
+        };
+        self.close_upload_forms();
+        self.upload_url = None;
+        self.upload_status = format!(
+            "Destination: {} · Named {name} · Session only · Remember to persist as current",
+            destination.origin()
+        );
+        self.upload_destination = Some(destination);
+        cx.notify();
+    }
+
+    fn remove_named_upload_destination(&mut self, name: &str, cx: &mut Context<Self>) {
+        if self.page != ControlPage::Uploads
+            || self.quitting
+            || self.upload_config_loading
+            || self.upload_cancel.is_some()
+        {
+            return;
+        }
+        if !self.upload_named.iter().any(|entry| entry.name() == name) {
+            return;
+        }
+        let name = name.to_string();
+        let mut entries = self.upload_named.clone();
+        entries.retain(|entry| entry.name() != name);
+        self.upload_config_loading = true;
+        self.upload_status = format!("Removing named destination {name}…");
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_spawn(async move {
+                    let catalog = app_core::UploadDestinationCatalog::from_entries(entries)?;
+                    catalog.save()?;
+                    Ok::<_, anyhow::Error>(catalog.into_entries())
+                })
+                .await;
+            this.update(cx, |this, cx| {
+                this.upload_config_loading = false;
+                if !this.quitting && this.page == ControlPage::Uploads {
+                    match result {
+                        Ok(entries) => {
+                            this.upload_named = entries;
+                            this.upload_status = format!(
+                                "Named destination {name} removed · session destination unchanged"
+                            );
+                        }
+                        Err(error) => {
+                            this.upload_status =
+                                format!("Named destinations unchanged: {error:#}");
+                        }
+                    }
+                }
+                this.finish_quit_if_idle(cx);
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+        cx.notify();
+    }
+
     fn close_upload_forms(&mut self) {
         self.upload_form_open = false;
         self.upload_form_inputs = None;
         self.upload_credential_open = false;
         self.upload_credential_inputs = None;
+        self.upload_named_open = false;
+        self.upload_named_input = None;
     }
 
     fn use_upload_form(&mut self, cx: &mut Context<Self>) {

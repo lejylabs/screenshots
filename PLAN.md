@@ -630,9 +630,9 @@ cache, watcher or idle timer. Constructor and headless UI fixtures verify HTTP
 rejection, empty secrets, duplicate admission, stale-result suppression and that
 status text never echoes the secret, without writing OS credentials or networking.
 An ignored native round-trip writes one uniquely named synthetic credential,
-reads it back and deletes it. Connection testing and credential removal are
-implemented below. Named destinations and non-Windows secret stores remain
-separate work.
+reads it back and deletes it. Connection testing, credential removal and named
+destinations are implemented below. Non-Windows secret stores remain separate
+work.
 Native keyboard/IME/accessibility, real Credential Manager UX and
 latency/process/GPU/resource acceptance remain open; no new performance
 measurement is claimed for this bounded secret-entry path.
@@ -686,10 +686,44 @@ A regular core fixture rejects destinations without a reference and unrelated
 or HTTP targets. An ignored native round-trip writes one uniquely named
 synthetic credential, deletes it through detach_credential, confirms lookup
 fails and leaves no secret in JSON.
-Named destinations and non-Windows secret stores remain separate work.
+Named destination lists are implemented below. Non-Windows secret stores
+remain separate work.
 Native keyboard/IME/accessibility, real Credential Manager UX and
 latency/process/GPU/resource acceptance remain open; no new performance
 measurement is claimed for this bounded deletion path.
+
+#### Current feature slice: named upload destinations
+
+Uploads offers Save named after a destination is present. Up to 16 named
+profiles persist in upload-destinations.json beside the existing remembered
+current destination. Names are trimmed, case-sensitive, unique and at most
+64 UTF-8 bytes without control characters; saving the same name replaces the
+profile. Use applies a saved profile to this session only; Remember still
+persists the current destination separately. Remove deletes only that catalog
+entry and leaves the session destination, remembered current file and OS
+credentials unchanged. Forget destination still leaves the named catalog in
+place. Profiles store the existing credential-free JSON, including a
+non-secret credential reference, never a token or password. Invalid names
+keep the previous list. Closing the form, page or window suppresses a pending
+save; Quit discards it. No connection, upload or image decode occurs while
+saving or switching.
+
+Resource cost is one lazy 64-byte Kit name input, at most 16 small named
+profile records and a 64 KiB catalog file with the existing atomic
+temporary/rename write. The input releases on cancel, successful save, page
+exit or UI close. There is no new dependency, worker, runtime, queue, image,
+cache, watcher or idle timer. Restore reads the catalog on the existing
+destination worker when the control window first opens. Constructor and
+headless UI fixtures verify button presence, empty-name rejection without a
+catalog write, in-memory Use/stale/busy guards and form discard, without
+writing user settings. A regular core fixture covers round-trip replace,
+16-name admission, missing-file defaults, failed validation preservation and
+that the remembered current file stays untouched.
+Per-task destination defaults, configuration export/import and ShareX profile
+import remain separate work.
+Native keyboard/IME/accessibility, packaged restart workflow and
+latency/process/GPU/resource acceptance remain open; no new performance
+measurement is claimed for this bounded catalog.
 
 #### Current feature slice: configurable Windows global hotkeys
 
