@@ -102,7 +102,7 @@ mod tests {
         );
         assert_eq!(std::fs::read(directory.join("first.png"))?, original);
         assert_eq!(std::fs::read(&source)?, original);
-        let conflict = export_saved_pngs(&[source.clone()], &directory, || false)?;
+        let conflict = export_saved_pngs(&[source], &directory, || false)?;
         assert_eq!((conflict.exported, conflict.failures.len()), (0, 1));
         assert_eq!(std::fs::read(directory.join("first.png"))?, original);
         assert_eq!(std::fs::read(&invalid)?, b"not PNG");
@@ -124,7 +124,7 @@ mod tests {
         let second = root.join("second.png");
         image::RgbaImage::new(2, 3).save(&first)?;
         image::RgbaImage::new(3, 2).save(&second)?;
-        let report = export_saved_pngs(&[first.clone(), second.clone()], &directory, || {
+        let report = export_saved_pngs(&[first.clone(), second], &directory, || {
             directory.join("first.png").exists()
         })?;
         assert_eq!(

@@ -3032,7 +3032,6 @@ mod tests {
         assert!(destination.clone().with_headers(many).is_err());
         assert!(
             destination
-                .clone()
                 .with_headers([("X-Foo", "a"), ("x-foo", "b")])
                 .is_err()
         );
@@ -3133,7 +3132,6 @@ mod tests {
         assert!(destination.clone().with_query(many).is_err());
         assert!(
             destination
-                .clone()
                 .with_query([("format", "a"), ("Format", "b")])
                 .is_err()
         );
@@ -3240,7 +3238,6 @@ mod tests {
         assert!(destination.clone().with_form(many).is_err());
         assert!(
             destination
-                .clone()
                 .with_form([("title", "a"), ("Title", "b")])
                 .is_err()
         );
@@ -3381,12 +3378,7 @@ mod tests {
             r#"{"url":"https://example.invalid/upload","field":"file","json_pointer":"/url","json":{"api_key":"secret"}}"#,
         )?;
         assert!(UploadDestination::load(&path).is_err());
-        assert!(
-            destination
-                .clone()
-                .with_form([("title", "screenshot")])
-                .is_err()
-        );
+        assert!(destination.with_form([("title", "screenshot")]).is_err());
         assert!(
             UploadDestination::manual(
                 "https://example.invalid/image.png".into(),
@@ -3578,7 +3570,7 @@ mod tests {
         assert!(destination.clone().with_thumbnail("{xml}").is_err());
         assert!(destination.clone().with_thumbnail("{xml://url}").is_err());
         assert!(destination.clone().with_thumbnail("{responseurl}").is_err());
-        assert!(destination.clone().with_deletion("").is_err());
+        assert!(destination.with_deletion("").is_err());
         let mut put = UploadDestination::manual(
             "https://example.invalid/image.png".into(),
             UploadMethod::Put,
@@ -3691,9 +3683,7 @@ mod tests {
                 .with_regex(&"a".repeat(257), None)
                 .is_err()
         );
-        let extras = destination
-            .clone()
-            .with_thumbnail(r#"{regex:thumb="(.+)"|1}"#)?;
+        let extras = destination.with_thumbnail(r#"{regex:thumb="(.+)"|1}"#)?;
         assert_eq!(
             extras.thumbnail_template().as_deref(),
             Some(r#"{regex:thumb="(.+)"|1}"#)
@@ -3788,9 +3778,7 @@ mod tests {
         )
         .is_err());
         assert!(xml_capture(body, "/files/file[3]/url", "result").is_err());
-        let extras = destination
-            .clone()
-            .with_thumbnail("{xml:/files/file[1]/name}")?;
+        let extras = destination.with_thumbnail("{xml:/files/file[1]/name}")?;
         assert_eq!(
             extras.thumbnail_template().as_deref(),
             Some("{xml:/files/file[1]/name}")
@@ -4646,7 +4634,7 @@ mod tests {
         )?;
         assert!(http.to_sharex(&root.join("http.sxcu")).is_err());
         assert!(!root.join("http.sxcu").exists());
-        let mut escaped = destination.clone();
+        let mut escaped = destination;
         escaped.json_pointer = "/foo~1bar".into();
         assert!(escaped.to_sharex(&root.join("escaped.sxcu")).is_err());
         assert!(!root.join("escaped.sxcu").exists());

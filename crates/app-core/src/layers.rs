@@ -932,7 +932,7 @@ mod tests {
         let order = vec![arrow.clone(), text.clone(), frame.clone()];
         let output = render(&order, None)?;
         assert_eq!(output.pixels.get_pixel(10, 16).0, [34, 197, 94, 255]);
-        let text_above = render(&[arrow.clone(), frame.clone(), text.clone()], None)?;
+        let text_above = render(&[arrow, frame.clone(), text], None)?;
         assert_eq!(text_above.pixels.get_pixel(10, 16).0, [250, 204, 21, 255]);
         let crop = PixelRegion {
             x: 8,

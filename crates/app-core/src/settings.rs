@@ -874,7 +874,7 @@ mod tests {
         assert!(CaptureHotkeys::default().0[4].is_empty());
         assert!(CaptureHotkeys::default().0[3].is_empty());
         assert!(CaptureHotkeys::default().0[5].is_empty());
-        let mut current = legacy.clone();
+        let mut current = legacy;
         current.0[3] = "Ctrl+Alt+W".into();
         current.0[4] = "Alt+R".into();
         current.0[5] = "Alt+D".into();
@@ -1202,7 +1202,7 @@ mod tests {
         assert_eq!(imported.output_directory, current);
         assert_eq!(imported.theme, UiTheme::Oldschool);
         assert_eq!(imported.output_profile, CaptureOutputProfile::CopyOnly);
-        assert_eq!(imported.region_presets, vec![preset.clone()]);
+        assert_eq!(imported.region_presets, vec![preset]);
         assert_eq!(imported.jpeg_quality, 73);
         assert_eq!(imported.export_format, crate::ImageExportFormat::WebP);
         assert_eq!(imported.filename_template, "Shot-{date}");
@@ -1226,7 +1226,7 @@ mod tests {
         let (imported, kept) = CaptureSettings::import_at(&other_backup, current.clone())?;
         assert!(!kept);
         assert_eq!(imported.output_directory, other);
-        let missing_settings = CaptureSettings::for_directory(missing.clone())?
+        let missing_settings = CaptureSettings::for_directory(missing)?
             .with_theme(UiTheme::Oldschool)
             .with_jpeg_quality(55)?;
         let missing_backup = root.join("missing.json");
@@ -1243,7 +1243,7 @@ mod tests {
         assert!(CaptureSettings::import_at(&backup, current.clone()).is_err());
         assert_eq!(fs::read(&neighbor)?, b"keep-upload");
         assert_eq!(
-            CaptureSettings::load_at(&settings_path, current.clone())?.jpeg_quality,
+            CaptureSettings::load_at(&settings_path, current)?.jpeg_quality,
             73
         );
         fs::remove_dir_all(root)?;

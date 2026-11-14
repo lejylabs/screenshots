@@ -1186,6 +1186,8 @@ impl CaptureWorkspace {
             let Ok(Some((settings, folder_kept, prepared))) = applied else {
                 return;
             };
+            #[cfg(not(target_os = "windows"))]
+            let _ = prepared;
             let persisted = settings.clone();
             let result = cx
                 .background_spawn(async move {
@@ -5797,7 +5799,7 @@ impl CaptureWorkspace {
                                 } else {
                                     None
                                 };
-                                (shot.png_path.clone(), saved, history_error)
+                                (shot.png_path, saved, history_error)
                             })
                             .collect::<Vec<_>>()
                     })

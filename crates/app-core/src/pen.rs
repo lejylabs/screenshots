@@ -268,7 +268,7 @@ mod tests {
         assert_eq!(pen.positions().next(), Some([8.5, 16.5]));
         assert!(pen.distance([16.0, 16.5]) < 0.01);
         assert!(pen.distance([16.0, 30.0]) > 5.0);
-        let draw = crate::DrawAnnotation::Pen(pen.clone());
+        let draw = crate::DrawAnnotation::Pen(pen);
         let output = crate::render_ordered_snapshot(
             &source,
             &[],

@@ -1251,6 +1251,8 @@ impl Render for CaptureWorkspace {
 }
 impl CaptureWorkspace {
     fn hotkey_settings(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
+        #[cfg(not(target_os = "windows"))]
+        let _ = cx;
         let panel = div().flex_none().p_5().flex().flex_col().gap_3().child(
             div()
                 .font_weight(gpui::FontWeight::SEMIBOLD)
