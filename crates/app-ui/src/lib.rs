@@ -3205,7 +3205,11 @@ impl CaptureWorkspace {
         self.history_thumb_cancel = None;
         self.history_thumb_loading = None;
         self.history_thumb_failed.clear();
-        let images: Vec<_> = self.history_thumbs.drain().map(|(_, render)| render).collect();
+        let images: Vec<_> = self
+            .history_thumbs
+            .drain()
+            .map(|(_, render)| render)
+            .collect();
         self.drop_history_images(images, cx);
     }
 
@@ -3324,8 +3328,7 @@ impl CaptureWorkspace {
         if let Some(render) = self.history_thumbs.get(&id).cloned() {
             self.clear_history_preview(cx);
             self.history_preview = Some((id, render));
-            self.history_preview_status =
-                "Preview only · Image and clipboard unchanged".into();
+            self.history_preview_status = "Preview only · Image and clipboard unchanged".into();
             cx.notify();
             return;
         }
@@ -5900,12 +5903,7 @@ impl CaptureWorkspace {
         self.start_capture_with_preview(jobs, false, None, cx);
     }
 
-    fn start_capture_task(
-        &mut self,
-        task: usize,
-        jobs: Vec<CaptureJob>,
-        cx: &mut Context<Self>,
-    ) {
+    fn start_capture_task(&mut self, task: usize, jobs: Vec<CaptureJob>, cx: &mut Context<Self>) {
         self.start_capture_with_preview(jobs, false, Some(task), cx);
     }
 

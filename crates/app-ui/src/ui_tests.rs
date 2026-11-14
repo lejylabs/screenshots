@@ -681,12 +681,6 @@ fn jpeg_quality_input_validates_preserves_failed_saves_and_releases_on_exit(
         .unwrap();
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
-        window.scroll(
-            "choose-output-directory",
-            gpui::ScrollDelta::Pixels(point(px(0.), px(-900.))),
-            cx,
-        );
-        window.render_frame(cx);
         window.click("save-jpeg-quality", cx);
     })
     .unwrap();
@@ -1568,10 +1562,7 @@ fn stale_library_menu_cannot_mutate_a_new_page(cx: &mut TestAppContext) {
 #[gpui::test]
 fn library_decodes_visible_page_thumbnails_and_releases_them(cx: &mut TestAppContext) {
     let handle = open_workspace(cx);
-    let root = std::env::temp_dir().join(format!(
-        "screenshots-gallery-{}",
-        std::process::id()
-    ));
+    let root = std::env::temp_dir().join(format!("screenshots-gallery-{}", std::process::id()));
     std::fs::create_dir_all(&root).unwrap();
     let database = root.join("history.sqlite3");
     let mut paths = Vec::new();
@@ -1589,8 +1580,10 @@ fn library_decodes_visible_page_thumbnails_and_releases_them(cx: &mut TestAppCon
             this.history_database = Some(database);
         })
         .unwrap();
-    cx.update_window(handle.into(), |_, window, cx| window.press(&shortcut("2"), cx))
-        .unwrap();
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.press(&shortcut("2"), cx)
+    })
+    .unwrap();
     cx.run_until_parked();
     let newest = handle
         .update(cx, |this, _, cx| {
@@ -2124,8 +2117,14 @@ fn output_task_profiles_apply_on_capture_without_persisting_the_session_profile(
     cx: &mut TestAppContext,
 ) {
     let handle = open_workspace(cx);
+    let blocker = std::env::temp_dir().join(format!(
+        "screenshots-output-task-blocker-{}",
+        std::process::id()
+    ));
+    std::fs::write(&blocker, b"not a directory").unwrap();
     handle
         .update(cx, |this, _, cx| {
+            this.output_directory = Some(blocker.clone());
             this.show_page(ControlPage::Settings, cx);
         })
         .unwrap();
@@ -2142,6 +2141,7 @@ fn output_task_profiles_apply_on_capture_without_persisting_the_session_profile(
     .unwrap();
     handle
         .update(cx, |this, _, cx| {
+            this.settings_saving = false;
             this.output_profile = CaptureOutputProfile::SaveAndCopy;
             this.output_task_profiles[0] = Some(CaptureOutputProfile::CopyOnly);
             this.start_capture_task(
@@ -2152,8 +2152,12 @@ fn output_task_profiles_apply_on_capture_without_persisting_the_session_profile(
                 ],
                 cx,
             );
-            assert!(!this.capturing);
-            assert!(this.capture_status.starts_with("Choose one display"));
+            assert!(!this.capturing, "{}", this.capture_status);
+            assert!(
+                this.capture_status.starts_with("Choose one display"),
+                "{}",
+                this.capture_status
+            );
             assert_eq!(this.output_profile, CaptureOutputProfile::SaveAndCopy);
             assert_eq!(
                 this.output_task_profiles[0],
@@ -2169,8 +2173,12 @@ fn output_task_profiles_apply_on_capture_without_persisting_the_session_profile(
                 ],
                 cx,
             );
-            assert!(!this.capturing);
-            assert!(this.capture_status.starts_with("Choose one display"));
+            assert!(!this.capturing, "{}", this.capture_status);
+            assert!(
+                this.capture_status.starts_with("Choose one display"),
+                "{}",
+                this.capture_status
+            );
             assert_eq!(this.output_profile, CaptureOutputProfile::CopyOnly);
             this.output_task_profiles[0] = None;
             this.capture_status.clear();
@@ -2182,8 +2190,12 @@ fn output_task_profiles_apply_on_capture_without_persisting_the_session_profile(
                 ],
                 cx,
             );
-            assert!(!this.capturing);
-            assert!(this.capture_status.starts_with("Choose one display"));
+            assert!(!this.capturing, "{}", this.capture_status);
+            assert!(
+                this.capture_status.starts_with("Choose one display"),
+                "{}",
+                this.capture_status
+            );
             this.settings_saving = true;
             this.choose_output_task_profile(0, 1, cx);
             assert!(this.settings_saving);
@@ -2196,6 +2208,7 @@ fn output_task_profiles_apply_on_capture_without_persisting_the_session_profile(
             assert!(this.last_saved.is_none() && this.last_capture.is_none());
         })
         .unwrap();
+    std::fs::remove_file(blocker).unwrap();
 }
 
 #[gpui::test]
