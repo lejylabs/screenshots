@@ -1,5 +1,6 @@
 mod cli;
 mod image_tools;
+mod ocr;
 mod qr;
 
 fn main() {
