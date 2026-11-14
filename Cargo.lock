@@ -7480,15 +7480,19 @@ dependencies = [
 name = "screenshots"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "app-core",
  "app-ui",
  "arboard",
  "global-hotkey",
+ "image",
  "rfd",
+ "serde_json",
  "shared",
  "tracing",
  "tracing-subscriber",
  "tray-icon",
+ "zeroize",
 ]
 
 [[package]]
