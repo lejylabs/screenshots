@@ -320,7 +320,7 @@ pub fn search_capture_history(
     if expression.is_empty() {
         return Ok(Vec::new());
     }
-    let connection = open(database)?;
+    let mut connection = open(database)?;
     let flag = cancel.clone();
     let started = std::time::Instant::now();
     connection.progress_handler(

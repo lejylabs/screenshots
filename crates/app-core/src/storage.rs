@@ -41,7 +41,7 @@ fn open_read_only(path: &Path) -> Result<Connection> {
         metadata.len() <= MAX_DATABASE_BYTES,
         "History database exceeds the 1 GiB maintenance limit"
     );
-    let connection = Connection::open_with_flags(
+    let mut connection = Connection::open_with_flags(
         path,
         OpenFlags::SQLITE_OPEN_READ_ONLY
             | OpenFlags::SQLITE_OPEN_NO_MUTEX
@@ -278,6 +278,14 @@ pub fn inspect_part_files(
 mod tests {
     use super::*;
     use std::cell::Cell;
+
+    #[test]
+    fn maintenance_uses_sqlite_with_the_wal_page_size_disclosure_fix() {
+        assert!(
+            rusqlite::version_number() >= 3_054_000,
+            "SQLite must include the RUSTSEC-2026-0459 fix"
+        );
+    }
 
     struct Fixture(PathBuf);
     impl Fixture {
