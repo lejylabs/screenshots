@@ -1,11 +1,19 @@
 # Functional gap analysis: screenshots and ShareX
 
+Implementation follow-up (2026-11-14, working tree): Uploads can assign a named
+destination to each of the six capture commands. Starting that capture applies
+the name to this session only and never starts an upload. Empty or missing names
+keep the current session destination. Settings backup stores the six names.
+Generic HTTP breadth and secret-store platforms other than Windows remain
+missing. See PLAN.md's per-task destination defaults slice.
+
 Implementation follow-up (2026-11-14, working tree): Settings can export and
 import a preferences backup JSON (appearance, folder, shortcuts, output profile,
-region presets, JPEG quality, Save as format, filename template and capture
-delay). A missing backup folder keeps the active save folder. Upload destinations,
-history, images and OS credentials stay out of the file. Per-task defaults,
-generic HTTP breadth and secret-store platforms other than Windows remain
+region presets, JPEG quality, Save as format, filename template, capture delay
+and per-task destination names). A missing backup folder keeps the active save
+folder. Upload destinations, history, images and OS credentials stay out of the
+file. Per-task defaults are implemented in the later 2026-11-14 follow-up.
+Generic HTTP breadth and secret-store platforms other than Windows remain
 missing. See PLAN.md's full settings backup slice.
 
 Implementation follow-up (2026-11-14, working tree): Uploads can export the
@@ -299,8 +307,8 @@ files/URLs and configured tasks.
 
 | Capability | Current status and gap | Priority |
 | --- | --- | --- |
-| Destination setup | Partial: Uploads offers native credential-free POST/PUT setup with plain-text/JSON link responses, bounded validation and explicit HTTP opt-in; Use is session-only and Remember persists it. Windows Save credential writes Bearer/API-key/Basic secrets to Credential Manager and attaches only the reference to the session destination. Remove credential deletes that OS secret and clears the session reference; Forget destination still leaves the OS secret in place. JSON profiles retain advanced settings. Test destination sends a throwaway 1×1 PNG through the existing transfer path without recording history. Named destinations persist up to 16 profiles in a separate catalog. Export/Import configuration copies that catalog and the current destination without secrets. Settings Export/Import copies preferences without destinations, history, images or secrets. | A |
-| Multiple destinations | Partial: a named catalog of up to 16 destinations can be saved, switched into the session and removed. Export/Import configuration copies the catalog with the current destination. The remembered current destination remains one profile. Per-task defaults are missing. | A/B |
+| Destination setup | Partial: Uploads offers native credential-free POST/PUT setup with plain-text/JSON link responses, bounded validation and explicit HTTP opt-in; Use is session-only and Remember persists it. Windows Save credential writes Bearer/API-key/Basic secrets to Credential Manager and attaches only the reference to the session destination. Remove credential deletes that OS secret and clears the session reference; Forget destination still leaves the OS secret in place. JSON profiles retain advanced settings. Test destination sends a throwaway 1×1 PNG through the existing transfer path without recording history. Named destinations persist up to 16 profiles in a separate catalog. Per-task defaults apply a saved name when that capture starts, without uploading. Export/Import configuration copies that catalog and the current destination without secrets. Settings Export/Import copies preferences, including per-task destination names, without destination URLs, history, images or secrets. | A |
+| Multiple destinations | Partial: a named catalog of up to 16 destinations can be saved, switched into the session and removed. Export/Import configuration copies the catalog with the current destination. Per-task defaults apply a saved name when that capture starts, without uploading. The remembered current destination remains one profile. | A/B |
 | Existing ShareX profiles | Partial: Uploads can import and export a documented `.sxcu` subset (HTTPS ImageUploader POST multipart or PUT binary, `{json}`/`{header}`/`{response}`/`{responseurl}`). Headers, query/body arguments, secrets, HTTP and richer parsers are rejected. Full custom-uploader parity remains missing. Our profile JSON is not the ShareX format. | B |
 | Generic HTTP breadth | Partial: POST multipart/PUT PNG; no custom request headers/arguments/query templates, JSON/form bodies, richer response expressions or deletion/thumbnail result URLs. Compatibility must preserve origin-scoped secrets and response bounds. | B |
 | Service integrations | No dedicated S3/R2, SFTP/FTP, OAuth/provider integrations or remote file management. Some simple services can already work through our generic POST/PUT path; test service by service. | B/C |

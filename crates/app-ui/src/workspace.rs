@@ -380,7 +380,7 @@ impl Render for CaptureWorkspace {
                         .child(div().flex().flex_col().gap_1()
                             .child(div().font_weight(gpui::FontWeight::SEMIBOLD).child("Destination"))
                             .child(div().text_sm().text_color(colors.muted_foreground).child(if self.upload_destination.is_some() { "Ready for an explicit upload" } else { "Connect your own image hosting service" }))))
-                    .child(div().text_sm().text_color(colors.muted_foreground).child("Set up a destination or load a profile. Import ShareX loads a documented .sxcu subset without secrets. Export ShareX writes that subset for the session destination. Save named stores up to 16 profiles. Export configuration copies destinations without secrets. Test destination sends a throwaway 1×1 PNG. Uploads of your screenshots start only when you choose an image and confirm."))
+                    .child(div().text_sm().text_color(colors.muted_foreground).child("Set up a destination or load a profile. Import ShareX loads a documented .sxcu subset without secrets. Export ShareX writes that subset for the session destination. Save named stores up to 16 profiles. Per-task destination applies a saved name when that capture starts, without uploading. Export configuration copies destinations without secrets. Test destination sends a throwaway 1×1 PNG. Uploads of your screenshots start only when you choose an image and confirm."))
                     .child(div().flex().flex_wrap().gap_2()
                         .child(capture_button(cx, "setup-upload-destination", if self.upload_form_open { "Cancel setup" } else { "Set up destination" },
                             self.upload_config_loading || self.upload_cancel.is_some(), cx.listener(|this, _, _, cx| {
@@ -532,6 +532,39 @@ impl Render for CaptureWorkspace {
                                     .child(Button::new(("remove-named-upload", index)).small().label("Remove").disabled(disabled)
                                         .accessibility_label(format!("Remove named destination {remove}"))
                                         .on_click(cx.listener(move |this, _, _, cx| this.remove_named_upload_destination(&remove, cx))))
+                            })))
+                    })
+                    .child({
+                        let names: Vec<String> = self.upload_named.iter().map(|entry| entry.name().to_string()).collect();
+                        let disabled = self.settings_loading || self.settings_saving || self.output_directory.is_none()
+                            || self.upload_config_loading || self.upload_cancel.is_some();
+                        div().id("upload-task-defaults").test_support().pt_3().border_t_1().border_color(colors.border).flex().flex_col().gap_2()
+                            .child(div().font_weight(gpui::FontWeight::SEMIBOLD).child("Per-task destination"))
+                            .child(div().text_sm().text_color(colors.muted_foreground).child(
+                                if names.is_empty() {
+                                    "Save a named destination first to assign per-task defaults. Empty keeps the current session destination. Capture never starts an upload."
+                                } else {
+                                    "Applies the named destination to this session when that capture starts. Empty keeps the current session destination. Capture never starts an upload."
+                                }
+                            ))
+                            .when(!names.is_empty(), |view| view.children((0..app_core::CaptureHotkeys::LABELS.len()).map(|task| {
+                                let selected = if self.upload_task_defaults[task].is_empty() {
+                                    Some(0)
+                                } else {
+                                    names.iter().position(|name| name == &self.upload_task_defaults[task]).map(|index| index + 1)
+                                };
+                                let mut labels = vec!["Session default".to_string()];
+                                labels.extend(names.iter().cloned());
+                                div().flex().flex_col().gap_1()
+                                    .child(div().text_sm().child(app_core::CaptureHotkeys::LABELS[task]))
+                                    .child(RadioGroup::new(format!("upload-task-default-{task}"))
+                                        .layout(gpui::Axis::Vertical)
+                                        .children(labels)
+                                        .selected_index(selected)
+                                        .disabled(disabled)
+                                        .on_change(cx.listener(move |this, index, _, cx| {
+                                            this.choose_upload_task_default(task, *index, cx);
+                                        })))
                             })))
                     }))
                 .child(div().flex_none().p_5().rounded(px(theme.panel_radius)).bg(colors.group_box).flex().flex_col().gap_3()

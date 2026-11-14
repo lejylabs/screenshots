@@ -23,7 +23,7 @@ This section is the current continuation brief. The numbered sections below cont
 - **GPUI Kit rewrite (2026-11-11):** the complete native presentation uses Kit 0.9.1 / GPUI 0.3.12: Sidebar, Button, Input, Checkbox, RadioGroup, PopupMenu, Kbd and bundled Lucide icons. Dark stays the default; Oldschool keeps compact square controls and colorful icons. Every window has a Base Root, with transparent surfaces preserved for overlays. Typed content access preserves native lifecycle jobs and waiting for work on Quit. Library search/menu callbacks retain byte, paging and stale-result bounds. The image canvas and bounded source-label editor keep their domain-specific contracts. See [the rewrite and measured evidence](docs/ui-redesign.md).
 - **Windows functional prototype:** tray/resident lifecycle, single-instance forwarding, hotkeys, display/window/region capture, countdown, clipboard, PNG output and save-folder settings. Graphics attach on demand and detach when the last UI consumer closes.
 - **Shared editor:** crop, shapes, arrows, lines/endpoints, pen, text/style, numbering, highlight/spotlight, blur, pixelation and opaque redaction; selection/transforms, duplicate/reorder, bounded metadata undo/redo and zoom/pan. Copy, Save and Save & copy are explicit. Original files are preserved when editing a copy.
-- **Storage/sharing:** paged SQLite capture history with prefix search, filters, PNG import/relink, explicit preview, bounded selection/removal/export; explicit configurable POST/PUT uploads, progress/cancel, remembered credential-free profiles and upload history. Windows Uploads can save Bearer/API-key/Basic secrets to Credential Manager. Other secret-store integrations remain pending.
+- **Storage/sharing:** paged SQLite capture history with prefix search, filters, PNG import/relink, explicit preview, bounded selection/removal/export; explicit configurable POST/PUT uploads, progress/cancel, remembered credential-free profiles, named destinations, per-task destination defaults and upload history. Windows Uploads can save Bearer/API-key/Basic secrets to Credential Manager. Other secret-store integrations remain pending.
 - **Current main UI:** a responsive 200/208-logical-pixel sidebar with Recent capture / Library / Displays & windows / Uploads / Settings. Main windows start at 1060×760 with a 680×480 minimum. Content scrolls at compact sizes; library rows are paged, identified by database ID and expose Kit menus. Switching pages releases search/preview state and cancels stale requests. A thumbnail gallery remains a separate feature.
 - **Current editor UI:** grouped Kit tool buttons, accessible labels/shortcut tooltips, contextual selection actions, swatches and separate Copy / Save / Save & copy actions. Toolbar scrolling leaves bounded image space. The in-memory canvas and exported image algorithms remain in Rust.
 
@@ -720,7 +720,8 @@ writing user settings. A regular core fixture covers round-trip replace,
 16-name admission, missing-file defaults, failed validation preservation and
 that the remembered current file stays untouched.
 Configuration export/import is implemented below. Per-task destination defaults
-and ShareX profile import remain separate work.
+are implemented in the later 2026-11-14 follow-up. ShareX profile import remains
+separate work.
 Native keyboard/IME/accessibility, packaged restart workflow and
 latency/process/GPU/resource acceptance remain open; no new performance
 measurement is claimed for this bounded catalog.
@@ -746,7 +747,7 @@ without importing into user settings. A regular core fixture covers round-trip
 replace, empty-current removal, secret-URL rejection, failed overwrite
 preservation and that settings.json stays untouched.
 ShareX profile import is implemented below. Per-task destination defaults and
-full settings backup remain separate work.
+full settings backup are implemented in the later 2026-11-14 follow-up.
 Native keyboard/IME/accessibility, packaged restart workflow and
 latency/process/GPU/resource acceptance remain open; no new performance
 measurement is claimed for this bounded backup.
@@ -772,8 +773,9 @@ verify button presence, canceled pickers, busy guards and that a completed
 import updates only the session destination from a temp .sxcu, without writing
 user settings. A regular core fixture covers JSON-path mapping, PUT/header/text
 modes, secret/header/query rejection and that neighboring files stay untouched.
-ShareX export is implemented below. Per-task destination defaults, generic HTTP
-breadth and full settings backup remain separate work.
+ShareX export is implemented below. Per-task destination defaults and full
+settings backup are implemented in the later 2026-11-14 follow-up. Generic HTTP
+breadth remains separate work.
 Native keyboard/IME/accessibility, packaged restart workflow and
 latency/process/GPU/resource acceptance remain open; no new performance
 measurement is claimed for this bounded import.
@@ -800,8 +802,9 @@ completed export writes only the chosen temp .sxcu, without writing user
 settings. A regular core fixture covers JSON-path reverse mapping, PUT/header/text
 modes, HTTPS-only export, overwrite rejection, omitted credentials and that
 neighboring files stay untouched.
-Full settings backup is implemented below. Per-task destination defaults and
-generic HTTP breadth remain separate work.
+Full settings backup is implemented below. Per-task destination defaults are
+implemented in the later 2026-11-14 follow-up. Generic HTTP breadth remains
+separate work.
 Native keyboard/IME/accessibility, packaged restart workflow and
 latency/process/GPU/resource acceptance remain open; no new performance
 measurement is claimed for this bounded export.
@@ -810,7 +813,8 @@ measurement is claimed for this bounded export.
 
 Settings offers Export settings and Import settings. Export writes the current
 appearance, save folder, shortcuts, output profile, region presets, JPEG quality,
-Save as format, filename template and capture delay into a user-chosen JSON file
+Save as format, filename template, capture delay and per-task destination names
+into a user-chosen JSON file
 of at most 64 KiB. Import validates that backup, then replaces settings.json.
 If the backup folder is missing, the active save folder is kept and the rest of
 the preferences still apply. Windows shortcut import reuses the existing
@@ -828,10 +832,37 @@ button presence, canceled pickers, busy guards and that a completed export write
 only the chosen file, without importing into user settings. A regular core
 fixture covers round-trip fields, missing-folder fallback, overwrite rejection,
 invalid-backup preservation and that neighboring upload files stay untouched.
-Per-task destination defaults and generic HTTP breadth remain separate work.
+Per-task destination defaults are implemented below. Generic HTTP breadth
+remains separate work.
 Native keyboard/IME/accessibility, packaged restart workflow and
 latency/process/GPU/resource acceptance remain open; no new performance
 measurement is claimed for this bounded backup.
+
+#### Current feature slice: per-task destination defaults
+
+Uploads offers a per-task destination after at least one named destination exists.
+Each of Primary display, Quick region, Capture and annotate, Active window,
+Repeat last region and Active display can keep the session destination or apply a
+saved name when that capture starts. Empty names keep the current session
+destination. A missing catalog name is ignored. Applying a name switches this
+session only and never Remember-s, never starts an upload and does not close
+destination forms. Display-list tiles, window-list tiles, Capture all and Probe
+overlays keep the current session destination. Settings backup includes the six
+names; secrets, destination URLs and the named catalog stay out of settings.json.
+Closing the page or window while a save is in progress suppresses applying the
+pending result; Quit discards it.
+
+Resource cost is six RadioGroups on Uploads that reuse the existing named catalog
+and settings.json write path. There is no new dependency, worker, runtime, queue,
+image, cache, watcher or idle timer. Constructor and headless UI fixtures verify
+radio presence, in-memory apply/stale/busy guards and that capture does not
+persist user settings or start an upload. A regular core fixture covers
+round-trip names, trimming, invalid-name preservation, missing-field defaults
+and that other preference saves keep the names.
+Generic HTTP breadth remains separate work.
+Native keyboard/IME/accessibility, packaged restart workflow and
+latency/process/GPU/resource acceptance remain open; no new performance
+measurement is claimed for this bounded default.
 
 #### Current feature slice: configurable Windows global hotkeys
 

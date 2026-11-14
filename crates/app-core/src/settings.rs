@@ -147,6 +147,8 @@ pub struct CaptureSettings {
     pub filename_template: String,
     #[serde(default = "default_capture_delay")]
     pub capture_delay_seconds: u8,
+    #[serde(default)]
+    pub upload_task_defaults: [String; 6],
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -183,6 +185,22 @@ fn validate_region_presets(presets: &[RegionPreset]) -> Result<()> {
         ensure!(!presets[..index].iter().any(|other| other.name == preset.name), "Preset names must be unique");
     }
     Ok(())
+}
+
+fn validate_upload_task_defaults(defaults: &[String; 6]) -> Result<[String; 6]> {
+    let mut result = std::array::from_fn(|_| String::new());
+    for (index, value) in defaults.iter().enumerate() {
+        let trimmed = value.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        ensure!(
+            trimmed.len() <= 64 && !trimmed.chars().any(char::is_control),
+            "Use a destination name of 1–64 bytes without control characters"
+        );
+        result[index] = trimmed.to_string();
+    }
+    Ok(result)
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -243,6 +261,7 @@ impl CaptureSettings {
             export_format: crate::ImageExportFormat::default(),
             filename_template: String::new(),
             capture_delay_seconds: default_capture_delay(),
+            upload_task_defaults: std::array::from_fn(|_| String::new()),
         })
     }
 
@@ -290,6 +309,11 @@ impl CaptureSettings {
         Ok(self)
     }
 
+    pub fn with_upload_task_defaults(mut self, defaults: [String; 6]) -> Result<Self> {
+        self.upload_task_defaults = validate_upload_task_defaults(&defaults)?;
+        Ok(self)
+    }
+
     pub(crate) fn config_path() -> Result<PathBuf> {
         Ok(ProjectDirs::from("", "lejylabs", "screenshots")
             .context("Application settings folder is unavailable")?
@@ -334,7 +358,8 @@ impl CaptureSettings {
             .with_jpeg_quality(settings.jpeg_quality)?
             .with_export_format(settings.export_format)
             .with_filename_template(settings.filename_template)?
-            .with_capture_delay(settings.capture_delay_seconds)?)
+            .with_capture_delay(settings.capture_delay_seconds)?
+            .with_upload_task_defaults(settings.upload_task_defaults)?)
     }
 
     /// Write a settings backup without secrets, uploads or overwriting.
@@ -410,6 +435,7 @@ impl CaptureSettings {
             self.output_directory.is_absolute(),
             "Invalid save folder"
         );
+        validate_upload_task_defaults(&self.upload_task_defaults)?;
         Ok(())
     }
 
@@ -424,6 +450,7 @@ impl CaptureSettings {
         crate::validate_capture_name_template(&self.filename_template)?;
         ensure!((1..=100).contains(&self.jpeg_quality), "JPEG quality must be between 1 and 100");
         ensure!(self.output_directory.is_absolute(), "Invalid save folder");
+        validate_upload_task_defaults(&self.upload_task_defaults)?;
         ensure!(
             self.output_directory.is_dir(),
             "The selected save folder does not exist"
@@ -916,7 +943,15 @@ mod tests {
             .with_jpeg_quality(73)?
             .with_export_format(crate::ImageExportFormat::WebP)
             .with_filename_template("Shot-{date}".into())?
-            .with_capture_delay(7)?;
+            .with_capture_delay(7)?
+            .with_upload_task_defaults([
+                "Host".into(),
+                String::new(),
+                String::new(),
+                String::new(),
+                String::new(),
+                String::new(),
+            ])?;
         original.save_at(&settings_path)?;
         let backup = root.join("backup.json");
         original.export_at(&backup)?;
@@ -936,6 +971,8 @@ mod tests {
         assert_eq!(imported.filename_template, "Shot-{date}");
         assert_eq!(imported.capture_delay_seconds, 7);
         assert_eq!(imported.hotkeys.0[0], "Ctrl+Alt+Q");
+        assert_eq!(imported.upload_task_defaults[0], "Host");
+        assert!(imported.upload_task_defaults[1].is_empty());
         let moved = CaptureSettings::for_directory(other.clone())?
             .with_theme(UiTheme::Default)
             .with_output_profile(CaptureOutputProfile::SaveOnly)
@@ -967,6 +1004,77 @@ mod tests {
             73
         );
         fs::remove_dir_all(root)?;
+        Ok(())
+    }
+
+    #[test]
+    fn upload_task_defaults_round_trip_validate_and_survive_other_saves() -> Result<()> {
+        let root = std::env::temp_dir().join(format!(
+            "screenshots-upload-task-defaults-{}",
+            uuid::Uuid::new_v4()
+        ));
+        fs::create_dir_all(&root)?;
+        let path = root.join("settings.json");
+        let defaults = [
+            "Host".into(),
+            String::new(),
+            " Annotate ".into(),
+            String::new(),
+            String::new(),
+            "Display".into(),
+        ];
+        CaptureSettings::for_directory(root.clone())?
+            .with_theme(UiTheme::Oldschool)
+            .with_output_profile(CaptureOutputProfile::CopyOnly)
+            .with_jpeg_quality(73)?
+            .with_upload_task_defaults(defaults)?
+            .save_at(&path)?;
+        let loaded = CaptureSettings::load_at(&path, root.clone())?;
+        assert_eq!(loaded.upload_task_defaults[0], "Host");
+        assert!(loaded.upload_task_defaults[1].is_empty());
+        assert_eq!(loaded.upload_task_defaults[2], "Annotate");
+        assert_eq!(loaded.upload_task_defaults[5], "Display");
+        assert_eq!(loaded.theme, UiTheme::Oldschool);
+        assert_eq!(loaded.jpeg_quality, 73);
+        loaded.with_theme(UiTheme::Default).save_at(&path)?;
+        let loaded = CaptureSettings::load_at(&path, root.clone())?;
+        assert_eq!(loaded.upload_task_defaults[0], "Host");
+        assert_eq!(loaded.upload_task_defaults[2], "Annotate");
+        assert_eq!(loaded.theme, UiTheme::Default);
+        let before = fs::read(&path)?;
+        let mut invalid = CaptureSettings::load_at(&path, root.clone())?;
+        invalid.upload_task_defaults[0] = "bad\nname".into();
+        assert!(invalid.save_at(&path).is_err());
+        assert_eq!(fs::read(&path)?, before);
+        invalid.upload_task_defaults[0] = "x".repeat(65);
+        assert!(invalid.save_at(&path).is_err());
+        assert_eq!(fs::read(&path)?, before);
+        assert!(
+            CaptureSettings::for_directory(root.clone())?
+                .with_upload_task_defaults([
+                    "\u{7}".into(),
+                    String::new(),
+                    String::new(),
+                    String::new(),
+                    String::new(),
+                    String::new(),
+                ])
+                .is_err()
+        );
+        let mut stored: serde_json::Value = serde_json::from_slice(&before)?;
+        stored["upload_task_defaults"][0] = "bad\nname".into();
+        fs::write(&path, serde_json::to_vec(&stored)?)?;
+        assert!(CaptureSettings::load_at(&path, root.clone()).is_err());
+        stored.as_object_mut().unwrap().remove("upload_task_defaults");
+        fs::write(&path, serde_json::to_vec(&stored)?)?;
+        assert!(
+            CaptureSettings::load_at(&path, root.clone())?
+                .upload_task_defaults
+                .iter()
+                .all(String::is_empty)
+        );
+        fs::remove_file(path)?;
+        fs::remove_dir(root)?;
         Ok(())
     }
 }

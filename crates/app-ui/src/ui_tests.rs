@@ -1185,6 +1185,77 @@ fn named_upload_destinations_switch_in_session_without_writing_catalog(cx: &mut 
 }
 
 #[gpui::test]
+fn upload_task_defaults_apply_on_capture_without_uploading_or_persisting(cx: &mut TestAppContext) {
+    let handle = open_workspace(cx);
+    handle.update(cx, |this, _, cx| {
+        this.show_page(ControlPage::Uploads, cx);
+    }).unwrap();
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.scroll("setup-upload-destination", gpui::ScrollDelta::Pixels(point(px(0.), px(-2400.))), cx);
+        window.render_frame(cx);
+        let _ = window.find("upload-task-defaults");
+        assert!(window.try_find("upload-task-default-0").is_none());
+    }).unwrap();
+    handle.update(cx, |this, _, cx| {
+        this.upload_destination = Some(app_core::UploadDestination::manual(
+            "https://old.invalid/upload".into(),
+            app_core::UploadMethod::Post, "file".into(), None, false).unwrap());
+        this.upload_url = Some("https://old.invalid/share/kept".into());
+        this.upload_named = vec![app_core::NamedUploadDestination::new(
+            "Host".into(),
+            app_core::UploadDestination::manual(
+                "https://named.invalid/upload".into(),
+                app_core::UploadMethod::Post, "file".into(), None, false).unwrap(),
+        ).unwrap()];
+        this.show_page(ControlPage::Uploads, cx);
+    }).unwrap();
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.scroll("setup-upload-destination", gpui::ScrollDelta::Pixels(point(px(0.), px(-2400.))), cx);
+        window.render_frame(cx);
+        let _ = window.find("upload-task-defaults");
+        assert!(window.try_find("use-named-upload-save").is_none());
+    }).unwrap();
+    handle.update(cx, |this, _, cx| {
+        this.upload_task_defaults[0] = "Host".into();
+        this.upload_named_open = true;
+        this.capture_primary(cx);
+        assert_eq!(this.upload_destination.as_ref().unwrap().origin(), "https://named.invalid");
+        assert!(this.upload_url.is_none());
+        assert!(this.upload_cancel.is_none() && this.upload_generation == 0);
+        assert!(this.last_saved.is_none() && this.last_capture.is_none());
+        assert!(!this.capturing);
+        assert!(this.upload_named_open);
+        this.upload_url = Some("https://named.invalid/share/kept".into());
+        this.upload_task_defaults[0].clear();
+        this.capture_primary(cx);
+        assert_eq!(this.upload_destination.as_ref().unwrap().origin(), "https://named.invalid");
+        assert_eq!(this.upload_url.as_deref(), Some("https://named.invalid/share/kept"));
+        this.upload_task_defaults[0] = "Missing".into();
+        this.capture_primary(cx);
+        assert_eq!(this.upload_destination.as_ref().unwrap().origin(), "https://named.invalid");
+        this.upload_task_defaults[0] = "Host".into();
+        this.upload_destination = Some(app_core::UploadDestination::manual(
+            "https://old.invalid/upload".into(),
+            app_core::UploadMethod::Post, "file".into(), None, false).unwrap());
+        this.upload_cancel = Some(app_core::UploadCancellation::default());
+        this.capture_primary(cx);
+        assert_eq!(this.upload_destination.as_ref().unwrap().origin(), "https://old.invalid");
+        this.upload_cancel = None;
+        this.settings_saving = true;
+        this.choose_upload_task_default(0, 0, cx);
+        assert!(this.settings_saving);
+        this.settings_saving = false;
+        this.show_page(ControlPage::Sources, cx);
+        this.capture_primary(cx);
+        assert_eq!(this.upload_destination.as_ref().unwrap().origin(), "https://named.invalid");
+        assert!(this.upload_url.is_none());
+        assert!(this.upload_cancel.is_none() && this.upload_generation == 0);
+    }).unwrap();
+}
+
+#[gpui::test]
 fn upload_configuration_export_writes_a_chosen_file_without_importing(cx: &mut TestAppContext) {
     let handle = open_workspace(cx);
     let root = std::env::temp_dir().join(format!("screenshots-upload-config-ui-{}", std::process::id()));
