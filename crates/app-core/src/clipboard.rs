@@ -44,6 +44,18 @@ impl std::io::Seek for EditorFile {
 
 /// Explicit editor input only; run decoding and orientation on a worker.
 pub fn load_editor_image(path: &std::path::Path) -> Result<image::RgbaImage> {
+    load_editor_image_with_limit(path, crate::MAX_CAPTURE_BYTES)
+}
+
+/// Admit another image within a composition's remaining decoded-source budget.
+pub fn load_editor_image_with_limit(
+    path: &std::path::Path,
+    max_decoded_bytes: u64,
+) -> Result<image::RgbaImage> {
+    anyhow::ensure!(
+        max_decoded_bytes > 0 && max_decoded_bytes <= crate::MAX_CAPTURE_BYTES,
+        "Invalid decoded image budget"
+    );
     let file = std::fs::File::open(path)?;
     let length = file.metadata()?.len();
     anyhow::ensure!(
@@ -63,14 +75,233 @@ pub fn load_editor_image(path: &std::path::Path) -> Result<image::RgbaImage> {
         ),
         "Choose a PNG, JPEG or WebP image"
     );
+    if reader.format() == Some(image::ImageFormat::WebP) {
+        use std::io::{Read as _, Seek as _};
+        // The WebP decoder trusts metadata/frame lengths before applying image limits.
+        // Validate and decode the same bounded bytes, including under in-place file edits.
+        let mut input = reader.into_inner();
+        input.seek(std::io::SeekFrom::Start(0))?;
+        let mut bytes = vec![0; usize::try_from(length)?];
+        input.read_exact(&mut bytes)?;
+        let orientation = validate_webp(&bytes, max_decoded_bytes)?;
+        let mut reader =
+            image::ImageReader::with_format(std::io::Cursor::new(bytes), image::ImageFormat::WebP);
+        let mut limits = image::Limits::default();
+        limits.max_alloc = Some(crate::MAX_CAPTURE_BYTES);
+        reader.limits(limits);
+        return decode_editor_pixels_with_limit(
+            reader.into_decoder()?,
+            max_decoded_bytes,
+            Some(orientation),
+        );
+    }
     let mut limits = image::Limits::default();
     limits.max_alloc = Some(crate::MAX_CAPTURE_BYTES);
     reader.limits(limits);
-    decode_editor_pixels(reader.into_decoder()?)
+    decode_editor_pixels_with_limit(reader.into_decoder()?, max_decoded_bytes, None)
 }
 
-pub(crate) fn decode_editor_pixels(
+const MAX_WEBP_CHUNKS: usize = 4096;
+
+fn webp_dimensions(width: u32, height: u32, budget: u64) -> Result<(u32, u32)> {
+    crate::validate_image_size(width, height)?;
+    anyhow::ensure!(
+        u64::from(width) * u64::from(height) * 4 <= budget,
+        "WebP frame exceeds the decoded image budget"
+    );
+    Ok((width, height))
+}
+
+fn webp_u24(bytes: &[u8]) -> u32 {
+    u32::from_le_bytes([bytes[0], bytes[1], bytes[2], 0])
+}
+
+/// Returns one checked chunk without trusting its declared size for an allocation.
+fn webp_chunk<'a>(
+    bytes: &'a [u8],
+    position: &mut usize,
+    count: &mut usize,
+) -> Result<([u8; 4], &'a [u8])> {
+    *count += 1;
+    anyhow::ensure!(
+        *count <= MAX_WEBP_CHUNKS,
+        "WebP exceeds the 4096-chunk limit"
+    );
+    let header = bytes
+        .get(*position..)
+        .and_then(|tail| tail.get(..8))
+        .context("Truncated WebP chunk header")?;
+    let kind = header[..4].try_into()?;
+    let size = u32::from_le_bytes(header[4..8].try_into()?) as usize;
+    let start = position
+        .checked_add(8)
+        .context("WebP chunk offset overflow")?;
+    let end = start
+        .checked_add(size)
+        .context("WebP chunk size overflow")?;
+    let padded = end
+        .checked_add(size & 1)
+        .context("WebP chunk padding overflow")?;
+    anyhow::ensure!(
+        padded <= bytes.len(),
+        "WebP chunk exceeds its encoded extent"
+    );
+    *position = padded;
+    Ok((kind, &bytes[start..end]))
+}
+
+fn webp_bitstream(kind: [u8; 4], payload: &[u8], budget: u64) -> Result<(u32, u32)> {
+    match &kind {
+        b"VP8 " => {
+            anyhow::ensure!(payload.len() >= 10, "Truncated VP8 frame header");
+            anyhow::ensure!(
+                payload[0] & 1 == 0 && payload[3..6] == [0x9d, 0x01, 0x2a],
+                "Invalid VP8 keyframe header"
+            );
+            webp_dimensions(
+                u32::from(u16::from_le_bytes(payload[6..8].try_into()?) & 0x3fff),
+                u32::from(u16::from_le_bytes(payload[8..10].try_into()?) & 0x3fff),
+                budget,
+            )
+        }
+        b"VP8L" => {
+            anyhow::ensure!(
+                payload.len() >= 5 && payload[0] == 0x2f,
+                "Invalid VP8L frame header"
+            );
+            let header = u32::from_le_bytes(payload[1..5].try_into()?);
+            anyhow::ensure!(header >> 29 == 0, "Unsupported VP8L version");
+            webp_dimensions((header & 0x3fff) + 1, ((header >> 14) & 0x3fff) + 1, budget)
+        }
+        _ => anyhow::bail!("Unsupported WebP frame bitstream"),
+    }
+}
+
+/// Validate every frame, not just the advertised VP8X canvas, before the decoder runs.
+fn validate_webp(bytes: &[u8], budget: u64) -> Result<image::metadata::Orientation> {
+    anyhow::ensure!(
+        bytes.len() >= 12 && &bytes[..4] == b"RIFF" && &bytes[8..12] == b"WEBP",
+        "Invalid WebP RIFF header"
+    );
+    let size = u32::from_le_bytes(bytes[4..8].try_into()?) as u64 + 8;
+    anyhow::ensure!(
+        size == bytes.len() as u64,
+        "WebP RIFF extent does not match its input"
+    );
+    let mut count = 0;
+    let mut position = 12;
+    let (first, payload) = webp_chunk(bytes, &mut position, &mut count)?;
+    let (canvas, animated) = if first == *b"VP8X" {
+        anyhow::ensure!(payload.len() == 10, "Invalid VP8X header size");
+        (
+            webp_dimensions(
+                webp_u24(&payload[4..7]) + 1,
+                webp_u24(&payload[7..10]) + 1,
+                budget,
+            )?,
+            payload[0] & 2 != 0,
+        )
+    } else {
+        (webp_bitstream(first, payload, budget)?, false)
+    };
+    let mut image_count = usize::from(first != *b"VP8X");
+    let mut frame_count = 0;
+    let mut orientation = image::metadata::Orientation::NoTransforms;
+    let mut seen_exif = false;
+    while position < bytes.len() {
+        let (kind, payload) = webp_chunk(bytes, &mut position, &mut count)?;
+        match &kind {
+            b"EXIF" if first == *b"VP8X" && !seen_exif => {
+                // Borrow the admitted metadata instead of making the decoder copy it.
+                orientation = image::metadata::Orientation::from_exif_chunk(payload)
+                    .unwrap_or(image::metadata::Orientation::NoTransforms);
+                seen_exif = true;
+            }
+            b"VP8X" => anyhow::bail!("Duplicate WebP extended header"),
+            b"VP8 " | b"VP8L" => {
+                anyhow::ensure!(
+                    !animated && image_count == 0,
+                    "Ambiguous WebP image bitstreams"
+                );
+                anyhow::ensure!(
+                    webp_bitstream(kind, payload, budget)? == canvas,
+                    "WebP bitstream dimensions do not match its canvas"
+                );
+                image_count += 1;
+            }
+            b"ANMF" => {
+                anyhow::ensure!(
+                    animated && payload.len() >= 16,
+                    "Invalid WebP animation frame"
+                );
+                let x = webp_u24(&payload[..3]) * 2;
+                let y = webp_u24(&payload[3..6]) * 2;
+                let frame = webp_dimensions(
+                    webp_u24(&payload[6..9]) + 1,
+                    webp_u24(&payload[9..12]) + 1,
+                    budget,
+                )?;
+                anyhow::ensure!(
+                    x.checked_add(frame.0).is_some_and(|end| end <= canvas.0)
+                        && y.checked_add(frame.1).is_some_and(|end| end <= canvas.1),
+                    "WebP animation frame is outside its canvas"
+                );
+                let mut nested_position = 16;
+                let (mut nested, mut data) = webp_chunk(payload, &mut nested_position, &mut count)?;
+                if nested == *b"ALPH" {
+                    (nested, data) = webp_chunk(payload, &mut nested_position, &mut count)?;
+                    anyhow::ensure!(
+                        nested == *b"VP8 ",
+                        "WebP alpha frame must be followed by a VP8 bitstream"
+                    );
+                }
+                anyhow::ensure!(
+                    webp_bitstream(nested, data, budget)? == frame,
+                    "WebP bitstream dimensions do not match its animation frame"
+                );
+                while nested_position < payload.len() {
+                    let (extra, _) = webp_chunk(payload, &mut nested_position, &mut count)?;
+                    anyhow::ensure!(
+                        !matches!(
+                            &extra,
+                            b"VP8 "
+                                | b"VP8L"
+                                | b"ALPH"
+                                | b"ANMF"
+                                | b"VP8X"
+                                | b"ANIM"
+                                | b"ICCP"
+                                | b"EXIF"
+                                | b"XMP "
+                        ),
+                        "WebP animation frame has extra known subchunks"
+                    );
+                }
+                frame_count += 1;
+            }
+            _ => {}
+        }
+    }
+    anyhow::ensure!(
+        if animated {
+            frame_count > 0
+        } else {
+            image_count == 1
+        },
+        "WebP has no image bitstream"
+    );
+    Ok(orientation)
+}
+
+#[cfg(target_os = "windows")]
+pub(crate) fn decode_editor_pixels(decoder: impl image::ImageDecoder) -> Result<image::RgbaImage> {
+    decode_editor_pixels_with_limit(decoder, crate::MAX_CAPTURE_BYTES, None)
+}
+
+fn decode_editor_pixels_with_limit(
     mut decoder: impl image::ImageDecoder,
+    max_decoded_bytes: u64,
+    orientation: Option<image::metadata::Orientation>,
 ) -> Result<image::RgbaImage> {
     let mut limits = image::Limits::default();
     limits.max_alloc = Some(crate::MAX_CAPTURE_BYTES);
@@ -78,10 +309,14 @@ pub(crate) fn decode_editor_pixels(
     let (width, height) = decoder.dimensions();
     crate::validate_image_size(width, height)?;
     anyhow::ensure!(
-        decoder.total_bytes() <= crate::MAX_CAPTURE_BYTES,
+        decoder.total_bytes() <= max_decoded_bytes
+            && u64::from(width) * u64::from(height) * 4 <= max_decoded_bytes,
         "Decoded image exceeds the memory limit"
     );
-    let orientation = decoder.orientation()?;
+    let orientation = match orientation {
+        Some(orientation) => orientation,
+        None => decoder.orientation()?,
+    };
     let mut decoded = image::DynamicImage::from_decoder(decoder)?;
     decoded.apply_orientation(orientation);
     Ok(decoded.into_rgba8())
@@ -330,6 +565,172 @@ mod tests {
             std::fs::write(&path, bytes)?;
             assert!(load_editor_image(&path).is_err());
         }
+        std::fs::remove_file(path)?;
+        std::fs::remove_dir(root)?;
+        Ok(())
+    }
+
+    fn webp_test_chunk(kind: &[u8; 4], payload: &[u8]) -> Vec<u8> {
+        let mut bytes = kind.to_vec();
+        bytes.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+        bytes.extend_from_slice(payload);
+        if payload.len() & 1 != 0 {
+            bytes.push(0);
+        }
+        bytes
+    }
+
+    fn webp_test_riff(chunks: &[Vec<u8>]) -> Vec<u8> {
+        let mut bytes = b"RIFF\0\0\0\0WEBP".to_vec();
+        for chunk in chunks {
+            bytes.extend_from_slice(chunk);
+        }
+        let size = bytes.len() as u32 - 8;
+        bytes[4..8].copy_from_slice(&size.to_le_bytes());
+        bytes
+    }
+
+    fn webp_test_extended(width: u32, height: u32, flags: u8) -> Vec<u8> {
+        let mut header = vec![flags, 0, 0, 0];
+        header.extend_from_slice(&(width - 1).to_le_bytes()[..3]);
+        header.extend_from_slice(&(height - 1).to_le_bytes()[..3]);
+        webp_test_chunk(b"VP8X", &header)
+    }
+
+    #[test]
+    fn webp_preflight_rejects_unbounded_metadata_inner_dimensions_and_chunk_counts() -> Result<()> {
+        let mut enormous_exif = b"EXIF".to_vec();
+        enormous_exif.extend_from_slice(&u32::MAX.to_le_bytes());
+        let bytes = webp_test_riff(&[webp_test_extended(1, 1, 8), enormous_exif]);
+        assert!(
+            validate_webp(&bytes, 4)
+                .unwrap_err()
+                .to_string()
+                .contains("encoded extent")
+        );
+
+        let mut frame = vec![0x10, 0, 0, 0x9d, 1, 0x2a];
+        frame.extend_from_slice(&16383_u16.to_le_bytes());
+        frame.extend_from_slice(&16383_u16.to_le_bytes());
+        let bytes = webp_test_riff(&[
+            webp_test_extended(1, 1, 0),
+            webp_test_chunk(b"VP8 ", &frame),
+        ]);
+        assert!(validate_webp(&bytes, 4).is_err());
+        frame[6..8].copy_from_slice(&2_u16.to_le_bytes());
+        frame[8..10].copy_from_slice(&2_u16.to_le_bytes());
+        let bytes = webp_test_riff(&[
+            webp_test_extended(1, 1, 0),
+            webp_test_chunk(b"VP8 ", &frame),
+        ]);
+        assert!(
+            validate_webp(&bytes, 16)
+                .unwrap_err()
+                .to_string()
+                .contains("canvas")
+        );
+
+        // The upstream ALPH animation branch decodes its next chunk as VP8;
+        // forbid disguising a second unvalidated VP8 header behind an ALPH tag.
+        let mut animation = vec![0; 16];
+        animation.extend_from_slice(&webp_test_chunk(b"ALPH", &[0, 255]));
+        animation.extend_from_slice(&webp_test_chunk(b"ALPH", &frame));
+        animation.extend_from_slice(&webp_test_chunk(b"VP8L", &[0x2f, 0, 0, 0, 0]));
+        let bytes = webp_test_riff(&[
+            webp_test_extended(1, 1, 18),
+            webp_test_chunk(b"ANIM", &[0, 0, 0, 0, 1, 0]),
+            webp_test_chunk(b"ANMF", &animation),
+        ]);
+        assert!(validate_webp(&bytes, 4).is_err());
+
+        let mut chunks = vec![webp_test_chunk(b"VP8L", &[0x2f, 0, 0, 0, 0])];
+        chunks.extend((0..MAX_WEBP_CHUNKS).map(|_| webp_test_chunk(b"JUNK", &[])));
+        let bytes = webp_test_riff(&chunks);
+        assert!(
+            validate_webp(&bytes, 4)
+                .unwrap_err()
+                .to_string()
+                .contains("4096")
+        );
+        assert!(validate_webp(&bytes[..bytes.len() - 1], 4).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn webp_preflight_preserves_lossy_alpha_lossless_exif_and_animated_still_inputs() -> Result<()>
+    {
+        use base64::Engine as _;
+        use image::ImageEncoder as _;
+        let root = std::env::temp_dir().join(format!(
+            "screenshots-webp-admission-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir(&root)?;
+        let path = root.join("input.webp");
+        let lossy = base64::engine::general_purpose::STANDARD
+            .decode("UklGRiIAAABXRUJQVlA4IBYAAAAwAQCdASoBAAEADsD+JaQAA3AAAAAA")?;
+        validate_webp(&lossy, 4)?;
+        std::fs::write(&path, &lossy)?;
+        assert_eq!(load_editor_image_with_limit(&path, 4)?.dimensions(), (1, 1));
+
+        let lossy_alpha = webp_test_riff(&[
+            webp_test_extended(1, 1, 16),
+            webp_test_chunk(b"ALPH", &[0, 78]),
+            lossy[12..].to_vec(),
+        ]);
+        std::fs::write(&path, &lossy_alpha)?;
+        assert_eq!(
+            load_editor_image_with_limit(&path, 4)?.get_pixel(0, 0).0[3],
+            78
+        );
+
+        let source = image::RgbaImage::from_fn(3, 2, |x, y| {
+            image::Rgba([x as u8 * 70, y as u8 * 90, 50, 78])
+        });
+        let mut lossless = std::io::Cursor::new(Vec::new());
+        source.write_to(&mut lossless, image::ImageFormat::WebP)?;
+        let lossless = lossless.into_inner();
+        validate_webp(&lossless, 24)?;
+        assert!(validate_webp(&lossless, 23).is_err());
+        std::fs::write(&path, &lossless)?;
+        assert_eq!(load_editor_image_with_limit(&path, 24)?, source);
+
+        let mut oriented = Vec::new();
+        let mut encoder = image::codecs::webp::WebPEncoder::new_lossless(&mut oriented);
+        encoder.set_exif_metadata(vec![
+            73, 73, 42, 0, 8, 0, 0, 0, 1, 0, 18, 1, 3, 0, 1, 0, 0, 0, 6, 0, 0, 0, 0, 0, 0, 0,
+        ])?;
+        encoder.write_image(source.as_raw(), 3, 2, image::ExtendedColorType::Rgba8)?;
+        std::fs::write(&path, &oriented)?;
+        assert_eq!(
+            load_editor_image(&path)?,
+            image::imageops::rotate90(&source)
+        );
+        assert_eq!(std::fs::read(&path)?, oriented);
+
+        let mut frame = vec![0; 16];
+        frame[6..9].copy_from_slice(&2_u32.to_le_bytes()[..3]);
+        frame[9..12].copy_from_slice(&1_u32.to_le_bytes()[..3]);
+        frame[15] = 2;
+        frame.extend_from_slice(&lossless[12..]);
+        frame.extend_from_slice(&webp_test_chunk(b"JUNK", &[1, 2, 3]));
+        let animated = webp_test_riff(&[
+            webp_test_extended(3, 2, 18),
+            webp_test_chunk(b"ANIM", &[0, 0, 0, 0, 1, 0]),
+            webp_test_chunk(b"ANMF", &frame),
+        ]);
+        validate_webp(&animated, 24)?;
+        std::fs::write(&path, &animated)?;
+        assert_eq!(load_editor_image_with_limit(&path, 24)?, source);
+        assert_eq!(std::fs::read(&path)?, animated);
+        // Even an unused later frame must be admitted before the still decoder runs.
+        frame[6..9].copy_from_slice(&1000_u32.to_le_bytes()[..3]);
+        let invalid = webp_test_riff(&[
+            webp_test_extended(3, 2, 18),
+            webp_test_chunk(b"ANIM", &[0, 0, 0, 0, 1, 0]),
+            webp_test_chunk(b"ANMF", &frame),
+        ]);
+        assert!(validate_webp(&invalid, 24).is_err());
         std::fs::remove_file(path)?;
         std::fs::remove_dir(root)?;
         Ok(())

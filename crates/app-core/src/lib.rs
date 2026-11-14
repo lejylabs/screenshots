@@ -65,7 +65,10 @@ pub use upload::{
     upload_png_bytes_with_progress, upload_png_with_progress, upload_progress_channel,
 };
 
-pub use clipboard::{ImageClipboard, load_editor_image, load_png_thumbnail, load_saved_png};
+pub use clipboard::{
+    ImageClipboard, load_editor_image, load_editor_image_with_limit, load_png_thumbnail,
+    load_saved_png,
+};
 
 #[cfg(target_os = "windows")]
 mod hotkey;
