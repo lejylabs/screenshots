@@ -1,0 +1,9 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Screenshots
+Comment=Capture and annotate screenshots
+Exec=screenshots --show
+Terminal=false
+Categories=Graphics;Utility;
+StartupNotify=true

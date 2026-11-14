@@ -2,11 +2,15 @@ name: Rust
 
 on:
   push:
-    branches: [main]
   pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read
+
+concurrency:
+  group: rust-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 env:
   CARGO_TERM_COLOR: always
@@ -14,11 +18,25 @@ env:
 
 jobs:
   build:
-    runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+            binary: screenshots
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            binary: screenshots.exe
+          - os: macos-15
+            target: aarch64-apple-darwin
+            binary: screenshots
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
-      - name: Install native build dependencies
+      - name: Install Linux native build dependencies
+        if: runner.os == 'Linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y \
@@ -30,35 +48,41 @@ jobs:
             libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev \
             libvulkan-dev libegl1-mesa-dev libgbm-dev libdrm-dev \
             libpipewire-0.3-dev
-      - name: Verify tray build dependencies
-        run: pkg-config --exists 'glib-2.0 >= 2.56' 'gtk+-3.0 >= 3.22' ayatana-appindicator3-0.1
-      - name: Install Rust
-        run: rustup toolchain install 1.99.0 --profile minimal
+      - name: Install pinned Rust and components
+        shell: bash
+        run: rustup show active-toolchain
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
       - uses: actions/cache@v4
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-          key: ${{ runner.os }}-cargo-1.99-${{ hashFiles('Cargo.lock') }}
-          restore-keys: ${{ runner.os }}-cargo-1.99-
-      - name: Build
-        run: cargo +1.99.0 build --workspace --locked
-      - name: Run tests
-        run: cargo +1.99.0 test --workspace --locked
-
-  windows-typecheck:
-    runs-on: windows-latest
-    timeout-minutes: 45
-    steps:
-      - uses: actions/checkout@v4
-      - name: Install Rust
-        run: rustup toolchain install 1.99.0 --profile minimal
-      - uses: actions/cache@v4
+          key: ${{ runner.os }}-cargo-${{ hashFiles('rust-toolchain.toml') }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-${{ hashFiles('rust-toolchain.toml') }}-
+      - name: Check formatting
+        if: runner.os == 'Linux'
+        run: cargo fmt --all -- --check
+      - name: Lint workspace and test paths
+        if: runner.os == 'Linux'
+        run: cargo clippy --workspace --all-targets --release --locked
+      - name: Build optimized application
+        run: cargo build --workspace --release --locked
+      - name: Run optimized deterministic tests
+        run: cargo test --workspace --release --locked
+      - name: Verify packaging logic
+        run: python scripts/test-package.py
+      - name: Package native executable
+        run: python scripts/package.py --target ${{ matrix.target }} --binary target/release/${{ matrix.binary }}
+      - name: Smoke extracted archive without a display or user data
+        shell: bash
+        run: |
+          for archive in target/packages/*.tar.gz target/packages/*.zip; do
+            if [ -f "$archive" ]; then python scripts/test-package-smoke.py "$archive"; fi
+          done
+      - uses: actions/upload-artifact@v4
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-          key: ${{ runner.os }}-cargo-1.99-${{ hashFiles('Cargo.lock') }}
-          restore-keys: ${{ runner.os }}-cargo-1.99-
-      - name: Check native Windows paths and opt-in tests
-        run: cargo +1.99.0 check --workspace --all-targets --locked
+          name: screenshots-${{ matrix.target }}
+          path: target/packages/*
+          if-no-files-found: error
