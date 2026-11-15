@@ -18,6 +18,7 @@ Headless commands (no desktop UI, clipboard writes or implicit uploads):
   screenshots capture display|window ID OUTPUT
   screenshots capture region DISPLAY X Y WIDTH HEIGHT OUTPUT
   screenshots capture desktop OUTPUT
+  screenshots capture-sequence display ID DIRECTORY --count N --interval-ms MS
   screenshots history DATABASE [--before ID] [--search WORDS]
   screenshots history-query captures|uploads DATABASE [--order newest|oldest]
       [--cursor ID] [--from YYYY-MM-DD] [--through YYYY-MM-DD]
@@ -73,6 +74,7 @@ pub fn run(args: Vec<OsString>) -> Result<bool> {
         "image" => convert(&args[1..])?,
         "list" => list(&args[1..])?,
         "capture" => capture(&args[1..])?,
+        "capture-sequence" => crate::capture_sequence::run(&args[1..])?,
         "history" => history(&args[1..])?,
         "history-query" => history_query(&args[1..])?,
         "storage" => storage(&args[1..])?,

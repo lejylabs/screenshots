@@ -1,3 +1,4 @@
+mod capture_sequence;
 mod cli;
 mod image_tools;
 mod ocr;

@@ -24,6 +24,7 @@ tracing-subscriber.workspace = true
 tray-icon.workspace = true
 serde_json.workspace = true
 serde.workspace = true
+uuid.workspace = true
 image.workspace = true
 zeroize.workspace = true
 qrcode = { version = "=0.14.1", default-features = false }
