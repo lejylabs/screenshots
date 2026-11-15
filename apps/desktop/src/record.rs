@@ -1,23 +1,24 @@
-//! Optional finite Unix recording through installed FFmpeg/ffprobe executables.
+//! Optional finite recording through installed FFmpeg/ffprobe executables.
 
 use anyhow::{Context, Result, bail, ensure};
+use serde::Deserialize;
 use std::{ffi::OsString, path::Path};
 
 #[derive(Clone, Copy, PartialEq)]
-enum OutputFormat {
+pub(crate) enum OutputFormat {
     Matroska,
     Gif,
 }
 
 impl OutputFormat {
-    fn container(self) -> &'static str {
+    pub(crate) fn container(self) -> &'static str {
         match self {
             Self::Matroska => "matroska",
             Self::Gif => "gif",
         }
     }
 
-    fn codec(self) -> &'static str {
+    pub(crate) fn codec(self) -> &'static str {
         match self {
             Self::Matroska => "ffv1",
             Self::Gif => "gif",
@@ -25,27 +26,29 @@ impl OutputFormat {
     }
 }
 
-struct Options<'a> {
-    mode: &'a str,
-    destination: &'a Path,
-    seconds: u32,
-    fps: u32,
-    width: u32,
-    height: u32,
-    x: u32,
-    y: u32,
-    format: OutputFormat,
+pub(crate) struct Options<'a> {
+    pub(crate) mode: &'a str,
+    pub(crate) destination: &'a Path,
+    pub(crate) seconds: u32,
+    pub(crate) fps: u32,
+    pub(crate) width: u32,
+    pub(crate) height: u32,
+    pub(crate) x: u32,
+    pub(crate) y: u32,
+    pub(crate) format: OutputFormat,
 }
 
 fn options(args: &[OsString]) -> Result<Options<'_>> {
     ensure!(
         matches!(args.len(), 10 | 14),
-        "Usage: screenshots record x11|test OUTPUT.mkv|OUTPUT.gif --seconds N --fps N --width N --height N [--x X --y Y]"
+        "Usage: screenshots record MODE OUTPUT.mkv|OUTPUT.gif --seconds N --fps N --width N --height N [--x X --y Y]"
     );
     let mode = args[0].to_str().context("Recording mode must be UTF-8")?;
     ensure!(
-        matches!(mode, "x11" | "test"),
-        "Choose recording mode x11 or test"
+        mode == "test"
+            || (cfg!(unix) && mode == "x11")
+            || (cfg!(target_os = "windows") && mode == "gdigrab"),
+        "Choose recording mode x11/test on Unix or gdigrab/test on Windows"
     );
     let destination = Path::new(&args[1]);
     let format = match destination
@@ -108,8 +111,8 @@ fn options(args: &[OsString]) -> Result<Options<'_>> {
     app_core::validate_image_size(width, height)?;
     ensure!(x.is_some() == y.is_some(), "Use --x and --y together");
     ensure!(
-        mode == "x11" || x.is_none(),
-        "Offsets apply only to x11 recording"
+        matches!(mode, "x11" | "gdigrab") || x.is_none(),
+        "Offsets apply only to desktop recording"
     );
     let (x, y) = (x.unwrap_or(0), y.unwrap_or(0));
     ensure!(
@@ -132,6 +135,7 @@ fn options(args: &[OsString]) -> Result<Options<'_>> {
     })
 }
 
+#[cfg(any(unix, test))]
 fn local_display(value: &str) -> Result<&str> {
     let valid_number =
         |part: &str| !part.is_empty() && part.bytes().all(|byte| byte.is_ascii_digit());
@@ -150,11 +154,13 @@ fn local_display(value: &str) -> Result<&str> {
 
 pub fn run(args: &[OsString]) -> Result<()> {
     let options = options(args)?;
-    #[cfg(not(unix))]
+    #[cfg(not(any(unix, target_os = "windows")))]
     {
         let _ = options;
-        bail!("Recording is currently supported on Unix only");
+        bail!("Recording is currently supported on Unix and Windows only");
     }
+    #[cfg(target_os = "windows")]
+    return crate::record_windows::record(options);
     #[cfg(unix)]
     unix::record(options)
 }
@@ -162,7 +168,6 @@ pub fn run(args: &[OsString]) -> Result<()> {
 #[cfg(unix)]
 mod unix {
     use super::*;
-    use serde::Deserialize;
     use std::{
         fs::{DirBuilder, File},
         io::Read,
@@ -564,96 +569,6 @@ mod unix {
         command
     }
 
-    #[derive(Deserialize)]
-    struct Probe {
-        streams: Vec<Stream>,
-        format: Format,
-    }
-
-    #[derive(Deserialize)]
-    struct Format {
-        format_name: String,
-    }
-
-    #[derive(Deserialize)]
-    struct Stream {
-        codec_name: String,
-        codec_type: String,
-        width: u32,
-        height: u32,
-        avg_frame_rate: String,
-        nb_read_frames: String,
-        duration: Option<String>,
-    }
-
-    fn verify_probe(bytes: &[u8], options: &Options<'_>) -> Result<()> {
-        let probe: Probe =
-            serde_json::from_slice(bytes).context("Invalid recording verification result")?;
-        ensure!(
-            probe
-                .format
-                .format_name
-                .split(',')
-                .any(|name| name == options.format.container()),
-            "Recording container verification failed"
-        );
-        ensure!(
-            probe.streams.len() == 1,
-            "Recording must contain exactly one video stream"
-        );
-        let stream = &probe.streams[0];
-        ensure!(
-            stream.codec_name == options.format.codec() && stream.codec_type == "video",
-            "Recording codec verification failed"
-        );
-        ensure!(
-            stream.width == options.width && stream.height == options.height,
-            "Recording dimensions do not match the request"
-        );
-        if options.format == OutputFormat::Matroska {
-            ensure!(
-                stream.avg_frame_rate == format!("{}/1", options.fps),
-                "Recording frame rate does not match the request"
-            );
-        } else {
-            let (numerator, denominator) = stream
-                .avg_frame_rate
-                .split_once('/')
-                .context("Invalid GIF frame rate")?;
-            let numerator = numerator.parse::<u32>().context("Invalid GIF frame rate")?;
-            let denominator = denominator
-                .parse::<u32>()
-                .context("Invalid GIF frame rate")?;
-            let minimum_delay = 100 / u64::from(options.fps);
-            let maximum_delay = 100_u64.div_ceil(u64::from(options.fps));
-            ensure!(
-                numerator > 0
-                    && denominator > 0
-                    && u64::from(denominator) * 100 >= u64::from(numerator) * minimum_delay
-                    && u64::from(denominator) * 100 <= u64::from(numerator) * maximum_delay,
-                "GIF frame timing is outside centisecond quantization bounds"
-            );
-            let duration = stream
-                .duration
-                .as_deref()
-                .context("GIF duration is missing")?
-                .parse::<f64>()
-                .context("Invalid GIF duration")?;
-            let frames = f64::from(options.seconds * options.fps);
-            ensure!(
-                duration.is_finite()
-                    && duration + 0.000001 >= frames * minimum_delay as f64 / 100.0
-                    && duration - 0.000001 <= frames * maximum_delay as f64 / 100.0,
-                "GIF duration is outside centisecond quantization bounds"
-            );
-        }
-        ensure!(
-            stream.nb_read_frames.parse::<u32>().ok() == Some(options.seconds * options.fps),
-            "Recording is incomplete: frame count does not match the request"
-        );
-        Ok(())
-    }
-
     pub(super) fn record(options: Options<'_>) -> Result<()> {
         let display = if options.mode == "x11" {
             let display =
@@ -729,9 +644,130 @@ mod unix {
     }
 }
 
+#[derive(Deserialize)]
+struct Probe {
+    streams: Vec<Stream>,
+    format: Format,
+}
+
+#[derive(Deserialize)]
+struct Format {
+    format_name: String,
+}
+
+#[derive(Deserialize)]
+struct Stream {
+    codec_name: String,
+    codec_type: String,
+    width: u32,
+    height: u32,
+    avg_frame_rate: String,
+    nb_read_frames: String,
+    duration: Option<String>,
+}
+
+pub(crate) fn verify_probe(bytes: &[u8], options: &Options<'_>) -> Result<()> {
+    let probe: Probe =
+        serde_json::from_slice(bytes).context("Invalid recording verification result")?;
+    ensure!(
+        probe
+            .format
+            .format_name
+            .split(',')
+            .any(|name| name == options.format.container()),
+        "Recording container verification failed"
+    );
+    ensure!(
+        probe.streams.len() == 1,
+        "Recording must contain exactly one video stream"
+    );
+    let stream = &probe.streams[0];
+    ensure!(
+        stream.codec_name == options.format.codec() && stream.codec_type == "video",
+        "Recording codec verification failed"
+    );
+    ensure!(
+        stream.width == options.width && stream.height == options.height,
+        "Recording dimensions do not match the request"
+    );
+    if options.format == OutputFormat::Matroska {
+        ensure!(
+            stream.avg_frame_rate == format!("{}/1", options.fps),
+            "Recording frame rate does not match the request"
+        );
+    } else {
+        let (numerator, denominator) = stream
+            .avg_frame_rate
+            .split_once('/')
+            .context("Invalid GIF frame rate")?;
+        let numerator = numerator.parse::<u32>().context("Invalid GIF frame rate")?;
+        let denominator = denominator
+            .parse::<u32>()
+            .context("Invalid GIF frame rate")?;
+        let minimum_delay = 100 / u64::from(options.fps);
+        let maximum_delay = 100_u64.div_ceil(u64::from(options.fps));
+        ensure!(
+            numerator > 0
+                && denominator > 0
+                && u64::from(denominator) * 100 >= u64::from(numerator) * minimum_delay
+                && u64::from(denominator) * 100 <= u64::from(numerator) * maximum_delay,
+            "GIF frame timing is outside centisecond quantization bounds"
+        );
+        let duration = stream
+            .duration
+            .as_deref()
+            .context("GIF duration is missing")?
+            .parse::<f64>()
+            .context("Invalid GIF duration")?;
+        let frames = f64::from(options.seconds * options.fps);
+        ensure!(
+            duration.is_finite()
+                && duration + 0.000001 >= frames * minimum_delay as f64 / 100.0
+                && duration - 0.000001 <= frames * maximum_delay as f64 / 100.0,
+            "GIF duration is outside centisecond quantization bounds"
+        );
+    }
+    ensure!(
+        stream.nb_read_frames.parse::<u32>().ok() == Some(options.seconds * options.fps),
+        "Recording is incomplete: frame count does not match the request"
+    );
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn shared_verifier_requires_complete_selected_codec_dimensions_and_rate() {
+        let options = Options {
+            mode: "test",
+            destination: Path::new("unused.mkv"),
+            seconds: 1,
+            fps: 2,
+            width: 16,
+            height: 12,
+            x: 0,
+            y: 0,
+            format: OutputFormat::Matroska,
+        };
+        let valid = serde_json::json!({"streams":[{"codec_name":"ffv1","codec_type":"video","width":16,"height":12,"avg_frame_rate":"2/1","nb_read_frames":"2"}],"format":{"format_name":"matroska,webm"}});
+        verify_probe(&serde_json::to_vec(&valid).unwrap(), &options).unwrap();
+        for field in ["codec_name", "width", "avg_frame_rate", "nb_read_frames"] {
+            let mut invalid = valid.clone();
+            invalid["streams"][0][field] = match field {
+                "codec_name" => "h264".into(),
+                "width" => 15.into(),
+                "avg_frame_rate" => "1/1".into(),
+                _ => "1".into(),
+            };
+            assert!(
+                verify_probe(&serde_json::to_vec(&invalid).unwrap(), &options).is_err(),
+                "{field}"
+            );
+        }
+        assert!(verify_probe(b"not json", &options).is_err());
+    }
 
     #[test]
     fn display_admission_only_accepts_local_numeric_x11_displays() {

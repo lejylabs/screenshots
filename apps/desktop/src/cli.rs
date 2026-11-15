@@ -50,7 +50,7 @@ Headless commands (no desktop UI, clipboard writes or implicit uploads):
   screenshots ocr INPUT [--language LANG]
   screenshots workflow RECIPE INPUT OUTPUT
   screenshots stitch-scroll OUTPUT MIN_OVERLAP INPUT INPUT [INPUT...]
-  screenshots record x11|test OUTPUT.mkv|OUTPUT.gif --seconds N --fps N --width N --height N
+  screenshots record x11|gdigrab|test OUTPUT.mkv|OUTPUT.gif --seconds N --fps N --width N --height N
       [--x X --y Y]
 
 Image input: PNG/JPEG/WebP, <=32 MiB encoded and <=256 MiB decoded.

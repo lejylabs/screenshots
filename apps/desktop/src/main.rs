@@ -18,6 +18,8 @@ mod ocr_windows;
 mod png_metadata;
 mod qr;
 mod record;
+#[cfg(target_os = "windows")]
+mod record_windows;
 mod scroll_stitch;
 mod upload_batch;
 mod upload_file;

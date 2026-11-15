@@ -63,10 +63,13 @@ impl Drop for Engine {
     }
 }
 
-fn job_object() -> Result<OwnedHandle> {
+pub(crate) fn job_object() -> Result<OwnedHandle> {
     // Null attributes make the handle non-inheritable; the child must not retain it.
     let handle = unsafe { CreateJobObjectW(std::ptr::null(), std::ptr::null()) };
-    ensure!(!handle.is_null(), "Could not create OCR process isolation");
+    ensure!(
+        !handle.is_null(),
+        "Could not create child process isolation"
+    );
     let job = unsafe { OwnedHandle::from_raw_handle(handle) };
     let mut limits = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
     limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
@@ -79,18 +82,18 @@ fn job_object() -> Result<OwnedHandle> {
                 std::mem::size_of_val(&limits) as u32,
             )
         } != 0,
-        "Could not configure OCR process isolation"
+        "Could not configure child process isolation"
     );
     Ok(job)
 }
 
-fn resume_initial_thread(process_id: u32, deadline: Instant) -> Result<()> {
+pub(crate) fn resume_initial_thread(process_id: u32, deadline: Instant) -> Result<()> {
     // std::process retains only the process handle. Before user code runs, locate
     // its sole initial thread once; reject ambiguous or oversized snapshots.
     let handle = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0) };
     ensure!(
         handle != INVALID_HANDLE_VALUE,
-        "Could not inspect suspended OCR engine"
+        "Could not inspect suspended child process"
     );
     let snapshot = unsafe { OwnedHandle::from_raw_handle(handle) };
     let mut entry = THREADENTRY32 {
@@ -104,12 +107,12 @@ fn resume_initial_thread(process_id: u32, deadline: Instant) -> Result<()> {
         count += 1;
         ensure!(
             count <= MAX_THREAD_ENTRIES && Instant::now() < deadline,
-            "OCR thread inspection exceeded its bound"
+            "Child thread inspection exceeded its bound"
         );
         if entry.th32OwnerProcessID == process_id {
             ensure!(
                 thread_id.is_none(),
-                "OCR engine has ambiguous initial threads"
+                "Child process has ambiguous initial threads"
             );
             thread_id = Some(entry.th32ThreadID);
         }
@@ -118,9 +121,9 @@ fn resume_initial_thread(process_id: u32, deadline: Instant) -> Result<()> {
     }
     ensure!(
         unsafe { GetLastError() } == ERROR_NO_MORE_FILES,
-        "Could not finish inspecting suspended OCR engine"
+        "Could not finish inspecting suspended child process"
     );
-    let thread_id = thread_id.context("Could not find suspended OCR engine thread")?;
+    let thread_id = thread_id.context("Could not find suspended child process thread")?;
     let handle = unsafe {
         OpenThread(
             THREAD_SUSPEND_RESUME | THREAD_QUERY_LIMITED_INFORMATION,
@@ -130,21 +133,21 @@ fn resume_initial_thread(process_id: u32, deadline: Instant) -> Result<()> {
     };
     ensure!(
         !handle.is_null(),
-        "Could not open suspended OCR engine thread"
+        "Could not open suspended child process thread"
     );
     let thread = unsafe { OwnedHandle::from_raw_handle(handle) };
     // Revalidate ownership after opening: snapshot IDs can be reused by the OS.
     ensure!(
         unsafe { GetProcessIdOfThread(thread.as_raw_handle()) } == process_id,
-        "Suspended OCR engine thread changed ownership"
+        "Suspended Child process thread changed ownership"
     );
     ensure!(
         Instant::now() < deadline,
-        "OCR exceeded its 30 second deadline"
+        "Child process startup exceeded its deadline"
     );
     ensure!(
         unsafe { ResumeThread(thread.as_raw_handle()) } == 1,
-        "Could not resume isolated OCR engine"
+        "Could not resume isolated child process"
     );
     Ok(())
 }

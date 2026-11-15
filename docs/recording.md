@@ -1,5 +1,9 @@
 # Optional Unix screen recording
 
+The separate [Windows recorder](recording-windows.md) uses bounded pipe output
+and a Windows Job Object. The Unix process/limit guarantees below describe only
+this Unix backend.
+
 Record a finite rectangle from a local X11 display with separately installed
 `ffmpeg` and `ffprobe` executables:
 
@@ -9,7 +13,7 @@ screenshots record x11 capture.mkv --seconds 10 --fps 15 --width 1280 --height 7
 
 This is a partial screen-recording capability: Unix, local X11, one video stream,
 Matroska with FFV1 lossless video or a GIF animation. It does not provide audio,
-Windows/macOS native capture, Wayland portals, cursor capture, editor integration
+macOS native capture, Wayland portals, cursor capture, editor integration
 or a recording UI. X11 support on a Unix system still depends on the installed
 FFmpeg build, permissions and an available X11 session. The application does not
 install, download or distribute either external executable. The user's installed
