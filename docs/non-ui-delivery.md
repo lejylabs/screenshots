@@ -1048,3 +1048,14 @@ Combined optimized verification after capture-task passed 371 regular tests,
 49 opt-in cases excluded, all doctests successful. Clippy passed and 44 project
 Markdown files had valid local links. Native display capture for the task,
 OS login activation and the remote CI remain separate open gates.
+
+Latest capture-task/autostart Linux release rebuilt in 1m 58s. The portable
+archive passed checksum/extraction/help/version smoke tests. Actual release
+execution passed isolated autostart status/enable/idempotence/disable and
+capture-task rejection before native access; the real user autostart stayed
+unchanged. Archive SHA256:
+`f74a20aac359f8e817c73c7008fe5a0c8517ee538253ac8d6056396dfa279daf`;
+binary SHA256:
+`fdfd194c2bcd4b9c89205adffeb3fdaef4f83f2814f3b464413d7b5e608321df`.
+The native CI for code head 4bb6cd4 remains in progress. No merge, release,
+signing or machine shutdown was performed; the complete backlog is still open.
