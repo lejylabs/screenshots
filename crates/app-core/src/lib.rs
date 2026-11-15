@@ -34,6 +34,8 @@ mod bmp_input;
 mod gif_assembly;
 mod history_thumbnail;
 mod strip;
+mod scrolling;
+pub use scrolling::{ScrollAssembler, ScrollMatchOptions, ScrollAppend};
 pub use bmp_export::save_bmp;
 pub use gif_assembly::assemble_gif;
 pub use strip::remove_image_strip;

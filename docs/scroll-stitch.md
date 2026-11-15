@@ -1,5 +1,9 @@
 # Exact scroll-image assembly
 
+For real native wheel control and repeated viewport capture, use
+[live scrolling capture](scroll-capture.md). This command keeps its exact
+file-assembly behavior.
+
 Status: explicit file utility. This assembles existing images; it does not scroll
 applications, inject input, capture screens or implement automatic scrolling
 capture.

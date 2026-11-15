@@ -63,6 +63,7 @@ Headless commands (no desktop UI, clipboard writes or implicit uploads):
   screenshots workflow RECIPE INPUT OUTPUT
   screenshots gif OUTPUT.gif --delay-ms N INPUT INPUT... (2–16 images)
   screenshots stitch-scroll OUTPUT MIN_OVERLAP INPUT INPUT [INPUT...]
+  screenshots scroll-capture WINDOW OUTPUT.png --region X Y WIDTH HEIGHT [--steps N] [--wheel N] [--settle-ms N] [--delay-ms N] [--min-overlap N] [--tolerance N] [--trim-top N] [--trim-bottom N]
   screenshots record x11|gdigrab|test OUTPUT.mkv|OUTPUT.gif --seconds N --fps N --width N --height N
       [--x X --y Y] [--cursor show|hide]
       [--audio-mode test|pulse|alsa|dshow|avfoundation --audio-device NAME --audio-channels 1|2] (MKV only)
@@ -152,6 +153,7 @@ pub fn run(args: Vec<OsString>) -> Result<bool> {
         "workflow" => crate::workflow::run(&args[1..])?,
         "gif" => crate::gif_assembly::run(&args[1..])?,
         "stitch-scroll" => crate::scroll_stitch::run(&args[1..])?,
+        "scroll-capture" => crate::scroll_capture::run(&args[1..])?,
         "record" => crate::record::run(&args[1..])?,
         "record-audio" => crate::audio_record::run(&args[1..])?,
         "upload-images" => crate::upload_batch::run(&args[1..])?,

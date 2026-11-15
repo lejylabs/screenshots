@@ -28,6 +28,7 @@ mod record_windows;
 mod region_analysis;
 mod s3;
 mod scroll_stitch;
+mod scroll_capture;
 mod upload_batch;
 mod upload_file;
 mod upload_files;
