@@ -2,7 +2,7 @@
 
 Author: NewtTheWolf
 Date: 2026-11-15
-Status: implemented; release verification in progress.
+Status: implemented and verified on isolated synthetic Linux X11; native gates below remain open.
 
 ## User contract
 
