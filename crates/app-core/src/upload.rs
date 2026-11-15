@@ -63,6 +63,7 @@ impl<R: tokio::io::AsyncRead + Unpin> tokio::io::AsyncRead for ProgressReader<R>
 }
 
 const MAX_RESPONSE: usize = 1024 * 1024;
+const MAX_PROFILE_BYTES: usize = 16 * 1024;
 const MAX_CUSTOM_HEADERS: usize = 8;
 const MAX_QUERY_PARAMETERS: usize = 8;
 const MAX_FORM_FIELDS: usize = 8;
@@ -226,6 +227,34 @@ enum XmlPathStep {
     Child { name: String, position: usize },
     Attribute { name: String },
     Text,
+}
+
+fn read_upload_profile(path: &Path, name: &str) -> Result<Vec<u8>> {
+    let validate = |metadata: std::fs::Metadata| -> Result<()> {
+        ensure!(metadata.is_file(), "{name} must be a regular file");
+        ensure!(
+            metadata.len() <= MAX_PROFILE_BYTES as u64,
+            "{name} exceeds 16 KiB"
+        );
+        Ok(())
+    };
+    validate(path.metadata()?)?;
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    // Unix avoids a substituted FIFO; other platforms use normal native open and recheck.
+    // These checks do not impose a timeout on native filesystem calls.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NONBLOCK);
+    }
+    let file = options.open(path)?;
+    validate(file.metadata()?)?;
+    let mut bytes = Vec::with_capacity(MAX_PROFILE_BYTES + 1);
+    file.take((MAX_PROFILE_BYTES + 1) as u64)
+        .read_to_end(&mut bytes)?;
+    ensure!(bytes.len() <= MAX_PROFILE_BYTES, "{name} exceeds 16 KiB");
+    Ok(bytes)
 }
 
 impl UploadDestination {
@@ -582,11 +611,7 @@ impl UploadDestination {
     }
 
     pub fn load(path: &Path) -> Result<Self> {
-        let mut bytes = Vec::new();
-        std::fs::File::open(path)?
-            .take(16385)
-            .read_to_end(&mut bytes)?;
-        ensure!(bytes.len() <= 16384, "Upload configuration exceeds 16 KiB");
+        let bytes = read_upload_profile(path, "Upload configuration")?;
         let destination: Self =
             serde_json::from_slice(&bytes).context("Invalid upload configuration")?;
         destination.validate()?;
@@ -769,11 +794,7 @@ impl UploadDestination {
     }
 
     fn from_sharex_at(path: &Path) -> Result<(Self, Option<String>)> {
-        let mut bytes = Vec::new();
-        std::fs::File::open(path)?
-            .take(16385)
-            .read_to_end(&mut bytes)?;
-        ensure!(bytes.len() <= 16384, "ShareX profile exceeds 16 KiB");
+        let bytes = read_upload_profile(path, "ShareX profile")?;
         let profile: ShareXCustomUploader =
             serde_json::from_slice(&bytes).context("Invalid ShareX profile")?;
         profile.into_destination()
@@ -2908,6 +2929,139 @@ mod tests {
         sync::mpsc,
         thread,
     };
+
+    #[test]
+    fn upload_profiles_accept_regular_files_through_the_exact_size_limit() -> Result<()> {
+        let root = std::env::temp_dir().join(format!(
+            "screenshots-profile-input-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir(&root)?;
+        for (sharex, source, name) in [
+            (
+                false,
+                r#"{"url":"https://example.invalid/upload","json_pointer":"/url"}"#,
+                "Upload configuration",
+            ),
+            (
+                true,
+                r#"{"DestinationType":"ImageUploader","RequestURL":"https://example.invalid/upload","URL":"{json:url}"}"#,
+                "ShareX profile",
+            ),
+        ] {
+            let load = |path: &Path| {
+                if sharex {
+                    UploadDestination::from_sharex(path).map(|(destination, _)| destination)
+                } else {
+                    UploadDestination::load(path)
+                }
+            };
+            let path = root.join(if sharex { "host.sxcu" } else { "host.json" });
+            std::fs::write(&path, source)?;
+            assert_eq!(load(&path)?.origin(), "https://example.invalid");
+            let mut bytes = source.as_bytes().to_vec();
+            bytes.resize(MAX_PROFILE_BYTES, b' ');
+            std::fs::write(&path, &bytes)?;
+            assert_eq!(load(&path)?.origin(), "https://example.invalid");
+            bytes.push(b' ');
+            std::fs::write(&path, &bytes)?;
+            assert_eq!(
+                load(&path).err().unwrap().to_string(),
+                format!("{name} exceeds 16 KiB")
+            );
+            assert_eq!(
+                load(&root).err().unwrap().to_string(),
+                format!("{name} must be a regular file")
+            );
+        }
+        std::fs::remove_dir_all(root)?;
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn upload_profiles_follow_symlinks_to_regular_files() -> Result<()> {
+        let root = std::env::temp_dir().join(format!(
+            "screenshots-profile-symlink-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir(&root)?;
+        let path = root.join("profile");
+        let link = root.join("link");
+        std::os::unix::fs::symlink(&path, &link)?;
+        std::fs::write(
+            &path,
+            r#"{"url":"https://example.invalid/upload","json_pointer":"/url"}"#,
+        )?;
+        assert_eq!(
+            UploadDestination::load(&link)?.origin(),
+            "https://example.invalid"
+        );
+        std::fs::write(
+            &path,
+            r#"{"DestinationType":"ImageUploader","RequestURL":"https://example.invalid/upload","URL":"{json:url}"}"#,
+        )?;
+        assert_eq!(
+            UploadDestination::from_sharex(&link)?.0.origin(),
+            "https://example.invalid"
+        );
+        std::fs::remove_dir_all(root)?;
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn upload_profiles_reject_fifos_without_waiting_for_a_writer() -> Result<()> {
+        const CHILD_PATH: &str = "SCREENSHOTS_UPLOAD_FIFO_TEST_PATH";
+        if let Some(path) = std::env::var_os(CHILD_PATH) {
+            let path = Path::new(&path);
+            assert_eq!(
+                UploadDestination::load(path).err().unwrap().to_string(),
+                "Upload configuration must be a regular file"
+            );
+            assert_eq!(
+                UploadDestination::from_sharex(path)
+                    .err()
+                    .unwrap()
+                    .to_string(),
+                "ShareX profile must be a regular file"
+            );
+            return Ok(());
+        }
+
+        use std::os::unix::ffi::OsStrExt;
+        let path =
+            std::env::temp_dir().join(format!("screenshots-profile-fifo-{}", uuid::Uuid::new_v4()));
+        let name = std::ffi::CString::new(path.as_os_str().as_bytes())?;
+        assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
+        // Isolate a blocking-open regression so the parent can kill it on timeout.
+        let mut child = std::process::Command::new(std::env::current_exe()?)
+            .args([
+                "--exact",
+                "upload::tests::upload_profiles_reject_fifos_without_waiting_for_a_writer",
+                "--nocapture",
+            ])
+            .env(CHILD_PATH, &path)
+            .spawn()?;
+        let started = std::time::Instant::now();
+        let status = loop {
+            if let Some(status) = child.try_wait()? {
+                break Some(status);
+            }
+            if started.elapsed() >= Duration::from_secs(3) {
+                child.kill()?;
+                child.wait()?;
+                break None;
+            }
+            thread::sleep(Duration::from_millis(10));
+        };
+        std::fs::remove_file(path)?;
+        assert!(
+            status.is_some_and(|status| status.success()),
+            "FIFO rejection failed or timed out"
+        );
+        Ok(())
+    }
 
     #[test]
     fn manual_destinations_validate_and_reuse_saved_profile_policy() -> Result<()> {
