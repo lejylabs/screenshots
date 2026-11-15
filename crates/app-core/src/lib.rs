@@ -6,6 +6,8 @@ mod pen;
 pub use layers::{DrawAnnotation, HighlightAnnotation};
 pub use pen::{MAX_DOCUMENT_PEN_POINTS, MAX_PEN_POINTS, PenAnnotation};
 mod capture;
+mod desktop_composite;
+pub use desktop_composite::{capture_stitched_desktop, stitch_desktop};
 mod resample;
 pub use resample::ExportSize;
 mod filenames;
@@ -31,7 +33,9 @@ mod text;
 pub use text::TextAnnotation;
 mod history;
 mod history_query;
-pub use history_query::{HistoryPage, HistoryQuery, HistorySort, query_capture_history, query_upload_history};
+pub use history_query::{
+    HistoryPage, HistoryQuery, HistorySort, query_capture_history, query_upload_history,
+};
 mod storage;
 pub use storage::{
     HistoryHealth, PartInspection, backup_history_database, check_history_database,
