@@ -1734,7 +1734,24 @@ pub(crate) fn export_saved_png_cancellable(
         return Err(std::io::Error::from(std::io::ErrorKind::AlreadyExists).into());
     }
     check()?;
-    let mut source = fs::File::open(source)?;
+    if !source.metadata()?.is_file() {
+        return Err(CaptureError::Backend(
+            "PNG export source must be a regular file".into(),
+        ));
+    }
+    let mut options = fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NONBLOCK);
+    }
+    let mut source = options.open(source)?;
+    if !source.metadata()?.is_file() {
+        return Err(CaptureError::Backend(
+            "PNG export source must be a regular file".into(),
+        ));
+    }
     let mut signature = [0; 8];
     source.read_exact(&mut signature)?;
     if signature != [137, 80, 78, 71, 13, 10, 26, 10] {
@@ -1778,7 +1795,7 @@ fn write_output(
     write_output_checked(destination, write, || Ok(()))
 }
 
-fn write_output_checked(
+pub(crate) fn write_output_checked(
     destination: &Path,
     write: impl FnOnce(&mut fs::File) -> Result<(), CaptureError>,
     check: impl Fn() -> Result<(), CaptureError>,

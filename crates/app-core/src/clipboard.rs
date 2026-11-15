@@ -52,12 +52,37 @@ pub fn load_editor_image_with_limit(
     path: &std::path::Path,
     max_decoded_bytes: u64,
 ) -> Result<image::RgbaImage> {
+    load_image_input(path, max_decoded_bytes, false)
+}
+
+pub(crate) fn load_export_png(path: &std::path::Path) -> Result<image::RgbaImage> {
+    load_image_input(path, crate::MAX_CAPTURE_BYTES, true)
+}
+
+fn load_image_input(
+    path: &std::path::Path,
+    max_decoded_bytes: u64,
+    png_only: bool,
+) -> Result<image::RgbaImage> {
     anyhow::ensure!(
         max_decoded_bytes > 0 && max_decoded_bytes <= crate::MAX_CAPTURE_BYTES,
         "Invalid decoded image budget"
     );
-    let file = std::fs::File::open(path)?;
-    let length = file.metadata()?.len();
+    anyhow::ensure!(
+        path.metadata()?.is_file(),
+        "Image input must be a regular file"
+    );
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NONBLOCK);
+    }
+    let file = options.open(path)?;
+    let metadata = file.metadata()?;
+    anyhow::ensure!(metadata.is_file(), "Image input must be a regular file");
+    let length = metadata.len();
     anyhow::ensure!(
         length <= MAX_EDITOR_FILE_BYTES,
         "Image file exceeds the 32 MiB input limit"
@@ -68,6 +93,10 @@ pub fn load_editor_image_with_limit(
         position: 0,
     }))
     .with_guessed_format()?;
+    anyhow::ensure!(
+        !png_only || reader.format() == Some(image::ImageFormat::Png),
+        "History metadata export requires PNG input"
+    );
     anyhow::ensure!(
         matches!(
             reader.format(),
@@ -414,6 +443,18 @@ impl ImageClipboard {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn editor_input_rejects_fifo_without_opening_it() {
+        use std::os::unix::ffi::OsStrExt;
+        let path = std::env::temp_dir().join(format!("screenshots-fifo-{}", uuid::Uuid::new_v4()));
+        let name = std::ffi::CString::new(path.as_os_str().as_bytes()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
+        let result = load_editor_image(&path);
+        std::fs::remove_file(path).unwrap();
+        assert!(result.unwrap_err().to_string().contains("regular file"));
+    }
 
     #[cfg(target_os = "windows")]
     #[test]

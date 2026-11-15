@@ -13,6 +13,16 @@ pub fn export_saved_pngs(
     directory: &Path,
     cancelled: impl Fn() -> bool,
 ) -> Result<ExportReport> {
+    export_saved_pngs_with_metadata(sources, directory, false, cancelled)
+}
+
+/// Explicit metadata policy; the default byte-preserving export remains unchanged.
+pub fn export_saved_pngs_with_metadata(
+    sources: &[PathBuf],
+    directory: &Path,
+    strip_metadata: bool,
+    cancelled: impl Fn() -> bool,
+) -> Result<ExportReport> {
     ensure!(
         !sources.is_empty() && sources.len() <= 20,
         "Select 1 to 20 images"
@@ -45,11 +55,15 @@ pub fn export_saved_pngs(
                 !name.to_string_lossy().contains(':'),
                 "Alternate data streams cannot be exported"
             );
-            crate::capture::export_saved_png_cancellable(
-                source,
-                &directory.join(name),
-                &cancelled,
-            )?;
+            if strip_metadata {
+                export_clean_png(source, &directory.join(name), &cancelled)?;
+            } else {
+                crate::capture::export_saved_png_cancellable(
+                    source,
+                    &directory.join(name),
+                    &cancelled,
+                )?;
+            }
             Ok(())
         })();
         match result {
@@ -68,9 +82,140 @@ pub fn export_saved_pngs(
     Ok(report)
 }
 
+fn export_clean_png(source: &Path, destination: &Path, cancelled: impl Fn() -> bool) -> Result<()> {
+    use image::ImageEncoder;
+    let started = std::time::Instant::now();
+    let check = || {
+        if cancelled() {
+            Err(crate::CaptureError::Canceled)
+        } else if started.elapsed() > std::time::Duration::from_secs(60) {
+            Err(crate::CaptureError::Backend(
+                "PNG export deadline exceeded".into(),
+            ))
+        } else {
+            Ok(())
+        }
+    };
+    check()?;
+    ensure!(!destination.try_exists()?, "Export output already exists");
+    // The shared file loader freezes the encoded extent and applies EXIF orientation.
+    let pixels = crate::clipboard::load_export_png(source)?;
+    check()?;
+    crate::capture::write_output_checked(
+        destination,
+        |file| {
+            let mut writer = std::io::BufWriter::with_capacity(64 * 1024, file);
+            image::codecs::png::PngEncoder::new_with_quality(
+                &mut writer,
+                image::codecs::png::CompressionType::Fast,
+                image::codecs::png::FilterType::Adaptive,
+            )
+            .write_image(
+                pixels.as_raw(),
+                pixels.width(),
+                pixels.height(),
+                image::ExtendedColorType::Rgba8,
+            )?;
+            std::io::Write::flush(&mut writer)?;
+            Ok(())
+        },
+        check,
+    )?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn export_policies_reject_named_pipe_sources_without_reading() -> Result<()> {
+        use std::os::unix::ffi::OsStrExt;
+        let root =
+            std::env::temp_dir().join(format!("screenshots-pipe-export-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&root)?;
+        let source = root.join("pipe.png");
+        let name = std::ffi::CString::new(source.as_os_str().as_bytes())?;
+        assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
+        for strip in [false, true] {
+            let report = export_saved_pngs_with_metadata(
+                std::slice::from_ref(&source),
+                &root,
+                strip,
+                || false,
+            )?;
+            assert_eq!(report.exported, 0);
+            assert_eq!(report.failures.len(), 1);
+        }
+        std::fs::remove_dir_all(root)?;
+        Ok(())
+    }
+
+    #[test]
+    fn metadata_policy_reencodes_pixels_and_preserves_originals() -> Result<()> {
+        use image::ImageEncoder;
+        let root =
+            std::env::temp_dir().join(format!("screenshots-clean-export-{}", uuid::Uuid::new_v4()));
+        let original_dir = root.join("original");
+        let clean_dir = root.join("clean");
+        std::fs::create_dir_all(&original_dir)?;
+        std::fs::create_dir(&clean_dir)?;
+        let source = root.join("input.png");
+        let pixels = image::RgbaImage::from_pixel(3, 2, image::Rgba([13, 24, 35, 87]));
+        let mut bytes = Vec::new();
+        let mut encoder = image::codecs::png::PngEncoder::new(&mut bytes);
+        encoder.set_exif_metadata(vec![b'S'; 128])?;
+        encoder.write_image(pixels.as_raw(), 3, 2, image::ExtendedColorType::Rgba8)?;
+        std::fs::write(&source, &bytes)?;
+        assert!(bytes.windows(4).any(|w| w == b"eXIf"));
+        let copied = export_saved_pngs(std::slice::from_ref(&source), &original_dir, || false)?;
+        assert_eq!(copied.exported, 1);
+        assert_eq!(std::fs::read(original_dir.join("input.png"))?, bytes);
+        let clean = export_saved_pngs_with_metadata(
+            std::slice::from_ref(&source),
+            &clean_dir,
+            true,
+            || false,
+        )?;
+        assert_eq!(clean.exported, 1);
+        assert!(clean.failures.is_empty());
+        let cleaned = std::fs::read(clean_dir.join("input.png"))?;
+        assert!(!cleaned.windows(4).any(|w| w == b"eXIf"));
+        assert_eq!(image::load_from_memory(&cleaned)?.into_rgba8(), pixels);
+        assert_eq!(std::fs::read(&source)?, bytes);
+        let duplicate = export_saved_pngs_with_metadata(
+            std::slice::from_ref(&source),
+            &clean_dir,
+            true,
+            || false,
+        )?;
+        assert_eq!(duplicate.exported, 0);
+        assert_eq!(duplicate.failures.len(), 1);
+        let canceled = export_saved_pngs_with_metadata(
+            std::slice::from_ref(&source),
+            &clean_dir,
+            true,
+            || true,
+        )?;
+        assert_eq!(canceled.not_exported, 1);
+        let cancel_dir = root.join("cancel");
+        std::fs::create_dir(&cancel_dir)?;
+        let checks = std::cell::Cell::new(0);
+        let canceled = export_saved_pngs_with_metadata(
+            std::slice::from_ref(&source),
+            &cancel_dir,
+            true,
+            || {
+                checks.set(checks.get() + 1);
+                checks.get() >= 5
+            },
+        )?;
+        assert_eq!((canceled.exported, canceled.not_exported), (0, 1));
+        assert_eq!(std::fs::read_dir(&cancel_dir)?.count(), 0);
+        std::fs::remove_dir_all(root)?;
+        Ok(())
+    }
 
     #[test]
     fn exports_report_partial_results_without_overwriting_or_changing_sources() -> Result<()> {

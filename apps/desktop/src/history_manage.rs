@@ -74,6 +74,39 @@ pub fn run(args: &[OsString]) -> Result<()> {
         .and_then(|value| value.to_str())
         .context("Use history-manage import, remove or relink")?;
     match command {
+        "export" => {
+            ensure!(
+                (5..=24).contains(&args.len()),
+                "Usage: screenshots history-manage export DATABASE DIRECTORY original|strip-metadata ID... (1–20 IDs)"
+            );
+            let strip = match args[3].to_str() {
+                Some("original") => false,
+                Some("strip-metadata") => true,
+                _ => bail!("Export policy must be original or strip-metadata"),
+            };
+            let ids = args[4..]
+                .iter()
+                .map(positive_id)
+                .collect::<Result<Vec<_>>>()?;
+            let database = bounded_path(&args[1])?;
+            existing_database(database)?;
+            let directory = absolute_path(&args[2])?;
+            let sources = ids
+                .into_iter()
+                .map(|id| {
+                    app_core::lookup_history_entry(database, id)?
+                        .map(|entry| entry.path)
+                        .context("History export ID was not found")
+                })
+                .collect::<Result<Vec<_>>>()?;
+            let report =
+                app_core::export_saved_pngs_with_metadata(&sources, &directory, strip, || false)?;
+            let failures = report.failures.into_iter().map(|(path,error)|json!({"path":path.to_string_lossy(),"error":bounded_error(error)})).collect::<Vec<_>>();
+            print_result(
+                json!({"exported":report.exported,"failed":failures.len(),"not_exported":report.not_exported,"failures":failures,"metadata_policy":if strip {"strip-metadata"}else{"original"},"path_encoding":"lossy-native"}),
+                "History export completed; published files remain",
+            )
+        }
         "import" => {
             ensure!(
                 (3..=102).contains(&args.len()),

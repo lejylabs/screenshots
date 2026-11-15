@@ -79,6 +79,60 @@ fn failure(output: Output) {
 }
 
 #[test]
+fn export_policy_strips_metadata_without_touching_library_or_sources() {
+    use image::ImageEncoder;
+    let fixture = Fixture::new();
+    let source = fixture.path("metadata.png");
+    let pixels = RgbaImage::from_pixel(4, 3, Rgba([12, 34, 56, 78]));
+    let mut encoded = Vec::new();
+    let mut encoder = image::codecs::png::PngEncoder::new(&mut encoded);
+    encoder.set_exif_metadata(vec![b'M'; 64]).unwrap();
+    encoder
+        .write_image(pixels.as_raw(), 4, 3, image::ExtendedColorType::Rgba8)
+        .unwrap();
+    std::fs::write(&source, &encoded).unwrap();
+    let database = fixture.path("history.sqlite3");
+    app_core::import_capture_files(&database, std::slice::from_ref(&source)).unwrap();
+    let entry = app_core::capture_history_page(&database, None)
+        .unwrap()
+        .remove(0);
+    let before = std::fs::read(&database).unwrap();
+    let directory = fixture.path("out");
+    std::fs::create_dir(&directory).unwrap();
+    let result = success(fixture.run(
+        "export",
+        &database,
+        &[
+            directory.clone().into(),
+            "strip-metadata".into(),
+            entry.id.to_string().into(),
+        ],
+    ));
+    assert_eq!(result["exported"], 1);
+    assert_eq!(result["failed"], 0);
+    let bytes = std::fs::read(directory.join("metadata.png")).unwrap();
+    assert!(!bytes.windows(4).any(|w| w == b"eXIf"));
+    assert_eq!(
+        image::load_from_memory(&bytes).unwrap().into_rgba8(),
+        pixels
+    );
+    assert_eq!(std::fs::read(&source).unwrap(), encoded);
+    assert_eq!(std::fs::read(&database).unwrap(), before);
+    let duplicate = success(fixture.run(
+        "export",
+        &database,
+        &[
+            directory.into(),
+            "original".into(),
+            entry.id.to_string().into(),
+        ],
+    ));
+    assert_eq!(duplicate["exported"], 0);
+    assert_eq!(duplicate["failed"], 1);
+    fixture.no_user_state();
+}
+
+#[test]
 fn import_reports_added_existing_and_individual_failures_without_changing_files() {
     let fixture = Fixture::new();
     let image = fixture.png("Größe $(ignored).png", 3, 2);

@@ -19,7 +19,7 @@ mod clipboard_windows;
 #[cfg(target_os = "windows")]
 pub use clipboard_windows::read_clipboard_image;
 mod export;
-pub use export::{ExportReport, export_saved_pngs};
+pub use export::{ExportReport, export_saved_pngs, export_saved_pngs_with_metadata};
 #[cfg(target_os = "windows")]
 mod desktop_events;
 #[cfg(target_os = "windows")]
