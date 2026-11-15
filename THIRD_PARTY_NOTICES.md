@@ -1,5 +1,19 @@
 # Third-party notices
 
+The vendored GPUI core 0.3.12 and cosmic-text 0.19.0 retain their upstream
+licenses. Their maintained SVG/font dependency migration and glyph-coverage
+adapter are documented in `vendor/gpui-pre/LOCAL-PATCH.md` and
+`vendor/cosmic-text/LOCAL-PATCH.md`. The GPUI Component Windows menu uses the
+same upstream resvg family; no application layout/design was changed.
+
+The narrowly vendored GPUI Linux 0.3.12, AccessKit Unix 0.22.1,
+AccessKit AT-SPI common 0.19.1, AT-SPI 0.29.0/common and proxies 0.13.0,
+and zbus-lockstep/macros 0.5.2 retain their published versions and original
+MIT and/or Apache license files. Their `LOCAL-PATCH.md` files describe the
+maintained zbus 6 consumer migration. The active application graph removes the
+standalone abandoned wire/name crates; this does not replace their source with
+renamed copies. The lockfile retains upstream dormant optional backends.
+
 The specialized cancellable history-thumbnail reduction is derived from the
 image crate 0.25.10 `src/imageops/sample.rs` and `src/math/utils.rs`, under its
 MIT license option. Its dimension, sampling and channel-rounding behavior is

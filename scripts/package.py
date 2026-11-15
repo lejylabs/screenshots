@@ -56,15 +56,21 @@ def bounded_license(path):
 
 
 def native_licenses(target):
-    if "windows" not in target:
+    if "windows" in target:
+        expected = "x64-windows-static-md"
+    elif target == "aarch64-apple-darwin":
+        expected = "arm64-osx"
+    elif target == "x86_64-apple-darwin":
+        expected = "x64-osx"
+    else:
         return []
     installed = os.environ.get("VCPKG_INSTALLED_ROOT")
-    if not installed or not Path(installed).is_absolute() or os.environ.get("VCPKGRS_TRIPLET") != "x64-windows-static-md":
-        raise ValueError("Windows packaging requires the pinned static vcpkg installation and triplet")
+    if not installed or not Path(installed).is_absolute() or os.environ.get("VCPKGRS_TRIPLET") != expected:
+        raise ValueError("Native packaging requires the pinned static vcpkg installation and target triplet")
     baseline = json.loads((ROOT / "packaging/windows/vcpkg.json").read_text(encoding="utf-8"))["builtin-baseline"]
     result = []
     for name, license in [("curl", "curl"), ("libssh2", "BSD-3-Clause"), ("openssl", "Apache-2.0"), ("zlib", "Zlib")]:
-        path = Path(installed) / "x64-windows-static-md/share" / name / "copyright"
+        path = Path(installed) / expected / "share" / name / "copyright"
         bounded_license(path)
         result.append({"name": "native-" + name, "version": "vcpkg-" + baseline,
                        "license": license, "source": "vcpkg baseline " + baseline,

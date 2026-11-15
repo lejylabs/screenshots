@@ -6,6 +6,11 @@ members = [
     "crates/app-ui",
     "crates/shared",
 ]
+exclude = [
+    "vendor/accesskit_unix",
+    "vendor/accesskit_atspi_common",
+    "vendor/atspi-common",
+]
 
 [workspace.package]
 version = "0.1.0"
@@ -60,7 +65,7 @@ uuid = { version = "1.29.2", features = ["v4", "v7", "serde"] }
 zeroize = "1.9.1"
 
 # Phase 0 still-image spike. Not a committed product backend yet.
-xcap = "=0.9.8"
+xcap = "=0.9.10"
 
 # Left out on purpose:
 # - FFmpeg: recording, after the MVP, license check first
@@ -72,6 +77,17 @@ xcap = "=0.9.8"
 opt-level = 1
 
 [patch.crates-io]
+curl-sys = { path = "vendor/curl-sys" }
+zbus-lockstep-macros = { path = "vendor/zbus-lockstep-macros" }
+zbus-lockstep = { path = "vendor/zbus-lockstep" }
+atspi-proxies = { path = "vendor/atspi-proxies" }
+atspi-common = { path = "vendor/atspi-common" }
+atspi = { path = "vendor/atspi" }
+accesskit_atspi_common = { path = "vendor/accesskit_atspi_common" }
+accesskit_unix = { path = "vendor/accesskit_unix" }
+gpui-pre-linux = { path = "vendor/gpui-pre-linux" }
+gpui-pre = { path = "vendor/gpui-pre" }
+cosmic-text = { path = "vendor/cosmic-text" }
 gpui-pre-windows = { path = "vendor/gpui-pre-windows" }
 glib = { path = "vendor/glib" }
 gpui-pre-reqwest = { path = "vendor/gpui-pre-reqwest" }

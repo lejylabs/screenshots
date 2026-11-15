@@ -12,6 +12,7 @@ description = "Desktop capture and sharing application"
 workspace = true
 
 [dependencies]
+curl-sys = { version = "=0.4.91", default-features = false, features = ["ssl", "protocol-ftp"] }
 anyhow.workspace = true
 app-core.workspace = true
 app-ui.workspace = true
@@ -33,12 +34,20 @@ sha2 = "0.11.0"
 crc32fast = "1.5.0"
 chrono.workspace = true
 
+[target.'cfg(target_os = "linux")'.dependencies]
+dbus = "=0.9.12"
+
 [target.'cfg(unix)'.dependencies]
 signal-hook = "=0.3.18"
 libc = "0.2.191"
 
 [target.'cfg(target_os = "windows")'.dependencies]
-windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_System_JobObjects", "Win32_System_Threading", "Win32_System_Diagnostics_ToolHelp", "Win32_System_Registry", "Win32_System_SystemServices", "Win32_Security", "Win32_Security_Authorization", "Win32_Storage_FileSystem", "Win32_UI_HiDpi"] }
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_System_JobObjects", "Win32_System_Console", "Win32_System_Pipes", "Win32_System_Threading", "Win32_System_Diagnostics_ToolHelp", "Win32_System_Registry", "Win32_System_SystemServices", "Win32_Security", "Win32_Security_Authorization", "Win32_Storage_FileSystem", "Win32_UI_HiDpi"] }
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]
 glib = "=0.18.5"
+accesskit = "=0.24.1"
+accesskit_unix = { path = "../../vendor/accesskit_unix" }
+accesskit_atspi_common = { path = "../../vendor/accesskit_atspi_common" }
+atspi-common = { path = "../../vendor/atspi-common" }
+zbus = { version = "=6.2.1", default-features = false, features = ["default-rt", "proxy", "service"] }

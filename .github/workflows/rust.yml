@@ -46,7 +46,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y \
-            build-essential clang cmake pkg-config libssl-dev \
+            build-essential clang cmake pkg-config libssl-dev libcurl4-openssl-dev \
             libglib2.0-dev libgtk-3-dev libayatana-appindicator3-dev \
             libfontconfig1-dev libfreetype6-dev libdbus-1-dev \
             libx11-dev libxrandr-dev libxfixes-dev libxcb1-dev \
@@ -61,12 +61,12 @@ jobs:
         with:
           python-version: "3.12"
       - uses: actions/cache@v4
-        if: runner.os == 'Windows'
+        if: runner.os == 'Windows' || runner.os == 'macOS'
         with:
           path: |
             target/vcpkg-installed
             target/vcpkg-downloads
-          key: native-sftp-${{ runner.os }}-${{ hashFiles('packaging/windows/vcpkg.json') }}
+          key: native-sftp-${{ matrix.target }}-${{ hashFiles('packaging/windows/vcpkg.json') }}
       - name: Build pinned Windows SFTP engine dependencies
         if: runner.os == 'Windows'
         shell: pwsh
@@ -80,6 +80,21 @@ jobs:
           "VCPKG_ROOT=$(Join-Path $PWD 'target/vcpkg')" >> $env:GITHUB_ENV
           "VCPKG_INSTALLED_ROOT=$(Join-Path $PWD 'target/vcpkg-installed')" >> $env:GITHUB_ENV
           "VCPKGRS_TRIPLET=x64-windows-static-md" >> $env:GITHUB_ENV
+      - name: Build pinned macOS SFTP engine dependencies
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          git clone --filter=blob:none --no-checkout https://github.com/microsoft/vcpkg.git target/vcpkg
+          git -C target/vcpkg checkout 8f363bdc11359ede4bc51e5eb32a2617538049c8
+          target/vcpkg/bootstrap-vcpkg.sh -disableMetrics
+          triplet=x64-osx
+          if [ "${{ matrix.target }}" = aarch64-apple-darwin ]; then triplet=arm64-osx; fi
+          export VCPKG_DOWNLOADS="$PWD/target/vcpkg-downloads"
+          target/vcpkg/vcpkg install --triplet "$triplet" --x-manifest-root=packaging/windows --x-install-root=target/vcpkg-installed --disable-metrics
+          echo "VCPKG_INSTALLED_ROOT=$PWD/target/vcpkg-installed" >> "$GITHUB_ENV"
+          echo "VCPKGRS_TRIPLET=$triplet" >> "$GITHUB_ENV"
+          echo "PKG_CONFIG_PATH=$PWD/target/vcpkg-installed/$triplet/lib/pkgconfig" >> "$GITHUB_ENV"
+          echo "LIBCURL_STATIC=1" >> "$GITHUB_ENV"
       - uses: actions/cache@v4
         with:
           path: |

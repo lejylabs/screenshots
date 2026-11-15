@@ -22,6 +22,20 @@ smoke_spec.loader.exec_module(smoke_module)
 
 
 class PackagingTests(unittest.TestCase):
+    def test_static_mac_native_notices_use_the_matching_target_triplet(self):
+        for target, triplet in [("aarch64-apple-darwin", "arm64-osx"), ("x86_64-apple-darwin", "x64-osx")]:
+            with self.subTest(target=target), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                for name in ["curl", "libssh2", "openssl", "zlib"]:
+                    folder = root / triplet / "share" / name
+                    folder.mkdir(parents=True)
+                    (folder / "copyright").write_bytes((name + " notice").encode())
+                with mock.patch.dict(os.environ, {"VCPKG_INSTALLED_ROOT": str(root), "VCPKGRS_TRIPLET": triplet}):
+                    self.assertEqual(len(module.native_licenses(target)), 4)
+                    other = "x64-osx" if triplet == "arm64-osx" else "arm64-osx"
+                    with mock.patch.dict(os.environ, {"VCPKGRS_TRIPLET": other}):
+                        with self.assertRaises(ValueError): module.native_licenses(target)
+
     def test_static_windows_native_notices_are_required_bounded_and_packaged(self):
         target = "x86_64-pc-windows-msvc"
         with tempfile.TemporaryDirectory() as temporary:
