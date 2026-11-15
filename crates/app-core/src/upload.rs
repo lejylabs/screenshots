@@ -1848,6 +1848,20 @@ pub fn upload_png(
     .url)
 }
 
+/// Explicit arbitrary-file upload; preserves bytes and never decodes or records them.
+pub fn upload_file(
+    destination: &UploadDestination,
+    path: &Path,
+    cancel: UploadCancellation,
+) -> Result<UploadOutcome> {
+    run_upload(
+        destination,
+        UploadPng::FilePath(path.to_path_buf()),
+        cancel,
+        None,
+    )
+}
+
 pub fn upload_png_with_progress(
     destination: &UploadDestination,
     path: &Path,
@@ -1898,6 +1912,7 @@ pub fn probe_upload(
 enum UploadPng {
     Path(std::path::PathBuf),
     Bytes(Vec<u8>),
+    FilePath(std::path::PathBuf),
 }
 
 fn write_probe_png(root: &Path) -> Result<std::path::PathBuf> {
@@ -1916,6 +1931,10 @@ fn run_upload(
     progress: Option<UploadProgressReporter>,
 ) -> Result<UploadOutcome> {
     let url = destination.validate()?;
+    ensure!(
+        !matches!(&source, UploadPng::FilePath(_)) || destination.json.is_empty(),
+        "Arbitrary file uploads support multipart POST or binary PUT, not image JSON bodies"
+    );
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .max_blocking_threads(1)
@@ -1938,7 +1957,7 @@ async fn transfer(
     progress: Option<UploadProgressReporter>,
 ) -> Result<UploadOutcome> {
     const PNG_SIGNATURE: [u8; 8] = [137, 80, 78, 71, 13, 10, 26, 10];
-    let (length, png, mut file) = match source {
+    let (length, png, mut file, content_type, filename) = match source {
         UploadPng::Path(path) => {
             ensure!(path.is_absolute(), "Upload source must be an absolute path");
             let mut file = tokio::fs::File::open(&path)
@@ -1956,7 +1975,13 @@ async fn transfer(
             file.read_exact(&mut signature).await?;
             ensure!(signature == PNG_SIGNATURE, "Upload source is not a PNG");
             file.rewind().await?;
-            (metadata.len(), None, Some(file))
+            (
+                metadata.len(),
+                None,
+                Some(file),
+                "image/png",
+                "screenshot.png",
+            )
         }
         UploadPng::Bytes(png) => {
             ensure!(
@@ -1967,7 +1992,39 @@ async fn transfer(
                 png.starts_with(&PNG_SIGNATURE),
                 "Upload source is not a PNG"
             );
-            (png.len() as u64, Some(png), None)
+            (
+                png.len() as u64,
+                Some(png),
+                None,
+                "image/png",
+                "screenshot.png",
+            )
+        }
+        UploadPng::FilePath(path) => {
+            ensure!(path.is_absolute(), "Upload source must be an absolute path");
+            let candidate = tokio::fs::metadata(&path)
+                .await
+                .context("Could not inspect the upload file")?;
+            ensure!(
+                candidate.is_file() && candidate.len() <= 64 * 1024 * 1024,
+                "Upload file exceeds the 64 MiB limit or is not a regular file"
+            );
+            let mut file = tokio::fs::File::open(&path)
+                .await
+                .context("Could not open the upload file")?;
+            file.set_max_buf_size(64 * 1024);
+            let metadata = file.metadata().await?;
+            ensure!(
+                metadata.is_file() && metadata.len() <= 64 * 1024 * 1024,
+                "Upload file exceeds the 64 MiB limit or is not a regular file"
+            );
+            (
+                metadata.len(),
+                None,
+                Some(file),
+                "application/octet-stream",
+                "file.bin",
+            )
         }
     };
     let client = reqwest::Client::builder()
@@ -2065,8 +2122,8 @@ async fn transfer(
         match destination.method {
             UploadMethod::Post => {
                 let part = reqwest::multipart::Part::stream_with_length(body, length)
-                    .file_name("screenshot.png")
-                    .mime_str("image/png")?;
+                    .file_name(filename)
+                    .mime_str(content_type)?;
                 let mut form = reqwest::multipart::Form::new();
                 for (name, value) in &destination.form {
                     form = form.text(name.clone(), value.clone());
@@ -2077,7 +2134,7 @@ async fn transfer(
             }
             UploadMethod::Put => client
                 .put(url)
-                .header(reqwest::header::CONTENT_TYPE, "image/png")
+                .header(reqwest::header::CONTENT_TYPE, content_type)
                 .header(reqwest::header::CONTENT_LENGTH, length)
                 .header(reqwest::header::IF_NONE_MATCH, "*")
                 .body(body),

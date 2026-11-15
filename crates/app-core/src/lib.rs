@@ -67,7 +67,7 @@ pub use settings::{
 pub use upload::{
     NamedUploadDestination, UploadAuthentication, UploadCancellation, UploadConfiguration,
     UploadDestination, UploadDestinationCatalog, UploadMethod, UploadOutcome, UploadProgress,
-    UploadProgressReceiver, UploadProgressReporter, probe_upload, upload_png,
+    UploadProgressReceiver, UploadProgressReporter, probe_upload, upload_file, upload_png,
     upload_png_bytes_with_progress, upload_png_with_progress, upload_progress_channel,
 };
 

@@ -7,6 +7,7 @@ mod ocr;
 mod qr;
 mod record;
 mod upload_batch;
+mod upload_file;
 mod workflow;
 
 fn main() {

@@ -33,6 +33,7 @@ Headless commands (no desktop UI, clipboard writes or implicit uploads):
   screenshots storage inspect-parts DIRECTORY
   screenshots upload PROFILE_JSON PNG
   screenshots upload-images PROFILE_JSON IMAGE...
+  screenshots upload-file PROFILE_JSON FILE
   screenshots credentials target|store|remove PROFILE_JSON [--username NAME]
   screenshots qr generate TEXT OUTPUT_PNG
   screenshots qr scan INPUT
@@ -106,6 +107,7 @@ pub fn run(args: Vec<OsString>) -> Result<bool> {
         "workflow" => crate::workflow::run(&args[1..])?,
         "record" => crate::record::run(&args[1..])?,
         "upload-images" => crate::upload_batch::run(&args[1..])?,
+        "upload-file" => crate::upload_file::run(&args[1..])?,
         "upload" => {
             ensure!(
                 args.len() == 3,
