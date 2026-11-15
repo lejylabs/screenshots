@@ -100,9 +100,14 @@ fn load_image_input(
     anyhow::ensure!(
         matches!(
             reader.format(),
-            Some(image::ImageFormat::Png | image::ImageFormat::Jpeg | image::ImageFormat::WebP)
+            Some(
+                image::ImageFormat::Png
+                    | image::ImageFormat::Jpeg
+                    | image::ImageFormat::WebP
+                    | image::ImageFormat::Bmp
+            )
         ),
-        "Choose a PNG, JPEG or WebP image"
+        "Choose a PNG, JPEG, WebP or supported truecolor BMP image"
     );
     if reader.format() == Some(image::ImageFormat::WebP) {
         use std::io::{Read as _, Seek as _};
@@ -122,6 +127,24 @@ fn load_image_input(
             reader.into_decoder()?,
             max_decoded_bytes,
             Some(orientation),
+        );
+    }
+    if reader.format() == Some(image::ImageFormat::Bmp) {
+        use std::io::{Read as _, Seek as _};
+        let mut input = reader.into_inner();
+        input.seek(std::io::SeekFrom::Start(0))?;
+        let mut bytes = vec![0; usize::try_from(length)?];
+        input.read_exact(&mut bytes)?;
+        crate::bmp_input::validate_bmp(&bytes, max_decoded_bytes)?;
+        let mut reader =
+            image::ImageReader::with_format(std::io::Cursor::new(bytes), image::ImageFormat::Bmp);
+        let mut limits = image::Limits::default();
+        limits.max_alloc = Some(crate::MAX_CAPTURE_BYTES);
+        reader.limits(limits);
+        return decode_editor_pixels_with_limit(
+            reader.into_decoder()?,
+            max_decoded_bytes,
+            Some(image::metadata::Orientation::NoTransforms),
         );
     }
     let mut limits = image::Limits::default();
@@ -442,6 +465,22 @@ impl ImageClipboard {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn bmp_snapshot_loader_honors_the_callers_decoded_budget() -> anyhow::Result<()> {
+        let root =
+            std::env::temp_dir().join(format!("screenshots-bmp-budget-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&root)?;
+        let path = root.join("source.bmp");
+        let pixels = image::RgbaImage::from_pixel(3, 2, image::Rgba([12, 34, 56, 78]));
+        crate::save_bmp(&pixels, &path)?;
+        let result = (|| -> anyhow::Result<()> {
+            assert_eq!(super::load_editor_image_with_limit(&path, 24)?, pixels);
+            assert!(super::load_editor_image_with_limit(&path, 23).is_err());
+            Ok(())
+        })();
+        std::fs::remove_dir_all(root)?;
+        result
+    }
     use super::*;
 
     #[cfg(unix)]

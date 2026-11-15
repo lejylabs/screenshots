@@ -30,6 +30,7 @@ pub use desktop_events::{DesktopEvent, desktop_events, request_reopen};
 pub use single_instance::SingleInstance;
 mod blur;
 mod bmp_export;
+mod bmp_input;
 pub use bmp_export::save_bmp;
 mod tiff_export;
 pub use tiff_export::save_tiff;

@@ -5,10 +5,11 @@ Date: 2026-11-15
 Status: implemented and locally verified; platform acceptance remains separate.
 
 Extend only `screenshots image convert INPUT OUTPUT.bmp` with exact RGBA8 BMP
-output. Existing PNG/JPEG/WebP input admission, rotate/flip/downscale ordering,
+output. Existing shared input admission, rotate/flip/downscale ordering,
 size limits, no-overwrite publication and JSON summary stay in use. Keep the
 editor's selectable/persisted format enum unchanged; this is a CLI conversion
-output, not BMP import or a new default for captures, history or workflows.
+output, not a new default for captures, history or workflows. A subsequent
+[bounded BMP input slice](bmp-input.md) supports reimport separately.
 
 Use the installed image crate's BMP encoder with RGBA8 and BITMAPV4 alpha masks.
 No new dependency or full-image color conversion is required. Keep the 256 MiB

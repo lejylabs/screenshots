@@ -1603,3 +1603,21 @@ binary SHA256
 `ceace6b9404e57016996aa7768e9b01beb737fa968fc58145e56921a54949c6a`.
 The new `scripts/test-upload-files.py` reproduces these synthetic native-CLI
 checks without accounts, user inputs or remote services.
+
+### Bounded truecolor BMP input (in progress, 2026-11-15)
+
+Extend the shared image loader with an immutable BMP snapshot and strict
+preflight before the image decoder runs. Accept a limited 24/32-bit subset with
+exact byte extents, fixed BGRA masks and no palette/compression/profiles. Existing
+caller budgets apply; PNG-only history remains unchanged. Shared-loader callers
+gain BMP input (conversion, workflow, QR/OCR, image batch and existing Open
+worker), without new UI controls or defaults. The full format, alpha and memory
+contract is in [BMP input](bmp-input.md). Core validation tests, Clippy and
+Windows compilation passed after a test-only redundant clone was removed;
+executable and full-regression verification continue.
+
+Three actual-executable BMP import fixtures passed, preserving exact pixels for
+exported BGRA and padded/top-down BGR/BGRX while refusing malformed layouts.
+The independent FFmpeg/QR roundtrip script passed against the optimized binary,
+with no overwrite or source/state changes. The loader's direct smaller-budget
+fixture was added; final complete workspace and release checks are still running.

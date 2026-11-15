@@ -8,7 +8,8 @@ never replaced. Generation prints `format`, `width`, `height` and
 `error_correction:"M"` as JSON, without echoing
 the supplied text to logs.
 
-`screenshots qr scan INPUT` reads PNG, JPEG or WebP through the shared bounded
+`screenshots qr scan INPUT` reads PNG, JPEG, WebP or
+[supported truecolor BMP](bmp-input.md) through the shared bounded
 image loader. It prints one JSON object containing `codes`, with `text` and
 `version` for each decoded code. These are inert strings: a URL, command or Wi-Fi
 payload is never opened, executed, copied or acted upon. Non-UTF-8 payloads,

@@ -164,8 +164,9 @@ not allowed. A unique suffix and `.png` are always appended. Click **Save filena
 template** to apply; an empty value restores default names. Existing files and
 manual **Save as** names are preserved.
 
-**Library → Open image…** opens PNG, JPEG or WebP directly in the editor without
+**Library → Open image…** opens PNG, JPEG, WebP or supported truecolor BMP directly in the editor without
 importing it. The original file stays unchanged; Copy/Save remain explicit actions.
+BMP support has [explicit header/size restrictions](docs/bmp-input.md).
 
 **Save as (.png / .jpg / .webp)…** exports the latest finalized capture through a
 native save dialog. Choose the format by filename: `.png`, `.jpg`/`.jpeg` or

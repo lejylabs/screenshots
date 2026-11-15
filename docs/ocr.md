@@ -1,6 +1,7 @@
 # Explicit OCR
 
-`screenshots ocr INPUT [--language LANG]` recognizes a PNG/JPEG/WebP file through
+`screenshots ocr INPUT [--language LANG]` recognizes a PNG/JPEG/WebP or
+[supported truecolor BMP](bmp-input.md) file through
 an optional, already-installed `tesseract` executable. The default language is
 `eng`; a bounded name such as `deu+eng` selects installed language data. The app
 does not install an engine, download trained data or contact a network service.

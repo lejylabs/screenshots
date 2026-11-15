@@ -2,7 +2,8 @@
 
 These commands run without initializing GPUI. They do not alter the editor UI,
 clipboard, history, configuration or network. Source files stay unchanged and
-existing destinations are never overwritten. PNG/JPEG/WebP input uses the shared
+existing destinations are never overwritten. PNG/JPEG/WebP and
+[supported truecolor BMP input](bmp-input.md) use the shared
 bounded decoder and EXIF orientation handling; output uses the shared PNG/JPEG/
 lossless WebP exporter. JPEG still rejects transparency instead of flattening it
 implicitly. The shared exporter creates missing output parent directories.
