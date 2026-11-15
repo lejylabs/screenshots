@@ -1440,3 +1440,26 @@ The final TIFF-tree run passed 439 regular optimized workspace tests, with 51
 opt-in tests excluded and all doctests passing. Current core TIFF tests passed
 all three cases after the I/O-error fix. The release build completed in 2m29s
 and its independent pixel/tag and package checks passed as recorded above.
+
+### Upload file-open admission (planned, 2026-11-15)
+
+Harden both saved-PNG and arbitrary-file upload inputs against Unix named-pipe
+replacement. Currently PNG opens before checking regular-file metadata, and
+generic-file preflight can race with the later open. Reuse one bounded regular
+open path with Unix O_NONBLOCK and post-open metadata/size validation, dispatched
+on the existing runtime's blocking pool; wrap the accepted handle for the
+unchanged 64 KiB Tokio stream. Regular-file symlinks remain supported. The
+runtime still owns at most one blocking worker; there is no new polling or
+background service. Windows and network-filesystem kernel stalls remain native
+limitations, not a claimed hard deadline. Modify upload.rs and upload_file
+fixtures; preserve existing signature, Content-Length, no-retry, no-redirect and
+source-unchanged semantics. Verify direct FIFO and metadata-to-open replacement
+without connecting to external services.
+
+Implemented with one metadata/open operation on the existing blocking pool and
+the same opened handle handed to Tokio. Focused tests passed the deterministic
+post-preflight FIFO replacement, four file-upload cases and four profile cases.
+Both PNG and generic-file FIFO inputs return before contacting a server, and
+the previous per-mode failure contexts remain. Clippy and Windows GNU app/test
+checks passed. Full workspace/release checks are in progress; other native
+filesystem stalls remain outside the FIFO-specific guarantee.

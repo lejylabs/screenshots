@@ -69,7 +69,9 @@ A successful remote upload followed by a stdout failure returns an error that
 explicitly says the remote file remains; the client does not retry. Native
 filesystem operations are not covered by a hard wall-clock timeout: Tokio's
 blocking file calls can outlive cancellation, and runtime teardown waits for
-them. A stalled filesystem or a concurrent replacement by a special file can
-therefore delay return beyond the HTTP deadline. Initial metadata validation
-rejects obvious nonregular files, but it is not an atomic no-special-file open
-guarantee. Avoid concurrently replacing upload inputs.
+them. The shared PNG/file opener performs regular-file/size admission before
+and after opening one handle on the existing blocking pool. On Unix it uses
+`O_NONBLOCK`, so replacing the pathname with a FIFO cannot wait for a writer.
+This does not promise interruptible network/FUSE/device calls or an atomic
+snapshot of a concurrently modified regular file. Other platforms retain
+their native open behavior; avoid concurrently replacing upload inputs.

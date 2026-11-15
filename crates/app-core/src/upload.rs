@@ -1959,6 +1959,58 @@ enum UploadPng {
     FilePath(std::path::PathBuf),
 }
 
+fn validate_upload_source(
+    metadata: &std::fs::Metadata,
+    minimum: u64,
+    maximum: u64,
+    message: &str,
+) -> Result<()> {
+    ensure!(
+        metadata.is_file() && (minimum..=maximum).contains(&metadata.len()),
+        "{message}"
+    );
+    Ok(())
+}
+
+fn open_upload_source_after_preflight(
+    path: &Path,
+    minimum: u64,
+    maximum: u64,
+    message: &str,
+) -> Result<(std::fs::File, u64)> {
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    // A FIFO substituted after metadata admission must never wait for a writer.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NONBLOCK);
+    }
+    let file = options.open(path).context("Could not open upload source")?;
+    let metadata = file.metadata()?;
+    validate_upload_source(&metadata, minimum, maximum, message)?;
+    Ok((file, metadata.len()))
+}
+
+async fn open_upload_source(
+    path: std::path::PathBuf,
+    minimum: u64,
+    maximum: u64,
+    message: &'static str,
+) -> Result<(tokio::fs::File, u64)> {
+    ensure!(path.is_absolute(), "Upload source must be an absolute path");
+    let (file, length) = tokio::task::spawn_blocking(move || {
+        let metadata = path.metadata().context("Could not inspect upload source")?;
+        validate_upload_source(&metadata, minimum, maximum, message)?;
+        open_upload_source_after_preflight(&path, minimum, maximum, message)
+    })
+    .await
+    .context("Upload source worker failed")??;
+    let mut file = tokio::fs::File::from_std(file);
+    file.set_max_buf_size(64 * 1024);
+    Ok((file, length))
+}
+
 fn write_probe_png(root: &Path) -> Result<std::path::PathBuf> {
     std::fs::create_dir_all(root)?;
     let path = root.join("probe.png");
@@ -2003,29 +2055,19 @@ async fn transfer(
     const PNG_SIGNATURE: [u8; 8] = [137, 80, 78, 71, 13, 10, 26, 10];
     let (length, png, mut file, content_type, filename) = match source {
         UploadPng::Path(path) => {
-            ensure!(path.is_absolute(), "Upload source must be an absolute path");
-            let mut file = tokio::fs::File::open(&path)
-                .await
-                .context("Could not open the saved PNG")?;
-            file.set_max_buf_size(64 * 1024);
-            let metadata = file.metadata().await?;
-            ensure!(
-                metadata.is_file()
-                    && metadata.len() >= 8
-                    && metadata.len() <= crate::MAX_CAPTURE_BYTES + 16 * 1024 * 1024,
-                "PNG file exceeds the upload size limit or is not a regular file"
-            );
+            let (mut file, length) = open_upload_source(
+                path,
+                8,
+                crate::MAX_CAPTURE_BYTES + 16 * 1024 * 1024,
+                "PNG file exceeds the upload size limit or is not a regular file",
+            )
+            .await
+            .context("Could not open the saved PNG")?;
             let mut signature = [0; 8];
             file.read_exact(&mut signature).await?;
             ensure!(signature == PNG_SIGNATURE, "Upload source is not a PNG");
             file.rewind().await?;
-            (
-                metadata.len(),
-                None,
-                Some(file),
-                "image/png",
-                "screenshot.png",
-            )
+            (length, None, Some(file), "image/png", "screenshot.png")
         }
         UploadPng::Bytes(png) => {
             ensure!(
@@ -2045,25 +2087,16 @@ async fn transfer(
             )
         }
         UploadPng::FilePath(path) => {
-            ensure!(path.is_absolute(), "Upload source must be an absolute path");
-            let candidate = tokio::fs::metadata(&path)
-                .await
-                .context("Could not inspect the upload file")?;
-            ensure!(
-                candidate.is_file() && candidate.len() <= 64 * 1024 * 1024,
-                "Upload file exceeds the 64 MiB limit or is not a regular file"
-            );
-            let mut file = tokio::fs::File::open(&path)
-                .await
-                .context("Could not open the upload file")?;
-            file.set_max_buf_size(64 * 1024);
-            let metadata = file.metadata().await?;
-            ensure!(
-                metadata.is_file() && metadata.len() <= 64 * 1024 * 1024,
-                "Upload file exceeds the 64 MiB limit or is not a regular file"
-            );
+            let (file, length) = open_upload_source(
+                path,
+                0,
+                64 * 1024 * 1024,
+                "Upload file exceeds the 64 MiB limit or is not a regular file",
+            )
+            .await
+            .context("Could not inspect the upload file")?;
             (
-                metadata.len(),
+                length,
                 None,
                 Some(file),
                 "application/octet-stream",
@@ -2946,6 +2979,66 @@ pub(crate) fn validate_link(value: &str) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn upload_source_fifo_substitution_is_nonblocking_after_preflight() {
+        const CHILD_PATH: &str = "SCREENSHOTS_UPLOAD_SOURCE_FIFO_TEST_PATH";
+        if let Some(path) = std::env::var_os(CHILD_PATH) {
+            let path = Path::new(&path);
+            for (minimum, maximum) in [
+                (0, 64 * 1024 * 1024),
+                (8, crate::MAX_CAPTURE_BYTES + 16 * 1024 * 1024),
+            ] {
+                let error = open_upload_source_after_preflight(
+                    path,
+                    minimum,
+                    maximum,
+                    "not a regular file",
+                )
+                .err()
+                .unwrap();
+                assert!(error.to_string().contains("not a regular file"));
+            }
+            return;
+        }
+        use std::os::unix::ffi::OsStrExt;
+        let path = std::env::temp_dir().join(format!(
+            "screenshots-upload-source-fifo-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::write(&path, b"valid regular file at preflight").unwrap();
+        validate_upload_source(&path.metadata().unwrap(), 8, 64 * 1024 * 1024, "fixture").unwrap();
+        std::fs::remove_file(&path).unwrap();
+        let native = std::ffi::CString::new(path.as_os_str().as_bytes()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(native.as_ptr(), 0o600) }, 0);
+        let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "upload::tests::upload_source_fifo_substitution_is_nonblocking_after_preflight",
+                "--nocapture",
+            ])
+            .env(CHILD_PATH, &path)
+            .spawn()
+            .unwrap();
+        let started = std::time::Instant::now();
+        let status = loop {
+            if let Some(status) = child.try_wait().unwrap() {
+                break Some(status);
+            }
+            if started.elapsed() >= Duration::from_secs(3) {
+                child.kill().unwrap();
+                child.wait().unwrap();
+                break None;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        };
+        std::fs::remove_file(path).unwrap();
+        assert!(
+            status.is_some_and(|status| status.success()),
+            "FIFO substitution did not fail without blocking"
+        );
+    }
     use std::{
         io::Write,
         net::{TcpListener, TcpStream},

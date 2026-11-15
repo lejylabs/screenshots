@@ -290,7 +290,7 @@ fn file_upload_rejects_oversize_directories_and_image_json_without_connecting() 
 
 #[cfg(unix)]
 #[test]
-fn file_upload_rejects_named_pipes_before_opening_them() {
+fn png_and_file_uploads_reject_named_pipes_before_opening_them() {
     use std::os::unix::ffi::OsStrExt;
     let f = Fixture::new();
     let server = Server::new();
@@ -298,26 +298,29 @@ fn file_upload_rejects_named_pipes_before_opening_them() {
     let path = f.path("named-pipe");
     let c_path = std::ffi::CString::new(path.as_os_str().as_bytes()).unwrap();
     assert_eq!(unsafe { libc::mkfifo(c_path.as_ptr(), 0o600) }, 0);
-    let mut child = f
-        .command("upload-file")
-        .arg(profile)
-        .arg(path)
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .unwrap();
-    let deadline = std::time::Instant::now() + Duration::from_secs(5);
-    while child.try_wait().unwrap().is_none() {
-        if std::time::Instant::now() >= deadline {
-            child.kill().unwrap();
-            child.wait().unwrap();
-            panic!("Nonregular input opened and stalled instead of failing metadata admission");
+    for command in ["upload-file", "upload"] {
+        let mut child = f
+            .command(command)
+            .arg(&profile)
+            .arg(&path)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while child.try_wait().unwrap().is_none() {
+            if std::time::Instant::now() >= deadline {
+                child.kill().unwrap();
+                child.wait().unwrap();
+                panic!("Nonregular input opened and stalled instead of failing metadata admission");
+            }
+            std::thread::sleep(Duration::from_millis(10));
         }
-        std::thread::sleep(Duration::from_millis(10));
+        let output = child.wait_with_output().unwrap();
+        assert!(!output.status.success());
+        assert!(output.stdout.is_empty());
+        assert!(String::from_utf8_lossy(&output.stderr).contains("not a regular file"));
     }
-    let output = child.wait_with_output().unwrap();
-    assert!(!output.status.success());
-    assert!(output.stdout.is_empty());
     assert!(server.finish().is_empty());
     f.assert_no_state();
 }
