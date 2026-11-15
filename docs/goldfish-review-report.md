@@ -254,3 +254,11 @@ fixture remains outside the real Run key. macOS file-only autostart review
 confirmed XML/ownership semantics and recommended directory fsync; that change
 passed the three focused tests. Wine/Linux evidence does not establish native
 Windows or macOS login acceptance.
+
+
+The explicit capture-task upload extension was reviewed for final-pixel ordering
+and partial-success reporting. Review caught a duplicate PNG encode for local
+PNG plus upload; one bounded encoded buffer now feeds atomic local publication
+and upload, with a no-overwrite regression. The native synthetic-X11 CLI chain
+passed crop/redact/save/local upload with exact saved/transferred bytes and
+independently decoded pixels. No user screen or remote provider was tested.

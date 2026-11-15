@@ -1059,3 +1059,28 @@ binary SHA256:
 `fdfd194c2bcd4b9c89205adffeb3fdaef4f83f2814f3b464413d7b5e608321df`.
 The native CI for code head 4bb6cd4 remains in progress. No merge, release,
 signing or machine shutdown was performed; the complete backlog is still open.
+
+### Window/region task targets and explicit post-output sharing
+
+Extend capture-task to existing window and region targets, preserving preflight
+validation and delayed native initialization. Optional `--upload PROFILE`
+explicitly authorizes one upload of final processed pixels after successful file
+publication. Load/validate the existing native JSON/ShareX profile before capture;
+never derive uploads from image/recipe contents. Retain single-image PNG transport,
+source/output preservation and truthful partial-success errors if sharing fails.
+No retries, rollback/delete, automatic link copy or hidden network work. Injected
+capture/upload fixtures verify ordering and exact final bytes without reading the
+desktop; native and authenticated provider acceptance remain separate gates.
+
+Window/region/upload task verification passed ten injected-execution tests and
+four executable rejection tests. PNG output+upload shares one encoded buffer
+through the new validated atomic PNG publication helper; JPEG/WebP keep their
+separate requested representations. The helper's no-replace/exact-byte test
+passed. One real CLI E2E created a synthetic 96x64 X11 window, captured its ID,
+cropped/redacted to 32x24, saved PNG and uploaded to a loopback HTTP server.
+Saved/uploaded bytes matched exactly and independent FFmpeg decoding verified
+all expected pixels (SHA256
+`6081b3ae5666f708db6035558cfdcd5b7bec9aa999b2ed556d6394af0b1495d3`).
+No user desktop pixels, state or external service were involved. Source review
+caught and fixed duplicate PNG encoding; Clippy passed. Native region/display
+variants and real provider behavior remain separate checks.
