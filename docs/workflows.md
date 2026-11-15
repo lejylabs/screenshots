@@ -17,6 +17,8 @@ paths, output paths, credentials or executable commands.
   "steps": [
     { "op": "crop", "x": 20, "y": 10, "width": 640, "height": 480 },
     { "op": "redact", "x": 10, "y": 10, "width": 120, "height": 30 },
+    { "op": "blur", "x": 200, "y": 20, "width": 80, "height": 60 },
+    { "op": "pixelate", "x": 320, "y": 20, "width": 80, "height": 60 },
     { "op": "resize", "width": 320, "height": 240 },
     { "op": "canvas", "padding": 8, "background": "FFFFFF" }
   ]
@@ -27,6 +29,8 @@ Version 1 requires between 1 and 16 steps. JSON objects reject unknown and
 duplicate fields; missing fields, unsupported operations and other versions
 are errors. The recipe must be a regular file containing at most 64 KiB of JSON,
 including whitespace. There are no includes, variables or implicit defaults.
+The opened handle is checked again after path validation; on Unix it is opened
+nonblocking so a FIFO substituted between those checks cannot wait for a writer.
 
 | Operation | Required fields besides `op` | Behavior |
 | --- | --- | --- |
@@ -36,6 +40,8 @@ including whitespace. There are no includes, variables or implicit defaults.
 | `resize` | `width`, `height` | Exact center-sampled nearest-neighbour resize; permits upscaling. |
 | `canvas` | `padding`, `background` | Add equal padding on all four sides and composite over the specified background. |
 | `redact` | `x`, `y`, `width`, `height` | Replace an in-bounds rectangle with opaque black pixels. |
+| `blur` | `x`, `y`, `width`, `height` | Apply the existing alpha-weighted 17×17 box blur inside an in-bounds rectangle. |
+| `pixelate` | `x`, `y`, `width`, `height` | Apply the existing alpha-weighted, source-aligned 16-pixel block grid inside an in-bounds rectangle. |
 
 Coordinates and dimensions are nonnegative whole numbers; widths and heights
 must be positive. Rectangle coordinates refer to the current image after all
@@ -46,10 +52,21 @@ Resize matches `image resize`; it preserves exact selected RGBA pixels and does
 not interpolate. Image input decoding applies EXIF orientation before the first
 step, matching the existing image commands.
 
+Blur and pixelation have fixed parameters, with no radius, block-size or preset
+fields. They sample the current full image and change only the selected rectangle;
+blur neighborhoods and pixelation blocks can include pixels outside that rectangle.
+Blur clips its 8-pixel-radius neighborhood at image edges. Pixelation anchors its
+16×16 blocks to the current image's top-left corner, so an earlier crop changes
+the grid origin. Fully transparent sample colors have no weight; RGB and alpha
+are averaged using the existing editor/export implementation. Blur and pixelation
+obscure appearance but are not substitutes for opaque redaction of secrets.
+
 Steps run sequentially on flattened pixels. A redaction removes the original
-pixels from that rectangle before later steps run, so later crop, rotation,
-resize or canvas operations cannot recover those pixels. This is an offline
-raster recipe, not editable document layers or arbitrary editor effect ordering.
+pixels from that rectangle before later steps run, so later effects, crop, rotation,
+resize or canvas operations cannot recover those pixels. Effects after redaction
+can blend the replacement black with its neighbors; they never sample the
+removed original pixels. This is an offline raster recipe, not editable document
+layers or arbitrary editor effect ordering.
 Redaction does not infer what content is sensitive; its coordinates must cover
 the intended content in the image state at that step.
 
@@ -61,8 +78,12 @@ bounds each dimension, without imposing a different workflow-only side limit.
 One current image and at most one replacement image are held during each step,
 then the previous image is dropped. The worst-case transform therefore holds
 512 MiB of RGBA buffers, plus bounded recipe data and existing decoder/encoder
-scratch. It keeps no undo history or retained original image. Existing export
-encoder limits and scratch costs still apply; this is an allocation contract,
+scratch. Blur uses less than 300 KiB of scratch. Pixelation prepares one grid of
+`ceil(width / 16) × ceil(height / 16) × 4` bytes from the current full image;
+under the RGBA admission limit this is at most 16 MiB, including extreme skinny
+images. Each grid or blur scratch allocation is released with its step. It keeps
+no undo history or retained original image. Existing export encoder limits and
+scratch costs still apply; this is an allocation contract,
 not a measured total-process memory result.
 
 Only the final image is exported, through the existing atomic no-replace export
@@ -73,7 +94,7 @@ or transform failure produces no output. An export error retains the existing
 temporary-file cleanup behavior. Successful stdout contains one JSON object:
 
 ```json
-{"version":1,"steps":4,"format":"webp","width":336,"height":256}
+{"version":1,"steps":6,"format":"webp","width":336,"height":256}
 ```
 
 The command performs no uploads, subprocesses, shell evaluation, clipboard
@@ -91,7 +112,9 @@ filesystem stalls and full platform resource acceptance remain open; no timeout
 or hardware-performance acceptance is claimed here.
 
 The executable fixtures in `apps/desktop/tests/workflow.rs` cover ordered exact
-pixels for all six operations, opaque redaction followed by resizing, alpha,
+pixels for all eight operations, independent alpha-weighted blur/pixelation
+oracles across composed steps, opaque redaction followed by resizing and effects,
+alpha,
 invocation-relative paths, recipe and step boundaries, strict schema rejection,
 oversized input/transform rejection, source preservation, existing outputs and
 output-free failures. These are test definitions; passing-run and optimized

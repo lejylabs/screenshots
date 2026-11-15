@@ -3,7 +3,7 @@
 use anyhow::{Context, Result, ensure};
 use image::RgbaImage;
 use serde::Deserialize;
-use std::{ffi::OsString, fs::File, io::Read, path::Path, sync::Arc};
+use std::{ffi::OsString, fs::OpenOptions, io::Read, path::Path, sync::Arc};
 
 const MAX_RECIPE_BYTES: u64 = 64 * 1024;
 const MAX_STEPS: usize = 16;
@@ -44,6 +44,18 @@ enum Step {
         width: u32,
         height: u32,
     },
+    Blur {
+        x: u32,
+        y: u32,
+        width: u32,
+        height: u32,
+    },
+    Pixelate {
+        x: u32,
+        y: u32,
+        width: u32,
+        height: u32,
+    },
 }
 
 #[derive(Deserialize)]
@@ -63,6 +75,18 @@ impl Step {
                 height,
             }
             | Self::Redact {
+                x,
+                y,
+                width,
+                height,
+            }
+            | Self::Blur {
+                x,
+                y,
+                width,
+                height,
+            }
+            | Self::Pixelate {
                 x,
                 y,
                 width,
@@ -104,6 +128,18 @@ impl Step {
                 y,
                 width,
                 height,
+            }
+            | Self::Blur {
+                x,
+                y,
+                width,
+                height,
+            }
+            | Self::Pixelate {
+                x,
+                y,
+                width,
+                height,
             } => {
                 let region = app_core::PixelRegion {
                     x,
@@ -112,10 +148,41 @@ impl Step {
                     height,
                 };
                 let source = crate::cli::frame(pixels);
-                let output = if matches!(self, Self::Crop { .. }) {
-                    app_core::crop_snapshot(&source, region)?
-                } else {
-                    app_core::redact_snapshot(&source, &[region])?
+                let output = match self {
+                    Self::Crop { .. } => app_core::crop_snapshot(&source, region)?,
+                    Self::Redact { .. } => app_core::redact_snapshot(&source, &[region])?,
+                    Self::Blur { .. } => app_core::render_filtered_snapshot(
+                        &source,
+                        &[],
+                        None,
+                        &[],
+                        &[],
+                        &[],
+                        &[],
+                        None,
+                        &[region],
+                    )?,
+                    Self::Pixelate { .. } => {
+                        // Check before preparing the full source-aligned grid.
+                        ensure!(
+                            x.checked_add(width).is_some_and(|end| end <= source.width)
+                                && y.checked_add(height)
+                                    .is_some_and(|end| end <= source.height),
+                            "Edit area is outside the image"
+                        );
+                        let grid = app_core::PixelationGrid::prepare(&source.pixels, || false)?;
+                        app_core::render_pixelated_snapshot(
+                            &source,
+                            &[],
+                            None,
+                            &[],
+                            &[],
+                            &[],
+                            &[region],
+                            Some(&grid),
+                        )?
+                    }
+                    _ => unreachable!("region step was matched"),
                 };
                 Arc::try_unwrap(output.pixels)
                     .map_err(|_| anyhow::anyhow!("Workflow edit retained its output pixels"))
@@ -168,7 +235,7 @@ fn read_recipe(path: &Path) -> Result<Recipe> {
         path.metadata()?.is_file(),
         "Workflow recipe must be a regular file"
     );
-    let file = File::open(path)?;
+    let file = open_recipe(path)?;
     let metadata = file.metadata()?;
     ensure!(metadata.is_file(), "Workflow recipe must be a regular file");
     ensure!(
@@ -192,6 +259,18 @@ fn read_recipe(path: &Path) -> Result<Recipe> {
             .with_context(|| format!("Invalid workflow step {}", index + 1))?;
     }
     Ok(recipe)
+}
+
+fn open_recipe(path: &Path) -> std::io::Result<std::fs::File> {
+    let mut options = OpenOptions::new();
+    options.read(true);
+    // A FIFO replacing the regular file after preflight must not wait for a writer.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NONBLOCK);
+    }
+    options.open(path)
 }
 
 pub fn run(args: &[OsString]) -> Result<()> {
@@ -224,4 +303,59 @@ pub fn run(args: &[OsString]) -> Result<()> {
         })
     );
     Ok(())
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+    use std::os::unix::ffi::OsStrExt;
+
+    #[test]
+    fn recipe_replaced_with_fifo_is_opened_without_waiting_for_a_writer() {
+        const CHILD_PATH: &str = "SCREENSHOTS_WORKFLOW_FIFO_TEST_PATH";
+        if let Some(path) = std::env::var_os(CHILD_PATH) {
+            let path = Path::new(&path);
+            let opened = open_recipe(path).unwrap();
+            assert!(!opened.metadata().unwrap().is_file());
+            assert!(read_recipe(path).is_err());
+            return;
+        }
+        let root =
+            std::env::temp_dir().join(format!("screenshots-recipe-race-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&root).unwrap();
+        let path = root.join("recipe.json");
+        std::fs::write(&path, b"regular at preflight").unwrap();
+        assert!(path.metadata().unwrap().is_file());
+        std::fs::remove_file(&path).unwrap();
+        let native = std::ffi::CString::new(path.as_os_str().as_bytes()).unwrap();
+        // The path is a NUL-terminated fixture path, and mkfifo reads it only during the call.
+        assert_eq!(unsafe { libc::mkfifo(native.as_ptr(), 0o600) }, 0);
+        let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "workflow::tests::recipe_replaced_with_fifo_is_opened_without_waiting_for_a_writer",
+                "--nocapture",
+            ])
+            .env(CHILD_PATH, &path)
+            .spawn()
+            .unwrap();
+        let started = std::time::Instant::now();
+        let status = loop {
+            if let Some(status) = child.try_wait().unwrap() {
+                break Some(status);
+            }
+            if started.elapsed() >= std::time::Duration::from_secs(3) {
+                child.kill().unwrap();
+                child.wait().unwrap();
+                break None;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        };
+        std::fs::remove_file(&path).unwrap();
+        std::fs::remove_dir(root).unwrap();
+        assert!(
+            status.is_some_and(|status| status.success()),
+            "FIFO open failed or timed out"
+        );
+    }
 }
