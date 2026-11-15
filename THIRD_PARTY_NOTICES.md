@@ -14,6 +14,10 @@ The vendored gpui-pre-reqwest 0.12.15 keeps its MIT and Apache-2.0 licenses.
 Its PEM-parser dependency migration is documented in
 `vendor/gpui-pre-reqwest/LOCAL-PATCH.md`.
 
+The vendored GPUI Base and GPUI Component 0.9.1 crates retain their Apache-2.0
+licenses. Their `instant` to `web-time` dependency migration is documented in
+each crate's `LOCAL-PATCH.md`.
+
 The selected embedded UI icons are provided by Lucide. Their notices follow.
 
 ISC License
