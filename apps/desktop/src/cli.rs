@@ -53,7 +53,7 @@ Headless commands (no desktop UI, clipboard writes or implicit uploads):
   screenshots workflow RECIPE INPUT OUTPUT
   screenshots stitch-scroll OUTPUT MIN_OVERLAP INPUT INPUT [INPUT...]
   screenshots record x11|gdigrab|test OUTPUT.mkv|OUTPUT.gif --seconds N --fps N --width N --height N
-      [--x X --y Y]
+      [--x X --y Y] [--cursor show|hide]
 
 Image input: PNG/JPEG/WebP, <=32 MiB encoded and <=256 MiB decoded.
 Output: PNG/JPEG/WebP; WebP is lossless unless --webp-quality is explicit.

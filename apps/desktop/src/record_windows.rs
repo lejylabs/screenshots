@@ -491,7 +491,7 @@ fn encoder(options: &Options<'_>) -> Command {
             "-offset_y",
             &options.y.to_string(),
             "-draw_mouse",
-            "0",
+            options.draw_mouse(),
             "-i",
             "desktop",
         ]);
@@ -602,7 +602,7 @@ pub(crate) fn record(options: Options<'_>) -> Result<()> {
             return Err(error.context("Recording failed and staging cleanup also failed"));
         }
     };
-    let result = serde_json::json!({"mode":options.mode,"container":options.format.container(),"codec":options.format.codec(),"seconds":options.seconds,"fps":options.fps,"width":options.width,"height":options.height,"frames":options.seconds*options.fps,"bytes":bytes});
+    let result = options.summary(bytes);
     let mut stdout = std::io::stdout().lock();
     writeln!(stdout, "{result}")
         .and_then(|_| stdout.flush())
@@ -672,6 +672,7 @@ mod tests {
                 x: 3,
                 y: 4,
                 format,
+                cursor: None,
             };
             let command = encoder(&options);
             let args = command
@@ -691,6 +692,35 @@ mod tests {
                 assert!(args.windows(2).any(|pair| pair == ["-f", "lavfi"]));
             }
             assert!(!args.iter().any(|arg| arg.contains("never-used")));
+        }
+    }
+
+    #[test]
+    fn gdigrab_cursor_argument_precedes_input_and_default_is_hidden() {
+        for cursor in [None, Some(false), Some(true)] {
+            let options = Options {
+                mode: "gdigrab",
+                destination: Path::new("unused.mkv"),
+                seconds: 1,
+                fps: 2,
+                width: 16,
+                height: 12,
+                x: 0,
+                y: 0,
+                format: OutputFormat::Matroska,
+                cursor,
+            };
+            let command = encoder(&options);
+            let args = command
+                .get_args()
+                .map(|v| v.to_str().unwrap())
+                .collect::<Vec<_>>();
+            let index = args.iter().position(|v| *v == "-draw_mouse").unwrap();
+            assert_eq!(
+                args[index + 1],
+                if cursor == Some(true) { "1" } else { "0" }
+            );
+            assert!(index < args.iter().position(|v| *v == "-i").unwrap());
         }
     }
 

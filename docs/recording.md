@@ -13,7 +13,7 @@ screenshots record x11 capture.mkv --seconds 10 --fps 15 --width 1280 --height 7
 
 This is a partial screen-recording capability: Unix, local X11, one video stream,
 Matroska with FFV1 lossless video or a GIF animation. It does not provide audio,
-macOS native capture, Wayland portals, cursor capture, editor integration
+macOS native capture, Wayland portals, editor integration
 or a recording UI. X11 support on a Unix system still depends on the installed
 FFmpeg build, permissions and an available X11 session. The application does not
 install, download or distribute either external executable. The user's installed
@@ -27,6 +27,14 @@ and default to zero. Their rectangle must fit signed 32-bit X11 coordinates and
 the actual display. The command records exactly `seconds × fps` frames, at most
 1800 for Matroska or 450 for GIF. Native failures such as an out-of-display
 rectangle stop without publishing.
+
+`--cursor show|hide` explicitly includes or excludes the X11 pointer. Omission
+keeps the existing hidden-pointer default. This option applies to desktop
+recording only; either value is rejected for synthetic `test` input. It maps
+to FFmpeg's input `-draw_mouse` setting before `-i`, without a resident pointer
+tracker or extra app frame buffer. Pointer shape/position capture remains the
+installed FFmpeg backend's responsibility. Still-capture cursor defaults and
+native Windows/macOS pointer acceptance are separate work.
 
 X11 capture reads `DISPLAY` from the environment and accepts only the local
 numeric form `:NUMBER` or `:NUMBER.SCREEN`, at most 64 bytes. Remote hosts and
@@ -121,13 +129,17 @@ Successful stdout contains one JSON object, for example:
 {"mode":"test","container":"matroska","codec":"ffv1","seconds":1,"fps":2,"width":16,"height":12,"frames":2,"bytes":12345}
 ```
 
+An explicitly supplied cursor option adds `"cursor":"show"` or
+`"cursor":"hide"`; omitted options preserve the existing result schema.
+
 Engine diagnostics and captured content do not appear in logs or error output.
 The only persistent intended result is the explicit video destination. The
 default executable tests use fake local engines to exercise admission, bounded
 streams, validation, no-overwrite publication, cleanup and signal termination
 without capturing a desktop. The ignored real-engine test uses only synthetic
-pixels and requires installed FFmpeg/ffprobe. Neither constitutes native X11,
-Wayland or other-platform acceptance.
+pixels and requires installed FFmpeg/ffprobe. These default fixtures do not
+constitute native X11, Wayland or other-platform acceptance. The separate
+isolated X11 cursor fixture below verifies synthetic native input only.
 
 Relevant upstream contracts: [X11 capture device](https://ffmpeg.org/ffmpeg-devices.html#x11grab),
 [FFmpeg options](https://ffmpeg.org/ffmpeg.html#Main-options) and
@@ -150,8 +162,26 @@ recording observation produced five verified frames each time, about 0.606 s
 process wall time and maximum reported process/child RSS 124.25 MiB. This synthetic
 source result is not an X11 capture timing, total concurrent-memory measurement
 or reference-hardware gate. Frames have a nominal one-second timeline; the
-synthetic source can be produced faster than wall time. Native capture remains
-unrun. The known per-process external memory cost is additional to app admission.
+synthetic source can be produced faster than wall time. That observation did not
+run native capture. The known per-process external memory cost is additional to
+app admission.
+
+The explicit `scripts/test-record-cursor.py` check starts a private authenticated
+Xvfb server with TCP disabled, paints a 96×64 scene and a known 8×8 pointer, and
+records omitted/hide/show policies through the actual CLI and installed FFmpeg.
+Independent frame decoding verifies that omitted equals hide and show changes
+exactly the 64 pointer pixels. Temporary images/recordings and redirected
+user-state paths are isolated; the server is stopped on success or failure.
+The script installs nothing and needs Python, libX11, xauth, xdpyinfo, Xvfb,
+FFmpeg/ffprobe and an optimized application binary. Run explicitly:
+
+```sh
+python3 scripts/test-record-cursor.py --binary target/release-fast/screenshots --xvfb /path/to/Xvfb
+```
+
+This synthetic X11 check passed without user-state writes. Physical pointer
+movement, mixed DPI, remote/session changes, Windows gdigrab output and
+reference-hardware resource acceptance remain open.
 
 On Linux, each direct encoder/probe child receives a parent-death SIGKILL via
 `prctl`, closing its capture when the invoking process dies unexpectedly. This

@@ -36,12 +36,31 @@ pub(crate) struct Options<'a> {
     pub(crate) x: u32,
     pub(crate) y: u32,
     pub(crate) format: OutputFormat,
+    pub(crate) cursor: Option<bool>,
+}
+
+impl Options<'_> {
+    pub(crate) fn draw_mouse(&self) -> &'static str {
+        if self.cursor == Some(true) { "1" } else { "0" }
+    }
+
+    pub(crate) fn summary(&self, bytes: u64) -> serde_json::Value {
+        let mut result = serde_json::json!({
+            "mode":self.mode,"container":self.format.container(),"codec":self.format.codec(),
+            "seconds":self.seconds,"fps":self.fps,"width":self.width,"height":self.height,
+            "frames":self.seconds*self.fps,"bytes":bytes,
+        });
+        if let Some(show) = self.cursor {
+            result["cursor"] = if show { "show" } else { "hide" }.into();
+        }
+        result
+    }
 }
 
 fn options(args: &[OsString]) -> Result<Options<'_>> {
     ensure!(
-        matches!(args.len(), 10 | 14),
-        "Usage: screenshots record MODE OUTPUT.mkv|OUTPUT.gif --seconds N --fps N --width N --height N [--x X --y Y]"
+        matches!(args.len(), 10 | 12 | 14 | 16),
+        "Usage: screenshots record MODE OUTPUT.mkv|OUTPUT.gif --seconds N --fps N --width N --height N [--x X --y Y] [--cursor show|hide]"
     );
     let mode = args[0].to_str().context("Recording mode must be UTF-8")?;
     ensure!(
@@ -66,7 +85,17 @@ fn options(args: &[OsString]) -> Result<Options<'_>> {
         "Recording output already exists or cannot be inspected"
     );
     let mut values = [None; 6];
+    let mut cursor = None;
     for pair in args[2..].chunks_exact(2) {
+        if pair[0] == "--cursor" {
+            ensure!(cursor.is_none(), "Duplicate --cursor option");
+            cursor = Some(match pair[1].to_str() {
+                Some("show") => true,
+                Some("hide") => false,
+                _ => bail!("Cursor must be show or hide"),
+            });
+            continue;
+        }
         let index = match pair[0].to_str() {
             Some("--seconds") => 0,
             Some("--fps") => 1,
@@ -114,6 +143,10 @@ fn options(args: &[OsString]) -> Result<Options<'_>> {
         matches!(mode, "x11" | "gdigrab") || x.is_none(),
         "Offsets apply only to desktop recording"
     );
+    ensure!(
+        mode != "test" || cursor.is_none(),
+        "Cursor option applies only to desktop recording"
+    );
     let (x, y) = (x.unwrap_or(0), y.unwrap_or(0));
     ensure!(
         x.checked_add(width)
@@ -132,6 +165,7 @@ fn options(args: &[OsString]) -> Result<Options<'_>> {
         x,
         y,
         format,
+        cursor,
     })
 }
 
@@ -481,7 +515,7 @@ mod unix {
         )
     }
 
-    fn encoder(options: &Options<'_>, stage: &Path, display: Option<&str>) -> Command {
+    pub(super) fn encoder(options: &Options<'_>, stage: &Path, display: Option<&str>) -> Command {
         let mut command = Command::new("ffmpeg");
         command.args([
             "-hide_banner",
@@ -509,7 +543,7 @@ mod unix {
                 "-video_size",
                 &format!("{}x{}", options.width, options.height),
                 "-draw_mouse",
-                "0",
+                options.draw_mouse(),
                 "-i",
                 &format!("{display}+{},{}", options.x, options.y),
             ]);
@@ -631,15 +665,7 @@ mod unix {
             }
         };
         drop(cancellation);
-        println!(
-            "{}",
-            serde_json::json!({
-                "mode": options.mode, "container": options.format.container(), "codec": options.format.codec(),
-                "seconds": options.seconds, "fps": options.fps,
-                "width": options.width, "height": options.height,
-                "frames": options.seconds * options.fps, "bytes": bytes,
-            })
-        );
+        println!("{}", options.summary(bytes));
         Ok(())
     }
 }
@@ -739,6 +765,85 @@ mod tests {
     use super::*;
 
     #[test]
+    fn cursor_option_is_explicit_desktop_only_and_defaults_preserve_json() {
+        let root = std::env::temp_dir().join(format!(
+            "screenshots-cursor-options-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir(&root).unwrap();
+        let output = root.join("unused.mkv");
+        let mode = if cfg!(windows) { "gdigrab" } else { "x11" };
+        let base = vec![
+            OsString::from(mode),
+            output.into_os_string(),
+            "--seconds".into(),
+            "1".into(),
+            "--fps".into(),
+            "2".into(),
+            "--width".into(),
+            "16".into(),
+            "--height".into(),
+            "12".into(),
+        ];
+        let parsed = options(&base).unwrap();
+        assert_eq!(parsed.draw_mouse(), "0");
+        assert!(parsed.summary(9).get("cursor").is_none());
+        for (value, flag) in [("show", "1"), ("hide", "0")] {
+            let mut args = base.clone();
+            args.splice(2..2, ["--cursor".into(), value.into()]);
+            let parsed = options(&args).unwrap();
+            assert_eq!(parsed.draw_mouse(), flag);
+            assert_eq!(parsed.summary(9)["cursor"], value);
+            let mut test = args;
+            test[0] = "test".into();
+            assert!(options(&test).is_err());
+        }
+        for extra in [
+            vec!["--cursor", "bad"],
+            vec!["--cursor", "show", "--cursor", "hide"],
+            vec!["--cursor"],
+        ] {
+            let mut args = base.clone();
+            args.extend(extra.into_iter().map(OsString::from));
+            assert!(options(&args).is_err());
+        }
+        assert!(std::fs::read_dir(&root).unwrap().next().is_none());
+        std::fs::remove_dir(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn x11_cursor_argument_precedes_its_input_and_is_absent_for_test_source() {
+        for cursor in [None, Some(false), Some(true)] {
+            let options = Options {
+                mode: "x11",
+                destination: Path::new("unused.mkv"),
+                seconds: 1,
+                fps: 2,
+                width: 16,
+                height: 12,
+                x: 0,
+                y: 0,
+                format: OutputFormat::Matroska,
+                cursor,
+            };
+            let command = unix::encoder(&options, Path::new("stage.mkv"), Some(":9"));
+            let args = command
+                .get_args()
+                .map(|v| v.to_str().unwrap())
+                .collect::<Vec<_>>();
+            let index = args.iter().position(|v| *v == "-draw_mouse").unwrap();
+            assert_eq!(
+                args[index + 1],
+                if cursor == Some(true) { "1" } else { "0" }
+            );
+            assert!(index < args.iter().position(|v| *v == "-i").unwrap());
+            let test = unix::encoder(&options, Path::new("stage.mkv"), None);
+            assert!(!test.get_args().any(|v| v == "-draw_mouse"));
+        }
+    }
+
+    #[test]
     fn shared_verifier_requires_complete_selected_codec_dimensions_and_rate() {
         let options = Options {
             mode: "test",
@@ -750,6 +855,7 @@ mod tests {
             x: 0,
             y: 0,
             format: OutputFormat::Matroska,
+            cursor: None,
         };
         let valid = serde_json::json!({"streams":[{"codec_name":"ffv1","codec_type":"video","width":16,"height":12,"avg_frame_rate":"2/1","nb_read_frames":"2"}],"format":{"format_name":"matroska,webm"}});
         verify_probe(&serde_json::to_vec(&valid).unwrap(), &options).unwrap();

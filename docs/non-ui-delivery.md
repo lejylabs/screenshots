@@ -1218,7 +1218,7 @@ All 47 non-vendored project Markdown files had valid local links. CI for the
 branch was still running when queried; these local results do not assert CI
 or native Windows/macOS acceptance.
 
-### Explicit recording cursor policy (planned, 2026-11-15)
+### Explicit recording cursor policy (2026-11-15)
 
 Add `record x11|gdigrab ... --cursor show|hide` without changing the current
 hidden-cursor default. The existing FFmpeg paths already pass `-draw_mouse 0`;
@@ -1230,3 +1230,13 @@ Modify record.rs, record_windows.rs, executable recording tests, CLI help and
 recording docs; use parser/argument fixtures plus isolated X11 evidence if
 possible. Still-image cursor composition requires different native APIs and
 remains open; this does not close all capture-default work.
+
+Implemented with unchanged resource/process limits and hidden-cursor default.
+The 405-test optimized workspace run passed, with 50 opt-in cases excluded and
+all doctests passing; Clippy passed. Four focused recording unit tests and 12
+executable fixtures passed; the Windows app/test cross-check and Wine gdigrab
+argument check passed. The new isolated `scripts/test-record-cursor.py` fixture
+recorded the real X11 input and independently decoded it: omitted/hide matched,
+show changed exactly the expected 8×8 pointer patch, no user state was written,
+and the private X server shut down. A small subsequent parser admission change
+retains at most 16 command arguments; focused verification follows it.

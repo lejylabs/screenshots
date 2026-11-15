@@ -14,7 +14,11 @@ are nonnegative signed-coordinate offsets. Test mode does not accept offsets.
 Native display geometry, DPI behavior, capture permissions and FFmpeg's
 `gdigrab` support remain requirements of the installed Windows environment.
 The [FFmpeg gdigrab documentation](https://ffmpeg.org/ffmpeg-devices.html#gdigrab)
-describes this input backend. No cursor or audio capture is enabled.
+describes this input backend. Cursor capture is hidden by default; explicit
+`--cursor show|hide` sets FFmpeg's `-draw_mouse` input option and adds the chosen
+value to the result's `cursor` field. Omission retains the existing JSON schema.
+The option is rejected for `test` input. Native Windows pointer appearance and
+position remain unverified. Audio capture is not enabled.
 
 The existing recording limits apply: Matroska/FFV1 accepts 1–60 seconds,
 1–30 FPS, 1–1920 width and 1–1080 height; GIF accepts at most 30 seconds,

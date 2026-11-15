@@ -1,7 +1,9 @@
+#[cfg(unix)]
+use std::process::Output;
 use std::{
     ffi::OsStr,
     path::{Path, PathBuf},
-    process::{Command, Output},
+    process::Command,
 };
 
 struct Fixture(PathBuf);
@@ -120,6 +122,36 @@ const PROBE: &str = "printf '%s' '{\"streams\":[{\"codec_name\":\"ffv1\",\"codec
 const GIF_ENCODE: &str = "for arg do output=$arg; done\nprintf 'GIF89afixture' > \"$output\"";
 #[cfg(unix)]
 const GIF_PROBE: &str = "printf '%s' '{\"streams\":[{\"codec_name\":\"gif\",\"codec_type\":\"video\",\"width\":16,\"height\":12,\"avg_frame_rate\":\"2/1\",\"nb_read_frames\":\"2\",\"duration\":\"1.000000\"}],\"format\":{\"format_name\":\"gif\"}}'";
+
+#[test]
+fn cursor_options_reject_invalid_duplicate_and_synthetic_sources_before_engines() {
+    let fixture = Fixture::new();
+    let output = fixture.path("unused.mkv");
+    for (extra, message) in [
+        (vec!["--cursor", "bad"], "Cursor must be show or hide"),
+        (
+            vec!["--cursor", "show", "--cursor", "hide"],
+            "Duplicate --cursor",
+        ),
+        (vec!["--cursor"], "Usage:"),
+        (vec!["--cursor", "show"], "Cursor option applies only"),
+        (vec!["--cursor", "hide"], "Cursor option applies only"),
+    ] {
+        let mut args = fixture.arguments(&output);
+        args.extend(extra.iter().map(|s| OsStr::new(*s)));
+        let result = fixture
+            .command()
+            .args(args)
+            .env("PATH", fixture.path("absent"))
+            .output()
+            .unwrap();
+        assert!(!result.status.success());
+        assert!(result.stdout.is_empty());
+        assert!(String::from_utf8_lossy(&result.stderr).contains(message));
+        assert!(!output.exists());
+        fixture.no_user_state_or_staging();
+    }
+}
 
 #[test]
 fn gif_limits_are_stricter_and_invalid_extensions_are_rejected_before_engines() {
