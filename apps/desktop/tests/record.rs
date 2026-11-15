@@ -116,6 +116,131 @@ const ENCODE: &str =
     "for arg do output=$arg; done\nprintf '\\032\\105\\337\\243fixture' > \"$output\"";
 #[cfg(unix)]
 const PROBE: &str = "printf '%s' '{\"streams\":[{\"codec_name\":\"ffv1\",\"codec_type\":\"video\",\"width\":16,\"height\":12,\"avg_frame_rate\":\"2/1\",\"nb_read_frames\":\"2\"}],\"format\":{\"format_name\":\"matroska,webm\"}}'";
+#[cfg(unix)]
+const GIF_ENCODE: &str = "for arg do output=$arg; done\nprintf 'GIF89afixture' > \"$output\"";
+#[cfg(unix)]
+const GIF_PROBE: &str = "printf '%s' '{\"streams\":[{\"codec_name\":\"gif\",\"codec_type\":\"video\",\"width\":16,\"height\":12,\"avg_frame_rate\":\"2/1\",\"nb_read_frames\":\"2\",\"duration\":\"1.000000\"}],\"format\":{\"format_name\":\"gif\"}}'";
+
+#[test]
+fn gif_limits_are_stricter_and_invalid_extensions_are_rejected_before_engines() {
+    let fixture = Fixture::new();
+    let output = fixture.path("output.gif");
+    for (index, value) in [(3, "31"), (5, "16"), (7, "1281"), (9, "721")] {
+        let mut arguments = fixture.arguments(&output);
+        arguments[index] = OsStr::new(value);
+        let result = fixture
+            .command()
+            .args(arguments)
+            .env("PATH", fixture.path("absent"))
+            .output()
+            .unwrap();
+        assert!(!result.status.success());
+        assert!(String::from_utf8_lossy(&result.stderr).contains("GIF limits"));
+        assert!(!output.exists());
+        fixture.no_user_state_or_staging();
+    }
+    let invalid = fixture.path("output.mp4");
+    let result = fixture
+        .command()
+        .args(fixture.arguments(&invalid))
+        .output()
+        .unwrap();
+    assert!(!result.status.success());
+    assert!(String::from_utf8_lossy(&result.stderr).contains(".mkv or .gif"));
+    fixture.no_user_state_or_staging();
+}
+
+#[cfg(unix)]
+#[test]
+fn gif_output_selects_gif_encoder_and_publishes_verified_animation() {
+    let fixture = Fixture::new();
+    let encoder = format!(
+        r#"
+codec= format= pixel= loop= previous=
+for arg do
+ case "$previous" in
+  -c:v) codec=$arg;; -f) format=$arg;; -pix_fmt) pixel=$arg;; -loop) loop=$arg;;
+ esac
+ previous=$arg
+done
+[ "$codec" = gif ] && [ "$format" = gif ] && [ "$pixel" = rgb8 ] && [ "$loop" = -1 ] || exit 8
+{GIF_ENCODE}
+"#
+    );
+    let probe = format!(
+        r#"
+previous= format=
+for arg do
+ [ "$previous" != -f ] || format=$arg
+ previous=$arg
+done
+[ "$format" = gif ] || exit 9
+{GIF_PROBE}
+"#
+    );
+    let engines = fixture.engines(&encoder, &probe);
+    let destination = fixture.path("animation.gif");
+    let result = fixture
+        .command()
+        .args(fixture.arguments(&destination))
+        .env("PATH", engines)
+        .output()
+        .unwrap();
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    let json: serde_json::Value = serde_json::from_slice(&result.stdout).unwrap();
+    assert_eq!(json["codec"], "gif");
+    assert_eq!(json["container"], "gif");
+    assert_eq!(json["frames"], 2);
+    assert_eq!(std::fs::read(&destination).unwrap(), b"GIF89afixture");
+    fixture.no_user_state_or_staging();
+}
+
+#[cfg(unix)]
+#[test]
+fn gif_wrong_codec_container_timing_and_frame_count_leave_no_output() {
+    for probe in [
+        GIF_PROBE.replace("\"codec_name\":\"gif\"", "\"codec_name\":\"ffv1\""),
+        GIF_PROBE.replace("\"format_name\":\"gif\"", "\"format_name\":\"matroska\""),
+        GIF_PROBE.replace("\"nb_read_frames\":\"2\"", "\"nb_read_frames\":\"1\""),
+        GIF_PROBE.replace("2/1", "1/1"),
+        GIF_PROBE.replace("2/1", "0/0"),
+        GIF_PROBE.replace("1.000000", "NaN"),
+        GIF_PROBE.replace("1.000000", "4.000000"),
+    ] {
+        let fixture = Fixture::new();
+        let engines = fixture.engines(GIF_ENCODE, &probe);
+        let destination = fixture.path("invalid.gif");
+        let result = fixture
+            .command()
+            .args(fixture.arguments(&destination))
+            .env("PATH", engines)
+            .output()
+            .unwrap();
+        assert!(!result.status.success());
+        assert!(result.stdout.is_empty());
+        assert!(!destination.exists());
+        fixture.no_user_state_or_staging();
+    }
+    let fixture = Fixture::new();
+    let engines = fixture.engines(ENCODE, GIF_PROBE);
+    let destination = fixture.path("bad-header.gif");
+    assert!(
+        !fixture
+            .command()
+            .args(fixture.arguments(&destination))
+            .env("PATH", engines)
+            .output()
+            .unwrap()
+            .status
+            .success()
+    );
+    assert!(!destination.exists());
+    fixture.no_user_state_or_staging();
+}
 
 #[test]
 fn malformed_arguments_and_existing_destinations_fail_without_engines() {
@@ -455,4 +580,42 @@ fn real_engine_synthetic_video_has_exact_dimensions_rate_and_frame_count() {
     assert_eq!(json["height"], 12);
     assert!(destination.metadata().unwrap().len() <= 256 * 1024 * 1024);
     fixture.no_user_state_or_staging();
+}
+
+#[cfg(unix)]
+#[test]
+#[ignore = "requires installed FFmpeg and ffprobe; synthetic pixels only"]
+fn real_engine_synthetic_gif_verifies_odd_dimensions_and_centisecond_timing() {
+    for (width, height, fps) in [(17, 13, 7), (1, 1, 1), (17, 13, 15)] {
+        let fixture = Fixture::new();
+        let destination = fixture.path("synthetic.gif");
+        let result = fixture
+            .command()
+            .arg("test")
+            .arg(&destination)
+            .args([
+                "--seconds",
+                "1",
+                "--fps",
+                &fps.to_string(),
+                "--width",
+                &width.to_string(),
+                "--height",
+                &height.to_string(),
+            ])
+            .output()
+            .unwrap();
+        assert!(
+            result.status.success(),
+            "{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        let json: serde_json::Value = serde_json::from_slice(&result.stdout).unwrap();
+        assert_eq!(json["frames"], fps);
+        assert_eq!(json["width"], width);
+        assert_eq!(json["height"], height);
+        assert_eq!(json["container"], "gif");
+        assert_eq!(&std::fs::read(&destination).unwrap()[..6], b"GIF89a");
+        fixture.no_user_state_or_staging();
+    }
 }

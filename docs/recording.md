@@ -8,25 +8,27 @@ screenshots record x11 capture.mkv --seconds 10 --fps 15 --width 1280 --height 7
 ```
 
 This is a partial screen-recording capability: Unix, local X11, one video stream,
-Matroska container and FFV1 lossless codec. It does not provide audio, GIF output,
+Matroska with FFV1 lossless video or a GIF animation. It does not provide audio,
 Windows/macOS native capture, Wayland portals, cursor capture, editor integration
 or a recording UI. X11 support on a Unix system still depends on the installed
 FFmpeg build, permissions and an available X11 session. The application does not
 install, download or distribute either external executable. The user's installed
 FFmpeg build and its licensing remain separate from the application package.
 
-All four options are required: `--seconds` accepts 1–60, `--fps` accepts 1–30,
-`--width` accepts 1–1920 and `--height` accepts 1–1080. Duplicate or unknown options
+All four options are required. For `.mkv`, `--seconds` accepts 1–60, `--fps` accepts
+1–30, `--width` accepts 1–1920 and `--height` accepts 1–1080. For `.gif`, the limits
+are 1–30 seconds, 1–15 FPS, width 1–1280 and height 1–720. Duplicate or unknown options
 are rejected. `--x` and `--y` are optional nonnegative coordinates, used together,
 and default to zero. Their rectangle must fit signed 32-bit X11 coordinates and
 the actual display. The command records exactly `seconds × fps` frames, at most
-1800. Native failures such as an out-of-display rectangle stop without publishing.
+1800 for Matroska or 450 for GIF. Native failures such as an out-of-display
+rectangle stop without publishing.
 
 X11 capture reads `DISPLAY` from the environment and accepts only the local
 numeric form `:NUMBER` or `:NUMBER.SCREEN`, at most 64 bytes. Remote hosts and
 user-supplied input URLs are rejected. Native X11 authentication still uses the
 session's existing environment. The supplied filename is a native filesystem
-path, relative to the invoking directory; it must end in `.mkv` and must not
+path, relative to the invoking directory; it must end in `.mkv` or `.gif` and must not
 already exist, including as a symlink. Paths are passed as arguments, never
 through a shell. No audio device, network input, clipboard, history or application
 configuration is opened by the command.
@@ -35,6 +37,7 @@ For synthetic verification without reading desktop pixels:
 
 ```sh
 screenshots record test pattern.mkv --seconds 1 --fps 2 --width 16 --height 12
+screenshots record test pattern.gif --seconds 1 --fps 7 --width 17 --height 13
 ```
 
 `test` mode uses FFmpeg's RGB `testsrc` pattern and does not accept offsets. The
@@ -42,7 +45,18 @@ RGB source preserves exact requested odd dimensions and the 1×1 boundary that
 the subsampled `testsrc2` source cannot represent. It is explicitly synthetic
 video, with the same limits, encoder, verification and publication as X11 mode.
 
-FFmpeg runs with fixed arguments for FFV1 level 3, one-frame GOP, BGR0 pixels,
+The extension selects the output format. GIF uses the built-in GIF encoder and
+fixed RGB8 palette, so colors are quantized and are not lossless. No whole-video
+palette generation, two-pass encoding or retained frame collection is added.
+The animation plays once (`-loop -1`); looping control is not exposed. Capture
+is opaque, including GIF output; transparent animation is not part of this slice.
+GIF stores frame delays in hundredths of a second, so FPS values such as 7 or 15
+are quantized. The command verifies that the reported average delay and total
+duration fit the floor/ceiling centisecond delays for the requested nominal FPS,
+while still requiring the exact frame count. It does not claim exact wall-clock
+playback duration or exact temporal sampling.
+
+The Matroska path retains fixed arguments for FFV1 level 3, one-frame GOP, BGR0 pixels,
 two codec threads, one filter thread, a one-packet input queue and a one-packet
 initial mux queue. No unbounded application frame queue or raw frame copy enters
 the Rust process. A 1920×1080 four-byte frame is about 7.9 MiB; external codec
@@ -77,10 +91,12 @@ child process group are outside this isolation guarantee.
 
 Recording writes to a private mode-0700 UUID directory beside the destination.
 FFmpeg gets a new filename with overwrite disabled. After encoding, the command
-checks the file is regular, bounded and has an EBML header, then runs `ffprobe`
-with the local file protocol and forced Matroska demuxer. Publication requires
-one FFV1 video stream, Matroska format, the requested dimensions/average frame-rate metadata and
-the exact decoded frame count. A cap-truncated or short recording is rejected.
+checks the file is regular, bounded and has the selected container's header
+(EBML or GIF87a/GIF89a), then runs `ffprobe` with the local file protocol and the
+matching forced demuxer. Publication requires one video stream with the selected
+codec/container, requested dimensions and exact decoded frame count. Matroska
+keeps the exact requested average frame-rate metadata check; GIF applies the
+centisecond bounds above. A cap-truncated or short recording is rejected.
 This verifies the completed output, rather than treating a successful encoder
 exit as proof of a full recording. The command syncs the file, publishes it with
 a same-filesystem no-replace hard link, and syncs the parent directory. Filesystems
@@ -111,7 +127,8 @@ Wayland or other-platform acceptance.
 
 Relevant upstream contracts: [X11 capture device](https://ffmpeg.org/ffmpeg-devices.html#x11grab),
 [FFmpeg options](https://ffmpeg.org/ffmpeg.html#Main-options) and
-[ffprobe verification](https://ffmpeg.org/ffprobe.html).
+[ffprobe verification](https://ffmpeg.org/ffprobe.html). GIF timing and loop
+behavior follow the [GIF muxer/demuxer](https://ffmpeg.org/ffmpeg-formats.html#gif).
 
 `--seconds` is a nominal frame-count duration: the command requests and verifies
 exactly `seconds * fps` frames with the requested nominal frame rate. X11 input

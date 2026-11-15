@@ -3,6 +3,28 @@
 use anyhow::{Context, Result, bail, ensure};
 use std::{ffi::OsString, path::Path};
 
+#[derive(Clone, Copy, PartialEq)]
+enum OutputFormat {
+    Matroska,
+    Gif,
+}
+
+impl OutputFormat {
+    fn container(self) -> &'static str {
+        match self {
+            Self::Matroska => "matroska",
+            Self::Gif => "gif",
+        }
+    }
+
+    fn codec(self) -> &'static str {
+        match self {
+            Self::Matroska => "ffv1",
+            Self::Gif => "gif",
+        }
+    }
+}
+
 struct Options<'a> {
     mode: &'a str,
     destination: &'a Path,
@@ -12,12 +34,13 @@ struct Options<'a> {
     height: u32,
     x: u32,
     y: u32,
+    format: OutputFormat,
 }
 
 fn options(args: &[OsString]) -> Result<Options<'_>> {
     ensure!(
         matches!(args.len(), 10 | 14),
-        "Usage: screenshots record x11|test OUTPUT.mkv --seconds N --fps N --width N --height N [--x X --y Y]"
+        "Usage: screenshots record x11|test OUTPUT.mkv|OUTPUT.gif --seconds N --fps N --width N --height N [--x X --y Y]"
     );
     let mode = args[0].to_str().context("Recording mode must be UTF-8")?;
     ensure!(
@@ -25,13 +48,14 @@ fn options(args: &[OsString]) -> Result<Options<'_>> {
         "Choose recording mode x11 or test"
     );
     let destination = Path::new(&args[1]);
-    ensure!(
-        destination
-            .extension()
-            .and_then(|extension| extension.to_str())
-            == Some("mkv"),
-        "Recording output must have a .mkv extension"
-    );
+    let format = match destination
+        .extension()
+        .and_then(|extension| extension.to_str())
+    {
+        Some("mkv") => OutputFormat::Matroska,
+        Some("gif") => OutputFormat::Gif,
+        _ => bail!("Recording output must have a .mkv or .gif extension"),
+    };
     ensure!(
         destination
             .symlink_metadata()
@@ -75,6 +99,12 @@ fn options(args: &[OsString]) -> Result<Options<'_>> {
         (1..=1080).contains(&height),
         "Recording height must be 1–1080"
     );
+    if format == OutputFormat::Gif {
+        ensure!(
+            seconds <= 30 && fps <= 15 && width <= 1280 && height <= 720,
+            "GIF limits are 30 seconds, 15 FPS and 1280×720 pixels"
+        );
+    }
     app_core::validate_image_size(width, height)?;
     ensure!(x.is_some() == y.is_some(), "Use --x and --y together");
     ensure!(
@@ -98,6 +128,7 @@ fn options(args: &[OsString]) -> Result<Options<'_>> {
         height,
         x,
         y,
+        format,
     })
 }
 
@@ -204,10 +235,14 @@ mod unix {
     }
 
     impl Staging {
-        fn new(parent: &Path) -> Result<Self> {
+        fn new(parent: &Path, format: OutputFormat) -> Result<Self> {
             let directory = parent.join(format!(".screenshots-record-{}", uuid::Uuid::new_v4()));
             DirBuilder::new().mode(0o700).create(&directory)?;
-            let file = directory.join("recording.mkv");
+            let file = directory.join(if format == OutputFormat::Gif {
+                "recording.gif"
+            } else {
+                "recording.mkv"
+            });
             Ok(Self { directory, file })
         }
 
@@ -495,22 +530,31 @@ mod unix {
             &(options.seconds * options.fps).to_string(),
             "-fps_mode",
             "passthrough",
-            "-c:v",
-            "ffv1",
-            "-level",
-            "3",
-            "-g",
-            "1",
-            "-slicecrc",
-            "1",
-            "-pix_fmt",
-            "bgr0",
+        ]);
+        if options.format == OutputFormat::Matroska {
+            command.args([
+                "-c:v",
+                "ffv1",
+                "-level",
+                "3",
+                "-g",
+                "1",
+                "-slicecrc",
+                "1",
+                "-pix_fmt",
+                "bgr0",
+            ]);
+        } else {
+            // RGB8 uses a fixed small palette; no whole-video palette generation pass.
+            command.args(["-c:v", "gif", "-pix_fmt", "rgb8", "-loop", "-1"]);
+        }
+        command.args([
             "-threads",
             "2",
             "-max_muxing_queue_size",
             "1",
             "-f",
-            "matroska",
+            options.format.container(),
         ]);
         command.arg(stage);
         command
@@ -535,6 +579,7 @@ mod unix {
         height: u32,
         avg_frame_rate: String,
         nb_read_frames: String,
+        duration: Option<String>,
     }
 
     fn verify_probe(bytes: &[u8], options: &Options<'_>) -> Result<()> {
@@ -545,7 +590,7 @@ mod unix {
                 .format
                 .format_name
                 .split(',')
-                .any(|name| name == "matroska"),
+                .any(|name| name == options.format.container()),
             "Recording container verification failed"
         );
         ensure!(
@@ -554,17 +599,50 @@ mod unix {
         );
         let stream = &probe.streams[0];
         ensure!(
-            stream.codec_name == "ffv1" && stream.codec_type == "video",
+            stream.codec_name == options.format.codec() && stream.codec_type == "video",
             "Recording codec verification failed"
         );
         ensure!(
             stream.width == options.width && stream.height == options.height,
             "Recording dimensions do not match the request"
         );
-        ensure!(
-            stream.avg_frame_rate == format!("{}/1", options.fps),
-            "Recording frame rate does not match the request"
-        );
+        if options.format == OutputFormat::Matroska {
+            ensure!(
+                stream.avg_frame_rate == format!("{}/1", options.fps),
+                "Recording frame rate does not match the request"
+            );
+        } else {
+            let (numerator, denominator) = stream
+                .avg_frame_rate
+                .split_once('/')
+                .context("Invalid GIF frame rate")?;
+            let numerator = numerator.parse::<u32>().context("Invalid GIF frame rate")?;
+            let denominator = denominator
+                .parse::<u32>()
+                .context("Invalid GIF frame rate")?;
+            let minimum_delay = 100 / u64::from(options.fps);
+            let maximum_delay = 100_u64.div_ceil(u64::from(options.fps));
+            ensure!(
+                numerator > 0
+                    && denominator > 0
+                    && u64::from(denominator) * 100 >= u64::from(numerator) * minimum_delay
+                    && u64::from(denominator) * 100 <= u64::from(numerator) * maximum_delay,
+                "GIF frame timing is outside centisecond quantization bounds"
+            );
+            let duration = stream
+                .duration
+                .as_deref()
+                .context("GIF duration is missing")?
+                .parse::<f64>()
+                .context("Invalid GIF duration")?;
+            let frames = f64::from(options.seconds * options.fps);
+            ensure!(
+                duration.is_finite()
+                    && duration + 0.000001 >= frames * minimum_delay as f64 / 100.0
+                    && duration - 0.000001 <= frames * maximum_delay as f64 / 100.0,
+                "GIF duration is outside centisecond quantization bounds"
+            );
+        }
         ensure!(
             stream.nb_read_frames.parse::<u32>().ok() == Some(options.seconds * options.fps),
             "Recording is incomplete: frame count does not match the request"
@@ -586,7 +664,7 @@ mod unix {
         let parent = destination
             .parent()
             .context("Recording output has no parent directory")?;
-        let staging = Staging::new(parent)?;
+        let staging = Staging::new(parent, options.format)?;
         let result = (|| {
             engine(
                 encoder(&options, &staging.file, display.as_deref()),
@@ -596,18 +674,21 @@ mod unix {
             )?;
             let metadata = staging.file.symlink_metadata()?;
             ensure!(
-                metadata.is_file() && metadata.len() >= 4 && metadata.len() <= MAX_OUTPUT_BYTES,
+                metadata.is_file() && metadata.len() >= 6 && metadata.len() <= MAX_OUTPUT_BYTES,
                 "Recording output is invalid or exceeds 256 MiB"
             );
             let mut file = File::open(&staging.file)?;
-            let mut header = [0; 4];
+            let mut header = [0; 6];
             file.read_exact(&mut header)?;
             ensure!(
-                header == [0x1a, 0x45, 0xdf, 0xa3],
-                "Recording is not Matroska"
+                match options.format {
+                    OutputFormat::Matroska => header[..4] == [0x1a, 0x45, 0xdf, 0xa3],
+                    OutputFormat::Gif => &header == b"GIF87a" || &header == b"GIF89a",
+                },
+                "Recording header does not match its output format"
             );
             let mut probe = Command::new("ffprobe");
-            probe.args(["-hide_banner", "-loglevel", "error", "-max_alloc", "67108864", "-threads", "2", "-protocol_whitelist", "file", "-f", "matroska", "-max_streams", "1", "-count_frames", "-show_entries", "stream=codec_name,codec_type,width,height,avg_frame_rate,nb_read_frames:format=format_name", "-of", "json", "-i"]);
+            probe.args(["-hide_banner", "-loglevel", "error", "-max_alloc", "67108864", "-threads", "2", "-protocol_whitelist", "file", "-f", options.format.container(), "-max_streams", "1", "-count_frames", "-show_entries", "stream=codec_name,codec_type,width,height,avg_frame_rate,nb_read_frames,duration:format=format_name", "-of", "json", "-i"]);
             probe.arg(&staging.file);
             verify_probe(&engine(probe, true, &cancellation, deadline)?, &options)?;
             file.sync_all()?;
@@ -634,7 +715,7 @@ mod unix {
         println!(
             "{}",
             serde_json::json!({
-                "mode": options.mode, "container": "matroska", "codec": "ffv1",
+                "mode": options.mode, "container": options.format.container(), "codec": options.format.codec(),
                 "seconds": options.seconds, "fps": options.fps,
                 "width": options.width, "height": options.height,
                 "frames": options.seconds * options.fps, "bytes": bytes,

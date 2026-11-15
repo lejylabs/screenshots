@@ -36,7 +36,7 @@ Headless commands (no desktop UI, clipboard writes or implicit uploads):
   screenshots qr scan INPUT
   screenshots ocr INPUT [--language LANG]
   screenshots workflow RECIPE INPUT OUTPUT
-  screenshots record x11|test OUTPUT.mkv --seconds N --fps N --width N --height N
+  screenshots record x11|test OUTPUT.mkv|OUTPUT.gif --seconds N --fps N --width N --height N
       [--x X --y Y]
 
 Image input: PNG/JPEG/WebP, <=32 MiB encoded and <=256 MiB decoded.
