@@ -75,6 +75,8 @@ opt-level = 1
 gpui-pre-windows = { path = "vendor/gpui-pre-windows" }
 glib = { path = "vendor/glib" }
 gpui-pre-reqwest = { path = "vendor/gpui-pre-reqwest" }
+gpui-base = { path = "vendor/gpui-base" }
+gpui-component = { path = "vendor/gpui-component" }
 
 [profile.release]
 debug = "limited"
