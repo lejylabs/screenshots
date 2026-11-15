@@ -1981,7 +1981,7 @@ pub(crate) fn export_saved_png_cancellable(
     )
 }
 
-fn write_output(
+pub(crate) fn write_output(
     destination: &Path,
     write: impl FnOnce(&mut fs::File) -> Result<(), CaptureError>,
 ) -> Result<(), CaptureError> {

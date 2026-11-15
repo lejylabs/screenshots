@@ -29,6 +29,8 @@ pub use desktop_events::{DesktopEvent, desktop_events, request_reopen};
 #[cfg(target_os = "windows")]
 pub use single_instance::SingleInstance;
 mod blur;
+mod bmp_export;
+pub use bmp_export::save_bmp;
 mod text;
 pub use text::TextAnnotation;
 mod history;

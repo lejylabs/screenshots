@@ -7,6 +7,12 @@ bounded decoder and EXIF orientation handling; output uses the shared PNG/JPEG/
 lossless WebP exporter. JPEG still rejects transparency instead of flattening it
 implicitly. The shared exporter creates missing output parent directories.
 
+`image convert INPUT OUTPUT.bmp` additionally supports explicit
+[RGBA BMP output](bmp-export.md), including its existing rotate/flip/downscale
+options. BMP remains output-only and is not added to editor/capture defaults or
+the other commands' format selection. JPEG/WebP quality flags are rejected for
+BMP output.
+
 ```sh
 screenshots image compose input.png padded.webp --padding 24 --background 202020
 screenshots image compose input.png marked.png --watermark logo.png --at 20 30

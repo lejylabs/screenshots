@@ -59,7 +59,8 @@ Headless commands (no desktop UI, clipboard writes or implicit uploads):
       [--x X --y Y] [--cursor show|hide]
 
 Image input: PNG/JPEG/WebP, <=32 MiB encoded and <=256 MiB decoded.
-Output: PNG/JPEG/WebP; WebP is lossless unless --webp-quality is explicit.
+Output: PNG/JPEG/WebP; image convert also supports BMP output.
+WebP is lossless unless --webp-quality is explicit.
 Existing files are never replaced.
 Convert resize does not upscale; image resize permits nearest-neighbour upscaling.
 Convert width alone or height alone keeps the aspect ratio.
@@ -245,14 +246,25 @@ fn convert(args: &[OsString]) -> Result<()> {
         index += 1;
     }
     let destination = Path::new(&args[2]);
-    let output_format = app_core::ImageExportFormat::from_path(destination)?;
+    let bmp = destination
+        .extension()
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("bmp"));
+    let output_format = if bmp {
+        None
+    } else {
+        Some(app_core::ImageExportFormat::from_path(destination)?)
+    };
     ensure!(
-        webp_quality.is_none() || output_format == app_core::ImageExportFormat::WebP,
+        webp_quality.is_none() || output_format == Some(app_core::ImageExportFormat::WebP),
         "--webp-quality requires a WebP output path"
     );
     ensure!(
         webp_quality.is_none() || !seen.contains("--jpeg-quality"),
         "Choose either WebP or JPEG quality"
+    );
+    ensure!(
+        !bmp || !seen.contains("--jpeg-quality"),
+        "BMP output does not accept JPEG quality"
     );
     let size = match (width, height) {
         (Some(width), Some(height)) => ExportSize::Exact(width, height),
@@ -277,7 +289,16 @@ fn convert(args: &[OsString]) -> Result<()> {
     }
     let image = frame(pixels);
     let dimensions = size.dimensions(image.width, image.height)?;
-    let format = if let Some(webp_quality) = webp_quality {
+    let format = if bmp {
+        let pixels = if dimensions == (image.width, image.height) {
+            image.pixels.clone()
+        } else {
+            Arc::new(app_core::downscale_export(&image.pixels, size)?)
+        };
+        drop(image);
+        app_core::save_bmp(&pixels, destination)?;
+        "bmp"
+    } else if let Some(webp_quality) = webp_quality {
         let pixels = if dimensions == (image.width, image.height) {
             image.pixels.clone()
         } else {
@@ -285,13 +306,13 @@ fn convert(args: &[OsString]) -> Result<()> {
         };
         drop(image);
         app_core::save_lossy_webp(&pixels, destination, webp_quality, || false)?;
-        output_format
+        "webp"
     } else {
-        image.save_image_as(destination, quality, size)?
+        image.save_image_as(destination, quality, size)?.extension()
     };
     println!(
         "{}",
-        json!({"format": format.extension(), "width": dimensions.0, "height": dimensions.1})
+        json!({"format": format, "width": dimensions.0, "height": dimensions.1})
     );
     Ok(())
 }

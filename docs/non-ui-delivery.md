@@ -1388,3 +1388,10 @@ buffer. Validate exact backing and the 256 MiB pixel limit; reject quality flags
 for BMP. Independent pixel/alpha checks and the planned limits are recorded in
 [BMP export](bmp-export.md). TIFF alpha metadata and GIF quantization require
 separate work rather than silent format expansion.
+
+BMP implementation passed three core tests and two actual-executable tests,
+including shared downscale, invalid input and existing-file/symlink refusal.
+Independent FFmpeg decoding of optimized CLI outputs preserved every RGBA byte
+for 3×5 and rotated/flipped 5×3 synthetic fixtures (182 bytes each), including
+alpha 0/128/255 and hidden RGB. Source/state remained unchanged. Clippy and
+Windows GNU app/test compilation passed; final workspace/release checks follow.
