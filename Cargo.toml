@@ -77,6 +77,8 @@ glib = { path = "vendor/glib" }
 gpui-pre-reqwest = { path = "vendor/gpui-pre-reqwest" }
 gpui-base = { path = "vendor/gpui-base" }
 gpui-component = { path = "vendor/gpui-component" }
+glib-macros = { path = "vendor/glib-macros" }
+gtk3-macros = { path = "vendor/gtk3-macros" }
 
 [profile.release]
 debug = "limited"
