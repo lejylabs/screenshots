@@ -9,6 +9,10 @@ main 523bc3c, the feature branch adds the following **CLI/core subsets**:
   acceptance and non-Windows hidden resident startup remain open.
 - Stitched desktop output on Windows at 100% scaling; native mixed-DPI and
   cross-monitor interactive selection remain open.
+- Multiple CLI crop outputs from one snapshot per selected display, with
+  bounded source pixels and explicit partial-save reporting. Native synthetic
+  X11 verification passed; interactive multi-region selection and physical
+  multi-monitor acceptance remain open. See [multi-region captures](capture-regions.md).
 - Finite interval still-capture sequences and one-shot RFC 3339 start times;
   persisted/repeating schedules, machine wake-up and UI controls remain open.
 - Explicit lossy WebP quality in conversion, capture tasks and finite sequences;

@@ -82,7 +82,7 @@ fn options(args: &[OsString], analysis: Analysis) -> Result<Options<'_>> {
 }
 
 #[cfg(any(target_os = "linux", test))]
-fn require_x11(
+pub(crate) fn require_x11(
     display: Option<&OsStr>,
     session: Option<&OsStr>,
     wayland: Option<&OsStr>,
@@ -98,7 +98,7 @@ fn require_x11(
     Ok(())
 }
 
-fn validate_geometry(display: &DisplayInfo, area: PixelRegion, x11: bool) -> Result<()> {
+pub(crate) fn validate_geometry(display: &DisplayInfo, area: PixelRegion, x11: bool) -> Result<()> {
     ensure!(
         display.scale_factor == 1.0 && display.rotation == 0.0,
         "Region analysis currently requires an unrotated display at 100% scale"
@@ -132,11 +132,11 @@ fn validate_geometry(display: &DisplayInfo, area: PixelRegion, x11: bool) -> Res
 }
 
 #[cfg(target_os = "windows")]
-struct DpiContext(windows_sys::Win32::UI::HiDpi::DPI_AWARENESS_CONTEXT);
+pub(crate) struct DpiContext(windows_sys::Win32::UI::HiDpi::DPI_AWARENESS_CONTEXT);
 
 #[cfg(target_os = "windows")]
 impl DpiContext {
-    fn enter() -> Result<Self> {
+    pub(crate) fn enter() -> Result<Self> {
         use windows_sys::Win32::UI::HiDpi::{
             DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, SetThreadDpiAwarenessContext,
         };

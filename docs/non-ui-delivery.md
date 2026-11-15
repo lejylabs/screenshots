@@ -1247,7 +1247,7 @@ Its archive passed checksum/extraction/help/version smoke. Archive SHA256
 binary SHA256
 `07abbbb1e4516a108ad0ac74ddf80263616a22d28da844e8c0de9bc445af9464`.
 
-### Multiple crops from admitted display snapshots (planned, 2026-11-15)
+### Multiple crops from admitted display snapshots (2026-11-15)
 
 Next implement explicit CLI `capture-regions DIRECTORY DISPLAY X Y WIDTH HEIGHT
 [DISPLAY X Y WIDTH HEIGHT]...`, admitting 1–16 regions and only PNG output.
@@ -1267,3 +1267,21 @@ crop_snapshot and atomic PNG save; do not add streams, timers, background
 runtime, history, clipboard or upload. New module/executable fixtures, CLI
 routing/help and a dedicated contract document will record the resource cost
 and source-snapshot semantics. Native work continues only in private Xvfb tests.
+
+Implemented in capture_regions.rs with session/DPI helpers shared from region
+analysis. Seven injected tests and three executable rejection fixtures passed.
+The native private-Xvfb fixture wrote three exact PNG crops from one display
+snapshot; all 1,344 overlap comparisons matched, source pixels stayed unchanged
+and no user-state files were created. Windows app/test compilation and Clippy
+passed. The final destination component rejects symlinks; parent-path rename
+races are not a descriptor-sandbox guarantee. Partial-save errors retain their
+cause, count earlier confirmed files and state that the current output may also
+exist; nothing is removed as rollback. The existing writer's file sync and
+atomic no-replace publication are reused without a new directory-durability
+claim. See [the full contract](capture-regions.md).
+
+The complete optimized workspace run passed 415 regular tests, with 50 opt-in
+cases excluded and all doctests passing. A same-context EGM review found a
+trailing slash/dot symlink-check bypass; normalize these path components before
+the final-component check and cover direct/trailing-slash/trailing-dot variants.
+This does not strengthen parent-path race guarantees beyond the stated contract.

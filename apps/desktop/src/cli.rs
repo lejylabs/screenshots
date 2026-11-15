@@ -25,6 +25,7 @@ Headless commands (no desktop UI, clipboard writes or implicit uploads):
   screenshots list displays|windows
   screenshots capture display|window ID OUTPUT
   screenshots capture region DISPLAY X Y WIDTH HEIGHT OUTPUT
+  screenshots capture-regions DIRECTORY DISPLAY X Y WIDTH HEIGHT [DISPLAY X Y WIDTH HEIGHT...]
   screenshots capture desktop OUTPUT
   screenshots capture-sequence display ID DIRECTORY --count N --interval-ms MS
       [--start-at RFC3339] [--format png|jpeg|webp] [--jpeg-quality 1..100] [--webp-quality 1..100]
@@ -116,6 +117,7 @@ pub fn run(args: Vec<OsString>) -> Result<bool> {
         "image" => convert(&args[1..])?,
         "list" => list(&args[1..])?,
         "capture" => capture(&args[1..])?,
+        "capture-regions" => crate::capture_regions::run(&args[1..])?,
         "capture-sequence" => crate::capture_sequence::run(&args[1..])?,
         "capture-task" => crate::capture_task::run(&args[1..])?,
         "autostart" => crate::autostart::run(&args[1..])?,
