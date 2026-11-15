@@ -1,20 +1,20 @@
 //! Explicit OCR through an optional installed engine; no resident service or image files.
 
-#[cfg(not(unix))]
+#[cfg(not(any(unix, target_os = "windows")))]
 use anyhow::bail;
 use anyhow::{Context, Result, ensure};
 use std::ffi::OsString;
-#[cfg(unix)]
+#[cfg(any(unix, target_os = "windows"))]
 use std::path::Path;
 
-#[cfg(unix)]
+#[cfg(any(unix, target_os = "windows"))]
 const MAX_OCR_IMAGE_BYTES: u64 = 16 * 1024 * 1024;
-#[cfg(unix)]
+#[cfg(any(unix, target_os = "windows"))]
 const MAX_OCR_PNG_BYTES: usize = 32 * 1024 * 1024;
-#[cfg(unix)]
-const MAX_TEXT_BYTES: usize = 256 * 1024;
-#[cfg(unix)]
-const MAX_DIAGNOSTIC_BYTES: usize = 16 * 1024;
+#[cfg(any(unix, target_os = "windows"))]
+pub(crate) const MAX_TEXT_BYTES: usize = 256 * 1024;
+#[cfg(any(unix, target_os = "windows"))]
+pub(crate) const MAX_DIAGNOSTIC_BYTES: usize = 16 * 1024;
 
 fn language(args: &[OsString]) -> Result<&str> {
     ensure!(
@@ -42,14 +42,12 @@ fn language(args: &[OsString]) -> Result<&str> {
 
 pub fn run(args: &[OsString]) -> Result<()> {
     let language = language(args)?;
-    #[cfg(not(unix))]
+    #[cfg(not(any(unix, target_os = "windows")))]
     {
         let _ = language;
-        bail!(
-            "Headless OCR is currently supported on Unix only; Windows process isolation is not implemented"
-        );
+        bail!("Headless OCR is currently supported on Unix and Windows only");
     }
-    #[cfg(unix)]
+    #[cfg(any(unix, target_os = "windows"))]
     {
         let pixels =
             app_core::load_editor_image_with_limit(Path::new(&args[0]), MAX_OCR_IMAGE_BYTES)?;
@@ -58,7 +56,10 @@ pub fn run(args: &[OsString]) -> Result<()> {
             input.len() <= MAX_OCR_PNG_BYTES,
             "OCR PNG input exceeds the 32 MiB pipe limit"
         );
+        #[cfg(unix)]
         let text = engine::recognize(input, language)?;
+        #[cfg(target_os = "windows")]
+        let text = crate::ocr_windows::recognize(input, language)?;
         println!(
             "{}",
             serde_json::json!({"text": text, "engine": "tesseract"})
@@ -67,8 +68,8 @@ pub fn run(args: &[OsString]) -> Result<()> {
     }
 }
 
-#[cfg(any(unix, test))]
-fn read_pipe(
+#[cfg(any(unix, target_os = "windows", test))]
+pub(crate) fn read_pipe(
     mut pipe: impl std::io::Read,
     limit: usize,
     keep: bool,

@@ -7,6 +7,8 @@ mod image_collection;
 mod image_info;
 mod image_tools;
 mod ocr;
+#[cfg(target_os = "windows")]
+mod ocr_windows;
 mod png_metadata;
 mod qr;
 mod record;

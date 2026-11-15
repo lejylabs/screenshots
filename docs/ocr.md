@@ -4,8 +4,10 @@
 an optional, already-installed `tesseract` executable. The default language is
 `eng`; a bounded name such as `deu+eng` selects installed language data. The app
 does not install an engine, download trained data or contact a network service.
-Missing engines or language data fail explicitly. Headless OCR is currently
-Unix-only; Windows needs reviewed native process-tree isolation before support.
+Missing engines or language data fail explicitly. The Unix launcher uses a
+dedicated process group; the [Windows launcher](windows-ocr.md) uses a
+kill-on-close Job Object. Native Windows execution remains a separate acceptance
+gate.
 
 The command bypasses GPUI, preserves the source and writes exactly one JSON value
 with `text` and `engine` to stdout after successful engine completion. It never
@@ -24,7 +26,8 @@ output and an 8 KiB read chunk per reader. Stderr is capped at 16 KiB and never
 retained. The optional engine receives `OMP_THREAD_LIMIT=2`.
 
 Engine work has a 30-second operation deadline. Output overflow, failure and
-deadline expiry kill its dedicated Unix process group and reap the direct child
+deadline expiry kill its dedicated Unix process group (or close the Windows job)
+and reap the direct child
 before joining pipe workers, preventing descendants that stay in that group from
 retaining pipes after a timeout. Waiting
 uses a 25 ms operation-scoped check; there is no resident timer, OCR thread,
@@ -33,7 +36,7 @@ pipe calls still depend on the operating system. The engine is a trusted local
 executable; its separate memory/OS allocations are not hard-capped by this app.
 Their reference-hardware memory/latency acceptance remains open.
 
-Scoped signal-safe flags handle SIGINT/Ctrl+C and SIGTERM while the engine is
+On Unix, scoped signal-safe flags handle SIGINT/Ctrl+C and SIGTERM while the engine is
 active. The operation observes the flag at its next bounded wait, kills the whole
 engine group and reaps the direct child before returning an error. Signal
 cancellation registrations are removed afterward. Two small conditional-shutdown
@@ -41,7 +44,8 @@ actions remain for this headless process's lifetime, so SIGINT/SIGTERM still
 terminate a blocked final stdout write after the engine has been cleaned up.
 The command exits instead of entering the resident UI; no signal worker thread
 is created. Engine descendants that deliberately escape the group are outside
-this trusted-engine contract.
+this trusted-engine contract. Windows uses OS handle cleanup on process exit;
+its different console and pre-assignment crash limits are documented separately.
 
 Languages accept at most 64 ASCII letters/digits/underscores, with `+` between
 nonempty names. Arguments are passed directly through `Command`, never a shell.
