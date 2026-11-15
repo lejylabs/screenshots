@@ -11,13 +11,20 @@ non-UTF-8 paths remain usable where the OS supports them.
 `PROFILE` selects the [documented ShareX ImageUploader subset](../README.md#capture-home)
 when its extension is `.sxcu`, ignoring ASCII case (`.SXCU` also works). Every
 other extension selects native destination JSON; contents are not auto-detected.
-The same selection applies to `upload` and `upload-file`. ShareX requires HTTPS
+The same extension selection applies to `upload`; `upload-file` additionally
+accepts the bounded FileUploader profile subset. ShareX requires HTTPS
 and keeps its existing supported bodies, response parsers and nonsecret-field
 validation; this does not add full ShareX compatibility. The optional profile
 name is ignored, and no profile or credentials are imported into settings or
 history. Credential-management commands continue to accept native JSON only.
 Both profile formats require a regular file of at most 16 KiB; symlinks to
 regular files remain accepted.
+
+The existing JSON `Data` object with a bare `{base64}` field is a local
+extension, not an interoperable ShareX image-upload representation. Official
+ShareX image/file uploaders support multipart or binary input; its text uploader
+uses a string `Data` template. This implementation preserves the local extension
+for existing image profiles, while file uploads reject JSON bodies.
 
 The complete argument count, destination profile and each input's regular-file
 metadata/32 MiB size limit are checked before the first request. Image contents

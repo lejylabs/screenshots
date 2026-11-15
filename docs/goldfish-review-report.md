@@ -278,3 +278,28 @@ FFI lifetime, panic containment, byte cap and atomic cleanup were reviewed;
 packaging now requires the exact nested notices and tests their archive bytes.
 Capture task/sequence quality integration was reviewed without code findings;
 docs distinguish native encoder scratch from admitted image bytes.
+
+## Further unattended slices (2026-11-15)
+
+The following were reviews by the existing reviewer in its continuing context,
+not new independent Goldfish contexts or new two-round convergence claims.
+
+- Region OCR/QR review required explicit argument/result contracts, the inherited
+  full-display metadata ceiling and exact returned backing-size checks. All were
+  added. Separate backend inspection found the current Wayland full-file path
+  and uncalibrated scaling; the new commands reject those cases before capture.
+- Recording cursor review confirmed input-option ordering and unchanged omitted
+  defaults/JSON. Private Xvfb tests independently decoded the exact pointer patch;
+  this does not establish Windows pointer rendering or physical display timing.
+- Multi-region review required before/after selected display geometry, actual
+  backing/identity checks before any saves and full-display X11 wire limits.
+  Review then found a final symlink bypass via trailing `/` or `/.`; path-component
+  normalization and targeted regression tests closed it. Partial-save errors
+  preserve confirmed earlier files and disclose ambiguous current publication.
+- FileUploader-context review kept acceptance confined to explicit `upload-file`,
+  preserved image/UI import rules and rejected JSON file bodies before network
+  work. Official source inspection also corrected claims about the existing
+  object-valued JSON `.sxcu` extension; it is not ShareX image interoperability.
+
+Test totals, artifact hashes and remaining native gates are recorded in the
+[delivery log](non-ui-delivery.md); review findings are not test results.

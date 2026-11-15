@@ -794,10 +794,20 @@ impl UploadDestination {
     }
 
     fn from_sharex_at(path: &Path) -> Result<(Self, Option<String>)> {
+        Self::read_sharex(path, false)
+    }
+
+    /// Load a FileUploader or legacy ImageUploader profile for explicit file uploads.
+    /// Only multipart POST and binary PUT bodies are accepted; no networking or secrets.
+    pub fn from_sharex_for_file(path: &Path) -> Result<(Self, Option<String>)> {
+        Self::read_sharex(path, true)
+    }
+
+    fn read_sharex(path: &Path, file_upload: bool) -> Result<(Self, Option<String>)> {
         let bytes = read_upload_profile(path, "ShareX profile")?;
         let profile: ShareXCustomUploader =
             serde_json::from_slice(&bytes).context("Invalid ShareX profile")?;
-        profile.into_destination()
+        profile.into_destination(file_upload)
     }
 
     /// Write a documented ShareX `.sxcu` subset without secrets or overwriting.
@@ -891,12 +901,17 @@ struct ShareXCustomUploader {
 }
 
 impl ShareXCustomUploader {
-    fn into_destination(self) -> Result<(UploadDestination, Option<String>)> {
+    fn into_destination(self, file_upload: bool) -> Result<(UploadDestination, Option<String>)> {
         ensure!(
             self.destination_type
                 .split(',')
-                .any(|kind| kind.trim().eq_ignore_ascii_case("ImageUploader")),
-            "ShareX profile must include ImageUploader"
+                .any(|kind| kind.trim().eq_ignore_ascii_case("ImageUploader")
+                    || (file_upload && kind.trim().eq_ignore_ascii_case("FileUploader"))),
+            if file_upload {
+                "ShareX file profile must include FileUploader or ImageUploader"
+            } else {
+                "ShareX profile must include ImageUploader"
+            }
         );
         let headers = sharex_string_map(&self.headers, "headers")?;
         let query = sharex_string_map(&self.parameters, "query parameters")?;
@@ -924,6 +939,14 @@ impl ShareXCustomUploader {
                 "Binary"
             })
             .trim();
+        ensure!(
+            !file_upload
+                || matches!(
+                    (method, body),
+                    (UploadMethod::Post, "MultipartFormData") | (UploadMethod::Put, "Binary")
+                ),
+            "ShareX file uploads support multipart POST or binary PUT, not image JSON bodies"
+        );
         match (method, body) {
             (UploadMethod::Post, "MultipartFormData") | (UploadMethod::Post, "JSON") => {}
             (UploadMethod::Put, "Binary") => {}
@@ -4400,6 +4423,54 @@ mod tests {
         let blocked = other.join("backup.json");
         assert!(configuration.save_at(&blocked).is_err());
         assert_eq!(std::fs::read(&other)?, b"keep-settings");
+        std::fs::remove_dir_all(root)?;
+        Ok(())
+    }
+
+    #[test]
+    fn sharex_file_context_preserves_image_profiles_and_rejects_unsupported_bodies() -> Result<()> {
+        let root =
+            std::env::temp_dir().join(format!("screenshots-sharex-file-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&root)?;
+        let path = root.join("file.SXCU");
+        for flags in [
+            "FileUploader",
+            " fileuploader ",
+            "TextUploader, FileUploader",
+            "ImageUploader, FileUploader",
+            "ImageUploader",
+        ] {
+            for (method, body) in [("POST", "MultipartFormData"), ("PUT", "Binary")] {
+                let profile = serde_json::json!({"DestinationType":flags,"RequestURL":"https://example.invalid/upload","RequestMethod":method,"Body":body,"URL":"{response}"});
+                let bytes = serde_json::to_vec(&profile)?;
+                std::fs::write(&path, &bytes)?;
+                let (destination, _) = UploadDestination::from_sharex_for_file(&path)?;
+                assert_eq!(destination.request_method(), method);
+                assert!(destination.json.is_empty());
+                if !flags.contains("ImageUploader") {
+                    assert!(UploadDestination::from_sharex(&path).is_err());
+                }
+                assert_eq!(std::fs::read(&path)?, bytes);
+            }
+        }
+        for profile in [
+            serde_json::json!({"DestinationType":"NotFileUploader","RequestURL":"https://example.invalid/upload"}),
+            serde_json::json!({"DestinationType":"TextUploader","RequestURL":"https://example.invalid/upload"}),
+            serde_json::json!({"DestinationType":"ImageUploader, FileUploader","RequestURL":"https://example.invalid/upload","Body":"JSON","Data":{"image":"{base64}"}}),
+            serde_json::json!({"DestinationType":"FileUploader","RequestURL":"https://example.invalid/upload","Body":"MultipartFormData","Data":{"image":"{base64}"}}),
+            serde_json::json!({"DestinationType":"FileUploader","RequestURL":"https://example.invalid/upload","Body":"FormURLEncoded"}),
+            serde_json::json!({"DestinationType":"FileUploader","RequestURL":"https://example.invalid/upload","Headers":{"Authorization":"synthetic-secret"}}),
+            serde_json::json!({"DestinationType":"FileUploader","RequestURL":"http://example.invalid/upload"}),
+        ] {
+            std::fs::write(&path, serde_json::to_vec(&profile)?)?;
+            let error = UploadDestination::from_sharex_for_file(&path)
+                .err()
+                .unwrap();
+            assert!(!format!("{error:#}").contains("synthetic-secret"));
+        }
+        let json_profile = serde_json::json!({"DestinationType":"ImageUploader","RequestURL":"https://example.invalid/upload","Body":"JSON","Data":{"image":"{base64}"}});
+        std::fs::write(&path, serde_json::to_vec(&json_profile)?)?;
+        assert!(!UploadDestination::from_sharex(&path)?.0.json.is_empty());
         std::fs::remove_dir_all(root)?;
         Ok(())
     }

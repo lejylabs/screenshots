@@ -8,7 +8,15 @@ pub fn run(args: &[OsString]) -> Result<()> {
         args.len() == 2,
         "Usage: screenshots upload-file PROFILE FILE"
     );
-    let destination = crate::cli::load_upload_profile(Path::new(&args[0]))?;
+    let profile = Path::new(&args[0]);
+    let destination = if profile
+        .extension()
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("sxcu"))
+    {
+        app_core::UploadDestination::from_sharex_for_file(profile)?.0
+    } else {
+        crate::cli::load_upload_profile(profile)?
+    };
     let source = std::path::absolute(&args[1])?;
     let outcome = app_core::upload_file(
         &destination,

@@ -220,7 +220,7 @@ fn invalid_and_secret_bearing_profiles_fail_before_connecting() {
     value["Parameters"] = json!({"api_key":"synthetic-secret-value"});
     invalid.push(value);
     let mut value = sharex(&url);
-    value["DestinationType"] = json!("FileUploader");
+    value["DestinationType"] = json!("TextUploader");
     invalid.push(value);
     let mut value = sharex(&url);
     value["RequestMethod"] = json!("GET");
@@ -248,6 +248,48 @@ fn invalid_and_secret_bearing_profiles_fail_before_connecting() {
     assert!(rejected(&output).contains("not image JSON bodies"));
     assert!(listener.accept().is_err());
     assert_eq!(std::fs::read(image).unwrap(), original_image);
+    f.assert_no_state();
+}
+
+#[test]
+fn file_only_profiles_are_scoped_to_upload_file_and_reject_json_before_connecting() {
+    let f = Fixture::new();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let url = format!("https://{}/upload", listener.local_addr().unwrap());
+    let image = f.image();
+    for extension in ["sxcu", "SXCU"] {
+        let mut value = sharex(&url);
+        value["DestinationType"] = json!("fileuploader");
+        let profile = f.profile(&format!("file-only.{extension}"), &value);
+        for command in ["upload", "upload-images"] {
+            let output = f.run(f.command(command).arg(&profile).arg(&image));
+            assert!(rejected(&output).contains("must include ImageUploader"));
+        }
+        let output = f.run(
+            f.command("upload-file")
+                .arg(&profile)
+                .arg(f.path("missing")),
+        );
+        assert!(rejected(&output).contains("Could not inspect the upload file"));
+    }
+    for flags in ["FileUploader", "ImageUploader, FileUploader"] {
+        let mut value = sharex(&url);
+        value["DestinationType"] = json!(flags);
+        value["RequestMethod"] = json!("POST");
+        value["Body"] = json!("JSON");
+        value["Data"] = json!({"image":"{base64}"});
+        let profile = f.profile("file-json.sxcu", &value);
+        let output = f.run(f.command("upload-file").arg(profile).arg(&image));
+        assert!(rejected(&output).contains("not image JSON bodies"));
+    }
+    let mut value = sharex(&url);
+    value["DestinationType"] = json!("FileUploader");
+    value["Headers"] = json!({"Authorization":"synthetic-secret-value"});
+    let profile = f.profile("secret-file.sxcu", &value);
+    let output = f.run(f.command("upload-file").arg(profile).arg(image));
+    assert!(!rejected(&output).contains("synthetic-secret-value"));
+    assert!(listener.accept().is_err());
     f.assert_no_state();
 }
 
@@ -435,6 +477,70 @@ fn sharex_profiles_upload_exact_bytes_and_batch_ndjson_over_loopback_tls() {
             .map(|byte| byte.as_u64().unwrap() as u8)
             .collect();
         assert_eq!(actual, body);
+    }
+    for (index, method) in ["PUT", "POST"].into_iter().enumerate() {
+        let mut value = sharex(&url);
+        value["DestinationType"] = json!("FileUploader");
+        value["RequestMethod"] = json!(method);
+        value["Body"] = json!(if method == "PUT" {
+            "Binary"
+        } else {
+            "MultipartFormData"
+        });
+        value["FileFormName"] = json!("payload");
+        let profile = f.profile(&format!("file-only-{index}.SXCU"), &value);
+        let original = std::fs::read(&profile).unwrap();
+        let output = f.run(
+            f.command("upload-file")
+                .arg(&profile)
+                .arg(&file)
+                .env("SSL_CERT_FILE", &cert),
+        );
+        assert!(output.status.success(), "{:?}", output);
+        request_count += 1;
+        let result: Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(
+            result["url"],
+            format!("https://example.invalid/result/{request_count}")
+        );
+        let records: Vec<Value> = read_bounded(&log)
+            .split(|byte| *byte == b'\n')
+            .filter(|line| !line.is_empty())
+            .skip(1)
+            .map(|line| serde_json::from_slice(line).unwrap())
+            .collect();
+        assert_eq!(records.len(), request_count);
+        let record = records.last().unwrap();
+        assert_eq!(record["method"], method);
+        let actual: Vec<u8> = record["body"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|byte| byte.as_u64().unwrap() as u8)
+            .collect();
+        if method == "PUT" {
+            assert_eq!(actual, binary);
+            assert_eq!(
+                record["headers"]["content-type"],
+                "application/octet-stream"
+            );
+        } else {
+            assert!(
+                record["headers"]["content-type"]
+                    .as_str()
+                    .unwrap()
+                    .starts_with("multipart/form-data; boundary=")
+            );
+            let text = String::from_utf8_lossy(&actual);
+            assert!(text.contains("name=\"payload\"; filename=\"file.bin\""));
+            assert!(
+                text.contains("Content-Type: application/octet-stream")
+                    || text.contains("content-type: application/octet-stream")
+            );
+            assert!(actual.windows(binary.len()).any(|window| window == binary));
+            assert!(!text.contains("private-source"));
+        }
+        assert_eq!(std::fs::read(profile).unwrap(), original);
     }
     assert!(read_bounded(&errors).is_empty());
     assert_eq!(std::fs::read(image).unwrap(), png);

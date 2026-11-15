@@ -1322,3 +1322,10 @@ for image/UI callers. Same-context review found no additional blocker; static
 analysis and Windows GNU app/test compilation passed. Tests cover source/profile
 preservation and loopback HTTPS PUT/multipart byte delivery; final execution
 results are recorded below once the runs finish.
+
+Focused execution passed three core ShareX importer tests, four regular
+executable profile tests and the explicit TLS fixture with ten actual loopback
+HTTPS uploads. FileUploader-only PUT and multipart POST delivered the exact
+binary input, preserved the generic filename and left profile/source bytes and
+user state unchanged. Image-only callers rejected those profiles before any
+connection. Full workspace and final release verification are still running.

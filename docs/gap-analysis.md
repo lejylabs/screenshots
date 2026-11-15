@@ -22,7 +22,8 @@ main 523bc3c, the feature branch adds the following **CLI/core subsets**:
   integration, native screen color picker and general metadata inspection remain
   open.
 - Arbitrary file and image-batch uploads, including direct use of the existing
-  ShareX profile subset; provider/OAuth integration, batch UI
+  ShareX profile subset and FileUploader-only profiles for `upload-file`;
+  provider/OAuth integration, batch UI
   and full after-capture/upload chains remain open. Explicit CLI capture-task
   now composes display/window/region capture, a recipe, file output and optional
   upload of finalized pixels.

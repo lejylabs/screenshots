@@ -6,7 +6,7 @@ files are accepted. The maximum size is 64 MiB. Relative input paths resolve
 against the caller's current directory; the core API requires an absolute path.
 Folders, unavailable files and larger files fail before a request is sent.
 
-`PROFILE` uses the [documented ShareX ImageUploader subset](../README.md#capture-home)
+`PROFILE` uses the [documented ShareX profile subset](../README.md#capture-home)
 for a case-insensitive `.sxcu` extension; every other extension uses native
 destination JSON. Contents are not auto-detected. Both require a regular file
 of at most 16 KiB, including symlinks to regular files. The profile's optional
@@ -19,9 +19,18 @@ preserving the privacy of the source filename/path.
 POST form fields, custom nonsecret headers/query parameters, HTTPS defaults,
 origin-scoped credentials and existing response parsers remain available.
 Image-specific JSON/base64 request bodies are rejected before the upload runtime
-starts. A `.sxcu` profile must still include `ImageUploader` and use HTTPS;
-`FileUploader` alone is rejected. Direct use by this command does not expand
-the importer or claim full ShareX/FileUploader compatibility.
+starts. A `.sxcu` profile must include `FileUploader` or the previously supported
+`ImageUploader` token and use HTTPS. Only this explicit file command accepts
+FileUploader-only profiles; image commands and UI import still require
+ImageUploader. JSON bodies are rejected even when both destination tokens are
+present. The profile parser, secret rejection and transport limits remain the
+same bounded subset, not full ShareX/FileUploader compatibility.
+
+Official [ShareX FileUploader](https://github.com/ShareX/ShareX/blob/develop/ShareX.UploadersLib/FileUploaders/CustomFileUploader.cs)
+and [ImageUploader](https://github.com/ShareX/ShareX/blob/develop/ShareX.UploadersLib/ImageUploaders/CustomImageUploader.cs)
+implement multipart and binary upload bodies. The app's existing object-valued
+JSON `Data` and bare `{base64}` template are a local image-profile extension;
+they are not an official interoperable image/file `.sxcu` representation.
 
 The source is opened once and its handle's size fixes the Content-Length. The
 stream reads at most that original length, so a growing file cannot increase
@@ -53,6 +62,8 @@ The opt-in direct-profile fixture uses isolated local HTTPS trust to verify
 `.sxcu` and `.SXCU` across all three upload commands, exact PNG/file bytes,
 batch NDJSON, and unchanged source/profile files. Invalid and secret-bearing
 profiles are rejected before connecting; native JSON selection remains tested.
+The FileUploader extension passed this same explicit TLS fixture with binary
+PUT and multipart POST; the entire fixture made ten loopback HTTPS uploads.
 
 A successful remote upload followed by a stdout failure returns an error that
 explicitly says the remote file remains; the client does not retry. Native
