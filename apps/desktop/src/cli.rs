@@ -8,6 +8,7 @@ const HELP: &str = "screenshots — native capture and image tools
 Desktop: screenshots [--show]
 Headless commands (no desktop UI, clipboard writes or implicit uploads):
   screenshots --help | --version
+  screenshots hash-file FILE [--expect SHA256_HEX]
   screenshots image convert INPUT OUTPUT [--width N] [--height N]
       [--rotate 90|180|270] [--flip-horizontal] [--flip-vertical]
       [--jpeg-quality 1..100]
@@ -25,7 +26,9 @@ Headless commands (no desktop UI, clipboard writes or implicit uploads):
   screenshots capture desktop OUTPUT
   screenshots capture-sequence display ID DIRECTORY --count N --interval-ms MS
   screenshots history DATABASE [--before ID] [--search WORDS]
+  screenshots history-audit DATABASE [--cursor ID]
   screenshots history-manage import|remove|relink DATABASE ARGUMENTS...
+  screenshots history-manage export DATABASE DIRECTORY original|strip-metadata ID...
   screenshots history-query captures|uploads DATABASE [--order newest|oldest]
       [--cursor ID] [--from YYYY-MM-DD] [--through YYYY-MM-DD]
       [--search TEXT] [--source all|captures|imports]
@@ -101,7 +104,9 @@ pub fn run(args: Vec<OsString>) -> Result<bool> {
         "capture" => capture(&args[1..])?,
         "capture-sequence" => crate::capture_sequence::run(&args[1..])?,
         "history" => history(&args[1..])?,
+        "history-audit" => crate::history_audit::run(&args[1..])?,
         "history-manage" => crate::history_manage::run(&args[1..])?,
+        "hash-file" => crate::hash_file::run(&args[1..])?,
         "history-query" => history_query(&args[1..])?,
         "storage" => storage(&args[1..])?,
         "credentials" => credentials(&args[1..])?,
