@@ -1693,6 +1693,6 @@ A three-run synthetic 1280×720 observation measured median 0.02 s / 16,896 KiB
 peak RSS for two frames and 0.13 s / 17,164 KiB for sixteen frames. This is a
 coarse development observation, not a private-memory/reference-hardware claim.
 
-The final whole-workspace GIF tree passed 489 regular optimized tests, with
+The final whole-workspace GIF tree passed 487 regular optimized tests, with
 51 opt-in cases excluded and all doctests passing. Final Clippy and Windows GNU
 test compilation passed. The feature was committed and pushed as `485386e`.
