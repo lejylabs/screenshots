@@ -930,3 +930,13 @@ Actual component color macros passed generated-name/value/fallback checks. Sourc
 and feature comparison found no encoder/assembly changes. `paste` is absent
 from the all-target graph; five unmaintained-package errors remain. ARM/native
 UI acceptance and full combined post-alias testing are separate gates.
+
+Remaining font dependency review: the smallest released SVG-stack migration
+would be GPUI's paired usvg/resvg 0.46 to 0.48 with explicit svgz enabled. It
+changes text shaping/positioning and tiny-skia versions, so it needs its own
+multilingual/font-fallback/SVGZ render corpus before adoption. ttf-parser also
+remains through a direct GPUI glyph check and cosmic-text's fontdb 0.23; changing
+only SVG dependencies does not close that second advisory. The three D-Bus
+unmaintained modules require the zbus 6 family transition. None is hidden with
+an ignore or mislabeled resolved. These wider dependency changes are not part
+of the tested small helper substitutions above.
