@@ -1729,3 +1729,7 @@ The archive smoke test passed. Archive SHA256
 `7632d806df44ea02e73f1866fe3a20c887d95b3e48fafd10f8632be3eb83e6ab`;
 binary SHA256
 `31929f554c6646a146da591d888ab7a5c9772465b47af5b60825d2640b93925a`.
+
+The final TIFF workspace passed 497 regular optimized tests with 51 opt-in
+cases excluded; all doctests passed. All seven TIFF core fixtures are included.
+The implementation is committed and pushed as `bc37362`.

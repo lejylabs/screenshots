@@ -17,7 +17,8 @@ explicit uploads, native credential management and read-only database
 inspection/online backup. Run `screenshots --help` for commands. These commands
 bypass GPUI and never start uploads or clipboard writes implicitly.
 
-See [delivery status and open work](docs/non-ui-delivery.md),
+See [current open-work checklist](docs/non-ui-status.md),
+[delivery evidence](docs/non-ui-delivery.md),
 [image tools](docs/image-tools.md), [QR](docs/qr.md), [OCR](docs/ocr.md),
 [explicit lossy WebP](docs/lossy-webp.md),
 [output-only BMP conversion](docs/bmp-export.md),

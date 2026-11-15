@@ -2,6 +2,9 @@
 
 ## Current reconciliation: feature branch, 2026-11-15
 
+The [current checklist](non-ui-status.md) reconciles all project Markdown and
+the complete requested feature list; this file retains the historical detail.
+
 The historical tables below are not the current delivery checklist. Relative to
 main 523bc3c, the feature branch adds the following **CLI/core subsets**:
 
