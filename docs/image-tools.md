@@ -13,6 +13,11 @@ options. BMP remains output-only and is not added to editor/capture defaults or
 the other commands' format selection. JPEG/WebP quality flags are rejected for
 BMP output.
 
+`image convert` also accepts `.tif` and `.tiff` for explicit
+[uncompressed TIFF output](tiff-export.md), with a tagged straight-alpha fourth
+channel. This output-only option uses the same transforms/downscale and does
+not add TIFF input support or alter editor/capture format preferences.
+
 ```sh
 screenshots image compose input.png padded.webp --padding 24 --background 202020
 screenshots image compose input.png marked.png --watermark logo.png --at 20 30

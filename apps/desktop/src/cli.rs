@@ -59,7 +59,7 @@ Headless commands (no desktop UI, clipboard writes or implicit uploads):
       [--x X --y Y] [--cursor show|hide]
 
 Image input: PNG/JPEG/WebP, <=32 MiB encoded and <=256 MiB decoded.
-Output: PNG/JPEG/WebP; image convert also supports BMP output.
+Output: PNG/JPEG/WebP; image convert also supports BMP/TIFF output.
 WebP is lossless unless --webp-quality is explicit.
 Existing files are never replaced.
 Convert resize does not upscale; image resize permits nearest-neighbour upscaling.
@@ -249,7 +249,10 @@ fn convert(args: &[OsString]) -> Result<()> {
     let bmp = destination
         .extension()
         .is_some_and(|extension| extension.eq_ignore_ascii_case("bmp"));
-    let output_format = if bmp {
+    let tiff = destination.extension().is_some_and(|extension| {
+        extension.eq_ignore_ascii_case("tif") || extension.eq_ignore_ascii_case("tiff")
+    });
+    let output_format = if bmp || tiff {
         None
     } else {
         Some(app_core::ImageExportFormat::from_path(destination)?)
@@ -263,8 +266,8 @@ fn convert(args: &[OsString]) -> Result<()> {
         "Choose either WebP or JPEG quality"
     );
     ensure!(
-        !bmp || !seen.contains("--jpeg-quality"),
-        "BMP output does not accept JPEG quality"
+        !(bmp || tiff) || !seen.contains("--jpeg-quality"),
+        "BMP/TIFF output does not accept JPEG quality"
     );
     let size = match (width, height) {
         (Some(width), Some(height)) => ExportSize::Exact(width, height),
@@ -289,15 +292,20 @@ fn convert(args: &[OsString]) -> Result<()> {
     }
     let image = frame(pixels);
     let dimensions = size.dimensions(image.width, image.height)?;
-    let format = if bmp {
+    let format = if bmp || tiff {
         let pixels = if dimensions == (image.width, image.height) {
             image.pixels.clone()
         } else {
             Arc::new(app_core::downscale_export(&image.pixels, size)?)
         };
         drop(image);
-        app_core::save_bmp(&pixels, destination)?;
-        "bmp"
+        if bmp {
+            app_core::save_bmp(&pixels, destination)?;
+            "bmp"
+        } else {
+            app_core::save_tiff(&pixels, destination)?;
+            "tiff"
+        }
     } else if let Some(webp_quality) = webp_quality {
         let pixels = if dimensions == (image.width, image.height) {
             image.pixels.clone()

@@ -1407,3 +1407,25 @@ recover temporary space; no user files were deleted. Archive SHA256
 binary SHA256
 `0bd8dac0ff61b7e57b9357160152c5e68a35b26fc9855c446435596c489240d6`.
 No native hardware, UI format selection or full parity acceptance is inferred.
+
+### TIFF conversion output (in progress, 2026-11-15)
+
+Use the locked TIFF encoder directly for one uncompressed straight-RGBA image,
+explicitly tagging `ExtraSamples=[2]`. Support `.tif`/`.tiff` only in the CLI
+converter; preserve all input and UI format choices. The bounded design and
+independent tag/pixel fixture are in [TIFF export](tiff-export.md). Review
+confirmed that adding extra samples would incorrectly produce five channels;
+the direct tag annotates the existing fourth channel. Encoding now preserves
+underlying I/O errors instead of hiding disk-full/permission causes behind a
+generic message. Clippy and Windows GNU app/test compilation passed; final
+execution results follow once the current runs finish.
+
+Two executable TIFF tests passed, and the rebuilt release independently passed
+TIFF-tag inspection and FFmpeg exact-RGBA decoding for 3×5 and rotated/flipped
+5×3 fixtures (286 bytes each). Output alpha is explicitly tagged unassociated;
+no user state or source file changed. The release archive passed checksum/
+extraction/help/version smoke. Archive SHA256
+`13721701906315d07247aeac6959553b5e11b979be31322af2399ff7bb120c35`;
+binary SHA256
+`ff67fc2867fcb7ebaa191ab601c49525f536a88f69cb90fcb4d2942c73eb062a`.
+Final complete workspace execution is still running; do not infer its result.

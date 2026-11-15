@@ -21,6 +21,7 @@ See [delivery status and open work](docs/non-ui-delivery.md),
 [image tools](docs/image-tools.md), [QR](docs/qr.md), [OCR](docs/ocr.md),
 [explicit lossy WebP](docs/lossy-webp.md),
 [output-only BMP conversion](docs/bmp-export.md),
+[output-only TIFF conversion](docs/tiff-export.md),
 [storage recovery](docs/storage-recovery.md) and [portable packaging](docs/packaging.md).
 Additional commands support strict [offline image recipes](docs/workflows.md),
 [filtered read-only history](docs/history-queries.md),
