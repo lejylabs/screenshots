@@ -598,6 +598,11 @@ mod tests {
                     Err(e) => panic!("{e}"),
                 }
             };
+            // Accepted sockets inherit nonblocking mode on some supported platforms.
+            socket.set_nonblocking(false).unwrap();
+            socket
+                .set_write_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
             socket
                 .set_read_timeout(Some(Duration::from_secs(5)))
                 .unwrap();
@@ -742,6 +747,10 @@ mod tests {
                         Err(error) => panic!("{error}"),
                     }
                 };
+                socket.set_nonblocking(false).unwrap();
+                socket
+                    .set_write_timeout(Some(Duration::from_secs(5)))
+                    .unwrap();
                 socket
                     .set_read_timeout(Some(Duration::from_secs(5)))
                     .unwrap();
