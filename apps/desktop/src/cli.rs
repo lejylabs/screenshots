@@ -12,7 +12,7 @@ Headless commands (no desktop UI, clipboard writes or implicit uploads):
   screenshots hash-file FILE [--expect SHA256_HEX]
   screenshots image convert INPUT OUTPUT [--width N] [--height N]
       [--rotate 90|180|270] [--flip-horizontal] [--flip-vertical]
-      [--jpeg-quality 1..100]
+      [--jpeg-quality 1..100] [--webp-quality 1..100]
   screenshots image compose INPUT OUTPUT [--padding N] [--background RRGGBB|RRGGBBAA]
       [--watermark FILE --at X Y]
   screenshots image resize INPUT OUTPUT WIDTH HEIGHT
@@ -192,6 +192,7 @@ fn convert(args: &[OsString]) -> Result<()> {
     let mut horizontal = false;
     let mut vertical = false;
     let mut quality = app_core::DEFAULT_JPEG_QUALITY;
+    let mut webp_quality = None;
     let mut seen = std::collections::HashSet::new();
     let mut index = 3;
     while index < args.len() {
@@ -200,7 +201,7 @@ fn convert(args: &[OsString]) -> Result<()> {
         match option {
             "--flip-horizontal" => horizontal = true,
             "--flip-vertical" => vertical = true,
-            "--width" | "--height" | "--rotate" | "--jpeg-quality" => {
+            "--width" | "--height" | "--rotate" | "--jpeg-quality" | "--webp-quality" => {
                 index += 1;
                 let value = args.get(index).context("Missing option value")?;
                 match option {
@@ -213,6 +214,11 @@ fn convert(args: &[OsString]) -> Result<()> {
                             "Rotation must be 90, 180 or 270"
                         );
                     }
+                    "--webp-quality" => {
+                        let value = number::<u8>(value)?;
+                        ensure!((1..=100).contains(&value), "WebP quality must be 1..100");
+                        webp_quality = Some(value);
+                    }
                     _ => {
                         quality = number::<u8>(value)?;
                         ensure!((1..=100).contains(&quality), "JPEG quality must be 1..100");
@@ -224,7 +230,15 @@ fn convert(args: &[OsString]) -> Result<()> {
         index += 1;
     }
     let destination = Path::new(&args[2]);
-    app_core::ImageExportFormat::from_path(destination)?;
+    let output_format = app_core::ImageExportFormat::from_path(destination)?;
+    ensure!(
+        webp_quality.is_none() || output_format == app_core::ImageExportFormat::WebP,
+        "--webp-quality requires a WebP output path"
+    );
+    ensure!(
+        webp_quality.is_none() || !seen.contains("--jpeg-quality"),
+        "Choose either WebP or JPEG quality"
+    );
     let size = match (width, height) {
         (Some(width), Some(height)) => ExportSize::Exact(width, height),
         (Some(width), None) => ExportSize::Width(width),
@@ -248,7 +262,18 @@ fn convert(args: &[OsString]) -> Result<()> {
     }
     let image = frame(pixels);
     let dimensions = size.dimensions(image.width, image.height)?;
-    let format = image.save_image_as(destination, quality, size)?;
+    let format = if let Some(webp_quality) = webp_quality {
+        let pixels = if dimensions == (image.width, image.height) {
+            image.pixels.clone()
+        } else {
+            Arc::new(app_core::downscale_export(&image.pixels, size)?)
+        };
+        drop(image);
+        app_core::save_lossy_webp(&pixels, destination, webp_quality, || false)?;
+        output_format
+    } else {
+        image.save_image_as(destination, quality, size)?
+    };
     println!(
         "{}",
         json!({"format": format.extension(), "width": dimensions.0, "height": dimensions.1})

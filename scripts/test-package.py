@@ -22,6 +22,26 @@ smoke_spec.loader.exec_module(smoke_module)
 
 
 class PackagingTests(unittest.TestCase):
+    def test_bundled_webp_notices_are_required_and_packaged(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "Cargo.toml").write_text("", encoding="utf-8")
+            vendor = root / "vendor"
+            vendor.mkdir()
+            item = {"name": "libwebp-sys", "manifest_path": str(root / "Cargo.toml")}
+            with self.assertRaises(ValueError):
+                module.license_files(item)
+            for name in ["COPYING", "PATENTS"]:
+                (vendor / name).write_text(name, encoding="utf-8")
+            paths = module.license_files(item)
+            self.assertEqual(set(map(lambda path: Path(path).name, paths)), {"COPYING", "PATENTS"})
+            binary = root / "binary"
+            binary.write_bytes(b"fixture")
+            archive = module.package(binary, root / "packages", "test", "linux", 0, {}, [{"name":"libwebp-sys", "version":"0.14.4", "license_files":paths}])
+            with tarfile.open(archive) as stream:
+                for name in ["COPYING", "PATENTS"]:
+                    self.assertEqual(stream.extractfile(f"test/licenses/libwebp-sys-0.14.4/{name}").read(), name.encode())
+
     def test_commands_decode_utf8_independently_of_the_platform_locale(self):
         expected = '{"description":"Zażółć 中文 😀"}'
         self.assertEqual(module.command(

@@ -1,5 +1,10 @@
 # Third-party notices
 
+Explicit lossy WebP export uses libwebp 1.6.0 through libwebp-sys 0.14.4.
+The archive includes Google's BSD license and patent grant as
+`licenses/libwebp-sys-0.14.4/COPYING` and `PATENTS`, together with dependency
+metadata. The full source notices reside in the crate's `vendor` directory.
+
 The application uses GPUI Kit (Apache-2.0) and the matching GPUI snapshot
 (Apache-2.0). Their source, license and provenance are available through Cargo.lock:
 https://github.com/longbridge/gpui-kit and https://github.com/zed-industries/zed.

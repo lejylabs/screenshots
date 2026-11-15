@@ -75,7 +75,7 @@ impl ExportSize {
 }
 
 /// Downscale finalized RGBA pixels without a full-size float intermediate.
-pub(crate) fn downscale_export(
+pub fn downscale_export(
     source: &image::RgbaImage,
     size: ExportSize,
 ) -> Result<image::RgbaImage, CaptureError> {

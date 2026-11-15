@@ -25,6 +25,21 @@ def write_text(path, text):
     path.write_text(text, encoding="utf-8", newline="\n")
 
 
+def license_files(item):
+    source = Path(item["manifest_path"]).parent
+    files = [path for path in source.iterdir() if path.is_file() and path.name.upper().startswith(("LICENSE", "LICENCE", "COPYING", "NOTICE", "PATENTS"))]
+    if item.get("license_file"):
+        files.append(source / item["license_file"])
+    if item["name"] == "libwebp-sys":
+        # The statically compiled C library's notices live below the Rust wrapper.
+        for name in ["COPYING", "PATENTS"]:
+            path = source / "vendor" / name
+            if not path.is_file() or path.is_symlink():
+                raise ValueError("Bundled libwebp license or patent notice is missing")
+            files.append(path)
+    return sorted(set(map(str, files)))
+
+
 def package(binary, output, name, target, epoch, info, licenses):
     """Stage complete files, then publish without replacing an existing archive."""
     if not binary.is_file() or binary.is_symlink():
@@ -118,11 +133,7 @@ def main():
     version = next(item["version"] for item in metadata["packages"] if item["name"] == "screenshots")
     licenses = []
     for item in sorted(metadata["packages"], key=lambda item: (item["name"], item["version"])):
-        source = Path(item["manifest_path"]).parent
-        files = [path for path in source.iterdir() if path.is_file() and path.name.upper().startswith(("LICENSE", "LICENCE", "COPYING", "NOTICE"))]
-        if item.get("license_file"):
-            files.append(source / item["license_file"])
-        licenses.append({"name": item["name"], "version": item["version"], "license": item["license"], "source": item["source"], "license_files": sorted(set(map(str, files)))})
+        licenses.append({"name": item["name"], "version": item["version"], "license": item["license"], "source": item["source"], "license_files": license_files(item)})
     commit = command("git", "rev-parse", "HEAD")
     epoch = int(os.environ.get("SOURCE_DATE_EPOCH", command("git", "show", "-s", "--format=%ct", "HEAD")))
     info = {"version": version, "target": host, "commit": commit, "dirty": bool(command("git", "status", "--porcelain")), "rustc": command("rustc", "-vV"), "source_date_epoch": epoch, "binary_input": "explicit prebuilt binary" if args.binary else "cargo build --locked --release", "signing": "unsigned; native runtime acceptance is separate"}

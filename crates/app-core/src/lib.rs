@@ -9,7 +9,7 @@ mod capture;
 mod desktop_composite;
 pub use desktop_composite::{capture_stitched_desktop, stitch_desktop};
 mod resample;
-pub use resample::ExportSize;
+pub use resample::{ExportSize, downscale_export};
 mod filenames;
 pub use arrows::ArrowAnnotation;
 pub use filenames::{capture_file_name, validate_capture_name_template};
@@ -42,7 +42,9 @@ pub use storage::{
     inspect_part_files,
 };
 mod pixelation;
+mod webp_lossy;
 pub use blur::blur_preview_bgra;
+pub use webp_lossy::save_lossy_webp;
 mod selection;
 pub use pixelation::PixelationGrid;
 mod settings;
