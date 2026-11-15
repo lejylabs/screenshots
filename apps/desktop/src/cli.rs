@@ -37,9 +37,9 @@ Headless commands (no desktop UI, clipboard writes or implicit uploads):
   screenshots storage check DATABASE
   screenshots storage backup DATABASE NEW_DATABASE
   screenshots storage inspect-parts DIRECTORY
-  screenshots upload PROFILE_JSON PNG
-  screenshots upload-images PROFILE_JSON IMAGE...
-  screenshots upload-file PROFILE_JSON FILE
+  screenshots upload PROFILE PNG
+  screenshots upload-images PROFILE IMAGE...
+  screenshots upload-file PROFILE FILE
   screenshots credentials target|store|remove PROFILE_JSON [--username NAME]
   screenshots qr generate TEXT OUTPUT_PNG
   screenshots qr scan INPUT
@@ -56,6 +56,8 @@ Convert width alone or height alone keeps the aspect ratio.
 Capture reads desktop pixels only when explicitly requested; it saves one image
 without history or clipboard output. Window capture is unavailable on Linux.
 Upload is an explicit network action and prints the server-returned URL.
+Upload profiles use the documented ShareX subset for .sxcu (case-insensitive),
+or native destination JSON for any other extension; profiles are not saved.
 Native platform capabilities/permissions still apply.
 Credential store reads a secret from piped stdin; secrets are never arguments.
 The profile must already contain an HTTPS credential reference/authentication.
@@ -123,11 +125,8 @@ pub fn run(args: Vec<OsString>) -> Result<bool> {
         "upload-images" => crate::upload_batch::run(&args[1..])?,
         "upload-file" => crate::upload_file::run(&args[1..])?,
         "upload" => {
-            ensure!(
-                args.len() == 3,
-                "Usage: screenshots upload PROFILE_JSON PNG"
-            );
-            let destination = app_core::UploadDestination::load(Path::new(&args[1]))?;
+            ensure!(args.len() == 3, "Usage: screenshots upload PROFILE PNG");
+            let destination = load_upload_profile(Path::new(&args[1]))?;
             let source = std::path::absolute(&args[2])?;
             let url = app_core::upload_png(
                 &destination,
@@ -139,6 +138,17 @@ pub fn run(args: Vec<OsString>) -> Result<bool> {
         _ => bail!("Unknown command; use --help"),
     }
     Ok(true)
+}
+
+pub(crate) fn load_upload_profile(path: &Path) -> Result<app_core::UploadDestination> {
+    if path
+        .extension()
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("sxcu"))
+    {
+        Ok(app_core::UploadDestination::from_sharex(path)?.0)
+    } else {
+        app_core::UploadDestination::load(path)
+    }
 }
 
 fn text(value: &OsString) -> Result<&str> {

@@ -1,19 +1,27 @@
 # Explicit arbitrary-file uploads
 
-`screenshots upload-file PROFILE_JSON FILE` uploads one regular file without
+`screenshots upload-file PROFILE FILE` uploads one regular file without
 decoding, converting, inspecting its extension or changing its bytes. Empty
 files are accepted. The maximum size is 64 MiB. Relative input paths resolve
 against the caller's current directory; the core API requires an absolute path.
 Folders, unavailable files and larger files fail before a request is sent.
 
-The command loads the existing validated destination JSON. It supports multipart
-POST and raw binary PUT. Both use `application/octet-stream`; multipart uses the
-generic filename `file.bin`, preserving the privacy of the source filename/path.
+`PROFILE` uses the [documented ShareX ImageUploader subset](../README.md#capture-home)
+for a case-insensitive `.sxcu` extension; every other extension uses native
+destination JSON. Contents are not auto-detected. Both require a regular file
+of at most 16 KiB, including symlinks to regular files. The profile's optional
+name is ignored; loading it creates no saved profile, history or credentials.
+Credential-management commands remain native-JSON-only.
+
+The command supports multipart POST and raw binary PUT. Both use
+`application/octet-stream`; multipart uses the generic filename `file.bin`,
+preserving the privacy of the source filename/path.
 POST form fields, custom nonsecret headers/query parameters, HTTPS defaults,
 origin-scoped credentials and existing response parsers remain available.
 Image-specific JSON/base64 request bodies are rejected before the upload runtime
-starts. ShareX profile imports still describe the documented ImageUploader
-subset; this command does not extend `.sxcu` import/export claims to FileUploader.
+starts. A `.sxcu` profile must still include `ImageUploader` and use HTTPS;
+`FileUploader` alone is rejected. Direct use by this command does not expand
+the importer or claim full ShareX/FileUploader compatibility.
 
 The source is opened once and its handle's size fixes the Content-Length. The
 stream reads at most that original length, so a growing file cannot increase
@@ -41,6 +49,10 @@ Subprocess fixtures exercise exact binary PUT bytes including NULs, multipart
 generic filename/MIME, empty input, oversized/directory/JSON-body rejection before
 networking, unchanged source bytes and absent user-state writes. Tests use local
 HTTP and generated files only, without real credentials or remote accounts.
+The opt-in direct-profile fixture uses isolated local HTTPS trust to verify
+`.sxcu` and `.SXCU` across all three upload commands, exact PNG/file bytes,
+batch NDJSON, and unchanged source/profile files. Invalid and secret-bearing
+profiles are rejected before connecting; native JSON selection remains tested.
 
 A successful remote upload followed by a stdout failure returns an error that
 explicitly says the remote file remains; the client does not retry. Native

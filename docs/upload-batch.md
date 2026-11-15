@@ -1,12 +1,23 @@
 # Explicit image upload batches
 
-`screenshots upload-images PROFILE_JSON IMAGE...` sends one to twenty PNG,
+`screenshots upload-images PROFILE IMAGE...` sends one to twenty PNG,
 JPEG or WebP images through the existing uploader. The command itself is the
 explicit network action; merely opening images, loading profiles or starting the
 desktop app does not upload them. It changes no source file, clipboard, capture
 history or settings. Duplicate paths are allowed and upload again in argument
 order. Relative paths resolve against the caller's current directory; native
 non-UTF-8 paths remain usable where the OS supports them.
+
+`PROFILE` selects the [documented ShareX ImageUploader subset](../README.md#capture-home)
+when its extension is `.sxcu`, ignoring ASCII case (`.SXCU` also works). Every
+other extension selects native destination JSON; contents are not auto-detected.
+The same selection applies to `upload` and `upload-file`. ShareX requires HTTPS
+and keeps its existing supported bodies, response parsers and nonsecret-field
+validation; this does not add full ShareX compatibility. The optional profile
+name is ignored, and no profile or credentials are imported into settings or
+history. Credential-management commands continue to accept native JSON only.
+Both profile formats require a regular file of at most 16 KiB; symlinks to
+regular files remain accepted.
 
 The complete argument count, destination profile and each input's regular-file
 metadata/32 MiB size limit are checked before the first request. Image contents
@@ -60,6 +71,9 @@ server. They inspect the uploaded PNG pixels, preserve source bytes, exercise a
 failure on the second transfer, prove no third request, reject invalid argument
 counts and metadata before networking, and verify no user-state writes. Native
 credentials and real third-party services remain separate acceptance checks.
+The opt-in direct-profile fixture additionally checks `.sxcu` and `.SXCU` over
+local HTTPS with isolated trust, exact PNG bytes and NDJSON output, without
+changing user state or source/profile files.
 This adds explicit image batching, not arbitrary-file uploads, queued workflows,
 watched folders or a batch UI.
 

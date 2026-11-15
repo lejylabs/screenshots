@@ -9,9 +9,9 @@ const MAX_INPUT_BYTES: u64 = 32 * 1024 * 1024;
 pub fn run(args: &[OsString]) -> Result<()> {
     ensure!(
         (2..=MAX_IMAGES + 1).contains(&args.len()),
-        "Usage: screenshots upload-images PROFILE_JSON IMAGE... (1–20 images)"
+        "Usage: screenshots upload-images PROFILE IMAGE... (1–20 images)"
     );
-    let destination = app_core::UploadDestination::load(std::path::Path::new(&args[0]))?;
+    let destination = crate::cli::load_upload_profile(std::path::Path::new(&args[0]))?;
     let paths = args[1..]
         .iter()
         .map(|path| {

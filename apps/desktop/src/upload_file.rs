@@ -6,9 +6,9 @@ use std::{ffi::OsString, io::Write, path::Path};
 pub fn run(args: &[OsString]) -> Result<()> {
     ensure!(
         args.len() == 2,
-        "Usage: screenshots upload-file PROFILE_JSON FILE"
+        "Usage: screenshots upload-file PROFILE FILE"
     );
-    let destination = app_core::UploadDestination::load(Path::new(&args[0]))?;
+    let destination = crate::cli::load_upload_profile(Path::new(&args[0]))?;
     let source = std::path::absolute(&args[1])?;
     let outcome = app_core::upload_file(
         &destination,
