@@ -4,10 +4,10 @@ Date: 2026-11-15
 Scope: the user's complete major-feature list, with final GPUI redesign and new
 UI controls excluded. The workstation stays on. The full backlog is **open**.
 
-Snapshot: branch `feat/non-ui-delivery`, committed implementation HEAD `17ee7ae`,
+Snapshot: branch `feat/non-ui-delivery`, committed implementation HEAD `bf34ac5`,
 including GIF implementation `485386e`, TIFF input `bc37362` and link-result
-formatting/QR `17ee7ae`. Thumbnail cancellation and admission changes are in
-progress in the working tree. “Delivered subset” means an existing CLI/core
+formatting/QR `17ee7ae`, and thumbnail cancellation/admission `bf34ac5`.
+“Delivered subset” means an existing CLI/core
 path, not completion of
 the corresponding product family or native acceptance. Evidence belongs to the
 named build and fixture. No new tests, builds, network calls or captures were
@@ -38,10 +38,12 @@ performed to prepare this checklist.
   CommonMark/HTML href and label checks, QR decoding and package smoke.
   The earlier dense-QR scanner failure is disclosed in the
   [delivery evidence](non-ui-delivery.md); it was not counted as a pass.
-- [ ] Thumbnail cancellation is in progress: stop obsolete reduction work,
+- [x] Thumbnail cancellation stops obsolete reduction work,
   retain the active job's admission until completion, and make both Quit paths
   wait for that completion. This repairs control flow without changing UI
-  design or adding controls. Tests remain pending at this snapshot.
+  design or adding controls. Final regression passed 518 regular tests,
+  52 opt-in cases excluded, all doctests; focused lifecycle, performance,
+  Clippy, Windows compilation and release/package checks passed.
   [Contract](image-cancellation.md).
 - [ ] Read native CI for exact head `17ee7ae` before claiming it passed. The
   earlier `bc37362` run was queued at its recorded check; its current state was
@@ -110,8 +112,8 @@ completion is listed separately.
   transfer and robust rename; explicit physical-file deletion/retention with
   recoverable file/DB ordering; richer substring/OCR search. Upload-link search
   already exists in CLI queries; integrated Library link search does not.
-  Existing thumbnail cancellation/admission/Quit repair is the active bounded
-  lifecycle slice above, not new prefetch or thumbnail UI.
+  Existing thumbnail cancellation/admission/Quit repair is delivered above;
+  prefetch and thumbnail UI remain separate.
 - [ ] **Major capabilities and utilities:** actual live scrolling control,
   fixed-header handling and imperfect-match reporting; audio capture and richer
   recording devices/codecs/timeline/trim/transcode workflows; general external
