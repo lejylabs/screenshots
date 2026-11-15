@@ -8,6 +8,7 @@ const HELP: &str = "screenshots — native capture and image tools
 Desktop: screenshots [--show]
 Headless commands (no desktop UI, clipboard writes or implicit uploads):
   screenshots --help | --version
+  screenshots autostart status|enable|disable
   screenshots hash-file FILE [--expect SHA256_HEX]
   screenshots image convert INPUT OUTPUT [--width N] [--height N]
       [--rotate 90|180|270] [--flip-horizontal] [--flip-vertical]
@@ -110,6 +111,7 @@ pub fn run(args: Vec<OsString>) -> Result<bool> {
         "list" => list(&args[1..])?,
         "capture" => capture(&args[1..])?,
         "capture-sequence" => crate::capture_sequence::run(&args[1..])?,
+        "autostart" => crate::autostart::run(&args[1..])?,
         "history" => history(&args[1..])?,
         "history-audit" => crate::history_audit::run(&args[1..])?,
         "history-manage" => crate::history_manage::run(&args[1..])?,

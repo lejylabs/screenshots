@@ -1,3 +1,4 @@
+mod autostart;
 mod capture_sequence;
 mod cli;
 mod hash_file;
