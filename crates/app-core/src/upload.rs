@@ -5289,10 +5289,13 @@ mod tests {
             upload_png(&destination, &path, UploadCancellation::default()).unwrap(),
             "https://example.invalid/share/query"
         );
-        let request = String::from_utf8(server.join().unwrap()).unwrap();
-        let line = request.lines().next().unwrap();
-        assert!(line.starts_with("POST /upload?format=json HTTP/1.1"));
-        assert!(!request.to_ascii_lowercase().contains("api_key"));
+        let request = server.join().unwrap();
+        assert!(request.starts_with(b"POST /upload?format=json HTTP/1.1\r\n"));
+        assert!(
+            !request
+                .windows(7)
+                .any(|part| part.eq_ignore_ascii_case(b"api_key"))
+        );
         std::fs::remove_dir_all(root).unwrap();
     }
 
@@ -5312,11 +5315,15 @@ mod tests {
             upload_png(&destination, &path, UploadCancellation::default()).unwrap(),
             "https://example.invalid/share/form"
         );
-        let request = String::from_utf8(server.join().unwrap()).unwrap();
-        assert!(request.contains("name=\"title\""));
-        assert!(request.contains("screenshot"));
-        assert!(request.contains("name=\"file\""));
-        assert!(!request.to_ascii_lowercase().contains("api_key"));
+        let request = server.join().unwrap();
+        let title = b"name=\"title\"\r\n\r\nscreenshot\r\n";
+        assert!(request.windows(title.len()).any(|part| part == title));
+        assert!(request.windows(11).any(|part| part == b"name=\"file\""));
+        assert!(
+            !request
+                .windows(7)
+                .any(|part| part.eq_ignore_ascii_case(b"api_key"))
+        );
         std::fs::remove_dir_all(root).unwrap();
     }
 
@@ -5532,8 +5539,14 @@ mod tests {
             upload_png(&destination, &path, UploadCancellation::default()).unwrap(),
             "https://example.invalid/share/headers"
         );
-        let request = String::from_utf8(server.join().unwrap()).unwrap();
-        let lower = request.to_ascii_lowercase();
+        let request = server.join().unwrap();
+        let header_end = request
+            .windows(4)
+            .position(|part| part == b"\r\n\r\n")
+            .unwrap();
+        let lower = std::str::from_utf8(&request[..header_end])
+            .unwrap()
+            .to_ascii_lowercase();
         assert!(lower.contains("x-client: screenshots"));
         assert!(!lower.contains("authorization"));
         assert!(!lower.contains("x-api-key"));
