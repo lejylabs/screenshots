@@ -15,7 +15,7 @@ performed to prepare this checklist.
 
 ## Immediate verification state
 
-- [x] Final committed GIF tree: 487 regular optimized workspace tests,
+- [x] Final committed GIF tree: 486 regular optimized workspace tests,
   51 opt-in cases excluded, all doctests passed; Clippy, Windows GNU app/test
   compilation, release FFmpeg decoding and package smoke passed.
   [Recorded results](non-ui-delivery.md#offline-gif-assembly-in-progress-2026-11-15).
@@ -28,26 +28,31 @@ performed to prepare this checklist.
   `31929f554c6646a146da591d888ab7a5c9772465b47af5b60825d2640b93925a`.
   Package smoke passed; archive SHA256:
   `7632d806df44ea02e73f1866fe3a20c887d95b3e48fafd10f8632be3eb83e6ab`.
-- [x] TIFF final complete optimized workspace run passed 499 regular tests,
+- [x] TIFF final complete optimized workspace run passed 496 regular tests,
   including all seven TIFF core fixtures, with 51 opt-in cases excluded and
   all doctests passing. Implementation commit `bc37362` is pushed.
   [TIFF contract](tiff-input.md), [current evidence](non-ui-delivery.md#bounded-truecolor-tiff-input-in-progress-2026-11-15).
-- [x] Link-result formatting/QR: final rerun passed 511 regular optimized tests,
+- [x] Link-result formatting/QR: final rerun passed 508 regular optimized tests,
   51 opt-in cases excluded, all doctests passed; final Clippy, formatting and
   Windows GNU test compilation passed. The release passed independent
   CommonMark/HTML href and label checks, QR decoding and package smoke.
   The earlier dense-QR scanner failure is disclosed in the
   [delivery evidence](non-ui-delivery.md); it was not counted as a pass.
 - [x] Thumbnail cancellation stops obsolete reduction work,
-  retain the active job's admission until completion, and make both Quit paths
+  retains the active job's admission until completion, and makes both Quit paths
   wait for that completion. This repairs control flow without changing UI
-  design or adding controls. Final regression passed 518 regular tests,
+  design or adding controls. Final regression passed 515 regular tests,
   52 opt-in cases excluded, all doctests; focused lifecycle, performance,
   Clippy, Windows compilation and release/package checks passed.
   [Contract](image-cancellation.md).
-- [ ] Read native CI for exact head `17ee7ae` before claiming it passed. The
-  earlier `bc37362` run was queued at its recorded check; its current state was
-  not queried for this documentation update. [Recorded TIFF run](https://github.com/lejylabs/screenshots/actions/runs/43731771823).
+- [x] Saved-PNG admission now checks regular files and a 272 MiB readable extent,
+  plus native/RGBA byte limits before decoding. Compatibility/FIFO cases and
+  release/package checks passed; the complete run passed 523 regular tests and
+  all doctests, with 52 opt-in cases excluded. The new timing-only opt-in test
+  also passed separately. [Contract](saved-png-admission.md).
+- [ ] Native CI for `bf34ac5` was still running at the latest check. Earlier
+  runs were canceled as newer pushes arrived. Local results above do not
+  establish native CI success. [Current thumbnail run](https://github.com/lejylabs/screenshots/actions/runs/43734938633).
 
 ## Delivered CLI/core subsets
 

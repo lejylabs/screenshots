@@ -236,6 +236,16 @@ Uploads stream the saved PNG without image decoding, preserve its existing bytes
 
 **Preview** on a history entry shows an aspect-preserving image up to 400×240 pixels without opening another application. The visible library page also loads those thumbnails automatically, one at a time, and keeps only the current 20. Clicking a name expands the cached image when it is ready. **Hide preview** closes the expanded view and keeps the page cache; changing pages/filters/search or closing history releases both. Preview never changes the PNG, clipboard or history and uses the existing image-size limit. Decoding temporarily holds the full source image. Next-page prefetch is not included.
 
+Saved-PNG loading for preview, recopy, saved-image editing and pixel re-export
+now uses [regular-file and fixed-extent admission](docs/saved-png-admission.md):
+8 bytes to 272 MiB encoded, with native decoded bytes and final RGBA each
+checked against 256 MiB before pixel decoding. It streams one opened handle
+without a full encoded snapshot and preserves saved-image orientation.
+Decoder/conversion scratch is additional; these bounds are not a total-memory
+or native-call timeout guarantee. Verification of this new admission path is
+pending. Direct Open image and sanitized history export keep their separate
+32 MiB input limits.
+
 The [thumbnail cancellation follow-up](docs/image-cancellation.md) is in
 progress: it stops obsolete reduction work and preserves job admission/Quit
 cleanup until completion. This changes worker control flow, not the design or

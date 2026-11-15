@@ -1693,7 +1693,7 @@ A three-run synthetic 1280×720 observation measured median 0.02 s / 16,896 KiB
 peak RSS for two frames and 0.13 s / 17,164 KiB for sixteen frames. This is a
 coarse development observation, not a private-memory/reference-hardware claim.
 
-The final whole-workspace GIF tree passed 487 regular optimized tests, with
+The final whole-workspace GIF tree passed 486 regular optimized tests, with
 51 opt-in cases excluded and all doctests passing. Final Clippy and Windows GNU
 test compilation passed. The feature was committed and pushed as `485386e`.
 
@@ -1730,7 +1730,7 @@ The archive smoke test passed. Archive SHA256
 binary SHA256
 `31929f554c6646a146da591d888ab7a5c9772465b47af5b60825d2640b93925a`.
 
-The final TIFF workspace passed 499 regular optimized tests with 51 opt-in
+The final TIFF workspace passed 496 regular optimized tests with 51 opt-in
 cases excluded; all doctests passed. All seven TIFF core fixtures are included.
 The implementation is committed and pushed as `bc37362`.
 
@@ -1772,7 +1772,7 @@ focused executable cases and the updated external release script passed.
 The first full run hit that scanner fixture failure; the final regression
 rerun follows the corrected tests and remains separate evidence.
 
-The final whole-workspace rerun passed 511 regular optimized tests, with
+The final whole-workspace rerun passed 508 regular optimized tests, with
 51 opt-in cases excluded and all doctests passing. Final Clippy, formatting
 and Windows GNU test compilation passed. No production change was needed for
 the dense-QR scanner limitation; it remains disclosed above.
@@ -1827,7 +1827,41 @@ Three isolated end-to-end measurement processes passed with median peak RSS
 iterations, not just the retained 360,000-byte thumbnail. The raw timing and
 process samples are in `target/verification/thumbnail-performance.json`.
 
-The final whole-workspace run passed 518 regular optimized tests with 52 opt-in
+The final whole-workspace run passed 515 regular optimized tests with 52 opt-in
 cases excluded and all doctests passing. The new opt-in case is the synthetic
 thumbnail benchmark, which was also run explicitly as recorded above. Final
 Clippy, formatting and Windows GNU test compilation passed.
+
+### Bounded saved-PNG admission (in progress)
+
+The [saved-PNG plan](saved-png-admission.md) adds regular-file and 272 MiB
+encoded admission while preserving large application output, plus native and
+RGBA byte checks before decoding. Existing PNG header limits already apply;
+the identified gaps are filesystem admission and post-conversion allocation.
+The same open handle is read through a frozen extent, without a full-file
+snapshot. Existing PNG variants, still-image/APNG interpretation and ignored
+EXIF orientation remain unchanged. Implementation and review are in progress.
+
+Eight focused saved-PNG fixtures passed, covering independent PNG variants,
+interlace/APNG/EXIF compatibility, native/RGBA predecode limits, a generated
+file above 32 MiB, exact 272 MiB extent admission and killable FIFO substitution.
+They also verify unchanged opened-file identity and no clipboard initialization
+or output publication on failure. Clippy and Windows GNU compilation passed;
+full regression, measurements and release checks continue.
+
+The saved-PNG release built in 2m26s and passed archive smoke. Archive SHA256
+`8c5b9ac001f514a1600ba16d0dff04a4db537e69a495422f57c26978f6c6d266`;
+binary SHA256
+`9ce3c17d1c2e22a2cb172736e0dde3d04fd28481bca23b9bf6e55e9bed7095f6`.
+
+The final focused run passed all eight admission/compatibility cases, including
+the direct post-open length regression. The opt-in 4K RGBA8/RGBA16 benchmark
+also passed with exact pixels: old/new median 3.559/3.265 ms (8 bit) and
+13.759/12.974 ms (16 bit), ten interleaved samples after two warmups. No latency
+regression was observed on these synthetic files; this is not hardware acceptance.
+
+The final saved-PNG workspace run passed 523 regular tests with 52 opt-in cases
+excluded and all doctests passing. The subsequently added timing-only ignored
+fixture and post-open assertion passed in the focused run (8 passed, 1 ignored).
+Test totals above have been audited to count only outer suites: subprocess
+fixtures print their own summaries and must not be counted again.

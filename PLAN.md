@@ -1229,6 +1229,24 @@ without UI design changes, new controls, workers or timers. Verification is
 pending; earlier thumbnail fixtures and measurements do not validate the new
 path. PNG decoding and native I/O remain noninterruptible within their calls.
 
+Saved-PNG admission follow-up (2026-11-15, implementation awaiting verification):
+`load_saved_png` now checks regular-file type/size before and after opening,
+uses Unix nonblocking open to reject FIFO substitution, and streams through one
+fixed-length handle with a 64 KiB buffer. The encoded whole-file limit is
+272 MiB, preserving large saved outputs beyond direct Open image's 32 MiB
+limit. PNG construction retains its existing pre-header decoder allocation
+limit; native decoded bytes and eventual RGBA bytes are now both checked
+against 256 MiB before pixel decoding. Saved-image EXIF orientation remains
+ignored and supported PNG sample/palette/default-still behavior is preserved.
+Preview, recopy, saved-image editing and pixel re-export share this protection.
+No full encoded snapshot, new worker, cache, timer or UI change is added.
+Decoder metadata/scratch and temporary color conversion remain additional;
+these bounds do not establish total-process memory or interruptible native I/O.
+The [saved-PNG contract](docs/saved-png-admission.md) defines the compatibility
+and pending checks. Direct editor input and sanitized history export retain
+their separate 32 MiB admission and orientation behavior; byte-copy export is
+unchanged. Historical measurements above do not validate this new path.
+
 #### Current feature slice: configurable Windows global hotkeys
 
 Implemented in the working tree (2026-11-12): three editable/disableable bindings

@@ -5,6 +5,7 @@ use std::borrow::Cow;
 use anyhow::{Context, Result};
 
 const MAX_EDITOR_FILE_BYTES: u64 = 32 * 1024 * 1024;
+const MAX_SAVED_PNG_FILE_BYTES: u64 = crate::MAX_CAPTURE_BYTES + 16 * 1024 * 1024;
 
 // JPEG reads its input in full before applying decoder limits. Freeze the readable
 // extent so a growing file cannot bypass the encoded-byte admission check.
@@ -391,16 +392,74 @@ fn decode_editor_pixels_with_limit(
 }
 
 pub fn load_saved_png(path: &std::path::Path) -> Result<image::RgbaImage> {
-    let mut reader = image::ImageReader::with_format(
-        std::io::BufReader::new(std::fs::File::open(path)?),
-        image::ImageFormat::Png,
+    let reader = std::io::BufReader::with_capacity(64 * 1024, open_saved_png(path)?);
+    decode_saved_png(reader, crate::MAX_CAPTURE_BYTES)
+}
+
+fn validate_saved_png_file(metadata: &std::fs::Metadata) -> Result<()> {
+    anyhow::ensure!(metadata.is_file(), "Saved PNG must be a regular file");
+    anyhow::ensure!(
+        (8..=MAX_SAVED_PNG_FILE_BYTES).contains(&metadata.len()),
+        "Saved PNG file must contain 8 bytes to 272 MiB"
+    );
+    Ok(())
+}
+
+fn open_saved_png(path: &std::path::Path) -> Result<EditorFile> {
+    validate_saved_png_file(&path.metadata().context("Could not inspect saved PNG")?)?;
+    open_saved_png_after_preflight(path)
+}
+
+fn open_saved_png_after_preflight(path: &std::path::Path) -> Result<EditorFile> {
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NONBLOCK);
+    }
+    let file = options.open(path).context("Could not open saved PNG")?;
+    let metadata = file.metadata().context("Could not inspect saved PNG")?;
+    validate_saved_png_file(&metadata)?;
+    Ok(EditorFile {
+        file,
+        length: metadata.len(),
+        position: 0,
+    })
+}
+
+fn decode_saved_png(
+    reader: impl std::io::BufRead + std::io::Seek,
+    max_decoded_bytes: u64,
+) -> Result<image::RgbaImage> {
+    use image::ImageDecoder;
+    anyhow::ensure!(
+        max_decoded_bytes > 0 && max_decoded_bytes <= crate::MAX_CAPTURE_BYTES,
+        "Invalid saved PNG decoded image budget"
     );
     let mut limits = image::Limits::default();
     limits.max_alloc = Some(crate::MAX_CAPTURE_BYTES);
-    reader.limits(limits);
-    let decoded = reader.decode()?;
-    crate::validate_image_size(decoded.width(), decoded.height())?;
-    Ok(decoded.into_rgba8())
+    let decoder = image::codecs::png::PngDecoder::with_limits(reader, limits)?;
+    let (width, height) = decoder.dimensions();
+    crate::validate_image_size(width, height)
+        .context("Saved PNG dimensions exceed the decoded image limit")?;
+    let rgba_bytes = u64::from(width) * u64::from(height) * 4;
+    anyhow::ensure!(
+        rgba_bytes <= max_decoded_bytes,
+        "Saved PNG RGBA pixels exceed the decoded image limit"
+    );
+    anyhow::ensure!(
+        decoder.total_bytes() <= max_decoded_bytes,
+        "Saved PNG native pixels exceed the decoded image limit"
+    );
+    // Saved PNGs retain their historical pixel orientation; only the explicit
+    // editor-input path applies EXIF transforms.
+    let pixels = image::DynamicImage::from_decoder(decoder)?.into_rgba8();
+    anyhow::ensure!(
+        pixels.dimensions() == (width, height) && pixels.as_raw().len() as u64 == rgba_bytes,
+        "Saved PNG decoded pixels do not match the admitted dimensions"
+    );
+    Ok(pixels)
 }
 
 /// Explicit history preview only. Decode on a worker, retain only a bounded thumbnail.
@@ -475,6 +534,10 @@ impl ImageClipboard {
         Ok((width, height))
     }
 }
+
+#[cfg(test)]
+#[path = "saved_png_tests.rs"]
+mod saved_png_tests;
 
 #[cfg(test)]
 mod tests {

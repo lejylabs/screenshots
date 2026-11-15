@@ -17,6 +17,15 @@ The original policy checks the PNG signature and streams at most 272 MiB after
 that signature (272 MiB plus eight bytes in total); it does not validate the
 complete image or decode its pixels. The stripped policy instead requires a
 fully decodable admitted input and has the smaller encoded limit stated above.
+This command still uses its separate 32 MiB loader and applies EXIF orientation.
+The [saved-PNG admission path](saved-png-admission.md) used by history previews,
+recopy, saved-image editing and other pixel re-exports instead accepts whole
+files up to 272 MiB, streams a regular-file handle with a fixed readable extent,
+and checks both native decoded bytes and RGBA before decoding. It continues to
+ignore saved-image EXIF orientation. That new path's verification is pending;
+it does not enlarge this command's stripped-export limit or alter the
+byte-preserving export above. Decoder/conversion scratch remains additional
+to the stated pixel admission, so neither path claims a total-memory bound.
 On non-Windows systems the existing publication path requires same-filesystem
 hard-link support. Unsupported filesystems fail rather than falling back to a
 partial copy or overwriting a destination. Windows uses native no-replace move.

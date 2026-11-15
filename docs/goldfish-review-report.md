@@ -347,3 +347,14 @@ completion and cancels/waits in both Quit paths, without changing rendering.
 The reviewer required behavioral cancellation fixtures and production-equivalent
 atomic flag reads plus raw samples in performance measurements. These were
 added; runtime results remain separate in the delivery log.
+
+## Saved-PNG admission review (2026-11-15)
+
+Fresh-context `saved_png_goldfish` corrected the proposed limit fixture:
+dimensions become available only after PNG decoder construction reaches IDAT,
+so test admission ahead of decompression rather than ahead of a missing-IDAT
+error. Exact file ownership and implementation phases were also added. The
+implementation review found no blocking defect and requested a direct opened-
+handle oversize regression in addition to pathname preflight/FIFO tests. This
+was added. The existing header-limit and aggregate-memory caveats remain
+explicit; this slice does not claim all PNG allocations are strictly bounded.
