@@ -1172,3 +1172,13 @@ Final lossy-WebP capture integration workspace run passed 393 regular tests,
 50 opt-in cases excluded, all doctests passed. Six packaging tests passed after
 bundled codec notices were added. The release artifact remains a separate check;
 no UI preference or native hardware acceptance is inferred.
+
+Lossy-WebP release verification: optimized application built and actual CLI
+output was decoded independently with exact alpha and unchanged source/state.
+The final 89 MiB archive passed checksum/extraction/help/version smoke and an
+explicit check for bundled libwebp COPYING/PATENTS. Archive SHA256:
+`600e4b2686b6fba9c49ea6fcd576809b1abd5244a5b99e1145ac63fb3f10e33c`;
+binary SHA256:
+`49f9970b91f24cc71fb90a9aa1cd010e6b350fb6ee6d1bcdce1b8e09b168b9da`.
+The complete backlog, native CI and hardware/OS acceptance remain separate;
+workstation shutdown remains revoked.
