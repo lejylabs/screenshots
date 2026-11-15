@@ -325,7 +325,8 @@ version = "0.2"
 version = "1.19.0"
 
 [dependencies.paste]
-version = "1"
+version = "=0.2.3"
+package = "pastey"
 
 [dependencies.regex]
 version = "1"

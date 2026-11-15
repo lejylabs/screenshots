@@ -79,6 +79,7 @@ gpui-base = { path = "vendor/gpui-base" }
 gpui-component = { path = "vendor/gpui-component" }
 glib-macros = { path = "vendor/glib-macros" }
 gtk3-macros = { path = "vendor/gtk3-macros" }
+rav1e = { path = "vendor/rav1e" }
 
 [profile.release]
 debug = "limited"

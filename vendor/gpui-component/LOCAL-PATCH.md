@@ -1,4 +1,4 @@
-# Local GPUI Component time dependency patch
+# Local GPUI Component dependency patches
 
 Base: published `gpui-component` 0.9.1 from crates.io, commit
 `39ab849a93b5f15507b969164d49891db8d5b470`, path `crates/component` in
@@ -8,8 +8,8 @@ metadata, `Cargo.toml.orig` and the packaged lockfile are omitted.
 
 The unmaintained `instant` dependency is replaced by `web-time` 1.1.0, following
 the migration recommended in the
-[instant README](https://github.com/sebcrozet/instant#readme). Only crate paths
-and that dependency entry change, including paths inside optional speech code.
+[instant README](https://github.com/sebcrozet/instant#readme). That migration only
+changes crate paths and the dependency entry, including optional speech code.
 The obsolete `instant/wasm-bindgen` dependency feature is removed; all other
 features and default behavior stay unchanged.
 
@@ -22,3 +22,10 @@ Performance API; no broader WASM platform support is claimed.
 No runtime, timer, task, cache, worker or idle activity is added. `web-time` is
 already in the application dependency graph. Remove this local patch when the
 pinned upstream version includes the migration.
+
+The unmaintained `paste` dependency is also replaced by `pastey` 0.2.3 under the
+same `paste` dependency alias. Its two color helper macros remain byte-for-byte
+unchanged; `pastey::paste!` supports their identifier generation. No feature or
+generated API is intentionally changed. This is a build-time helper only and
+adds no application runtime work. Remove this alias patch once upstream adopts
+a maintained token-pasting crate.
