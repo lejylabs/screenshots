@@ -381,16 +381,20 @@ mod unix {
             command.stdout(Stdio::null());
         }
         command.env_remove("FFREPORT");
+        #[cfg(target_os = "linux")]
+        let controller_pid = std::process::id() as libc::pid_t;
         // Bound file growth in the child; a cap hit cannot be mistaken for a full recording.
         unsafe {
-            command.pre_exec(|| {
+            command.pre_exec(move || {
                 #[cfg(target_os = "linux")]
                 {
-                    let parent = libc::getppid();
+                    if libc::getppid() != controller_pid {
+                        return Err(std::io::Error::other("Recording parent exited"));
+                    }
                     if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL) != 0 {
                         return Err(std::io::Error::last_os_error());
                     }
-                    if libc::getppid() != parent {
+                    if libc::getppid() != controller_pid {
                         return Err(std::io::Error::other("Recording parent exited"));
                     }
                 }
