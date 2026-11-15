@@ -2,7 +2,7 @@
 
 Author: NewtTheWolf
 Date: 2026-11-15
-Status: implemented, final regression/release checks in progress; Linux-only mutation.
+Status: implemented and locally verified; Linux-only mutation.
 
 Add `history-manage move DATABASE ID NEW.png`, `history-manage pending-move
 DATABASE`, and `history-manage recover-move DATABASE OPERATION finish|cancel`.
@@ -115,3 +115,8 @@ explicit finish and cancel recovery. Exact bytes, inode, row metadata and FTS
 references remain correct. Windows cross-compilation and Clippy passed; mutation remains
 unsupported on Windows/macOS. Whole-workspace and release results are recorded
 in the delivery log after completion.
+
+The complete optimized workspace run passed 464 regular tests, with 51 opt-in
+cases excluded and all doctests passing. Release artifact and recovery script
+checks passed. Native Windows/macOS moves and hostile external-writer guarantees
+remain outside this first implementation.

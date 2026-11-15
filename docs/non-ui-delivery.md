@@ -1560,3 +1560,28 @@ rename, durable pending read without mutation, explicit finish/cancel, stable
 row/FTS metadata and unchanged bytes/inode. No production fault hook was added.
 The release built in 2m32s and its archive passed checksum/extraction/help/version
 smoke. Final complete workspace verification is still running.
+
+Final history-move workspace verification passed 464 regular optimized tests,
+with 51 opt-in cases excluded and all doctests passing. Archive SHA256
+`7364418528dee1090e9e4e6e57e7a123617032ba5dcc9fa3796adf25229a784f`;
+binary SHA256
+`a9f1aa5f20be9c7362d79227ae418bb4e9a82288b9076b1dfd388e303415fc26`.
+
+### Explicit arbitrary-file upload batches (planned, 2026-11-15)
+
+Add `upload-files PROFILE FILE...` for 1–20 unchanged regular files, including
+empty files, at most 64 MiB each. Resolve and preflight every input before the
+first request. Reuse the single-file profile parser (including scoped `.sxcu`
+FileUploader support) and existing bounded transport. Reject image-only JSON
+bodies before starting. Upload sequentially and flush one NDJSON result after
+each confirmed upload; emit a final count only on completion. An upload or stdout
+failure stops later inputs, reports confirmed count and preserves earlier remote
+results; no retry or rollback. Keep generic remote names and avoid decoding,
+local copies, history, clipboard, timers or a batch worker pool. One file handle
+and the existing per-operation runtime/64 KiB streams are active at a time.
+
+Create upload_files.rs and executable loopback fixtures, expose the existing
+upload_file profile loader for reuse, and wire headless CLI/main/help. Tests cover
+exact binary/empty bytes, ordering, a failing middle request, invalid later input
+before any upload and absent user-state writes. Native filesystem stalls and
+in-place changes retain the single-file limits; preflight is not a snapshot.
