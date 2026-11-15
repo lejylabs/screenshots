@@ -158,6 +158,7 @@ pub struct CaptureWorkspace {
     settings_loading: bool,
     settings_saving: bool,
     output_directory: Option<PathBuf>,
+    pending_open_image: Option<PathBuf>,
     settings_status: String,
     hotkey_bindings: app_core::CaptureHotkeys,
     output_profile: CaptureOutputProfile,
@@ -620,6 +621,7 @@ impl CaptureWorkspace {
             } else {
                 None
             },
+            pending_open_image: None,
             settings_status: String::new(),
             hotkey_bindings: app_core::CaptureHotkeys::default(),
             output_profile: CaptureOutputProfile::default(),
@@ -758,6 +760,7 @@ impl CaptureWorkspace {
                         theme::apply(settings.theme, cx);
                         this.backend = XcapBackend::new(&settings.output_directory);
                         this.output_directory = Some(settings.output_directory);
+                        this.try_open_pending_image(cx);
                     }
                     Err(error) => {
                         this.settings_status = format!(
@@ -2734,6 +2737,9 @@ impl CaptureWorkspace {
     }
 
     fn finish_quit_if_idle(&mut self, cx: &mut Context<Self>) {
+        if !self.quitting && self.pending_open_image.is_some() {
+            self.try_open_pending_image(cx);
+        }
         if self.quitting
             && !self.capturing
             && !self.copying
@@ -2782,6 +2788,28 @@ impl CaptureWorkspace {
 
     fn open_history_editor(&mut self, path: PathBuf, cx: &mut Context<Self>) {
         self.open_redaction_source(EditorImage::SavedPng(path), cx);
+    }
+
+    fn queue_open_image(&mut self, path: PathBuf, cx: &mut Context<Self>) {
+        if self.quitting || !path.is_absolute() || path.as_os_str().as_encoded_bytes().len() > 4096
+        {
+            return;
+        }
+        if self.pending_open_image.is_some() {
+            self.capture_status = "An image is already waiting to open.".into();
+            cx.notify();
+            return;
+        }
+        self.pending_open_image = Some(path);
+        self.try_open_pending_image(cx);
+    }
+
+    fn try_open_pending_image(&mut self, cx: &mut Context<Self>) {
+        if !self.image_input_busy() {
+            if let Some(path) = self.pending_open_image.take() {
+                self.open_redaction_source(EditorImage::File(path), cx);
+            }
+        }
     }
 
     fn image_input_busy(&self) -> bool {
@@ -3072,6 +3100,7 @@ impl CaptureWorkspace {
                         }
                         this.restore_control(cx);
                         this.request_history_thumbs(cx);
+                        this.try_open_pending_image(cx);
                         this.finish_quit_if_idle(cx);
                         cx.notify();
                     })
@@ -6567,7 +6596,158 @@ fn close_application(cx: &mut App) {
     cx.quit();
 }
 
+/// A file-opening process has no tray/hotkey owner and never forwards only Show.
+/// All file I/O and decode still go through the existing editor worker.
+pub fn run_open_image(path: PathBuf) {
+    run_image_window(Some(path), false);
+}
+
+fn run_image_window(path: Option<PathBuf>, native_services: bool) {
+    let platform = gpui_platform::current_platform(false);
+    let fonts = caption::CaptionFonts(platform.text_system());
+    let app = gpui::Application::with_platform(platform).with_assets(assets::AppAssets);
+    #[cfg(target_os = "macos")]
+    let receiver = std::rc::Rc::new(std::cell::RefCell::new(
+        None::<(gpui::Entity<CaptureWorkspace>, gpui::AsyncApp)>,
+    ));
+    #[cfg(target_os = "macos")]
+    let early_open = std::rc::Rc::new(std::cell::RefCell::new(None::<PathBuf>));
+    #[cfg(target_os = "macos")]
+    {
+        let receiver = receiver.clone();
+        let early_open = early_open.clone();
+        app.on_open_urls(move |urls| {
+            let [url] = urls.as_slice() else {
+                return;
+            };
+            let Ok(path) = file_open_url(url) else {
+                return;
+            };
+            let Some((owner, cx)) = receiver.borrow().clone() else {
+                if early_open.borrow().is_none() {
+                    *early_open.borrow_mut() = Some(path);
+                }
+                return;
+            };
+            cx.spawn(async move |cx| {
+                owner.update(cx, |this, cx| this.queue_open_image(path, cx));
+            })
+            .detach();
+        });
+    }
+    app.run(move |cx: &mut App| {
+        cx.set_global(fonts);
+        redaction_editor::bind_keys(cx);
+        cx.on_action(|_: &Quit, cx| cx.defer(close_application));
+        cx.bind_keys([
+            KeyBinding::new("escape", CloseOverlay, None),
+            KeyBinding::new("ctrl-shift-o", OpenProbeOverlays, Some("CaptureWorkspace")),
+            KeyBinding::new(
+                "ctrl-shift-f",
+                OpenFullscreenOverlays,
+                Some("CaptureWorkspace"),
+            ),
+            KeyBinding::new("ctrl-shift-c", CapturePrimary, Some("CaptureWorkspace")),
+            KeyBinding::new(
+                if cfg!(target_os = "macos") {
+                    "cmd-q"
+                } else {
+                    "ctrl-q"
+                },
+                Quit,
+                None,
+            ),
+        ]);
+        let bounds = Bounds::centered(None, size(px(1060.), px(760.)), cx);
+        let handle = cx
+            .open_kit_window(
+                WindowOptions {
+                    window_bounds: Some(WindowBounds::Windowed(bounds)),
+                    window_min_size: Some(size(px(680.), px(480.))),
+                    ..app_window_options("screenshots")
+                },
+                |window, cx| {
+                    let owner = cx.new(|cx| {
+                        CaptureWorkspace::with_native_services(
+                            Some(window.window_handle()),
+                            native_services,
+                            cx,
+                        )
+                    });
+                    window.on_window_should_close(cx, |_, cx| {
+                        cx.defer(close_application);
+                        false
+                    });
+                    window.focus(&owner.read(cx).focus_handle.clone(), cx);
+                    owner
+                },
+            )
+            .expect("Could not open image window");
+        handle
+            .update(cx, |this, _, cx| {
+                if let Some(path) = path {
+                    this.queue_open_image(path, cx);
+                }
+            })
+            .ok();
+        #[cfg(target_os = "macos")]
+        handle
+            .update(cx, |_, _, cx| {
+                *receiver.borrow_mut() = Some((cx.entity(), cx.to_async()));
+                if let Some(path) = early_open.borrow_mut().take() {
+                    cx.defer(move |this, cx| this.queue_open_image(path, cx));
+                }
+            })
+            .ok();
+        cx.activate(true);
+    });
+}
+
+#[cfg(any(test, target_os = "macos"))]
+fn file_open_url(url: &str) -> anyhow::Result<PathBuf> {
+    anyhow::ensure!(url.len() <= 12288, "File URL exceeds its limit");
+    let value = url
+        .strip_prefix("file://localhost/")
+        .map(|v| format!("/{v}"))
+        .or_else(|| url.strip_prefix("file:///").map(|v| format!("/{v}")))
+        .ok_or_else(|| anyhow::anyhow!("Only local file URLs can open images"))?;
+    anyhow::ensure!(
+        !value.contains(['?', '#']),
+        "File URLs cannot contain query or fragment components"
+    );
+    let mut output = Vec::with_capacity(value.len());
+    let mut bytes = value.bytes();
+    while let Some(byte) = bytes.next() {
+        let byte = if byte == b'%' {
+            let high = bytes.next().and_then(|b| (b as char).to_digit(16));
+            let low = bytes.next().and_then(|b| (b as char).to_digit(16));
+            let (high, low) = high
+                .zip(low)
+                .ok_or_else(|| anyhow::anyhow!("Invalid file URL encoding"))?;
+            (high * 16 + low) as u8
+        } else {
+            byte
+        };
+        anyhow::ensure!(byte != 0 && output.len() < 4096, "Invalid file URL path");
+        output.push(byte);
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::OsStringExt;
+        Ok(PathBuf::from(std::ffi::OsString::from_vec(output)))
+    }
+    #[cfg(not(unix))]
+    {
+        Ok(PathBuf::from(String::from_utf8(output)?))
+    }
+}
+
 pub fn run() {
+    #[cfg(target_os = "macos")]
+    {
+        run_image_window(None, true);
+        return;
+    }
     if let Some(mode) =
         std::env::args().find_map(|arg| arg.strip_prefix("--resource-probe=").map(str::to_owned))
     {

@@ -6,6 +6,7 @@ use std::{ffi::OsString, path::Path, sync::Arc};
 const HELP: &str = "screenshots — native capture and image tools
 
 Desktop: screenshots [--show]
+Open image: screenshots --open FILE
 Headless commands (no desktop UI, clipboard writes or implicit uploads):
   screenshots --help | --version
   screenshots autostart status|enable|disable
@@ -92,6 +93,13 @@ pub fn run(args: Vec<OsString>) -> Result<bool> {
         return Ok(false);
     };
     match command {
+        "--open" => {
+            ensure!(
+                args.len() == 2 && !args[1].is_empty() && args[1].as_encoded_bytes().len() <= 4096,
+                "Usage: screenshots --open FILE (path at most 4096 bytes)"
+            );
+            return Ok(false);
+        }
         "--show" | "--resource-probe" => return Ok(false),
         value if value.starts_with("--resource-probe=") || value.starts_with("--exit-after=") => {
             return Ok(false);

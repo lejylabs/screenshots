@@ -14,6 +14,79 @@ fn shortcut(key: &str) -> String {
 }
 
 #[gpui::test]
+fn open_with_waits_for_settings_and_uses_the_existing_image_worker(cx: &mut TestAppContext) {
+    let handle = open_workspace(cx);
+    let path = std::env::temp_dir().join(format!(
+        "screenshots-open-with-{}.png",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let pixels = image::RgbaImage::from_pixel(3, 2, image::Rgba([7, 22, 37, 128]));
+    pixels.save(&path).unwrap();
+    let before = std::fs::read(&path).unwrap();
+    handle
+        .update(cx, |this, _, cx| {
+            this.output_directory = path.parent().map(PathBuf::from);
+            this.settings_loading = true;
+            this.queue_open_image(path.clone(), cx);
+            assert_eq!(this.pending_open_image.as_ref(), Some(&path));
+            assert!(!this.capturing);
+            this.settings_loading = false;
+            this.saving = true;
+            this.finish_quit_if_idle(cx);
+            assert!(this.pending_open_image.is_some());
+            this.saving = false;
+            this.finish_quit_if_idle(cx);
+            assert!(this.pending_open_image.is_none());
+            assert!(this.capturing);
+        })
+        .unwrap();
+    cx.run_until_parked();
+    handle
+        .update(cx, |this, _, cx| {
+            assert!(this.editor.is_some());
+            assert!(!this.capturing);
+            assert!(this.last_saved.is_none());
+            assert!(this.last_capture.is_none());
+            let editor = this.editor.take().unwrap();
+            editor
+                .update(cx, |editor, window, _| {
+                    editor.release_images(window);
+                    window.remove_window();
+                })
+                .unwrap();
+        })
+        .unwrap();
+    cx.run_until_parked();
+    assert_eq!(std::fs::read(&path).unwrap(), before);
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn file_open_urls_are_local_bounded_and_decode_paths_only() {
+    assert_eq!(
+        file_open_url("file:///tmp/a%20b%23c%3Fd.png").unwrap(),
+        PathBuf::from("/tmp/a b#c?d.png")
+    );
+    assert_eq!(
+        file_open_url("file://localhost/tmp/a.png").unwrap(),
+        PathBuf::from("/tmp/a.png")
+    );
+    for value in [
+        "https://example.invalid/a.png",
+        "file://remote/tmp/a.png",
+        "file:///tmp/a?token=1",
+        "file:///tmp/a#part",
+        "file:///tmp/%",
+        "file:///tmp/%00.png",
+    ] {
+        assert!(file_open_url(value).is_err());
+    }
+}
+
+#[gpui::test]
 fn transparent_overlays_keep_their_alpha_surface_across_theme_changes(cx: &mut TestAppContext) {
     struct OverlayContent;
     impl Render for OverlayContent {

@@ -52,5 +52,12 @@ fn main() {
         )
         .init();
 
-    app_ui::run();
+    let mut args = std::env::args_os().skip(1);
+    if args.next().is_some_and(|arg| arg == "--open") {
+        app_ui::run_open_image(
+            std::path::absolute(args.next().unwrap()).expect("Could not resolve image path"),
+        );
+    } else {
+        app_ui::run();
+    }
 }
