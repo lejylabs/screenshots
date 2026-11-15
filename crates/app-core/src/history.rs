@@ -287,7 +287,7 @@ const SEARCH_PAGE_SQL: &str = "SELECT c.id,c.file_path,c.width,c.height,c.create
     WHERE captures_search MATCH ?1 AND captures_search.rowid < ?2
     AND (?3 IS NULL OR c.source=?3) ORDER BY captures_search.rowid DESC LIMIT 21";
 
-fn search_expression(query: &str) -> Result<String> {
+pub(crate) fn search_expression(query: &str) -> Result<String> {
     ensure!(query.len() <= 512, "Search is limited to 512 UTF-8 bytes");
     let words: Vec<_> = query
         .split(|ch: char| !ch.is_alphanumeric())

@@ -30,6 +30,8 @@ mod blur;
 mod text;
 pub use text::TextAnnotation;
 mod history;
+mod history_query;
+pub use history_query::{HistoryPage, HistoryQuery, HistorySort, query_capture_history, query_upload_history};
 mod storage;
 pub use storage::{
     HistoryHealth, PartInspection, backup_history_database, check_history_database,
