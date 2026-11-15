@@ -33,6 +33,8 @@ Headless commands (no desktop UI, clipboard writes or implicit uploads):
   screenshots qr scan INPUT
   screenshots ocr INPUT [--language LANG]
   screenshots workflow RECIPE INPUT OUTPUT
+  screenshots record x11|test OUTPUT.mkv --seconds N --fps N --width N --height N
+      [--x X --y Y]
 
 Image input: PNG/JPEG/WebP, <=32 MiB encoded and <=256 MiB decoded.
 Output: PNG/JPEG/lossless WebP; existing files are never replaced.
@@ -83,6 +85,7 @@ pub fn run(args: Vec<OsString>) -> Result<bool> {
         "qr" => crate::qr::run(&args[1..])?,
         "ocr" => crate::ocr::run(&args[1..])?,
         "workflow" => crate::workflow::run(&args[1..])?,
+        "record" => crate::record::run(&args[1..])?,
         "upload-images" => crate::upload_batch::run(&args[1..])?,
         "upload" => {
             ensure!(

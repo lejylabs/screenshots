@@ -32,3 +32,4 @@ quircs = "=0.10.3"
 
 [target.'cfg(unix)'.dependencies]
 signal-hook = "=0.3.18"
+libc = "0.2.191"

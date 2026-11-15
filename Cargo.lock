@@ -7503,6 +7503,7 @@ dependencies = [
  "arboard",
  "global-hotkey",
  "image",
+ "libc",
  "qrcode",
  "quircs",
  "rfd",

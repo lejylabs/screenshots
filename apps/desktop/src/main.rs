@@ -3,6 +3,7 @@ mod cli;
 mod image_tools;
 mod ocr;
 mod qr;
+mod record;
 mod upload_batch;
 mod workflow;
 
