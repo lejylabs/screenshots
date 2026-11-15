@@ -1361,3 +1361,30 @@ compilation and workspace Clippy passed before final regression; fresh final
 whole-workspace and release builds are still running. A test-only BTreeMap
 inference error from the additional wire assertions was fixed and the six-test
 suite rerun successfully.
+
+The S3 CLI's versioned credential packing test and two executable validation/
+target tests passed. An isolated Windows-target credential test under Wine
+passed raw odd-length/binary roundtrip, the exact 2560-byte limit, rejected
+2561 bytes without replacing the previous value, and idempotent deletion. Its
+unique target was removed; this is emulated evidence, not native Windows
+acceptance. The independent Linux TLS test covers actual CLI store/upload/remove.
+
+Final S3-tree workspace verification passed 429 regular optimized tests, with
+51 opt-in tests excluded and all doctests passing. The release built in 2m29s,
+passed the independent TLS/credential lifecycle script, and its archive passed
+checksum/extraction/help/version smoke. Archive SHA256
+`120b2d5f3c612e9b748495c795220c0269d57d6e64b72ca92d43f65baaba7e78`;
+binary SHA256
+`e955c9e668fa4248c9a99d6f4eb3f79769b136b08d5b1f96b3954a9a51d3d34f`.
+All 49 Markdown files had valid local links. Branch CI was still running when
+last queried; no cloud-account or native macOS/Windows acceptance is claimed.
+
+### BMP conversion output (in progress, 2026-11-15)
+
+Add explicit BMP output only to `image convert`, preserving the editor's
+selectable format enum and all existing defaults. The installed image encoder
+streams exact finalized RGBA through the existing atomic writer with a 64 KiB
+buffer. Validate exact backing and the 256 MiB pixel limit; reject quality flags
+for BMP. Independent pixel/alpha checks and the planned limits are recorded in
+[BMP export](bmp-export.md). TIFF alpha metadata and GIF quantization require
+separate work rather than silent format expansion.

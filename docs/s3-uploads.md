@@ -2,7 +2,7 @@
 
 Author: NewtTheWolf
 Date: 2026-11-15
-Status: implemented; final regression/release verification in progress, not provider acceptance.
+Status: implemented with local signing/transport verification, not provider acceptance.
 
 ## Commands and profile
 
@@ -99,6 +99,11 @@ passed; Windows Credential Manager and macOS Keychain runtime acceptance remain
 open for the new raw payload. The reused native source module is compiled into
 each credential namespace; this adds code only, no duplicate persistent store
 connection or resident service.
+
+An isolated Windows-target test under Wine also passed binary/odd-length secret
+roundtrip, exact 2560-byte admission, rejection at 2561 bytes while preserving
+the stored value, and idempotent removal of its unique test target. Wine is not
+native Windows runtime acceptance.
 
 References: [AWS signing and vectors](https://docs.aws.amazon.com/AmazonS3/latest/developerguide/sig-v4-header-based-auth.html),
 [AWS conditional writes](https://docs.aws.amazon.com/AmazonS3/latest/userguide/conditional-writes.html),
