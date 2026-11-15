@@ -18,6 +18,10 @@ The vendored GPUI Base and GPUI Component 0.9.1 crates retain their Apache-2.0
 licenses. Their `instant` to `web-time` dependency migration is documented in
 each crate's `LOCAL-PATCH.md`.
 
+The vendored rav1e 0.8.1 keeps its upstream BSD license and PATENTS file. Its
+compile-time token-pasting dependency alias is documented in
+`vendor/rav1e/LOCAL-PATCH.md`; encoder/assembly sources are unchanged.
+
 The vendored GLib macros 0.18.5 and GTK3 macros 0.18.2 retain their MIT licenses
 and copyright notices. Their compile-time diagnostic-helper migration is
 documented in their respective `LOCAL-PATCH.md` files.

@@ -231,3 +231,10 @@ changes are namespace substitutions, exact helper3.1.1 configuration matches Syn
 and stable abort/panic propagation and cleanup semantics match the original.
 Nightly auto-detection is deliberately not claimed. Positive and six negative
 compile fixtures were executed separately by the implementer.
+
+
+Pastey follow-up review found no actionable issue: the two aliases leave codec,
+CPU dispatch and assembly sources unchanged, and consumers use supported simple
+concatenation without the replacement's differing case-transform forms. The
+existing MSRV remains satisfied. Independent before/after AVIF, color-macro and
+NASM fixtures passed; no ARM/native UI coverage is inferred.

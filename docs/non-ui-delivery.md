@@ -907,3 +907,26 @@ closure and template forms failed with their expected primary-span diagnostics,
 without macro panics. Source review confirmed stable abort/cleanup semantics.
 The older helper and Syn 1 are absent from the graph, reducing unmaintained deny
 errors from seven to six. Application-wide compilation remains a separate gate.
+
+### Token-pasting helper cleanup
+
+Replace the abandoned `paste` macro dependency with maintained `pastey` 0.2.3
+under the existing dependency key in GPUI Component and an exact vendored rav1e
+0.8.1. Preserve all source, SIMD/codec/default features and generated symbols;
+do not remove AVIF from the graph to hide the advisory. Keep rav1e license and
+patent notices. Verify component macro output, real AVIF encoding and separately
+enabled x86 assembly compilation. This is a build-time alias only; no new runtime,
+resource loop or codec behavior is requested. Confirm graph/advisory removal.
+
+
+The complete macro-helper integration passed 354 regular tests with 49 opt-in
+cases excluded, all doctests passed, plus Clippy and Windows GNU all-target check.
+
+Pastey verification: real AVIF baseline, patched scalar and patched NASM builds
+produced identical 306-byte files (SHA256
+`3e99925ee848e6fe8c89a6e5dcc7903d315365b61953c8a86ca379d80d3c90a0`).
+Independent ffprobe/ffmpeg checks confirmed AV1 16x12 and identical decoded RGB.
+Actual component color macros passed generated-name/value/fallback checks. Source
+and feature comparison found no encoder/assembly changes. `paste` is absent
+from the all-target graph; five unmaintained-package errors remain. ARM/native
+UI acceptance and full combined post-alias testing are separate gates.
