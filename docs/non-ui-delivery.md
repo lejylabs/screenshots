@@ -1127,3 +1127,13 @@ tests with 49 opt-in cases excluded, all doctests passed. Clippy and full Window
 GNU source/test checking passed; source review has no unresolved blocker after
 ACL validation and deadline wording were fixed. Five Wine fixtures remain
 emulated evidence, not a completed Windows FFmpeg/gdigrab pipeline acceptance.
+
+Final recording-slice Linux release rebuilt successfully in 2m 00s. Actual
+release synthetic FFmpeg recording passed both 17x13 Matroska and GIF with two
+verified frames and unchanged user state. The 87 MiB archive passed checksum,
+extraction, help and version smoke tests. Archive SHA256:
+`685979a9154f210a7bbe0eea512cbe496866cf86fcec7388f3bf19512cf3ae06`;
+binary SHA256:
+`c5a5b7e5a681abff7a33855fed957fd3063f3d5b6aeb37ab8a688d8c7ff8b3e3`.
+This Linux artifact does not establish Windows engine or native gdigrab behavior.
+The complete backlog and native CI remain open; no shutdown is authorized.
