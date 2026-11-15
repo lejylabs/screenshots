@@ -127,3 +127,35 @@ History-reference-management same-context review found no new implementation
 defect. Wording was narrowed to the actual optimistic path/date identity check;
 import/create and remove/relink/no-create semantics are documented. Six CLI
 fixtures and eight core history regressions passed without modifying images.
+
+## User-checklist follow-up review
+
+`checklist_reconcile` completed a fresh read-only comparison from main 523bc3c
+to feature 500ee38. It found stale “missing” statements for CLI subsets and a
+one-JSON-output rule conflicting with upload-batch NDJSON. The historical scope
+heading and central contract are corrected; gap-analysis now has a dated
+reconciliation without marking whole UI/native families complete.
+
+`export_hash_review` independently reviewed the new hash and sanitized export.
+Its cooperative-deadline, special-file-open and resource/format-disclosure
+findings were fixed: both export paths reject nonregular files, the stripped
+path retains a 60-second per-file check, and docs describe RGBA8/still conversion,
+transient decode memory and partial-report semantics. No remaining Blocker/Major
+was reported after source reinspection; tests were run by the root, not by the
+reviewer. `checklist_delivery_review` is a separate fresh final review.
+
+The latest independent checklist delivery review found no implementation defect.
+Its documentation findings (original-copy byte/signature limits, filesystem
+publication requirements and query lookahead) are now explicit. Both reviewers
+ran read-only; the root's full 318-test run and export/hash/audit fixtures provide
+the separate execution evidence.
+
+Canceled native CI logs show compilation/linking, not a demonstrated runtime
+hang. Test binaries now use the existing optimized release-fast profile to avoid
+per-test thin-LTO cost; shipped artifacts still use release with thin LTO.
+
+`png_inventory_review` independently inspected the bounded PNG inventory parser
+and found no functional blocker. Its documentation findings were addressed with
+exact palette/APNG/bit-depth acceptance and one-input/JSON/exit-status semantics.
+Five subprocess tests and two unit tests passed; no image pixels or metadata
+values are printed by the command.

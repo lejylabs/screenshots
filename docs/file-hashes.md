@@ -54,3 +54,8 @@ deadline check. These bounds are implementation limits; optimized resource
 measurements and platform results must be recorded separately before making
 performance-acceptance claims. This utility does not complete the remaining
 ShareX utility backlog.
+
+A short optimized Linux development observation hashed a generated 64 MiB file
+with one warmup and five process invocations. Median process time was 32.52 ms.
+This includes startup and warm-cache reads; it is not a cold-disk throughput or
+reference-hardware acceptance result. The 64 KiB buffer does not grow with input.

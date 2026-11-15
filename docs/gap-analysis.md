@@ -1,5 +1,34 @@
 # Functional gap analysis: screenshots and ShareX
 
+## Current reconciliation: feature branch through 500ee38 (2026-11-15)
+
+The historical tables below are not the current delivery checklist. Relative to
+main 523bc3c, the feature branch adds the following **CLI/core subsets**:
+
+- Stitched desktop output on Windows at 100% scaling; native mixed-DPI and
+  cross-monitor interactive selection remain open.
+- Finite interval still-capture sequences; scheduled activation and UI controls
+  remain open.
+- Offline image recipes, combine/compare/split, file pixel sampling and image
+  info; editor tool integration, native screen color picker and full metadata
+  inspection remain open.
+- Arbitrary file and image-batch uploads; provider/OAuth integration, batch UI
+  and after-capture/upload chains remain open.
+- Read-only date/text/history-link queries and explicit import/relink/remove
+  metadata commands; corresponding Library UI and physical-file management
+  remain open.
+- Optional Unix X11/FFmpeg video and GIF recording; audio, native Windows/macOS/
+  Wayland recording and interactive controls remain open.
+- Exact assembly of supplied overlapping screenshots; live scrolling control,
+  fixed-header handling and fuzzy matching remain open.
+
+Portable packaging, image import/conversion/upscaling, file OCR/QR, native secret
+store adapters and storage backup already existed at 523bc3c. Implementation
+does not imply native acceptance. The latest CI result must be read separately
+from local synthetic tests. See [the delivery record](non-ui-delivery.md).
+
+## Historical inventory
+
 Current non-UI follow-up: [delivery plan and test status](non-ui-delivery.md).
 Headless image composition/upscaling, QR generation/scanning, Unix Tesseract file
 OCR, explicit maintenance/backup and Linux/macOS credential adapters are being

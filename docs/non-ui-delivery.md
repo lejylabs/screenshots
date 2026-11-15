@@ -141,7 +141,8 @@ CLI grammar is documented by `screenshots --help`. Dispatch returns
 Result<bool>: true for a completed headless action, false only for existing
 desktop --show/resource-probe/exit-after launch arguments or no arguments.
 Unknown commands exit 1 before GPUI; help/version exit 0. Headless actions print
-one JSON value to stdout (help/version use plain text); errors go to stderr and
+one JSON value to stdout (help/version use plain text), except `upload-images`
+which flushes NDJSON progress/results and a final summary. Errors go to stderr and
 exit 1. Paths use native OsString and resolve relative to the invoking directory.
 Upload paths are made absolute before calling the existing uploader. No CLI
 command records history or copies clipboard data implicitly. `history DATABASE`
@@ -247,7 +248,7 @@ fresh review findings and every still-open work package here before shutdown.
   FlushFileBuffers needs write access; the verified staging file is now reopened
   read/write without creation or truncation, closed before publication.
 
-### Scope still open
+### Scope still open after the first tranche (historical snapshot)
 
 The full requested backlog is not complete. UI design/interaction work is left
 to the user. Recording/audio/GIF, scrolling capture, pinning, reusable workflows/
@@ -589,3 +590,75 @@ Final local full-workspace verification after metadata management passed 300
 regular tests with 47 opt-in checks excluded, including all doctest phases.
 The latest native CI run is still pending/running separately; no platform
 acceptance is inferred from these Linux results. The workstation stays on.
+
+## Reconciled checklist follow-up
+
+The supplied checklist targets `main @ 523bc3c`. Current feature work already
+adds CLI-only file/batch uploads, image utilities, exact scroll-image assembly,
+history filters/reference management, bounded recipes and optional Unix video/GIF.
+These do not complete their corresponding editor/native workflows. Preserve
+that distinction rather than checking off whole feature families.
+
+Next concrete changes: create `apps/desktop/src/hash_file.rs`,
+`apps/desktop/tests/hash_file.rs` and `docs/file-hashes.md` for bounded SHA256
+hash/check, and add explicit sanitized PNG history export through the existing
+core exporter plus `history-manage export DATABASE DIRECTORY POLICY ID...`.
+`POLICY` is `original` or `strip-metadata`; no implicit change to GUI/export
+defaults. Stripped export re-encodes pixels only, preserving source files and
+history. At most20 IDs, one decoded image at a time, existing atomic no-overwrite
+publication and partial-failure reporting. No new idle activity.
+
+### Checklist reconciliation (2026-11-15, next tranche)
+
+The user supplied a main-523bc3c checklist. A fresh EGM codebase reviewer compared
+that baseline to 500ee38 and identified CLI-only progress separately from UI and
+native acceptance. The current gap-analysis introduction now supersedes old
+historical table claims. The central output contract explicitly exempts the
+NDJSON upload batch from the one-JSON-result rule.
+
+New concrete work adds explicit hash checking, missing-reference inspection and
+metadata-policy exports. Hash and history-audit commands do not mutate user
+files or application state; metadata-stripped export is opt-in and does not
+change GUI defaults. The shared loader and byte-copy exporter now reject
+nonregular inputs, including FIFO paths, before blocking reads; Unix nonblocking
+open closes the special-file replacement window. These changes are being
+verified separately from the earlier 300-test baseline.
+
+### Latest checklist tranche verification
+
+- Optimized full workspace: 318 passed, 47 opt-in checks ignored, all doctests
+  passed. Hash executable fixtures: 7; missing-reference audit: 5; history manage
+  fixtures: 7. Core export tests pass for source preservation, metadata stripping,
+  no overwrite and cancellation before publication. Clippy passed with existing
+  warnings; formatting and whitespace checks passed.
+- Synthetic 4K export comparison: original-byte export median 2.10 ms/RSS 14.63 MiB;
+  stripped-pixel export median 13.30 ms/RSS 47.20 MiB. This is extra decoding work,
+  not a hardware acceptance claim.
+- Actual previous CI logs show test-binary compilation was still running when
+  the run was superseded; no test execution had begun. Do not call this a runtime
+  deadlock. Native application builds passed on Windows/macOS/Linux in that run,
+  but tests/package gates were canceled. Deterministic CI tests now use the
+  existing optimized release-fast profile; the packaged binary remains thin-LTO
+  release and is smoke-tested after extraction.
+
+### Bounded PNG metadata inventory
+
+Create `apps/desktop/src/png_metadata.rs`, its executable fixtures and
+`docs/png-metadata.md`, and route `image metadata INPUT` through the CLI. Inspect
+PNG structure/CRC and chunk types/lengths, never print ancillary payloads or
+decompress metadata. Input is one regular file at most 32 MiB with at most 4096
+chunks. Report dimensions/bit depth/color type and metadata/animation presence.
+This is PNG inventory, not a general EXIF/ICC editor or full decoder validation.
+Reuse the existing transitive CRC dependency and do no disk or clipboard writes.
+
+PNG inventory verification: five real-executable fixtures and two parser/input
+unit fixtures passed, as did workspace Clippy. A fresh EGM reviewer found no
+functional blocker; exact PNG/APNG acceptance rules and CLI output semantics
+were expanded in the documentation. Payload values are never emitted.
+
+Latest PNG-inventory full-workspace verification: 325 regular tests passed,
+47 opt-in tests excluded, all doctest phases passed. Clippy, formatting and
+whitespace checks passed. Five packaging tests passed; all 39 project Markdown
+files had valid local links. Release archive smoke and real release-binary
+hash/export/missing-reference checks passed with unchanged user state. Native
+CI remains a separate outstanding gate; no runtime acceptance is inferred.
