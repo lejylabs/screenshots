@@ -1621,3 +1621,30 @@ exported BGRA and padded/top-down BGR/BGRX while refusing malformed layouts.
 The independent FFmpeg/QR roundtrip script passed against the optimized binary,
 with no overwrite or source/state changes. The loader's direct smaller-budget
 fixture was added; final complete workspace and release checks are still running.
+
+The BMP-input release passed its standalone exact-pixel/QR roundtrip and package
+smoke. Archive SHA256
+`91f0da27301841ceae15d3134c1ac2d2001e0b0ef38c836fa4a6913abcd91d63`;
+binary SHA256
+`91e8c92c067f6d882e4be9ce8115545c99851b807636ce4540a6f515fa86ebd0`.
+The overlapping whole-workspace run encountered newly wired strip calls before
+its cached core exposed that API; do not count it as a passed full run. The
+complete next-tree regression will verify both slices together.
+
+### Exact row/column strip removal (in progress, 2026-11-15)
+
+Add an offline full-axis strip removal operation to image utilities and recipes.
+Remove complete rows or columns and join retained pixels without resampling;
+validate nonzero, in-bounds ranges and output before allocation. Keep one output
+alongside the current source, then release the old image. Recipe coordinates
+refer to the current image, and prior opaque redaction cannot be undone by
+removal. No UI, new dependency, cache, worker or idle activity is added. See
+[strip removal](strip-removal.md) for syntax and pixel/format semantics. Clippy
+and Windows compilation passed; core/executable/complete-regression tests run
+against the finished tree next.
+
+All three core strip fixtures and all three actual-executable strip/recipe
+fixtures passed. A fresh-context EGM reviewer additionally inspected the slice;
+same-context reviews are still distinguished from this fresh review. No native
+screen/user image input was used. Final combined BMP/strip workspace and release
+verification continue below when complete.

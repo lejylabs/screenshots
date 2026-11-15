@@ -10,14 +10,18 @@ implicitly. The shared exporter creates missing output parent directories.
 
 `image convert INPUT OUTPUT.bmp` additionally supports explicit
 [RGBA BMP output](bmp-export.md), including its existing rotate/flip/downscale
-options. BMP remains output-only and is not added to editor/capture defaults or
-the other commands' format selection. JPEG/WebP quality flags are rejected for
-BMP output.
+options. BMP is not added to editor/capture output defaults or the other
+commands' output selection; supported BMP input is described above. JPEG/WebP
+quality flags are rejected for BMP output.
 
 `image convert` also accepts `.tif` and `.tiff` for explicit
 [uncompressed TIFF output](tiff-export.md), with a tagged straight-alpha fourth
 channel. This output-only option uses the same transforms/downscale and does
 not add TIFF input support or alter editor/capture format preferences.
+
+`image remove-strip INPUT OUTPUT horizontal|vertical START LENGTH` removes
+an entire band of rows or columns and joins the retained pixels exactly.
+See [strip removal](strip-removal.md) for coordinate and failure semantics.
 
 ```sh
 screenshots image compose input.png padded.webp --padding 24 --background 202020

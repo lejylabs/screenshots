@@ -37,6 +37,7 @@ nonblocking so a FIFO substituted between those checks cannot wait for a writer.
 | `crop` | `x`, `y`, `width`, `height` | Keep an in-bounds rectangle. |
 | `rotate` | `degrees` | Rotate clockwise by 90, 180 or 270 degrees. |
 | `flip` | `axis` | Mirror `horizontal` or `vertical`. |
+| `remove_strip` | `axis`, `start`, `length` | Remove complete rows (`horizontal`) or columns (`vertical`) and join the retained pixels without resampling. |
 | `resize` | `width`, `height` | Exact center-sampled nearest-neighbour resize; permits upscaling. |
 | `canvas` | `padding`, `background` | Add equal padding on all four sides and composite over the specified background. |
 | `redact` | `x`, `y`, `width`, `height` | Replace an in-bounds rectangle with opaque black pixels. |
@@ -70,7 +71,7 @@ layers or arbitrary editor effect ordering.
 Redaction does not infer what content is sensitive; its coordinates must cover
 the intended content in the image state at that step.
 
-Inputs are PNG, JPEG or WebP, detected from file contents, with the existing
+Inputs are PNG, JPEG, WebP or [supported truecolor BMP](bmp-input.md), detected from file contents, with the existing
 32 MiB encoded and 256 MiB decoded limits. Every output and intermediate image
 must have a nonzero size and fit 256 MiB as RGBA; dimension arithmetic and
 rectangles are checked before allocating their result. This byte limit also
@@ -112,7 +113,8 @@ filesystem stalls and full platform resource acceptance remain open; no timeout
 or hardware-performance acceptance is claimed here.
 
 The executable fixtures in `apps/desktop/tests/workflow.rs` cover ordered exact
-pixels for all eight operations, independent alpha-weighted blur/pixelation
+pixels for the original eight operations; `apps/desktop/tests/strip.rs` covers
+the ninth, `remove_strip`, including redaction ordering. Other fixtures include independent alpha-weighted blur/pixelation
 oracles across composed steps, opaque redaction followed by resizing and effects,
 alpha,
 invocation-relative paths, recipe and step boundaries, strict schema rejection,

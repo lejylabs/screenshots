@@ -49,6 +49,11 @@ enum Step {
     Flip {
         axis: Axis,
     },
+    RemoveStrip {
+        axis: Axis,
+        start: u32,
+        length: u32,
+    },
     Resize {
         width: u32,
         height: u32,
@@ -122,6 +127,12 @@ impl Step {
                 "Workflow rotation must be 90, 180 or 270"
             ),
             Self::Flip { .. } => {}
+            Self::RemoveStrip { start, length, .. } => {
+                ensure!(
+                    *length > 0 && start.checked_add(*length).is_some(),
+                    "Invalid workflow strip range"
+                );
+            }
             Self::Resize { width, height } => app_core::validate_image_size(*width, *height)?,
             Self::Canvas {
                 padding,
@@ -222,6 +233,16 @@ impl Step {
                 }
                 Ok(pixels)
             }
+            Self::RemoveStrip {
+                axis,
+                start,
+                length,
+            } => Ok(app_core::remove_image_strip(
+                &pixels,
+                matches!(axis, Axis::Vertical),
+                start,
+                length,
+            )?),
             Self::Resize { width, height } => {
                 crate::image_tools::resize_pixels(&pixels, width, height)
             }

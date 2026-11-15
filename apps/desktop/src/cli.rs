@@ -16,6 +16,7 @@ Headless commands (no desktop UI, clipboard writes or implicit uploads):
   screenshots image compose INPUT OUTPUT [--padding N] [--background RRGGBB|RRGGBBAA]
       [--watermark FILE --at X Y]
   screenshots image resize INPUT OUTPUT WIDTH HEIGHT
+  screenshots image remove-strip INPUT OUTPUT horizontal|vertical START LENGTH
   screenshots image combine horizontal|vertical OUTPUT INPUT INPUT [INPUT...]
   screenshots image compare FIRST SECOND OUTPUT.png
   screenshots image split INPUT DIRECTORY --columns N --rows N
@@ -98,9 +99,9 @@ pub fn run(args: Vec<OsString>) -> Result<bool> {
             println!("screenshots {}", app_core::version());
         }
         "image"
-            if args
-                .get(1)
-                .is_some_and(|arg| arg == "compose" || arg == "resize") =>
+            if args.get(1).is_some_and(|arg| {
+                arg == "compose" || arg == "resize" || arg == "remove-strip"
+            }) =>
         {
             crate::image_tools::run(&args[1..])?
         }

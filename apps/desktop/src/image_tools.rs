@@ -84,8 +84,32 @@ pub fn run(args: &[OsString]) -> Result<()> {
     match text(&args[0])? {
         "compose" => compose(args),
         "resize" => resize(args),
+        "remove-strip" => remove_strip(args),
         _ => bail!("Unknown image utility; use --help"),
     }
+}
+
+fn remove_strip(args: &[OsString]) -> Result<()> {
+    ensure!(
+        args.len() == 6,
+        "Usage: screenshots image remove-strip INPUT OUTPUT horizontal|vertical START LENGTH"
+    );
+    let vertical = match text(&args[3])? {
+        "vertical" => true,
+        "horizontal" => false,
+        _ => bail!("Strip axis must be horizontal or vertical"),
+    };
+    let start = number(&args[4])?;
+    let length = number(&args[5])?;
+    ensure!(
+        length > 0 && start.checked_add(length).is_some(),
+        "Invalid strip range"
+    );
+    let destination = destination(args)?;
+    let source = app_core::load_editor_image(Path::new(&args[1]))?;
+    let output = app_core::remove_image_strip(&source, vertical, start, length)?;
+    drop(source);
+    save(output, destination)
 }
 
 fn compose(args: &[OsString]) -> Result<()> {
