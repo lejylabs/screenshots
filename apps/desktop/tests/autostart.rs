@@ -275,7 +275,7 @@ mod linux {
     }
 }
 
-#[cfg(not(any(target_os = "linux", target_os = "windows")))]
+#[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
 #[test]
 fn other_platforms_report_explicitly_unsupported() {
     let root = std::env::temp_dir().join(format!("screenshots-autostart-{}", uuid::Uuid::new_v4()));
@@ -292,7 +292,7 @@ fn other_platforms_report_explicitly_unsupported() {
             .unwrap();
         assert!(!output.status.success());
         assert!(output.stdout.is_empty());
-        assert!(String::from_utf8_lossy(&output.stderr).contains("supported only on Linux"));
+        assert!(String::from_utf8_lossy(&output.stderr).contains("not supported on this platform"));
     }
     assert!(std::fs::read_dir(&root).unwrap().next().is_none());
     std::fs::remove_dir(root).unwrap();

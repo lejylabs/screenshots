@@ -1,4 +1,6 @@
 mod autostart;
+#[cfg(any(target_os = "macos", all(test, unix)))]
+mod autostart_macos;
 #[cfg(target_os = "windows")]
 mod autostart_windows;
 mod capture_sequence;
