@@ -822,3 +822,13 @@ and capture format changes: 348 regular tests, 48 opt-in cases excluded, all
 doctests passed. Clippy and Windows GNU application/tests check passed. Packaging
 logic passed five tests; project Markdown links remained valid. The pending
 release rebuild and native CI are separate from this source/test result.
+
+The final source-tranche Linux release rebuilt successfully in 2m 29s. Archive
+checksum/extraction/help/version checks passed, plus actual release-binary QR,
+PNG inventory, direct uppercase ShareX profile dispatch, and all three scheduled
+output-format rejection/revalidation paths with no native capture or user-state
+writes. Archive SHA256:
+`0c6648210b52367e82fba7e95256d85d7cd9a3cd4ea46d6683a48f2ba322b3d8`;
+binary SHA256:
+`5120f26aa81c64535aaa9ed01c219a2603c44db4ad58955a25b0b150094363fc`.
+Native CI remains a separate pending check.
