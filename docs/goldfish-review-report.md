@@ -262,3 +262,11 @@ PNG plus upload; one bounded encoded buffer now feeds atomic local publication
 and upload, with a no-overwrite regression. The native synthetic-X11 CLI chain
 passed crop/redact/save/local upload with exact saved/transferred bytes and
 independently decoded pixels. No user screen or remote provider was tested.
+
+
+Windows recording review identified that setting a DACL alone does not protect
+FAT/exFAT storage. The resolved path checks FILE_PERSISTENT_ACLS on the actual
+directory and verifies a protected exact current-user DACL before any pixels are
+written. Five Wine process/ACL/stream fixtures and Unix regression tests passed;
+real Windows FFmpeg/gdigrab remains unrun. A parent-enforced output cap discards
+overflow before writing, and Job Object shutdown precedes worker joins.

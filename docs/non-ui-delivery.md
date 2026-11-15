@@ -1099,3 +1099,31 @@ unchanged user state. Archive SHA256:
 binary SHA256:
 `7448569dc1e7725365b05013af8d15d9101c338ae225248fb5f665325a172fdb`.
 The broader list and native CI remain open; the workstation stays powered on.
+
+### Windows optional recorder
+
+Add a Windows recorder using the existing optional FFmpeg/ffprobe contract:
+gdigrab or synthetic test mode, FFV1/Matroska or GIF, existing finite limits.
+Reuse suspended Job Object setup, stream encoded stdout into a private staged
+file with a hard parent-side 256 MiB cap, drain bounded diagnostics, and share
+exact probe verification with Unix. Kill/close the job before pipe joins on all
+failures; no engine writes the final path. Publish only after complete verified
+output, without overwrite. Native gdigrab capture is a separate opt-in gate;
+Windows process/pipe tests may use synthetic engines, never user desktop data.
+No codecs are bundled, auto-installed or silently licensed differently.
+
+Windows recording implementation passed full Windows GNU application/test
+compilation, five isolated optimized Wine tests and eleven existing Unix
+recording regressions. The shared verifier has a new pure validity/rejection
+fixture; its implementation is unchanged. Review found a staging-ACL enforcement
+gap: creation now verifies persistent ACL support on the actual opened directory,
+a protected DACL and exact current-user-only ACE before engine startup; failure
+removes the empty directory. Wine passed that admission. A real Windows FFmpeg
+synthetic test is provided but not run; gdigrab/native filesystem and recording
+latency/resource acceptance remain open. No engine was installed or bundled.
+
+Post-Windows-recorder full optimized workspace verification passed 379 regular
+tests with 49 opt-in cases excluded, all doctests passed. Clippy and full Windows
+GNU source/test checking passed; source review has no unresolved blocker after
+ACL validation and deadline wording were fixed. Five Wine fixtures remain
+emulated evidence, not a completed Windows FFmpeg/gdigrab pipeline acceptance.

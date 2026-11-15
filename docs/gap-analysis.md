@@ -1,6 +1,6 @@
 # Functional gap analysis: screenshots and ShareX
 
-## Current reconciliation: feature branch through 835cce7 (2026-11-15)
+## Current reconciliation: feature branch through 6976ade (2026-11-15)
 
 The historical tables below are not the current delivery checklist. Relative to
 main 523bc3c, the feature branch adds the following **CLI/core subsets**:
@@ -23,8 +23,8 @@ main 523bc3c, the feature branch adds the following **CLI/core subsets**:
 - Read-only date/text/history-link queries and explicit import/relink/remove
   metadata commands, missing-file audit and opt-in metadata-stripped PNG exports;
   corresponding Library UI and physical-file management remain open.
-- Optional Unix X11/FFmpeg video and GIF recording; audio, native Windows/macOS/
-  Wayland recording and interactive controls remain open.
+- Optional Unix X11/FFmpeg and Windows gdigrab video/GIF implementations; audio,
+  native Windows runtime acceptance, macOS/Wayland recording and controls remain open.
 - Exact assembly of supplied overlapping screenshots; live scrolling control,
   fixed-header handling and fuzzy matching remain open.
 - Optional installed-Tesseract file OCR on Windows with Job Object cleanup;

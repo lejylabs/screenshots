@@ -29,7 +29,9 @@ Additional commands support strict [offline image recipes](docs/workflows.md),
 capture currently requires Windows and 100% scaling; capture sequences and upload
 batches are explicit bounded commands. None starts from merely opening the app. Optional [Unix recording](docs/recording.md) uses an explicitly installed
 FFmpeg/ffprobe pair for bounded FFV1/Matroska or GIF output; it is not bundled and does
-not imply Windows/macOS/Wayland recorder support.
+not imply macOS/Wayland recorder support. The separate
+[Windows recording path](docs/recording-windows.md) has bounded staging and process
+tests; native gdigrab/FFmpeg runtime acceptance remains open.
 
 Explicit user autostart controls are documented for [Linux](docs/autostart.md),
 [Windows](docs/autostart-windows.md) and [macOS](docs/autostart-macos.md).
