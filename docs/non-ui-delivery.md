@@ -1022,3 +1022,29 @@ Full optimized workspace verification after all three autostart entry points
 passed 363 regular tests, 49 opt-in cases excluded, all doctests passed. Clippy
 passed. Mac-specific file logic was exercised via test-only Unix compilation;
 actual macOS launchd/runtime acceptance remains open.
+
+### Capture-to-recipe task
+
+Add an explicit display capture task with optional saved image recipe before its
+single final output: `capture-task display ID OUTPUT [--recipe FILE]
+[--delay-ms MS] [--jpeg-quality N]`. Validate arguments, output and recipe before
+any sleep/native access. Delay is one operation-scoped sleep, 0..3600000 ms.
+Capture stays in memory through the existing bounded recipe and final encoder;
+never save the unedited source. No upload, history or clipboard side effect.
+Reuse parsed recipe execution rather than duplicate transformations. Synthetic
+capture injection checks ordering/final pixels, while executable negative cases
+prove invalid requests do not touch native capture. Real display checks remain
+explicit opt-in. This is an initial task/after-capture chain, not IPC or arbitrary
+hotkey binding.
+
+Capture-task implementation passed five synthetic execution/ownership tests,
+three executable rejection tests and all ten existing workflow integration tests.
+Recipe parsing is shared without changing workflow behavior. Review found no
+production defect; documentation now states the unconditional final-path recheck.
+Native display capture is excluded from these fixtures. Clippy passed; combined
+workspace verification is recorded after completion.
+
+Combined optimized verification after capture-task passed 371 regular tests,
+49 opt-in cases excluded, all doctests successful. Clippy passed and 44 project
+Markdown files had valid local links. Native display capture for the task,
+OS login activation and the remote CI remain separate open gates.
