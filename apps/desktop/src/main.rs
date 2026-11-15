@@ -18,6 +18,7 @@ mod image_info;
 mod image_tools;
 mod metadata_jpeg;
 mod metadata_webp;
+mod oauth_provider;
 mod ocr;
 #[cfg(target_os = "windows")]
 mod ocr_windows;

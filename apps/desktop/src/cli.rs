@@ -58,6 +58,7 @@ Headless commands (no desktop UI; outputs and uploads require explicit actions):
   screenshots s3-upload PROFILE FILE
   screenshots provider-upload PROFILE FILE
   screenshots provider-credentials target|store|remove PROFILE
+  screenshots oauth login|refresh|remove|target PROFILE [--allow-loopback-http]
   screenshots s3-credentials target|store|remove PROFILE
   screenshots credentials target|store|remove PROFILE_JSON [--username NAME]
   screenshots qr generate TEXT OUTPUT_PNG
@@ -183,6 +184,7 @@ pub fn run(args: Vec<OsString>) -> Result<bool> {
         "s3-upload" => crate::s3::upload(&args[1..])?,
         "provider-upload" => crate::sharing_provider::upload(&args[1..])?,
         "provider-credentials" => crate::sharing_provider::credentials(&args[1..])?,
+        "oauth" => crate::oauth_provider::run(&args[1..])?,
         #[cfg(any(unix, target_os = "windows"))]
         "provider-engine" => crate::sharing_provider_worker::run(&args[1..])?,
         "s3-credentials" => crate::s3::credentials(&args[1..])?,

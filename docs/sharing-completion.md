@@ -2,11 +2,11 @@
 
 Author: NewtTheWolf
 Date: 2026-11-15
-Status: implementation plan; the mechanisms below are not yet runtime evidence.
+Status: transport accepted; OAuth implementation under review; custom-uploader completion planned.
 
-Transport update: SFTP/FTPS/FTP and their credential mechanism are implemented
-with the focused evidence below. OAuth and the remaining custom-uploader
-execution sections are still a plan; they are not claimed complete here.
+Delivery update: SFTP/FTPS/FTP and OAuth PKCE/device authorization are implemented
+with the focused evidence below. The remaining custom-uploader execution
+section is a plan and is not claimed complete here.
 
 ## Scope and source inventory
 
@@ -183,7 +183,7 @@ local GET callbacks with exact Host/path, one code/state and constant-time
 state comparison. Reject duplicates, wrong state, malformed percent encoding,
 server error and oversized input without echoing query tokens. The browser
 response is fixed success/failure text, never the authorization code or tokens.
-The token POST has five-second connect/sixty-second operation limits, no proxy,
+The token POST has five-second connect/sixty-second request limits, no proxy,
 redirect or retry, a bounded 32 KiB body and strict bearer-token/expiry fields.
 Loopback HTTP endpoints are allowed only through an explicit test/development
 flag and only literal loopback addresses; normal accounts require HTTPS.
@@ -198,7 +198,7 @@ Storage partial failures are truthful and preserve successfully stored new
 credentials instead of automatically deleting an unrelated previous entry.
 Removal affects only the configured connection's exact entries.
 
-### Concrete OAuth implementation contract (next delivery)
+### Concrete OAuth implementation contract (implemented)
 
 Add `crates/app-core/src/oauth_provider.rs` and a small explicit desktop CLI
 adapter. No dependency or persistent runtime is needed: use existing reqwest,
@@ -209,12 +209,13 @@ browser launch, real consent, discovery, account access or background refresh.
 
 Strict version-1 regular profile (16 KiB, one opened frozen extent) fields:
 `flow:authorization_code|device_code`, `client_id`, `token_endpoint`,
-`authorization_endpoint` (code flow only) or `device_authorization_endpoint`
+optional exact callback `issuer`, `authorization_endpoint` (code flow only) or `device_authorization_endpoint`
 (device flow only), `scopes` (at most 32 printable OAuth scope tokens of 128
 bytes), `credential` (same 1–64 safe reference as the existing destination),
 `upload_destination` (an explicit existing bearer profile), and optional bounded
 `authorization_parameters`/`token_parameters` maps for provider audience/resource
-parameters. Reserved protocol parameters and client secrets are rejected.
+parameters (token extras encode to at most 4 KiB, reserving the rest for protocol
+values). Reserved protocol parameters and client secrets are rejected.
 Endpoints are canonical HTTPS, no userinfo/query/fragment; an explicit CLI
 `--allow-loopback-http` permits literal-loopback mock token/auth endpoints only.
 The upload destination itself always retains existing HTTPS credential policy.
@@ -224,7 +225,7 @@ embedded client secret is confidential.
 Preflight freezes the existing destination, requires Bearer authentication and
 matching credential reference, and derives its exact existing upload target.
 Refresh metadata lives under `Screenshots/provider/oauth/SHA256/REFERENCE`,
-where the hash binds the flow/endpoints, client ID, scopes, parameter maps and
+where the hash binds the flow/endpoints/issuer, client ID, scopes, parameter maps and
 upload target. Access tokens are stored through the existing private upload
 credential API from app-core; refresh metadata is a separate versioned,
 zeroizing native-store payload (at most 2560 bytes). Validate the complete new
@@ -234,12 +235,20 @@ an omitted old refresh token and persists rotations. Removal always attempts
 both exact entries and reports partial failure. No enumeration or plaintext
 secret/profile updates occur.
 
+The access entry retains the existing upload origin/credential-reference
+namespace. Profiles deliberately configured with that same origin/reference
+share the active bearer credential: refresh replaces it and removal clears it.
+Use distinct credential references for independent accounts or connections.
+Refresh-state entries remain bound to the full OAuth profile hash.
+
 Code flow binds only `127.0.0.1:0`, uses an exact origin/Host/path callback,
-64-character high-entropy verifier/state and S256. Callback headers/request
+96-character verifier/state (366 random bits from three OS-random UUIDs) and S256. Callback headers/request
 line are capped at 8 KiB, at most 16 callback connections, short per-connection
 I/O timeout and 180-second total login deadline. Reject duplicate/reserved
 parameters, malformed percent encoding, wrong state, OAuth error and invalid
-code without echoing them. Device flow uses RFC 8628: bounded device/user codes,
+code without echoing them. Configure `issuer` when the provider returns `iss`;
+missing, mismatched or unconfigured issuer values are refused. Bounded extension
+response parameters are ignored as required by OAuth. Device flow uses RFC 8628: bounded device/user codes,
 HTTPS verification URI, server interval (default 5 seconds), authorization-
 pending and slow-down (+5 seconds), and a total deadline no longer than 180
 seconds. Polling exists only during an explicitly invoked device login.
@@ -396,3 +405,63 @@ Current focused evidence: `target/provider-transport-review-unit.log`,
 and `target/verification/provider-pipe-harness/{build,wine}.log`.
 No full-workspace, frozen-release, real-account or reference-hardware gate is
 closed by these focused checks; the root coordinates those separately.
+
+## OAuth implementation and focused evidence
+
+`crates/app-core/src/oauth_provider.rs` implements the profile, PKCE callback,
+RFC 8628 device polling, token exchange, explicit refresh and native-store
+lifecycle. `apps/desktop/src/oauth_provider.rs` exposes explicit
+`oauth login|refresh|remove|target PROFILE [--allow-loopback-http]`. No automatic
+browser, token refresh, discovery, user account or background runtime is used.
+The Unix CLI retains cancellation through authorization-event output, callback
+wait, requests and native-store transitions. Errors never include token bodies,
+callback codes or provider diagnostics.
+
+Example public-client profile (the matching existing upload profile must already
+contain Bearer authentication and the same credential reference):
+
+```json
+{"version":1,"flow":"authorization_code","client_id":"registered-public-client-id",
+ "authorization_endpoint":"https://identity.example.invalid/authorize",
+ "token_endpoint":"https://identity.example.invalid/token",
+ "scopes":["upload","offline_access"],"credential":"images",
+ "upload_destination":"upload.json"}
+```
+
+Device profiles use `flow:device_code` and `device_authorization_endpoint`
+instead of `authorization_endpoint`. `oauth target` validates the complete
+profile/destination and prints only exact target names, without reading secrets.
+OAuth access tokens use existing upload credentials, so existing upload/Task
+commands consume them without a token argument or remembered plaintext update.
+Refresh preserves an omitted token and persists rotation before updating access;
+partial native-store failures retain recovery state and are reported explicitly.
+Removal attempts both scoped entries even if one removal fails.
+
+The final optimized focused run passed six pure contract/storage tests and two
+actual localhost HTTP protocol tests. They cover the RFC 7636 vector,
+96-character/366-bit randomness, HMAC verifier state comparison, exact callback
+Host/path/issuer/encoding, token/storage limits, refresh rotation/omission and
+injected partial storage/cancellation. The actual device test measures the
+pending → slow-down → token sequence (at least eight seconds with the fixture's
+one-second starting interval). Three actual CLI admission tests passed without
+any available Secret Service, confirming target/admission paths do not read
+native secrets or create persistent user state.
+
+`scripts/test-oauth-provider.py` passed both actual CLI login flows using private
+identity services, unique native Secret Service entries and an ephemeral CA/leaf.
+OAuth token/refresh POSTs and two subsequent bearer uploads used verified HTTPS.
+The fixture checked wrong-state refusal before a valid callback, PKCE verifier
+matching, device pending/slow-down, rotated then omitted refresh tokens, access
+credential consumption by the existing upload engine, and removal of both native
+entries. Failed refresh and upload after removal confirmed that both entries
+were gone. Source/profile bytes and isolated user-state paths were unchanged;
+all synthetic entries and servers were cleaned up.
+
+Evidence: `target/oauth-core-protocol.log`, `target/oauth-cli-admission.log`,
+`target/oauth-provider-e2e.log`, `target/verification/oauth-provider-e2e.json`.
+The actual E2E binary SHA256 was
+`7fa154053611f3aee9863d11821e75276423f86266143d945a13ccfce1f2db73`.
+This proves synthetic protocol/native-store execution, not real provider consent
+or signed macOS/Windows account acceptance. Request timers cover ordinary
+asynchronous HTTP; forcibly interrupting stalled native DNS/TLS or secret-store
+calls remains part of the repository's separate native-call deadline work.

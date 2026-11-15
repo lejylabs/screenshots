@@ -60,6 +60,8 @@ pub use blur::blur_preview_bgra;
 pub use webp_lossy::save_lossy_webp;
 mod selection;
 pub use pixelation::PixelationGrid;
+mod oauth_provider;
+pub use oauth_provider::{OAuthEvent, OAuthOutcome, OAuthProfile};
 mod provider_credentials;
 mod s3_credentials;
 pub use provider_credentials::{
