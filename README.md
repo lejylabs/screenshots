@@ -25,6 +25,8 @@ Additional commands support strict [offline image recipes](docs/workflows.md),
 [filtered read-only history](docs/history-queries.md),
 [finite interval/scheduled captures with PNG/JPEG/WebP](docs/capture-sequence.md),
 [in-memory capture/recipe/output tasks](docs/capture-task.md),
+[region OCR/QR](docs/region-analysis.md),
+[multiple crops from shared display snapshots](docs/capture-regions.md),
 [physical desktop composition](docs/desktop-composite.md) and
 [sequential image upload batches](docs/upload-batch.md). Stitched native desktop
 capture currently requires Windows and 100% scaling; capture sequences and upload
