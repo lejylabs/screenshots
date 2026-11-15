@@ -7,6 +7,7 @@ mod image_collection;
 mod image_info;
 mod image_tools;
 mod ocr;
+mod png_metadata;
 mod qr;
 mod record;
 mod scroll_stitch;

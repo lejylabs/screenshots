@@ -20,6 +20,7 @@ Headless commands (no desktop UI, clipboard writes or implicit uploads):
   screenshots image split INPUT DIRECTORY --columns N --rows N
   screenshots image info INPUT
   screenshots image pixel INPUT X Y
+  screenshots image metadata INPUT
   screenshots list displays|windows
   screenshots capture display|window ID OUTPUT
   screenshots capture region DISPLAY X Y WIDTH HEIGHT OUTPUT
@@ -98,6 +99,9 @@ pub fn run(args: Vec<OsString>) -> Result<bool> {
                 .is_some_and(|arg| arg == "info" || arg == "pixel") =>
         {
             crate::image_info::run(&args[1..])?
+        }
+        "image" if args.get(1).is_some_and(|arg| arg == "metadata") => {
+            crate::png_metadata::run(&args[2..])?
         }
         "image" => convert(&args[1..])?,
         "list" => list(&args[1..])?,

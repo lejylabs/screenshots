@@ -7502,6 +7502,7 @@ dependencies = [
  "app-core",
  "app-ui",
  "arboard",
+ "crc32fast",
  "global-hotkey",
  "image",
  "libc",
