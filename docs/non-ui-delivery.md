@@ -415,3 +415,72 @@ synthetic databases, with no image files or existing user history.
 - Source head CI is running at
   https://github.com/lejylabs/screenshots/actions/runs/43698698480 ; no native
   result is claimed until that run completes. The PC stays on.
+
+### Recording design decision (2026-11-15)
+
+Add an optional Unix file recorder using separately installed `ffmpeg` and
+`ffprobe`; do not bundle, download, auto-update or link their binaries/libraries.
+The selected on-disk format is Matroska with FFV1 lossless video, no audio,
+1–60 nominal frame-count seconds, 1–30 fps and at most 1920×1080 pixels. The X11 input is explicit
+and accepts a local display only; `test` input records only FFmpeg's generated
+test pattern for E2E validation. Wayland and Windows/macOS native screen capture
+remain separate work. This is a bounded recording slice, not complete recording
+or GIF/audio support.
+
+This is a local optional-tool integration decision, not a conclusion that a
+separate executable exempts distribution obligations. FFmpeg licensing depends
+on its build; the installed development binary is GPL-enabled. Product packages
+continue to contain no FFmpeg binaries, libraries or language/runtime downloads.
+Before distributing a combined FFmpeg bundle, inspect its exact configuration,
+corresponding source/license obligations and supported-platform identity. See
+https://ffmpeg.org/legal.html . Our source license is unchanged; selecting FFV1
+does not change the license of a user's installed FFmpeg build.
+
+Create `apps/desktop/src/record.rs`, `apps/desktop/tests/record.rs` and
+`docs/recording.md`; modify desktop main/CLI and add Unix libc as an existing
+transitive dependency for child-only resource limits. One encoder/probe process
+at a time, 256 MiB child file limit, private staging, bounded diagnostics and
+duration+10s overall deadline. Verify exact frame count, codec, dimensions and
+container before no-replace publication. No pixels/history/clipboard/network
+output beyond the explicitly requested recording. Native screen tests remain
+opt-in; actual synthetic FFmpeg recording E2E is run without desktop capture.
+
+Both subprocesses share one absolute deadline (requested seconds plus ten).
+X11 accepts only local `:digits[.digits]` DISPLAY names up to 64 bytes; `test`
+never reads DISPLAY and uses a fixed lavfi testsrc pattern with no shell or
+user-supplied filter expression. Output options force FFV1/Matroska, bounded
+threads and frame count, without audio, subtitles or network protocols. Stdout
+is null for the encoder; probe stdout is capped at 8 KiB, both stderr streams
+at 16 KiB and discarded. Dedicated Unix process groups are killed/reaped on
+timeout, interrupt, oversize or error before worker joins. Only after local
+ffprobe verifies the exact expected frames/codec/geometry is the file synced
+and published without replacement. Probe failure never publishes partial video.
+
+FFmpeg's `-max_alloc 67108864` is a per-allocation bound, not a total memory
+limit. The external engine's actual RSS and codec buffers must be measured
+separately; no total-process budget pass is inferred from that option. The
+requested frame is at most 8 MiB as RGBA and the encoder uses two threads, but
+codec/reference/OS buffers are additional. Do not enable a resident recorder.
+
+Recording implementation verification: eight optimized recording process tests
+passed, including installed FFmpeg/ffprobe synthetic output. They verify exact
+frames, dimensions, format/codec, failure/no-overwrite and cancellation cleanup.
+Clippy and formatting pass. Native X11 desktop recording and cross-platform
+recording remain unverified. Process-level synthetic memory observation is in
+recording.md; no total-memory or physical timing acceptance is claimed.
+
+The post-recording full optimized workspace run passed 265 regular tests with 46
+opt-in tests ignored; all doctests passed. The real synthetic recording test was
+then explicitly run as part of the recording-focused eight-test pass above.
+Clippy passed with the repository's existing warnings. Native CI source run is
+https://github.com/lejylabs/screenshots/actions/runs/43699260979 (running at this
+checkpoint); prior intermediate runs were superseded, not counted as passes.
+
+The updated thin-LTO release build passed (2m 14s). Its actual portable archive
+passed isolated help/version smoke plus real recipe/redaction/resize and real
+FFmpeg synthetic-video checks. User state and original image bytes were unchanged.
+Artifact: `target/continued-packages/screenshots-0.1.0-x86_64-unknown-linux-gnu.tar.gz`.
+Archive SHA256: `541d7425d2fbdbd6103a9386d0d94a664c1ce6b589ad3f1b9b8f14c6a1eb3ca0`.
+Binary SHA256: `0a3b2d1bdcb10327dc2a0ce7e8b75627ffd6351cf0146c6d7312f6c3e866ff96`.
+This local development artifact records dirty documentation provenance; it is
+not a signed production release. The PC remains on, as explicitly requested.

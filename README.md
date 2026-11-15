@@ -26,7 +26,9 @@ Additional commands support strict [offline image recipes](docs/workflows.md),
 [physical desktop composition](docs/desktop-composite.md) and
 [sequential image upload batches](docs/upload-batch.md). Stitched native desktop
 capture currently requires Windows and 100% scaling; capture sequences and upload
-batches are explicit bounded commands. None starts from merely opening the app.
+batches are explicit bounded commands. None starts from merely opening the app. Optional [Unix recording](docs/recording.md) uses an explicitly installed
+FFmpeg/ffprobe pair for bounded FFV1/Matroska output; it is not bundled and does
+not imply Windows/macOS/Wayland recorder support.
 
 Headless utilities do not imply corresponding editor UI or complete ShareX parity.
 

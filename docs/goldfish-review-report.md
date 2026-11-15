@@ -82,3 +82,12 @@ allocation limits, plus missing final-summary failure context and PUT target
 reuse. Documentation now states the exporter behavior/native limits and repeated
 PUT preconditions; final summary failure explicitly preserves the remote success
 count. This same-agent follow-up is not counted as a fresh convergence round.
+
+Recording design was reviewed by the existing readiness reviewer (same-context
+follow-up, not a fresh convergence claim). The main finding was that requested
+seconds were only a frame-count contract. Documentation now distinguishes
+nominal frames from wall-clock/timestamp duration. Verification uses average
+frame-rate metadata rather than Matroska's derived r_frame_rate, which can differ
+from requested FPS. Real synthetic recording found that mismatch before commit.
+Resource-limit tests also revealed child core dumps on SIGXFSZ; child RLIMIT_CORE
+is now zero, test dumps were removed, and the tests passed again without dumps.
