@@ -832,3 +832,25 @@ writes. Archive SHA256:
 binary SHA256:
 `5120f26aa81c64535aaa9ed01c219a2603c44db4ad58955a25b0b150094363fc`.
 Native CI remains a separate pending check.
+
+### Linux X11 window capability
+
+Next slice: replace unconditional Linux window-disable flags with X11 availability
+from a nonempty, valid DISPLAY value. Xcap's window enumeration/capture are X11
+operations; this supports X11 and XWayland clients, not native Wayland windows.
+Use existing worker/admission, PID/minimized checks and returned-pixel bounds.
+No eager server probe, environment mutation, persistent connection or polling.
+Add pure capability fixtures and a deliberately invoked native test that reads
+only an explicitly supplied 96x64 synthetic external Xlib window into RAM. Test
+self-PID, minimized and closed-window refusals using only that fixture's state.
+Never modify desktop-wide window lists or save the captured frame. Surface actual
+server/EWMH failures, and document that DISPLAY alone does not prove availability.
+
+Linux window implementation passed the 11-test capture group and its separate
+native XWayland fixture (0.08 s). The fixture verified exact 96x64 pixels, source
+ID, no disk output and rejection of self/minimized/closed states. Review found
+XCap's incorrect/overflow-prone monitor association; Linux now skips it entirely
+and returns unknown display metadata while retaining window_id. Enumeration's
+1,024-ID/current-pointer-X-screen limits are documented. Full optimized workspace
+verification passed 349 regular tests with 49 opt-in cases excluded; native
+fixture execution is separate. Other session/hardware gates remain open.

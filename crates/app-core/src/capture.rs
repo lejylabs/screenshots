@@ -452,6 +452,10 @@ impl XcapBackend {
         if window.is_minimized().map_err(backend_error)? {
             return Err(CaptureError::Unsupported("capturing a minimized window"));
         }
+        // XCap's Linux monitor association mixes coordinates and can overflow before admission.
+        #[cfg(target_os = "linux")]
+        let display = String::new();
+        #[cfg(not(target_os = "linux"))]
         let display = monitor_id(&window.current_monitor().map_err(backend_error)?)?;
         Ok(PreparedCapture::Window(
             window,
@@ -505,11 +509,15 @@ impl XcapBackend {
 
 impl CaptureBackend for XcapBackend {
     fn capabilities(&self) -> CaptureCapabilities {
+        #[cfg(target_os = "linux")]
+        let windows = linux_x11_windows_available(std::env::var_os("DISPLAY").as_deref());
+        #[cfg(not(target_os = "linux"))]
+        let windows = true;
         CaptureCapabilities {
             list_displays: true,
-            list_windows: cfg!(not(target_os = "linux")),
+            list_windows: windows,
             capture_display: true,
-            capture_window: cfg!(not(target_os = "linux")),
+            capture_window: windows,
             capture_region: true,
         }
     }
@@ -564,6 +572,14 @@ impl CaptureBackend for XcapBackend {
             .capture_batch(vec![CaptureRequest::Window(window_id.into())])?
             .remove(0))
     }
+}
+
+#[cfg(target_os = "linux")]
+fn linux_x11_windows_available(display: Option<&std::ffi::OsStr>) -> bool {
+    // XCap's window path is X11-only, including XWayland; it cannot list native Wayland clients.
+    display
+        .and_then(std::ffi::OsStr::to_str)
+        .is_some_and(|display| !display.trim().is_empty())
 }
 
 fn backend_error(error: impl std::fmt::Display) -> CaptureError {
@@ -1431,6 +1447,149 @@ mod tests {
         } else {
             assert!(matches!(result, Err(CaptureError::Unsupported(_))));
         }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_window_capabilities_require_a_nonempty_display() {
+        use std::{ffi::OsStr, os::unix::ffi::OsStrExt};
+        for display in [None, Some(""), Some(" \t\n")] {
+            assert!(!linux_x11_windows_available(display.map(OsStr::new)));
+        }
+        for display in [":0", ":1.0", "localhost:10.0"] {
+            assert!(linux_x11_windows_available(Some(OsStr::new(display))));
+        }
+        assert!(!linux_x11_windows_available(Some(OsStr::from_bytes(&[
+            0xff
+        ]))));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    #[ignore = "requires an X11/XWayland desktop, Python 3 and libX11; creates/captures only its own synthetic external window in RAM"]
+    fn captures_only_its_synthetic_x11_window() -> anyhow::Result<()> {
+        use std::{
+            io::{BufRead, BufReader},
+            process::{Child, Command, Stdio},
+            time::Duration,
+        };
+        struct Fixture(Child);
+        impl Drop for Fixture {
+            fn drop(&mut self) {
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+            }
+        }
+        // Only this client's window properties are written; root/other clients are untouched.
+        let script = r#"
+import ctypes as c, ctypes.util, os, sys
+x = c.CDLL(ctypes.util.find_library('X11'))
+def bind(name, result, *args):
+    fn = getattr(x, name); fn.restype = result; fn.argtypes = args; return fn
+ptr, ul, ui, integer = c.c_void_p, c.c_ulong, c.c_uint, c.c_int
+open_display = bind('XOpenDisplay', ptr, c.c_char_p)
+root_window = bind('XDefaultRootWindow', ul, ptr)
+create_window = bind('XCreateSimpleWindow', ul, ptr, ul, integer, integer, ui, ui, ui, ul, ul)
+atom = bind('XInternAtom', ul, ptr, c.c_char_p, integer)
+change = bind('XChangeProperty', integer, ptr, ul, ul, ul, integer, integer, ptr, integer)
+store_name = bind('XStoreName', integer, ptr, ul, c.c_char_p)
+map_window = bind('XMapWindow', integer, ptr, ul)
+clear_window = bind('XClearWindow', integer, ptr, ul)
+sync = bind('XSync', integer, ptr, integer)
+destroy = bind('XDestroyWindow', integer, ptr, ul)
+close = bind('XCloseDisplay', integer, ptr)
+d = open_display(None)
+if not d: raise RuntimeError('Synthetic fixture cannot connect to DISPLAY')
+w = create_window(d, root_window(d), 40, 40, 96, 64, 0, 0, 0x123456)
+def prop(name, kind, values):
+    data = (ul * len(values))(*values)
+    change(d, w, atom(d, name.encode(), 0), atom(d, kind.encode(), 0), 32, 0, data, len(values))
+store_name(d, w, b'Screenshots synthetic X11 fixture')
+prop('_NET_WM_PID', 'CARDINAL', [os.getpid()])
+prop('_NET_WM_USER_TIME', 'CARDINAL', [0])
+prop('_MOTIF_WM_HINTS', '_MOTIF_WM_HINTS', [2, 0, 0, 0, 0])
+prop('_NET_WM_STATE', 'ATOM', [])
+map_window(d, w); clear_window(d, w); sync(d, 0)
+print(w, flush=True)
+for line in sys.stdin:
+    command = line.strip().split()
+    if command[0] == 'pid': prop('_NET_WM_PID', 'CARDINAL', [int(command[1])])
+    elif command[0] == 'hidden': prop('_NET_WM_STATE', 'ATOM', [atom(d, b'_NET_WM_STATE_HIDDEN', 0)])
+    elif command[0] == 'normal': prop('_NET_WM_STATE', 'ATOM', [])
+    elif command[0] == 'close': destroy(d, w); w = 0
+    sync(d, 0); print('ready', flush=True)
+    if not w: break
+if w: destroy(d, w)
+close(d)
+"#;
+        let mut fixture = Fixture(
+            Command::new("python3")
+                .args(["-u", "-c", script])
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .spawn()?,
+        );
+        let mut input = fixture.0.stdin.take().unwrap();
+        let mut output = BufReader::new(fixture.0.stdout.take().unwrap());
+        let mut id = String::new();
+        output.read_line(&mut id)?;
+        let id = id.trim().to_owned();
+        assert!(
+            id.parse::<u32>().is_ok(),
+            "Fixture did not return a window ID"
+        );
+        let directory =
+            std::env::temp_dir().join(format!("screenshots-x11-fixture-{}", uuid::Uuid::new_v4()));
+        let backend = XcapBackend::new(&directory);
+        assert!(backend.capabilities().list_windows && backend.capabilities().capture_window);
+        let started = Instant::now();
+        loop {
+            if backend.list_windows()?.iter().any(|window| window.id == id) {
+                break;
+            }
+            anyhow::ensure!(
+                started.elapsed() < Duration::from_secs(3),
+                "Fixture was not listed"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let shot = backend.capture_window(&id)?;
+        assert_eq!(shot.window_id.as_deref(), Some(id.as_str()));
+        assert!(shot.display_id.is_empty() && shot.display_geometry.is_none());
+        assert_eq!((shot.width, shot.height), (96, 64));
+        assert!(
+            shot.pixels
+                .pixels()
+                .all(|pixel| pixel.0 == [0x12, 0x34, 0x56, 255])
+        );
+        assert!(!directory.exists() && !shot.png_path.exists());
+        drop(shot);
+        let mut send = |command: &str| -> anyhow::Result<()> {
+            writeln!(input, "{command}")?;
+            input.flush()?;
+            let mut response = String::new();
+            output.read_line(&mut response)?;
+            anyhow::ensure!(response.trim() == "ready", "Fixture command failed");
+            Ok(())
+        };
+        send(&format!("pid {}", std::process::id()))?;
+        assert!(matches!(
+            backend.capture_window(&id),
+            Err(CaptureError::Unsupported(
+                "capturing this application's own window"
+            ))
+        ));
+        send(&format!("pid {}", fixture.0.id()))?;
+        send("hidden")?;
+        assert!(matches!(
+            backend.capture_window(&id),
+            Err(CaptureError::Unsupported("capturing a minimized window"))
+        ));
+        send("normal")?;
+        send("close")?;
+        assert!(backend.capture_window(&id).is_err());
+        assert!(!directory.exists());
+        Ok(())
     }
 
     #[test]

@@ -54,7 +54,7 @@ Output: PNG/JPEG/lossless WebP; existing files are never replaced.
 Convert resize does not upscale; image resize permits nearest-neighbour upscaling.
 Convert width alone or height alone keeps the aspect ratio.
 Capture reads desktop pixels only when explicitly requested; it saves one image
-without history or clipboard output. Window capture is unavailable on Linux.
+without history or clipboard output. Linux window capture requires X11/XWayland.
 Upload is an explicit network action and prints the server-returned URL.
 Upload profiles use the documented ShareX subset for .sxcu (case-insensitive),
 or native destination JSON for any other extension; profiles are not saved.

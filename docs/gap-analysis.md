@@ -549,8 +549,10 @@ Evidence: [library implementation](../crates/app-core/src/history.rs),
 
 Our additional cross-platform gaps: non-Windows startup remains the windowed
 spike; resident integration/hotkeys/single-instance modules are Windows-only.
-Window listing/capture is disabled on Linux, including X11. Capabilities are
-currently largely static OS flags rather than session/permission discovery.
+Linux window listing/capture now supports X11/XWayland clients when DISPLAY is
+present; native Wayland windows remain unsupported. The synthetic fixture
+validation and limitations are recorded in [Linux window capture](linux-window-capture.md).
+Other capabilities remain largely static OS flags rather than session/permission discovery.
 A validated Wayland portal/selection fallback and signed macOS permission flow
 are not implemented/accepted. Native Linux UI tests do not validate Linux capture.
 English-only app UI is deliberate project scope; multilingual UI would be an

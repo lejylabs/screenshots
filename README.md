@@ -12,7 +12,7 @@ On Windows, normal launches share one instance per user/session. Starting the ap
 
 The non-UI delivery branch adds explicit file conversion/rotation, canvas and
 watermark composition, nearest-neighbour resize, QR generation/scanning,
-Unix file OCR through an optional installed Tesseract engine, paged history,
+Unix/Windows file OCR through an optional installed Tesseract engine, paged history,
 explicit uploads, native credential management and read-only database
 inspection/online backup. Run `screenshots --help` for commands. These commands
 bypass GPUI and never start uploads or clipboard writes implicitly.
@@ -22,7 +22,7 @@ See [delivery status and open work](docs/non-ui-delivery.md),
 [storage recovery](docs/storage-recovery.md) and [portable packaging](docs/packaging.md).
 Additional commands support strict [offline image recipes](docs/workflows.md),
 [filtered read-only history](docs/history-queries.md),
-[finite interval captures](docs/capture-sequence.md),
+[finite interval/scheduled captures with PNG/JPEG/WebP](docs/capture-sequence.md),
 [physical desktop composition](docs/desktop-composite.md) and
 [sequential image upload batches](docs/upload-batch.md). Stitched native desktop
 capture currently requires Windows and 100% scaling; capture sequences and upload
@@ -31,6 +31,9 @@ FFmpeg/ffprobe pair for bounded FFV1/Matroska or GIF output; it is not bundled a
 not imply Windows/macOS/Wayland recorder support.
 
 Headless utilities do not imply corresponding editor UI or complete ShareX parity.
+Linux window listing/capture supports X11 and XWayland clients when `DISPLAY`
+is available; native Wayland windows remain unsupported. See the
+[Linux window-capture contract](docs/linux-window-capture.md).
 
 ## UI implementation
 
