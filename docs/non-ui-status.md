@@ -26,7 +26,7 @@ performed to prepare this checklist.
   `31929f554c6646a146da591d888ab7a5c9772465b47af5b60825d2640b93925a`.
   Package smoke passed; archive SHA256:
   `7632d806df44ea02e73f1866fe3a20c887d95b3e48fafd10f8632be3eb83e6ab`.
-- [x] TIFF final complete optimized workspace run passed 497 regular tests,
+- [x] TIFF final complete optimized workspace run passed 499 regular tests,
   including all seven TIFF core fixtures, with 51 opt-in cases excluded and
   all doctests passing. Implementation commit `bc37362` is pushed.
   [TIFF contract](tiff-input.md), [current evidence](non-ui-delivery.md#bounded-truecolor-tiff-input-in-progress-2026-11-15).
