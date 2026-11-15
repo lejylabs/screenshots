@@ -2,10 +2,11 @@
 
 Author: NewtTheWolf
 Date: 2026-11-15
-Status: implemented, final workspace/release checks in progress.
+Status: implemented and locally verified; full metadata semantics remain outside this inventory.
 
 Extend `screenshots image metadata INPUT` to identify PNG, JPEG or WebP by file
-signature, not extension. Preserve the existing PNG JSON exactly. JPEG/WebP
+signature, not extension. Preserve existing PNG JSON fields, types and values;
+object key order is not a byte-level compatibility promise. JPEG/WebP
 results include an explicit `format`, byte size, dimensions, basic encoding or
 animation flags, a bounded segment/chunk inventory and metadata presence.
 Never decode pixels or print metadata payloads, comments, ICC, EXIF, GPS, XMP or

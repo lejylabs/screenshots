@@ -1490,3 +1490,11 @@ real 10-scan progressive JPEG; the new executable fixture and all five existing
 PNG fixtures passed. Source bytes and user state remain unchanged and sensitive
 payload markers never appear in output/errors. Final workspace/release checks
 continue separately from these completed targeted tests.
+
+Final metadata-tree verification passed 450 regular optimized workspace tests,
+with 51 opt-in cases excluded and all doctests passing. Release build 2m04s and
+archive checksum/extraction/help/version smoke passed. Archive SHA256
+`c4bd56b07626de171a73fe215125a2f6d4abd861cd18b6254df6f0b6483b4e5a`;
+binary SHA256
+`4ae9decaa0785da5a39d2fab9c7ac1b9e0be1a783de0e63f805392e2cfa55c1e`.
+PNG schema and values remain compatible; JSON object key order is not fixed.
