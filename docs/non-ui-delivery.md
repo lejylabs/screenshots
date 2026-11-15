@@ -957,3 +957,28 @@ binary SHA256:
 `d2dd7a0f4bd1da098175edce352af32ac234ae49a4bde5dfe95baafadd96ccd6`.
 Native branch CI is still running separately; no pending result is called passed.
 The full requested backlog remains open and the PC stays on.
+
+### Explicit Linux autostart control
+
+Add headless `autostart status|enable|disable` on Linux, using the XDG autostart
+entry `me.lejy.screenshots.desktop`. Only explicit enable writes the entry, with
+quoted canonical executable and `--show`; this does not claim Linux resident
+mode. Status is read-only; enable/disable must preserve foreign, edited or symlink
+entries and operate only on this exact owned format. Use bounded regular-file
+reads and atomic no-overwrite publication, isolated XDG/HOME process fixtures,
+and tests for Desktop Exec escaping. Do not configure the development user's
+real autostart or add startup polling/background infrastructure. Other platforms
+return unsupported until their native implementations are provided.
+
+Autostart implementation passed two optimized quoting/validation tests and four
+isolated Linux CLI tests, including idempotence, exact ownership, foreign/edited/
+symlink/FIFO refusal, HOME fallback and malformed arguments. Generated desktop
+entry validation passed with desktop-file-validate. Read-only review caught and
+fixed ambiguous stdout failure after mutation; results now use checked output.
+Windows GNU full application/test compilation and workspace Clippy passed. No
+real user autostart entry was created; actual next-login behavior remains open.
+
+Post-autostart full optimized verification passed 360 regular tests with 49
+opt-in cases excluded, all doctests passed. Clippy, Windows GNU application/test
+compilation and five packaging tests passed. This does not prove next-login
+behavior or native Windows/macOS integration.

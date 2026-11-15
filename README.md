@@ -30,6 +30,9 @@ batches are explicit bounded commands. None starts from merely opening the app. 
 FFmpeg/ffprobe pair for bounded FFV1/Matroska or GIF output; it is not bundled and does
 not imply Windows/macOS/Wayland recorder support.
 
+Explicit [Linux autostart control](docs/autostart.md) manages only this executable’s
+user entry and never activates itself automatically.
+
 Headless utilities do not imply corresponding editor UI or complete ShareX parity.
 Linux window listing/capture supports X11 and XWayland clients when `DISPLAY`
 is available; native Wayland windows remain unsupported. See the

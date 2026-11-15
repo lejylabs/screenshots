@@ -1,10 +1,12 @@
 # Functional gap analysis: screenshots and ShareX
 
-## Current reconciliation: feature branch through b81cb8f (2026-11-15)
+## Current reconciliation: feature branch through e829e14 (2026-11-15)
 
 The historical tables below are not the current delivery checklist. Relative to
 main 523bc3c, the feature branch adds the following **CLI/core subsets**:
 
+- Explicit Linux user autostart entry management; actual login acceptance and
+  hidden resident startup remain open.
 - Stitched desktop output on Windows at 100% scaling; native mixed-DPI and
   cross-monitor interactive selection remain open.
 - Finite interval still-capture sequences and one-shot RFC 3339 start times;

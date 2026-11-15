@@ -238,3 +238,11 @@ CPU dispatch and assembly sources unchanged, and consumers use supported simple
 concatenation without the replacement's differing case-transform forms. The
 existing MSRV remains satisfied. Independent before/after AVIF, color-macro and
 NASM fixtures passed; no ARM/native UI coverage is inferred.
+
+
+Linux autostart same-context review found the need for truthful post-mutation
+stdout failure reporting; checked write/flush now states completion explicitly.
+Exact ownership, no-replace creation and quoting were reviewed against the XDG
+specification. Scope is only its managed user entry; system-wide startup and the
+final hostile unlink race are documented. Six isolated tests and desktop-file
+validation passed; no real autostart entry was changed.
