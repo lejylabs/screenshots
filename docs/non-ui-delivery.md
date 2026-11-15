@@ -764,3 +764,24 @@ were checked. Existing image-batch (5), file-upload (4) and CLI upload (2) fixtu
 also passed. Three new core profile-reader tests passed exact byte limits,
 regular-file/symlink behavior and timeout-safe FIFO rejection. Workspace Clippy
 passed before the subsequent glib source override. No external service was used.
+
+
+The glib backport passed all eleven upstream iterator tests in an optimized
+isolated test copy and a workspace integration regression covering borrowed
+Unicode/empty strings in both directions. The copied test manifest omitted
+benchmark/compile-test-only dependencies unavailable locally; shipped source and
+manifest retain upstream contents. The vendored source differs only by the
+upstream two-line pointer fix plus its provenance note. `cargo deny` still fails
+on nine unmaintained transitive packages, and the remote glib version alert is
+not marked resolved. Full post-backport verification is recorded below once done.
+
+### Capture-sequence output formats
+
+Next bounded extension: allow explicit `--format png|jpeg|webp` and JPEG quality
+on finite sequences, reusing core image export. Omitted flags retain PNG files
+and existing JSON. Validate both options before any scheduled wait or native
+initialization; derive filenames from the chosen format, keep no-overwrite and
+one-frame-at-a-time publication, and reject transparent JPEG through existing
+policy. Synthetic core/export fixtures and CLI rejection tests cover this path;
+no real screen is captured during automated checks. No new encoder, persisted
+setting, worker, stream or idle timer is added.

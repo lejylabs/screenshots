@@ -186,3 +186,14 @@ profile reads or JSON-only credential commands. The optional ShareX name is
 discarded and no profile is persisted. This is a follow-up inspection, not another
 fresh-context convergence round. Root/implementer execution separately passed the
 synthetic parser tests and eight local TLS uploads.
+
+
+The dependency follow-up matched the glib VariantStrIter defect to upstream
+commit b5a4071e439bef2b5eea76c3aa25e5ae84839e34. Root vendored exact glib 0.18.5
+and verified that only the two pointer-mutability lines differ in source. Eleven
+upstream iterator tests passed optimized in an isolated copy (unneeded benchmark/
+compile-test dev dependencies removed only from that test copy); a workspace
+regression also passed forward/reverse Unicode/empty-string iteration. This
+fixes the identified code defect without inventing a safe package version. The
+remote version-based glib alert and nine unmaintained-package deny errors remain
+explicitly unresolved; no advisory ignore was introduced.

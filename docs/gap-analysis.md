@@ -1,6 +1,6 @@
 # Functional gap analysis: screenshots and ShareX
 
-## Current reconciliation: feature branch through ec45a9b (2026-11-15)
+## Current reconciliation: feature branch through b13e238 (2026-11-15)
 
 The historical tables below are not the current delivery checklist. Relative to
 main 523bc3c, the feature branch adds the following **CLI/core subsets**:
@@ -13,7 +13,8 @@ main 523bc3c, the feature branch adds the following **CLI/core subsets**:
   info, SHA256 file hashing and bounded PNG chunk inventory; editor tool
   integration, native screen color picker and general metadata inspection remain
   open.
-- Arbitrary file and image-batch uploads; provider/OAuth integration, batch UI
+- Arbitrary file and image-batch uploads, including direct use of the existing
+  ShareX profile subset; provider/OAuth integration, batch UI
   and after-capture/upload chains remain open.
 - Read-only date/text/history-link queries and explicit import/relink/remove
   metadata commands, missing-file audit and opt-in metadata-stripped PNG exports;
@@ -30,7 +31,8 @@ Portable packaging, image import/conversion/upscaling, file OCR/QR, native secre
 store adapters and storage backup already existed at 523bc3c. A synthetic Linux
 Secret Service create/read/update/delete roundtrip now passed against the already
 accessible local store; macOS runtime and real provider acceptance remain open.
-Implementation
+The glib VariantStrIter defect has an exact upstream source backport; its
+version-based alert and nine unmaintained-package gates remain open. Implementation
 does not imply native acceptance. The latest CI result must be read separately
 from local synthetic tests. See [the delivery record](non-ui-delivery.md).
 
