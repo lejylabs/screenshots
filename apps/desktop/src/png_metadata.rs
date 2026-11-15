@@ -1,4 +1,4 @@
-//! Explicit PNG chunk inventory without decoding pixels or exposing metadata values.
+//! Explicit image structure inventory without decoding pixels or exposing metadata values.
 
 use anyhow::{Context, Result, ensure};
 use serde::Serialize;
@@ -37,7 +37,7 @@ pub fn run(args: &[OsString]) -> Result<()> {
     ensure!(args.len() == 1, "Usage: screenshots image metadata INPUT");
     let started = Instant::now();
     let path = Path::new(&args[0]);
-    validate_file(&path.metadata().context("Could not inspect PNG input")?)?;
+    validate_file(&path.metadata().context("Could not inspect image input")?)?;
     let mut options = OpenOptions::new();
     options.read(true);
     // Avoid blocking if a FIFO replaces the regular file after preflight.
@@ -46,35 +46,41 @@ pub fn run(args: &[OsString]) -> Result<()> {
         use std::os::unix::fs::OpenOptionsExt as _;
         options.custom_flags(libc::O_NONBLOCK);
     }
-    let file = options.open(path).context("Could not open PNG input")?;
+    let file = options.open(path).context("Could not open image input")?;
     let before = file
         .metadata()
-        .context("Could not inspect opened PNG input")?;
+        .context("Could not inspect opened image input")?;
     validate_file(&before)?;
     let result = {
         let bytes = read_snapshot(&file, before.len(), started)?;
-        let after = file.metadata().context("Could not recheck PNG input")?;
+        let after = file.metadata().context("Could not recheck image input")?;
         ensure!(
             before.len() == after.len() && before.modified().ok() == after.modified().ok(),
-            "PNG input changed while reading"
+            "Image input changed while reading"
         );
-        inventory(&bytes, started)?
+        if bytes.starts_with(b"\xff\xd8") {
+            crate::metadata_jpeg::inventory(&bytes, started)?
+        } else if bytes.starts_with(b"RIFF") && bytes.get(8..12) == Some(b"WEBP") {
+            crate::metadata_webp::inventory(&bytes, started)?
+        } else {
+            serde_json::to_value(inventory(&bytes, started)?)?
+        }
     };
     // The encoded snapshot is released before serializing the bounded inventory.
     let mut output = std::io::stdout().lock();
     serde_json::to_writer(&mut output, &result)
-        .context("Could not write PNG metadata inventory")?;
-    writeln!(output).context("Could not write PNG metadata inventory")?;
+        .context("Could not write image metadata inventory")?;
+    writeln!(output).context("Could not write image metadata inventory")?;
     output
         .flush()
-        .context("Could not flush PNG metadata inventory")
+        .context("Could not flush image metadata inventory")
 }
 
 fn validate_file(metadata: &Metadata) -> Result<()> {
-    ensure!(metadata.is_file(), "PNG input must be a regular file");
+    ensure!(metadata.is_file(), "Image input must be a regular file");
     ensure!(
         metadata.len() <= MAX_FILE_BYTES,
-        "PNG input exceeds the 32 MiB limit"
+        "Image input exceeds the 32 MiB limit"
     );
     Ok(())
 }
@@ -82,7 +88,7 @@ fn validate_file(metadata: &Metadata) -> Result<()> {
 fn check_deadline(started: Instant) -> Result<()> {
     ensure!(
         started.elapsed() < DEADLINE,
-        "PNG inspection exceeded the 30-second deadline"
+        "Image inspection exceeded the 30-second deadline"
     );
     Ok(())
 }
@@ -90,7 +96,7 @@ fn check_deadline(started: Instant) -> Result<()> {
 fn read_snapshot(reader: impl std::io::Read, length: u64, started: Instant) -> Result<Vec<u8>> {
     ensure!(
         length <= MAX_FILE_BYTES,
-        "PNG input exceeds the 32 MiB limit"
+        "Image input exceeds the 32 MiB limit"
     );
     check_deadline(started)?;
     let mut bytes = vec![0; usize::try_from(length)?];
@@ -101,9 +107,9 @@ fn read_snapshot(reader: impl std::io::Read, length: u64, started: Instant) -> R
         let end = (position + 64 * 1024).min(bytes.len());
         let read = match reader.read(&mut bytes[position..end]) {
             Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
-            result => result.context("Could not read PNG input")?,
+            result => result.context("Could not read image input")?,
         };
-        ensure!(read > 0, "PNG input ended before its reported length");
+        ensure!(read > 0, "Image input ended before its reported length");
         position += read;
     }
     check_deadline(started)?;

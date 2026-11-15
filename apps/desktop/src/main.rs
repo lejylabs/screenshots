@@ -13,6 +13,8 @@ mod history_manage;
 mod image_collection;
 mod image_info;
 mod image_tools;
+mod metadata_jpeg;
+mod metadata_webp;
 mod ocr;
 #[cfg(target_os = "windows")]
 mod ocr_windows;

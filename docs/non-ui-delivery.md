@@ -1471,3 +1471,22 @@ Archive SHA256
 `6b1922be37473f748b9d022bb81f8423e52efd6e873c7747b51e903851e3108d`;
 binary SHA256
 `135d32cd7274884f15a77a31384b32496c06c48826c80a708de172218a20419e`.
+
+### JPEG/WebP metadata structure inventory (in progress, 2026-11-15)
+
+Extend the existing bounded `image metadata` reader with signature-dispatched
+JPEG/WebP parsers. Keep PNG result JSON unchanged; add explicit formats for new
+results. Neither parser decodes pixels or prints metadata values. JPEG scans
+bounded markers/entropy escapes, WebP checks bounded RIFF/chunk/frame structure;
+these are partial structural inventories, not full decoders or metadata-free
+certificates. Exact fields, supported headers and privacy limits are in
+[image metadata](image-metadata.md). Read-only review required explicit semantics
+for APP/COM versus ICCP/EXIF/XMP presence and undocumented nested/unknown payloads;
+the document now states those limits. Initial parser tests, Clippy and Windows
+compilation passed; updated progressive and executable fixtures remain running.
+
+Updated verification passed four JPEG and four WebP parser tests, including a
+real 10-scan progressive JPEG; the new executable fixture and all five existing
+PNG fixtures passed. Source bytes and user state remain unchanged and sensitive
+payload markers never appear in output/errors. Final workspace/release checks
+continue separately from these completed targeted tests.

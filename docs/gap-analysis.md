@@ -26,6 +26,9 @@ main 523bc3c, the feature branch adds the following **CLI/core subsets**:
   info, SHA256 file hashing and bounded PNG chunk inventory; editor tool
   integration, native screen color picker and general metadata inspection remain
   open.
+- `image metadata` also reports bounded JPEG markers and WebP chunks without
+  printing metadata payloads. It is a partial structure inventory, not a full
+  metadata-value inspector or proof that an image contains no private data.
 - Arbitrary file and image-batch uploads, including direct use of the existing
   ShareX profile subset and FileUploader-only profiles for `upload-file`;
   provider/OAuth integration, batch UI

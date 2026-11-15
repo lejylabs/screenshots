@@ -94,5 +94,6 @@ is part of the enclosing change's verification; these descriptions are not a
 claim that a test or hardware acceptance gate has passed.
 
 The structural checks follow the [W3C PNG specification](https://www.w3.org/TR/png-3/).
-Full metadata inspection/editing, JPEG/WebP metadata and native editor integration
-remain separate work.
+The same command now supports bounded [JPEG/WebP structural inventories](image-metadata.md).
+Full metadata value inspection/editing and native editor integration remain
+separate work.
