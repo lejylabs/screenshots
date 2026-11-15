@@ -108,6 +108,10 @@ durability.
 Two native filesystem fixtures and seven journal fixtures passed, as did three
 actual executable tests covering move/history updates, destination collision
 and invalid-command preservation. All operate only on synthetic temporary PNGs
-and databases. Windows cross-compilation and Clippy passed; mutation remains
+and databases. `scripts/test-history-move.py` also passed against the release
+binary: it injects a SQLite abort trigger only into its fixture database to
+interrupt finalization after rename, verifies the durable journal, then exercises
+explicit finish and cancel recovery. Exact bytes, inode, row metadata and FTS
+references remain correct. Windows cross-compilation and Clippy passed; mutation remains
 unsupported on Windows/macOS. Whole-workspace and release results are recorded
 in the delivery log after completion.

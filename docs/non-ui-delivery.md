@@ -1553,3 +1553,10 @@ move tests passed. These verify real no-replace renames of synthetic images,
 exact bytes/IDs/FTS updates, collision preservation and explicit recovery states.
 Updated contexts report unconfirmed outcomes honestly after ambiguous commits.
 Full workspace and final release verification remain in progress.
+
+The actual release executable passed the independent history-move script:
+normal move and collision preservation, a fixture-only SQLite abort after
+rename, durable pending read without mutation, explicit finish/cancel, stable
+row/FTS metadata and unchanged bytes/inode. No production fault hook was added.
+The release built in 2m32s and its archive passed checksum/extraction/help/version
+smoke. Final complete workspace verification is still running.
