@@ -54,7 +54,8 @@ Headless commands (no desktop UI, clipboard writes or implicit uploads):
       [--x X --y Y]
 
 Image input: PNG/JPEG/WebP, <=32 MiB encoded and <=256 MiB decoded.
-Output: PNG/JPEG/lossless WebP; existing files are never replaced.
+Output: PNG/JPEG/WebP; WebP is lossless unless --webp-quality is explicit.
+Existing files are never replaced.
 Convert resize does not upscale; image resize permits nearest-neighbour upscaling.
 Convert width alone or height alone keeps the aspect ratio.
 Capture reads desktop pixels only when explicitly requested; it saves one image
