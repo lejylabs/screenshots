@@ -2,7 +2,7 @@
 
 Author: NewtTheWolf
 Date: 2026-11-15
-Status: implemented, final workspace/release verification in progress.
+Status: implemented and locally verified; platform acceptance remains separate.
 
 Extend only `screenshots image convert INPUT OUTPUT.bmp` with exact RGBA8 BMP
 output. Existing PNG/JPEG/WebP input admission, rotate/flip/downscale ordering,

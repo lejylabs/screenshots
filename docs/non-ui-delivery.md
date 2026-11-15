@@ -1395,3 +1395,15 @@ Independent FFmpeg decoding of optimized CLI outputs preserved every RGBA byte
 for 3×5 and rotated/flipped 5×3 synthetic fixtures (182 bytes each), including
 alpha 0/128/255 and hidden RGB. Source/state remained unchanged. Clippy and
 Windows GNU app/test compilation passed; final workspace/release checks follow.
+
+Final BMP-tree verification passed 434 regular optimized workspace tests, with
+51 opt-in cases excluded and all doctests passing. The release built in 2m26s,
+passed independent FFmpeg pixel/alpha verification and archive checksum/
+extraction/help/version smoke. The first extraction attempt exhausted the
+host's 16 GiB `/tmp` tmpfs; repeating with a project-local temporary directory
+passed. Only agents' known completed test build directories were removed to
+recover temporary space; no user files were deleted. Archive SHA256
+`b391aff7bdacaa148b3e75d4a514752fd5f929c10fa3d8017a3da49fef7be14d`;
+binary SHA256
+`0bd8dac0ff61b7e57b9357160152c5e68a35b26fc9855c446435596c489240d6`.
+No native hardware, UI format selection or full parity acceptance is inferred.
