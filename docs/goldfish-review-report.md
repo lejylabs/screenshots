@@ -206,3 +206,12 @@ confirmed required alloc/std feature wiring and API availability in pki-types
 1.9.0. The capture-sequence format follow-up also had no actionable finding.
 These are same-context follow-ups, not fresh rounds; executable evidence is
 recorded separately.
+
+Linux window follow-up found a concrete XCap current_monitor defect: incorrect
+vertical coordinate, mixed coordinate units and overflow before image admission.
+Linux window capture now bypasses that optional association and records unknown
+display metadata, retaining authoritative window_id and exact drawable pixels.
+The reviewer checked current CLI/window-editor consumers for compatibility.
+Its remaining enumeration limits are explicit. Root/implementer native fixtures
+passed against a self-owned XWayland window; the final source passed 349 regular
+workspace tests and Clippy. This does not establish native Wayland capture.
