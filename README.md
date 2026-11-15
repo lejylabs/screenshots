@@ -36,6 +36,10 @@ not imply macOS/Wayland recorder support. The separate
 [Windows recording path](docs/recording-windows.md) has bounded staging and process
 tests; native gdigrab/FFmpeg runtime acceptance remains open.
 
+Explicit [S3-compatible object uploads](docs/s3-uploads.md) use a separate
+credential profile and signed create-only PUT. Provider runtime acceptance is
+tracked separately from local signing tests.
+
 Explicit user autostart controls are documented for [Linux](docs/autostart.md),
 [Windows](docs/autostart-windows.md) and [macOS](docs/autostart-macos.md).
 They manage only this executable’s user entry and never activate themselves automatically.

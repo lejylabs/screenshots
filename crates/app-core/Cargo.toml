@@ -18,6 +18,8 @@ arboard.workspace = true
 chrono.workspace = true
 directories.workspace = true
 image.workspace = true
+hmac = "=0.12.1"
+sha2_10 = { package = "sha2", version = "=0.10.9" }
 libwebp-sys = { version = "=0.14.4", default-features = false }
 regex.workspace = true
 reqwest.workspace = true

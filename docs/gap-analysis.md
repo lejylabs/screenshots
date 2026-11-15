@@ -27,6 +27,10 @@ main 523bc3c, the feature branch adds the following **CLI/core subsets**:
   and full after-capture/upload chains remain open. Explicit CLI capture-task
   now composes display/window/region capture, a recipe, file output and optional
   upload of finalized pixels.
+- Explicit bounded S3-compatible single-object PUT with SigV4 and a separate
+  native credential namespace. Independent loopback HTTPS signing tests passed;
+  real S3/R2 account compatibility, multipart uploads, OAuth and provider UI
+  remain open. See [S3 upload limits](s3-uploads.md).
 - Read-only date/text/history-link queries and explicit import/relink/remove
   metadata commands, missing-file audit and opt-in metadata-stripped PNG exports;
   corresponding Library UI and physical-file management remain open.

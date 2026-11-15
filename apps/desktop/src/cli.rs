@@ -45,6 +45,8 @@ Headless commands (no desktop UI, clipboard writes or implicit uploads):
   screenshots upload PROFILE PNG
   screenshots upload-images PROFILE IMAGE...
   screenshots upload-file PROFILE FILE
+  screenshots s3-upload PROFILE FILE
+  screenshots s3-credentials target|store|remove PROFILE
   screenshots credentials target|store|remove PROFILE_JSON [--username NAME]
   screenshots qr generate TEXT OUTPUT_PNG
   screenshots qr scan INPUT
@@ -141,6 +143,8 @@ pub fn run(args: Vec<OsString>) -> Result<bool> {
         "record" => crate::record::run(&args[1..])?,
         "upload-images" => crate::upload_batch::run(&args[1..])?,
         "upload-file" => crate::upload_file::run(&args[1..])?,
+        "s3-upload" => crate::s3::upload(&args[1..])?,
+        "s3-credentials" => crate::s3::credentials(&args[1..])?,
         "upload" => {
             ensure!(args.len() == 3, "Usage: screenshots upload PROFILE PNG");
             let destination = load_upload_profile(Path::new(&args[1]))?;

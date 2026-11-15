@@ -1328,4 +1328,36 @@ executable profile tests and the explicit TLS fixture with ten actual loopback
 HTTPS uploads. FileUploader-only PUT and multipart POST delivered the exact
 binary input, preserved the generic filename and left profile/source bytes and
 user state unchanged. Image-only callers rejected those profiles before any
-connection. Full workspace and final release verification are still running.
+connection. The final release built in 2m21s and its archive passed
+checksum/extraction/help/version smoke. Archive SHA256
+`f8303ecb97b0a01b483b91cf40915d290222a61a10fe3aa1a4fd00c226d065fa`;
+binary SHA256
+`e0825e3b2f887a7a22b283299e8aa649b2be7a7a1912d108a036f62543adc686`.
+The overlapping full-workspace attempt saw the next S3 CLI module while it still
+held the prior core build and failed with missing S3 exports. This is not a
+passing whole-workspace result; rerun against the completed S3 tree. The focused
+file-profile regressions, Clippy and Windows checks above remain the completed
+evidence for this slice.
+
+### Explicit S3-compatible upload (in progress, 2026-11-15)
+
+Implement the bounded profile, native signing-key storage and single-object
+SigV4 PUT described in [S3 uploads](s3-uploads.md). Use existing HMAC/SHA-256
+packages already in Cargo.lock, a separate credential namespace, one regular
+file handle, 64 MiB admission, 64 KiB I/O buffers, 60-second cooperative operation
+deadline and no retry/redirect. No 1Password access, environment credential
+discovery, bucket provisioning or real provider upload is needed for development.
+The private loopback/signature fixtures and synthetic native-store entry are
+separate from real AWS/R2 provider acceptance.
+
+Core implementation passed six optimized signing/transfer tests, including the
+official AWS signature vector, exact wire header/body checks, empty input,
+conditional failures and response caps. Three native-store validation tests
+passed, plus an explicit Linux create/read/delete roundtrip under a unique
+synthetic target. The independent real-CLI TLS fixture verified three signed
+requests with Python HMAC/SHA-256, exact binary/empty bodies, HTTP 412 without
+retry, unchanged source/profile/state and removed credentials. Windows GNU
+compilation and workspace Clippy passed before final regression; fresh final
+whole-workspace and release builds are still running. A test-only BTreeMap
+inference error from the additional wire assertions was fixed and the six-test
+suite rerun successfully.

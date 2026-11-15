@@ -47,6 +47,8 @@ pub use blur::blur_preview_bgra;
 pub use webp_lossy::save_lossy_webp;
 mod selection;
 pub use pixelation::PixelationGrid;
+mod s3_credentials;
+mod s3_upload;
 mod settings;
 mod upload;
 mod upload_credentials;
@@ -57,6 +59,8 @@ pub use history::{
     remove_history_entries, remove_history_entry, remove_upload_history_entry,
     search_capture_history, upload_history_page,
 };
+pub use s3_credentials::{read_s3_credentials, remove_s3_credentials, save_s3_credentials};
+pub use s3_upload::{S3Credentials, S3Outcome, S3Profile, upload_s3_file};
 pub use selection::{
     FrameAnnotation, PixelRegion, crop_snapshot, edit_snapshot, redact_snapshot,
     render_annotated_snapshot, render_document_snapshot, render_edited_snapshot,
