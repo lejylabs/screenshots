@@ -79,7 +79,7 @@ pub(crate) fn overlay(output: &mut RgbaImage, source: &RgbaImage, x: u32, y: u32
 pub fn run(args: &[OsString]) -> Result<()> {
     ensure!(
         args.len() >= 3,
-        "Usage: screenshots image compose|resize INPUT OUTPUT [options]"
+        "Usage: screenshots image compose|resize|remove-strip INPUT OUTPUT [options]"
     );
     match text(&args[0])? {
         "compose" => compose(args),

@@ -23,6 +23,10 @@ encoding remains lossy.
 
 Create core strip.rs, expose remove_image_strip and call it from existing image
 utilities/workflow. Update CLI help, image/workflow docs and executable tests.
+The public core signature is `remove_image_strip(&RgbaImage, vertical: bool,
+start: u32, length: u32) -> Result<RgbaImage, CaptureError>`; `vertical=true`
+removes columns and `false` removes rows. The backing storage must contain
+exactly `width * height * 4` bytes before any allocation is allowed.
 Test all axis boundaries, exact pixel order, invalid ranges, source preservation,
 composition with redaction and one final output, no overwrite and no user-state
 writes. This adds an offline tool, not editor selection or scrolling capture.
