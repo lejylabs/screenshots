@@ -714,7 +714,14 @@ The full opt-in upload filter passed 18 tests, including a unique synthetic Linu
 Secret Service roundtrip and a missing-credential/no-network check. The synthetic
 entry was removed; no existing account credential was accessed. Clippy, formatting,
 whitespace and five packaging unit checks passed; 39 Markdown files had no broken
-local links. The final release artifact is checked separately after rebuilding.
+local links. The Linux thin-LTO release rebuild passed in 2m 30s. Its 87 MiB portable archive
+passed checksum/extraction/help/version smoke checks, and the actual release
+binary passed hash/PNG-inventory/conversion/scheduled-revalidation checks with
+unchanged source and user state. Archive SHA256:
+`aacc833434d2ec3de464790bfda0c4dff815a4f5466e9bdcadfbfa58b1fe19c3`;
+binary SHA256:
+`0d310fc83ed24ff3908cdca9520514236dcb8c61d7fb1241d36e2673659a1635`.
+It predates the next direct-ShareX slice below; native CI remains separate.
 
 ### Direct ShareX profiles in headless uploads
 
