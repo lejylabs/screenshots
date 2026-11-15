@@ -1,6 +1,6 @@
 # Functional gap analysis: screenshots and ShareX
 
-## Current reconciliation: feature branch through 6976ade (2026-11-15)
+## Current reconciliation: feature branch through 4e6a58c (2026-11-15)
 
 The historical tables below are not the current delivery checklist. Relative to
 main 523bc3c, the feature branch adds the following **CLI/core subsets**:
@@ -11,6 +11,8 @@ main 523bc3c, the feature branch adds the following **CLI/core subsets**:
   cross-monitor interactive selection remain open.
 - Finite interval still-capture sequences and one-shot RFC 3339 start times;
   persisted/repeating schedules, machine wake-up and UI controls remain open.
+- Explicit lossy WebP quality in conversion, capture tasks and finite sequences;
+  default WebP remains lossless and editor preference work remains open.
 - Offline image recipes including ordered blur/pixelation, combine/compare/split, file pixel sampling and image
   info, SHA256 file hashing and bounded PNG chunk inventory; editor tool
   integration, native screen color picker and general metadata inspection remain

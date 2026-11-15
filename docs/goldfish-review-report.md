@@ -270,3 +270,11 @@ directory and verifies a protected exact current-user DACL before any pixels are
 written. Five Wine process/ACL/stream fixtures and Unix regression tests passed;
 real Windows FFmpeg/gdigrab remains unrun. A parent-enforced output cap discards
 overflow before writing, and Job Object shutdown precedes worker joins.
+
+
+Lossy WebP review found and fixed retained-original memory during downscale and
+missing nested libwebp license/patent distribution. Callback state, synchronous
+FFI lifetime, panic containment, byte cap and atomic cleanup were reviewed;
+packaging now requires the exact nested notices and tests their archive bytes.
+Capture task/sequence quality integration was reviewed without code findings;
+docs distinguish native encoder scratch from admitted image bytes.

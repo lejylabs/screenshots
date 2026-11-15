@@ -1137,3 +1137,38 @@ binary SHA256:
 `c5a5b7e5a681abff7a33855fed957fd3063f3d5b6aeb37ab8a688d8c7ff8b3e3`.
 This Linux artifact does not establish Windows engine or native gdigrab behavior.
 The complete backlog and native CI remain open; no shutdown is authorized.
+
+### Lossy WebP export investigation
+
+Evaluate an explicit lossy WebP option without changing existing lossless
+exports or adding UI. Current image-webp exposes lossless encoding only; assess
+maintained libwebp Rust bindings, codec licensing/build cost, RGBA/alpha semantics
+and allocation/cancellation limits before choosing a dependency. Any selected
+path must preserve source files and no-overwrite publication and describe actual
+codec scratch/resource limits, not imply the RGBA cap bounds native allocation.
+
+Lossy WebP implementation passed five core fixtures and two real-executable
+CLI tests, including exact alpha, VP8 output, cancellation/panic/write failure,
+byte cap, source preservation and no overwrite. Windows GNU compilation and
+Clippy passed; six packaging fixtures now require and include libwebp's nested
+COPYING/PATENTS notices. A short 4K patterned-image comparison found quality-75
+lossy export at 914.08 ms/1,639,422 bytes vs PNG 42.07 ms/11,471,538 and lossless
+WebP 30.08 ms/16,220,138. C scratch/RSS remain unmeasured; no reference-hardware
+acceptance inferred. Existing lossless defaults are unchanged.
+
+Extend this explicit quality option to capture-task and finite capture-sequence,
+using the same core API after current pixel processing. Validate incompatible
+flags before capture/wait; omit the field/behavior change unless requested. No
+UI preference, implicit capture format or upload representation is changed.
+
+Lossy WebP capture integration passed 29 focused unit tests and 14 executable
+CLI tests, plus all three lossy convert fixtures including alpha-preserving
+resampling. The full pre-final-addition workspace run passed 393 regular tests,
+50 opt-in tests excluded; Clippy passed. Default lossless behavior and explicit
+upload PNG representation remain unchanged. Source review corrected memory
+wording to distinguish RGBA admission from native YUV/alpha storage and scratch.
+
+Final lossy-WebP capture integration workspace run passed 393 regular tests,
+50 opt-in cases excluded, all doctests passed. Six packaging tests passed after
+bundled codec notices were added. The release artifact remains a separate check;
+no UI preference or native hardware acceptance is inferred.
