@@ -1,5 +1,6 @@
 mod capture_sequence;
 mod cli;
+mod history_manage;
 mod image_collection;
 mod image_info;
 mod image_tools;

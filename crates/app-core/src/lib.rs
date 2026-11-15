@@ -51,8 +51,9 @@ mod upload_credentials;
 pub use history::{
     HistoryEntry, HistoryFilter, ImportReport, UploadHistoryEntry, capture_history_page,
     capture_history_page_filtered, history_database_path, import_capture_files,
-    record_saved_capture, record_uploaded_png, relink_history_entry, remove_history_entries,
-    remove_history_entry, remove_upload_history_entry, search_capture_history, upload_history_page,
+    lookup_history_entry, record_saved_capture, record_uploaded_png, relink_history_entry,
+    remove_history_entries, remove_history_entry, remove_upload_history_entry,
+    search_capture_history, upload_history_page,
 };
 pub use selection::{
     FrameAnnotation, PixelRegion, crop_snapshot, edit_snapshot, redact_snapshot,

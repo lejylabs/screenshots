@@ -145,6 +145,30 @@ fn open(path: &Path) -> Result<Connection> {
     Ok(connection)
 }
 
+fn open_existing(path: &Path) -> Result<Connection> {
+    ensure!(
+        std::fs::symlink_metadata(path)?.is_file(),
+        "History database must be an existing regular file"
+    );
+    let parent = path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    let path = parent
+        .canonicalize()?
+        .join(path.file_name().context("Invalid history path")?);
+    let mut connection = Connection::open_with_flags(
+        path,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE | rusqlite::OpenFlags::SQLITE_OPEN_NOFOLLOW,
+    )?;
+    connection.busy_timeout(Duration::from_millis(250))?;
+    connection.execute_batch(
+        "PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA cache_size=-512;",
+    )?;
+    migrations().to_latest(&mut connection)?;
+    Ok(connection)
+}
+
 /// Successful upload metadata contains no pixels or full source path.
 #[derive(Clone)]
 pub struct UploadHistoryEntry {
@@ -216,7 +240,7 @@ pub fn upload_history_page(
 
 pub fn remove_upload_history_entry(database: &Path, id: i64) -> Result<()> {
     ensure!(id > 0, "Invalid upload history ID");
-    let mut connection = open(database)?;
+    let mut connection = open_existing(database)?;
     let transaction = connection.transaction()?;
     transaction.execute("DELETE FROM uploads WHERE id=?1", [id])?;
     transaction.commit()?;
@@ -236,6 +260,40 @@ pub fn record_saved_capture(database: &Path, path: &Path) -> Result<()> {
 /// Keyset pagination; at most 21 metadata rows, never decoded image buffers.
 pub fn capture_history_page(database: &Path, before: Option<i64>) -> Result<Vec<HistoryEntry>> {
     capture_history_page_filtered(database, before, HistoryFilter::All, || false)
+}
+
+/// Explicit row lookup for a subsequent optimistic relink; never decodes pixels.
+pub fn lookup_history_entry(database: &Path, id: i64) -> Result<Option<HistoryEntry>> {
+    use rusqlite::OptionalExtension;
+    ensure!(id > 0, "Invalid history entry ID");
+    let connection = crate::storage::open_read_only(database)?;
+    let entry = connection
+        .query_row(
+            "SELECT id,CASE WHEN typeof(file_path)='text' AND length(CAST(file_path AS BLOB))<=4096 THEN file_path END,width,height,CASE WHEN typeof(created_at)='text' AND length(CAST(created_at AS BLOB))<=64 THEN created_at END FROM captures WHERE id=?1",
+            [id],
+            |row| {
+                Ok(HistoryEntry {
+                    id: row.get(0)?,
+                    path: PathBuf::from(row.get::<_, String>(1)?),
+                    width: row.get(2)?,
+                    height: row.get(3)?,
+                    created_at: row.get(4)?,
+                })
+            },
+        )
+        .optional()?;
+    if let Some(entry) = &entry {
+        ensure!(
+            entry.path.is_absolute() && !entry.path.to_string_lossy().chars().any(char::is_control),
+            "Invalid history entry path"
+        );
+        crate::validate_image_size(entry.width, entry.height)?;
+        ensure!(
+            !entry.created_at.is_empty() && !entry.created_at.chars().any(char::is_control),
+            "Invalid history timestamp"
+        );
+    }
+    Ok(entry)
 }
 
 /// Indexed source filtering; cancellation is checked before storage work and while reading rows.
@@ -360,7 +418,7 @@ pub fn search_capture_history(
 pub fn relink_history_entry(database: &Path, entry: &HistoryEntry, path: &Path) -> Result<()> {
     ensure!(entry.id > 0, "Invalid history entry ID");
     let info = image_info(path)?;
-    let mut connection = open(database)?;
+    let mut connection = open_existing(database)?;
     let transaction = connection.transaction()?;
     let updated = transaction
         .execute(
@@ -399,7 +457,7 @@ pub fn remove_history_entries(database: &Path, ids: &[i64]) -> Result<usize> {
         "Select 1 to 20 history entries"
     );
     ensure!(ids.iter().all(|id| *id > 0), "Invalid history entry ID");
-    let mut connection = open(database)?;
+    let mut connection = open_existing(database)?;
     let transaction = connection.transaction()?;
     let mut removed = 0;
     {
