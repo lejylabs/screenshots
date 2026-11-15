@@ -2,7 +2,7 @@
 
 Date: 2026-11-15
 Author: NewtTheWolf
-Status: implemented, final regression/release verification in progress.
+Status: implemented and locally verified; broader BMP variants remain unsupported.
 
 Allow BMP in the shared explicit image loader after immutable-snapshot preflight.
 This lets converted BMP images reenter image tools, file OCR and QR scanning.

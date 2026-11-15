@@ -1648,3 +1648,14 @@ fixtures passed. A fresh-context EGM reviewer additionally inspected the slice;
 same-context reviews are still distinguished from this fresh review. No native
 screen/user image input was used. Final combined BMP/strip workspace and release
 verification continue below when complete.
+
+Final combined BMP/strip verification passed 482 regular optimized workspace
+tests, with 51 opt-in cases excluded and all doctests passing. The fresh-context
+review found usage and API-documentation gaps, both fixed; no logic defect was
+reported. Final focused strip tests passed after the usage correction. The
+release built in 2m58s and passed independent FFmpeg strip/redaction checks and
+package smoke. Archive SHA256
+`e54b8dd23744e1ccc2f4bce918c4a9f14d068cb5328539553c12bec85eaeca5b`;
+binary SHA256
+`82367b73111a62a8301a18595c97e782241563cb6260c0662326ec85e1998917`.
+All 55 project Markdown files had valid local links during the reconciliation.

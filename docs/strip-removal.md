@@ -2,7 +2,7 @@
 
 Date: 2026-11-15
 Author: NewtTheWolf
-Status: implemented, final regression/release verification in progress.
+Status: implemented and locally verified.
 
 Add `image remove-strip INPUT OUTPUT horizontal|vertical START LENGTH` and a
 recipe step `{"op":"remove_strip","axis":"horizontal","start":N,"length":N}`.
