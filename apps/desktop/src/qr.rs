@@ -6,7 +6,7 @@ use qrcode::{Color, EcLevel, QrCode};
 use std::{ffi::OsString, path::Path};
 
 const MAX_GENERATED_TEXT_BYTES: usize = 2048;
-const MAX_SCAN_RGBA_BYTES: u64 = 16 * 1024 * 1024;
+pub(crate) const MAX_SCAN_RGBA_BYTES: u64 = 16 * 1024 * 1024;
 const MAX_SCAN_SIDE: u32 = 4096;
 // quircs silently stops at eight grids; reject saturation rather than omit codes.
 const MAX_RESULTS: usize = 7;
@@ -62,7 +62,18 @@ fn generate(text: &OsString, destination: &Path) -> Result<()> {
 
 fn scan(source: &Path) -> Result<()> {
     let pixels = app_core::load_editor_image_with_limit(source, MAX_SCAN_RGBA_BYTES)?;
+    println!("{}", scan_pixels(pixels)?);
+    Ok(())
+}
+
+pub(crate) fn scan_pixels(pixels: RgbaImage) -> Result<serde_json::Value> {
     let (width, height) = pixels.dimensions();
+    app_core::validate_image_size(width, height)?;
+    ensure!(
+        u64::from(width) * u64::from(height) * 4 <= MAX_SCAN_RGBA_BYTES
+            && pixels.as_raw().len() as u64 <= MAX_SCAN_RGBA_BYTES,
+        "QR scan image exceeds the 16 MiB RGBA limit"
+    );
     ensure!(
         width <= MAX_SCAN_SIDE && height <= MAX_SCAN_SIDE,
         "QR scan dimensions must not exceed 4096 pixels per side"
@@ -109,6 +120,64 @@ fn scan(source: &Path) -> Result<()> {
         let text = std::str::from_utf8(&decoded.payload).context("QR payload is not UTF-8 text")?;
         results.push(serde_json::json!({"text": text, "version": decoded.version}));
     }
-    println!("{}", serde_json::json!({"codes": results}));
-    Ok(())
+    Ok(serde_json::json!({"codes": results}))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn owned_pixels_scan_generated_qr_and_reject_blank_images() {
+        let text = "in-memory QR ü https://example.invalid/";
+        let code = QrCode::with_error_correction_level(text.as_bytes(), EcLevel::M).unwrap();
+        let modules = code.width() as u32;
+        let side = (modules + QUIET_MODULES * 2) * MODULE_PIXELS;
+        let pixels = RgbaImage::from_fn(side, side, |x, y| {
+            let (x, y) = (x / MODULE_PIXELS, y / MODULE_PIXELS);
+            let dark = x >= QUIET_MODULES
+                && y >= QUIET_MODULES
+                && x < modules + QUIET_MODULES
+                && y < modules + QUIET_MODULES
+                && code[((x - QUIET_MODULES) as usize, (y - QUIET_MODULES) as usize)]
+                    == Color::Dark;
+            let level = if dark { 0 } else { 255 };
+            Rgba([level, level, level, 255])
+        });
+        let result = scan_pixels(pixels).unwrap();
+        assert_eq!(result["codes"].as_array().unwrap().len(), 1);
+        assert_eq!(result["codes"][0]["text"], text);
+        assert!(result["codes"][0]["version"].as_i64().unwrap() > 0);
+        assert!(
+            scan_pixels(RgbaImage::from_pixel(32, 32, Rgba([0, 0, 0, 0])))
+                .unwrap_err()
+                .to_string()
+                .contains("No QR code")
+        );
+    }
+
+    #[test]
+    fn owned_pixels_enforce_byte_and_dimension_limits_before_scanning() {
+        assert!(scan_pixels(RgbaImage::new(0, 1)).is_err());
+        assert!(
+            scan_pixels(RgbaImage::new(4097, 1))
+                .unwrap_err()
+                .to_string()
+                .contains("4096")
+        );
+        assert!(
+            scan_pixels(RgbaImage::new(4096, 1025))
+                .unwrap_err()
+                .to_string()
+                .contains("16 MiB")
+        );
+        let oversized_backing =
+            RgbaImage::from_raw(1, 1, vec![0; MAX_SCAN_RGBA_BYTES as usize + 4]).unwrap();
+        assert!(
+            scan_pixels(oversized_backing)
+                .unwrap_err()
+                .to_string()
+                .contains("16 MiB")
+        );
+    }
 }

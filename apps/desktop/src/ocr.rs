@@ -7,8 +7,7 @@ use std::ffi::OsString;
 #[cfg(any(unix, target_os = "windows"))]
 use std::path::Path;
 
-#[cfg(any(unix, target_os = "windows"))]
-const MAX_OCR_IMAGE_BYTES: u64 = 16 * 1024 * 1024;
+pub(crate) const MAX_OCR_IMAGE_BYTES: u64 = 16 * 1024 * 1024;
 #[cfg(any(unix, target_os = "windows"))]
 const MAX_OCR_PNG_BYTES: usize = 32 * 1024 * 1024;
 #[cfg(any(unix, target_os = "windows"))]
@@ -26,6 +25,11 @@ fn language(args: &[OsString]) -> Result<&str> {
     } else {
         "eng"
     };
+    validate_language(language)?;
+    Ok(language)
+}
+
+pub(crate) fn validate_language(language: &str) -> Result<()> {
     ensure!(
         !language.is_empty()
             && language.len() <= 64
@@ -37,7 +41,7 @@ fn language(args: &[OsString]) -> Result<&str> {
             }),
         "OCR language must contain at most 64 ASCII letters, digits, underscores or language separators (+)"
     );
-    Ok(language)
+    Ok(())
 }
 
 pub fn run(args: &[OsString]) -> Result<()> {
@@ -51,6 +55,29 @@ pub fn run(args: &[OsString]) -> Result<()> {
     {
         let pixels =
             app_core::load_editor_image_with_limit(Path::new(&args[0]), MAX_OCR_IMAGE_BYTES)?;
+        println!("{}", recognize_pixels(pixels, language)?);
+        Ok(())
+    }
+}
+
+pub(crate) fn recognize_pixels(
+    pixels: image::RgbaImage,
+    language: &str,
+) -> Result<serde_json::Value> {
+    validate_language(language)?;
+    #[cfg(not(any(unix, target_os = "windows")))]
+    {
+        let _ = pixels;
+        bail!("Headless OCR is currently supported on Unix and Windows only");
+    }
+    #[cfg(any(unix, target_os = "windows"))]
+    {
+        app_core::validate_image_size(pixels.width(), pixels.height())?;
+        ensure!(
+            u64::from(pixels.width()) * u64::from(pixels.height()) * 4 <= MAX_OCR_IMAGE_BYTES
+                && pixels.as_raw().len() as u64 <= MAX_OCR_IMAGE_BYTES,
+            "OCR image exceeds the 16 MiB RGBA limit"
+        );
         let input = crate::cli::frame(pixels).png_bytes()?;
         ensure!(
             input.len() <= MAX_OCR_PNG_BYTES,
@@ -60,11 +87,7 @@ pub fn run(args: &[OsString]) -> Result<()> {
         let text = engine::recognize(input, language)?;
         #[cfg(target_os = "windows")]
         let text = crate::ocr_windows::recognize(input, language)?;
-        println!(
-            "{}",
-            serde_json::json!({"text": text, "engine": "tesseract"})
-        );
-        Ok(())
+        Ok(serde_json::json!({"text": text, "engine": "tesseract"}))
     }
 }
 
@@ -337,6 +360,7 @@ mod tests {
     #[test]
     fn language_options_are_bounded_and_unambiguous() {
         for value in ["eng", "deu+eng", "chi_sim"] {
+            validate_language(value).unwrap();
             assert_eq!(
                 language(&["x.png".into(), "--language".into(), value.into()]).unwrap(),
                 value
@@ -352,11 +376,38 @@ mod tests {
             "eng\n",
             "ä",
         ] {
+            assert!(validate_language(value).is_err());
             assert!(language(&["x.png".into(), "--language".into(), value.into()]).is_err());
         }
         assert!(language(&["x.png".into(), "--language".into(), "x".repeat(65).into()]).is_err());
         assert!(language(&[]).is_err());
         assert!(language(&["x.png".into(), "--unknown".into(), "eng".into()]).is_err());
+    }
+
+    #[cfg(any(unix, target_os = "windows"))]
+    #[test]
+    fn owned_pixels_validate_before_starting_an_engine() {
+        assert!(
+            recognize_pixels(image::RgbaImage::new(1, 1), "../eng")
+                .unwrap_err()
+                .to_string()
+                .contains("OCR language")
+        );
+        assert!(recognize_pixels(image::RgbaImage::new(0, 1), "eng").is_err());
+        assert!(
+            recognize_pixels(image::RgbaImage::new(4097, 1024), "eng")
+                .unwrap_err()
+                .to_string()
+                .contains("16 MiB")
+        );
+        let oversized_backing =
+            image::RgbaImage::from_raw(1, 1, vec![0; MAX_OCR_IMAGE_BYTES as usize + 4]).unwrap();
+        assert!(
+            recognize_pixels(oversized_backing, "eng")
+                .unwrap_err()
+                .to_string()
+                .contains("16 MiB")
+        );
     }
 
     #[test]
