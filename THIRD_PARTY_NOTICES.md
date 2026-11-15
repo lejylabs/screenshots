@@ -10,6 +10,10 @@ The vendored glib 0.18.5 retains its upstream MIT license in
 Its two-line VariantStrIter safety backport and upstream commit are documented
 in `vendor/glib/LOCAL-PATCH.md`; the package version is unchanged.
 
+The vendored gpui-pre-reqwest 0.12.15 keeps its MIT and Apache-2.0 licenses.
+Its PEM-parser dependency migration is documented in
+`vendor/gpui-pre-reqwest/LOCAL-PATCH.md`.
+
 The selected embedded UI icons are provided by Lucide. Their notices follow.
 
 ISC License

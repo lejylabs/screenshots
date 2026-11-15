@@ -785,3 +785,40 @@ one-frame-at-a-time publication, and reject transparent JPEG through existing
 policy. Synthetic core/export fixtures and CLI rejection tests cover this path;
 no real screen is captured during automated checks. No new encoder, persisted
 setting, worker, stream or idle timer is added.
+
+### Remove obsolete PEM-parser dependency
+
+After the glib backport, migrate only gpui-pre-reqwest 0.12.15's three TLS PEM
+parsing sites to the already-resolved rustls-pki-types PEM API. Preserve certificate
+and CRL filtering and identity handling (certificate order, private-key formats,
+invalid/missing sections, rejection of recognized unrelated sections). Vendor the
+exact crate with a patch provenance note; remove rustls-pemfile from its manifest
+and enable pki-types for the shared TLS feature. Verify public TLS parsing with
+existing/synthetic fixtures and the workspace dependency graph. No TLS verification
+bypass, new backend or trust-store mutation is allowed. The objective is removing
+one genuinely unused/unmaintained graph node, not suppressing its advisory.
+
+Capture-sequence format verification passed 15 optimized unit tests and eight
+CLI tests; one native capture fixture remained excluded. Synthetic fixtures
+verify exact default PNG bytes, lossless WebP alpha/pixels, JPEG dimensions and
+quality reaching the encoder, transparency refusal, collisions and frame release.
+
+The complete post-glib/direct-ShareX workspace run passed 348 regular tests,
+48 opt-in cases excluded, all doctests passed. This run included updated source
+present during build; focused format tests provide the separately reported exact
+new-format coverage. Post-glib Clippy and the GNU Windows whole-app/test cross-check
+passed. No additional native runtime acceptance is inferred from these checks.
+
+
+PEM migration verification: nine Rustls-only and four native-default TLS tests
+passed optimized in an isolated test copy. Tests cover certificate/CRL filters,
+order/last-key semantics, invalid sections and retained error classes. The entire
+Windows GNU application/test check passed. `rustls-pemfile` is absent from the
+all-target dependency graph; `cargo deny` now reports eight unmaintained-package
+errors, down from nine. No advisory suppression or TLS trust bypass was added.
+
+Final focused-tranche check: the workspace passed again after the PEM migration
+and capture format changes: 348 regular tests, 48 opt-in cases excluded, all
+doctests passed. Clippy and Windows GNU application/tests check passed. Packaging
+logic passed five tests; project Markdown links remained valid. The pending
+release rebuild and native CI are separate from this source/test result.

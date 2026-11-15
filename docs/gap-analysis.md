@@ -1,6 +1,6 @@
 # Functional gap analysis: screenshots and ShareX
 
-## Current reconciliation: feature branch through b13e238 (2026-11-15)
+## Current reconciliation: feature branch through 381e00c (2026-11-15)
 
 The historical tables below are not the current delivery checklist. Relative to
 main 523bc3c, the feature branch adds the following **CLI/core subsets**:
@@ -32,7 +32,8 @@ store adapters and storage backup already existed at 523bc3c. A synthetic Linux
 Secret Service create/read/update/delete roundtrip now passed against the already
 accessible local store; macOS runtime and real provider acceptance remain open.
 The glib VariantStrIter defect has an exact upstream source backport; its
-version-based alert and nine unmaintained-package gates remain open. Implementation
+version-based alert and eight unmaintained-package gates remain open. The obsolete
+PEM parser dependency was removed through a scoped GPUI request-library patch. Implementation
 does not imply native acceptance. The latest CI result must be read separately
 from local synthetic tests. See [the delivery record](non-ui-delivery.md).
 

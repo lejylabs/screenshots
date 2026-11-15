@@ -197,3 +197,12 @@ regression also passed forward/reverse Unicode/empty-string iteration. This
 fixes the identified code defect without inventing a safe package version. The
 remote version-based glib alert and nine unmaintained-package deny errors remain
 explicitly unresolved; no advisory ignore was introduced.
+
+
+The same reviewer compared the gpui-pre-reqwest PEM migration to published
+0.12.15 and rustls-pemfile 2.2.0: no actionable difference in certificate/CRL
+filtering, errors, identity key selection, or unknown/ECH section handling. It
+confirmed required alloc/std feature wiring and API availability in pki-types
+1.9.0. The capture-sequence format follow-up also had no actionable finding.
+These are same-context follow-ups, not fresh rounds; executable evidence is
+recorded separately.
