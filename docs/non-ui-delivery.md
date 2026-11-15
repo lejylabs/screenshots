@@ -854,3 +854,56 @@ and returns unknown display metadata while retaining window_id. Enumeration's
 1,024-ID/current-pointer-X-screen limits are documented. Full optimized workspace
 verification passed 349 regular tests with 49 opt-in cases excluded; native
 fixture execution is separate. Other session/hardware gates remain open.
+
+### Continued dependency and workflow cleanup
+
+Replace `instant` with already-resolved `web-time` in vendored gpui-base and
+component 0.9.1. Both are exact std::time types on the supported native targets;
+change only crate-qualified imports/types and the two dependency declarations.
+Preserve features, application behavior and idle timers; verify native type/
+time semantics and compile checks rather than claim new resource performance.
+Wasm build support remains a separate check if its target/dependencies are absent.
+
+Extend the existing bounded offline recipe with region blur/pixelate operations
+using exported core rendering and PixelationGrid, applied to current flattened
+pixels in step order. Keep fixed existing algorithms, one current/output image,
+16-step/64-KiB recipe bounds and explicit final export. Document scratch costs,
+alpha/edge behavior and redaction irreversibility; reject invalid rectangles.
+Harden recipe open with the existing Unix nonblocking regular-file pattern.
+No new effect engine, UI workflow, runtime, idle work or network is introduced.
+
+The web-time migration passed 34 optimized isolated tests (UndoHistory, optional
+speech timing math and native std type identity), full Linux all-target checks,
+Clippy and Windows GNU all-target checks. The source diff is restricted to the
+21 crate-qualified path substitutions and two manifests, plus provenance notes.
+Wasm compilation was attempted but the target is not installed; it is not marked
+passed. `instant` is absent from the all-target lock graph and `cargo deny` now
+has seven unmaintained errors, down from eight. No ignore or new runtime was added.
+
+
+Workflow effects passed ten real-executable integration fixtures plus the
+killable FIFO replacement unit test. Independent alpha-aware oracles cover
+ordered blur/pixelation; two different secret inputs yield identical outputs
+after redaction and later effects. Source preservation, strict schema, bounds
+and no-overwrite checks pass. The codebase reviewer found no production defect;
+the example's step count was corrected to six. Full combined checks follow.
+
+### Macro diagnostic dependency migration
+
+Replace the abandoned proc-macro-error 1.x used by glib-macros 0.18.5 and
+GTK3-macros 0.18.2 with the maintained proc-macro-error3 3.1.1, using its actual
+namespace, default features disabled and syn2-error enabled. Vendor those exact
+small macro crates, change only dependency/namespace references, and keep stable
+Rust 1.100 diagnostic behavior. Do not substitute proc-macro-error2 (also
+unmaintained) or enable nightly-specific diagnostics. Verify positive GLib/GTK
+expansions plus malformed derive/template/closure inputs that must fail with
+useful errors rather than panic. Confirm the old graph nodes disappear and
+all application checks still pass. Compile-time dependency only; no runtime cost.
+
+
+Macro helper verification: valid GLib Enum/Variant/Properties roundtrips and a
+GTK CompositeTemplate file definition passed. Six intentionally invalid enum,
+closure and template forms failed with their expected primary-span diagnostics,
+without macro panics. Source review confirmed stable abort/cleanup semantics.
+The older helper and Syn 1 are absent from the graph, reducing unmaintained deny
+errors from seven to six. Application-wide compilation remains a separate gate.

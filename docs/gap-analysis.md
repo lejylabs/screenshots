@@ -1,6 +1,6 @@
 # Functional gap analysis: screenshots and ShareX
 
-## Current reconciliation: feature branch through 381e00c (2026-11-15)
+## Current reconciliation: feature branch through a5ec20f (2026-11-15)
 
 The historical tables below are not the current delivery checklist. Relative to
 main 523bc3c, the feature branch adds the following **CLI/core subsets**:
@@ -9,7 +9,7 @@ main 523bc3c, the feature branch adds the following **CLI/core subsets**:
   cross-monitor interactive selection remain open.
 - Finite interval still-capture sequences and one-shot RFC 3339 start times;
   persisted/repeating schedules, machine wake-up and UI controls remain open.
-- Offline image recipes, combine/compare/split, file pixel sampling and image
+- Offline image recipes including ordered blur/pixelation, combine/compare/split, file pixel sampling and image
   info, SHA256 file hashing and bounded PNG chunk inventory; editor tool
   integration, native screen color picker and general metadata inspection remain
   open.
@@ -32,8 +32,9 @@ store adapters and storage backup already existed at 523bc3c. A synthetic Linux
 Secret Service create/read/update/delete roundtrip now passed against the already
 accessible local store; macOS runtime and real provider acceptance remain open.
 The glib VariantStrIter defect has an exact upstream source backport; its
-version-based alert and eight unmaintained-package gates remain open. The obsolete
-PEM parser dependency was removed through a scoped GPUI request-library patch. Implementation
+version-based alert and six unmaintained-package gates remain open. The obsolete
+PEM parser, instant and proc-macro-error dependencies were removed through scoped
+GPUI/GTK patches. Implementation
 does not imply native acceptance. The latest CI result must be read separately
 from local synthetic tests. See [the delivery record](non-ui-delivery.md).
 

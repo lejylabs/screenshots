@@ -215,3 +215,19 @@ The reviewer checked current CLI/window-editor consumers for compatibility.
 Its remaining enumeration limits are explicit. Root/implementer native fixtures
 passed against a self-owned XWayland window; the final source passed 349 regular
 workspace tests and Clippy. This does not establish native Wayland capture.
+
+
+Web-time and workflow follow-up source review found no production defect. The
+21 upstream source changes are only instant:: to web_time:: substitutions;
+native std::time identity is preserved. Blur/pixelate use current flattened
+pixels, validated rectangles, existing alpha algorithms and bounded step-local
+scratch. Reviewer caught an outdated example result step count, now corrected.
+The FIFO regression runs in a killable child so a blocking regression is bounded.
+These are same-context reviews; no new fresh-context convergence is claimed.
+
+
+The macro diagnostic-helper follow-up found no actionable issue: all source
+changes are namespace substitutions, exact helper3.1.1 configuration matches Syn2,
+and stable abort/panic propagation and cleanup semantics match the original.
+Nightly auto-detection is deliberately not claimed. Positive and six negative
+compile fixtures were executed separately by the implementer.
