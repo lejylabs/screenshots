@@ -10,8 +10,8 @@ Implement the outstanding functionality collected in PLAN.md and
 docs/gap-analysis.md, without redesigning the UI. Use a feature branch,
 Conventional Commits, incremental pushes, fresh EGM reviewers and end-to-end
 tests. The user is away and cannot provide passwords, approvals or test input.
-Use existing credentials only. Shut down the workstation after saving the final
-work and reporting its state. Never confuse an unavailable native test with a
+Use existing credentials only. The user revoked shutdown on 2026-11-15:
+leave the workstation powered on while continuing implementation. Never confuse an unavailable native test with a
 passing test or an implemented helper with a complete product feature.
 
 The baseline is 0c4a455. Preserve the performance contract in PLAN.md: native
@@ -299,3 +299,119 @@ Source CI run: https://github.com/lejylabs/screenshots/actions/runs/43652730948
 (head `20452cdaba963be9162bbfacfdbced3579d7e14c`), still running at local handoff.
 The previous source run was canceled by the workflow concurrency rule after the
 measurement-test commit; it is not counted as passing.
+
+## Continuation (2026-11-15)
+
+The user requested continued implementation and explicitly revoked shutdown.
+`shutdown -c` completed; no scheduled systemd shutdown remains. The previous
+source CI completed: Linux passed, Windows failed during packaging, and macOS
+failed a storage test. Investigate those actual results before treating the
+three-platform delivery as complete.
+
+### Next execution slices
+
+1. Fix Windows packaging UTF-8 decoding explicitly and macOS SQLite no-follow
+   behavior for canonical system temporary directories. Preserve final-component
+   symlink rejection and live-WAL semantics. Re-run exact failing fixtures and CI.
+2. Add a separate read-only history-query API and CLI command: captures/uploads,
+   ID ascending/descending keyset pages, UTC date range and bounded text search.
+   Do not change existing UI queries or silently create/migrate databases.
+3. Add explicit versioned image workflow recipes: at most sixteen in-memory
+   crop/rotate/flip/resize/canvas/redaction operations, then one no-overwrite
+   output. Recipes cannot invoke processes, read extra files, upload, change
+   clipboard/history, or execute code. Exact schemas and fixtures are recorded
+   in workflows.md before acceptance.
+4. Add explicit stitched-desktop output from one admitted capture group. Combine
+   frozen RGBA images on their physical-pixel desktop bounds; reject overlapping
+   or contradictory geometry rather than silently producing a wrong mixed-DPI
+   image. Transparent gaps stay explicit. Admission checks the source sum and
+   final bounding-box bytes before allocating. Synthetic multi-monitor fixtures
+   prove negative-origin placement and failure behavior; native topology and
+   mixed-DPI acceptance remain separate.
+
+5. Add a finite explicit still-capture sequence, exposed as
+   `capture-sequence display ID DIRECTORY --count N --interval-ms MS`.
+   Count is 1–1000 and the post-save wait is 100–3,600,000 ms. The directory
+   must already exist and be empty; filenames use one invocation UUID and index.
+   One image is captured, saved and released before waiting for the next; no
+   catch-up backlog, history, clipboard, upload or resident timer. Cancellation
+   retains completed files and may leave the ordinary interrupted-export part.
+   Create `apps/desktop/src/capture_sequence.rs`,
+   `apps/desktop/tests/capture_sequence.rs` and `docs/capture-sequence.md`; modify
+   `apps/desktop/src/main.rs`, `apps/desktop/src/cli.rs`,
+   `apps/desktop/Cargo.toml` and `Cargo.lock`
+   only for module dispatch and reuse of the existing uuid dependency. Native
+   capture acceptance is an explicit opt-in test, never part of routine tests.
+
+These slices extend the non-UI surface. No screen recording, native scrolling,
+or interactive selection capability is claimed until implemented and tested.
+The workstation must remain on; shutdown is no longer authorized.
+
+File assignments for this tranche (repository-relative):
+
+- Modify `scripts/package.py`, `scripts/test-package.py`,
+  `scripts/test-package-smoke.py`, `crates/app-core/src/storage.rs`,
+  `docs/packaging.md` and `docs/storage-recovery.md` for the CI repairs.
+- Create `crates/app-core/src/history_query.rs`,
+  `apps/desktop/tests/history_query.rs` and `docs/history-queries.md`.
+  Modify `crates/app-core/src/history.rs` to expose the existing FTS parser,
+  `crates/app-core/src/lib.rs` for exports and `apps/desktop/src/cli.rs` for routing.
+- Create `apps/desktop/src/workflow.rs`, `apps/desktop/tests/workflow.rs` and
+  `docs/workflows.md`. Modify `apps/desktop/src/main.rs` for module registration,
+  `apps/desktop/src/cli.rs` for routing, `apps/desktop/src/image_tools.rs` for
+  shared image helpers and `apps/desktop/Cargo.toml`/`Cargo.lock` for serde.
+- Create `crates/app-core/src/desktop_composite.rs` and
+  `docs/desktop-composite.md`. Modify `crates/app-core/src/lib.rs` and
+  `apps/desktop/src/cli.rs` to expose and route the explicit capture operation.
+
+Existing UI views, capture backends and schema migrations remain unmodified by
+these assignments.
+
+History CLI contract: `screenshots history-query captures|uploads DATABASE`
+with optional `--order newest|oldest`, `--cursor ID`, `--from YYYY-MM-DD`,
+`--through YYYY-MM-DD`, `--search TEXT`, `--source all|captures|imports`.
+Reject repeated/unknown flags. Upload queries reject non-all source filters.
+Output contains `entries`, `has_more`, `next_cursor`; paths are validated UTF-8,
+upload URLs remain inert strings. Entry fields match each public core row type.
+The command never performs migration and uses the same explicit error/status
+contract as other headless commands. Tests invoke the real binary against
+synthetic databases, with no image files or existing user history.
+
+6. Add `screenshots upload-images PROFILE IMAGE...`, an explicit sequential batch
+   for 1–20 PNG/JPEG/WebP files. Create `apps/desktop/src/upload_batch.rs`,
+   `apps/desktop/tests/upload_batch.rs` and `docs/upload-batch.md`; modify the
+   existing desktop main/CLI only for dispatch. Preflight profile/count/regular
+   files and encoded extent before any upload, then decode/encode/upload one
+   input at a time. Each confirmed result is flushed as NDJSON, so earlier links
+   remain visible if a later upload fails. No implicit history, clipboard,
+   retries, remote deletion or disk image intermediate. This uses the existing
+   uploader/credential safeguards and does not add provider or arbitrary-file
+   support. Duplicate inputs explicitly mean repeated uploads.
+
+### Continuation evidence
+
+- Both actual prior CI causes were corrected, with five packaging regressions
+  passing and a linked-ancestor live-WAL storage regression added. The Linux
+  optimized core run passed 116 tests at that checkpoint. Native rerun results
+  remain distinct from the local synthetic regression.
+- New HistoryQuery tests passed 7 cases including 10,000 records and cooperative
+  cancellation; real executable history query passed 1, image workflow passed 7,
+  upload-images passed 5 local-loopback cases. No real remote service or desktop
+  capture was used. Later full-workspace evidence follows below.
+- The explicit history timing fixture passed: new ID query p95 0.111 ms, existing
+  ID query 0.080 ms, FTS 0.215 ms and full no-match upload scan 2.708 ms. These are warm
+  development database observations; unchanged UI query paths and the unindexed
+  scan deadline remain documented in history-queries.md.
+- Every new functional slice and each CI repair was committed and pushed with
+  a Conventional Commit. Original unfinished capability families stay open.
+
+- Final continuation workspace run passed all 257 regular tests (45 opt-in tests
+  excluded), including the five upload-batch tests; all doctest phases passed.
+  Workspace Clippy passed with existing warnings, formatting and whitespace
+  checks passed. The earlier overlapping-build doctest artifact failure was
+  reproduced as infrastructure churn, not suppressed: the final stable run
+  completed successfully. Native capture sequence/stitched acceptance remains
+  unrun, because these commands would read the actual desktop.
+- Source head CI is running at
+  https://github.com/lejylabs/screenshots/actions/runs/43698698480 ; no native
+  result is claimed until that run completes. The PC stays on.

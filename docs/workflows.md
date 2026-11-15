@@ -103,3 +103,11 @@ copy source bytes or retain source metadata. Extensions are case-insensitive;
 `.jpg` and `.jpeg` both report `"jpg"`. JPEG quality defaults to 90. Missing
 output parent directories are created by the shared exporter. Errors produce
 stderr with exit 1 and no success JSON.
+
+A short Linux optimized process observation (release-fast, five warm samples)
+used a solid 3840×2160 RGBA input. Convert-only median was 8.06 ms and a recipe
+with two cancelling horizontal flips was 14.33 ms; peak RSS observations were
+45.17 MiB and 44.97 MiB respectively. These include process startup and export,
+are not controlled reference-hardware latency measurements, and do not prove
+a memory improvement. The recipe does additional requested work; no idle cost
+or GPU resources were added.

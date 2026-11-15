@@ -20,6 +20,14 @@ bypass GPUI and never start uploads or clipboard writes implicitly.
 See [delivery status and open work](docs/non-ui-delivery.md),
 [image tools](docs/image-tools.md), [QR](docs/qr.md), [OCR](docs/ocr.md),
 [storage recovery](docs/storage-recovery.md) and [portable packaging](docs/packaging.md).
+Additional commands support strict [offline image recipes](docs/workflows.md),
+[filtered read-only history](docs/history-queries.md),
+[finite interval captures](docs/capture-sequence.md),
+[physical desktop composition](docs/desktop-composite.md) and
+[sequential image upload batches](docs/upload-batch.md). Stitched native desktop
+capture currently requires Windows and 100% scaling; capture sequences and upload
+batches are explicit bounded commands. None starts from merely opening the app.
+
 Headless utilities do not imply corresponding editor UI or complete ShareX parity.
 
 ## UI implementation

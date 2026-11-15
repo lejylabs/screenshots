@@ -54,3 +54,31 @@ archive checks passed as recorded in non-ui-delivery.md. Native GitHub CI remain
 a separate remote gate; pending jobs are not acceptance evidence. A subsequent
 ignored trusted-fixture WebP timing test adds measurement evidence without
 changing production behavior.
+
+## Continuation review (2026-11-15)
+
+The user explicitly revoked shutdown; leave the workstation powered on. Actual
+prior CI finished: Linux passed, Windows packaging failed because Python decoded
+UTF-8 metadata as cp1252, and macOS live-WAL backup rejected `/var` symlink
+ancestry through SQLite NOFOLLOW. Fixes preserve native no-replace and final-file
+symlink protection; five packaging regressions and the optimized core suite pass
+locally. Native CI rerun remains the cross-platform verification step.
+
+`continuation_plan_review` completed read-only: missing exact file allowlists and
+ignored per-frame topology contradictions were Major findings. Exact paths are
+now listed, and native stitched capture requires each frame's verified geometry
+to match the admitted display. Rotation and pure-vs-native scale contracts are
+explicit; tests cover missing and mismatched geometry.
+
+`workflow_review` completed read-only: no implementation blocker found. Contract
+Majors concerned no-op recipes re-encoding, exact JPEG/extension/error behavior,
+and physical-coordinate assumptions. These are documented. Seven real workflow
+process tests pass, as does the new history-query process fixture. Source-review
+completion does not replace native capture or platform runtime tests.
+
+The same `workflow_review` follow-up covered interval capture and image batches.
+It found documentation mismatches about recreated output directories and native
+allocation limits, plus missing final-summary failure context and PUT target
+reuse. Documentation now states the exporter behavior/native limits and repeated
+PUT preconditions; final summary failure explicitly preserves the remote success
+count. This same-agent follow-up is not counted as a fresh convergence round.
