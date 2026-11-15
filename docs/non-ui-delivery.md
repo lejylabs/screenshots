@@ -946,3 +946,14 @@ Combined verification after all helper migrations and workflow changes passed:
 Workspace Clippy and Windows GNU application/test compilation passed. These are
 source/platform-build checks, not native Windows or reference-hardware acceptance.
 The latest optimized release is rebuilt separately for archive smoke verification.
+
+Latest release verification (after Linux window/workflow and dependency patches):
+optimized release built successfully in 3m 59s. The 87 MiB portable archive
+passed checksum/extraction/help/version smoke checks. Actual release execution
+passed ordered redact/blur/pixelate output, existing-output refusal, source
+preservation and missing-X11 refusal, with no user-state writes. Archive SHA256:
+`a67e7acbc0b1f7c9f84ceacb4c01393f9ff7551f379f237a01e63ff95c408c5b`;
+binary SHA256:
+`d2dd7a0f4bd1da098175edce352af32ac234ae49a4bde5dfe95baafadd96ccd6`.
+Native branch CI is still running separately; no pending result is called passed.
+The full requested backlog remains open and the PC stays on.
