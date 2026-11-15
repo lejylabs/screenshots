@@ -49,6 +49,8 @@ main 523bc3c, the feature branch adds the following **CLI/core subsets**:
   native Windows runtime acceptance, macOS/Wayland recording and controls remain open.
   Per-invocation recording cursor inclusion/exclusion is available; still-image
   cursor composition remains open.
+- Offline GIF assembly from bounded still images, with explicit timing,
+  quantization and binary-alpha rules; this does not add recording or audio.
 - Exact assembly of supplied overlapping screenshots; live scrolling control,
   fixed-header handling and fuzzy matching remain open.
 - Optional installed-Tesseract file OCR on Windows with Job Object cleanup;

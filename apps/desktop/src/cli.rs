@@ -59,6 +59,7 @@ Headless commands (no desktop UI, clipboard writes or implicit uploads):
   screenshots ocr-region DISPLAY X Y WIDTH HEIGHT [--language LANG]
   screenshots qr-region DISPLAY X Y WIDTH HEIGHT
   screenshots workflow RECIPE INPUT OUTPUT
+  screenshots gif OUTPUT.gif --delay-ms N INPUT INPUT... (2–16 images)
   screenshots stitch-scroll OUTPUT MIN_OVERLAP INPUT INPUT [INPUT...]
   screenshots record x11|gdigrab|test OUTPUT.mkv|OUTPUT.gif --seconds N --fps N --width N --height N
       [--x X --y Y] [--cursor show|hide]
@@ -145,6 +146,7 @@ pub fn run(args: Vec<OsString>) -> Result<bool> {
             crate::region_analysis::run(&args[1..], crate::region_analysis::Analysis::Qr)?
         }
         "workflow" => crate::workflow::run(&args[1..])?,
+        "gif" => crate::gif_assembly::run(&args[1..])?,
         "stitch-scroll" => crate::scroll_stitch::run(&args[1..])?,
         "record" => crate::record::run(&args[1..])?,
         "upload-images" => crate::upload_batch::run(&args[1..])?,

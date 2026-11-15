@@ -303,3 +303,16 @@ not new independent Goldfish contexts or new two-round convergence claims.
 
 Test totals, artifact hashes and remaining native gates are recorded in the
 [delivery log](non-ui-delivery.md); review findings are not test results.
+
+## Offline GIF assembly review (2026-11-15)
+
+The fresh-context `gif_readiness` review found a possible transparent-palette
+collision and missing result/forced-termination contracts. The implementation
+now checks every final palette index against the source alpha mask; the
+documentation states exact JSON output and possible abandoned staging files.
+An independent FFmpeg test then found opaque background disposal. Reserving an
+unused transparent index on opaque frames fixed the observed defect; frames
+using all 256 indices are rejected. A same-context follow-up requested explicit
+255/256-color boundaries and a flush failure through the real atomic writer.
+Those tests were added and passed. The follow-up is not a fresh convergence
+round or a native-player acceptance claim.

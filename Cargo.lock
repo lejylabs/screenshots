@@ -224,6 +224,7 @@ dependencies = [
  "crc32fast",
  "dbus-secret-service",
  "directories",
+ "gif 0.14.2",
  "global-hotkey",
  "hmac",
  "image",

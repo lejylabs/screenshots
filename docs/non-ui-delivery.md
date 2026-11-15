@@ -1659,3 +1659,36 @@ package smoke. Archive SHA256
 binary SHA256
 `82367b73111a62a8301a18595c97e782241563cb6260c0662326ec85e1998917`.
 All 55 project Markdown files had valid local links during the reconciliation.
+
+### Offline GIF assembly (in progress, 2026-11-15)
+
+Create one play-once GIF from 2–16 supplied images, without FFmpeg or recording.
+Frames share dimensions, use exact 10 ms timing increments and stay within
+1280×720/64 MiB aggregate bounds. Decode/quantize/write one frame at a time;
+cap output before writes and explicitly finish the trailer before publication.
+The [GIF contract](gif-assembly.md) documents palette loss and alpha limits.
+Fresh-context review found a possible transparent-palette collision after
+quantization; verify every index against the source alpha mask and reject unsafe
+results. The same review required precise JSON and forced-termination cleanup
+limits; those were documented. Four core tests passed after the owned-writer
+borrow fix, including output/trailer errors and quantized transparency.
+Clippy and Windows cross-compilation passed; complete executable/release tests
+continue against this final implementation.
+
+Independent FFmpeg decoding exposed an opaque background after an opaque first
+frame. Each opaque frame now reserves an unused transparent palette index for
+background disposal; a fully occupied 256-index palette is rejected without
+publication. The final mask check still rejects quantized alpha collisions.
+Focused tests cover exact 255-color success, 256-color rejection and a failing
+flush through the real atomic writer. The two executable tests and the separate
+three-frame FFmpeg check passed against the updated optimized executable.
+Final complete workspace and release verification are recorded below when done.
+
+The native release built in 2m26s and passed the independent FFmpeg check and
+archive smoke test. Six packaging-unit checks also passed. Archive SHA256
+`1d92d71fae41a63661410bdfa5961c4085875222323ea6b81f345a789a6d65e8`;
+binary SHA256
+`c1f2a67a8d0414ad828537031c1d3094731f22206fcd0590475b17adae0ae4ce`.
+A three-run synthetic 1280×720 observation measured median 0.02 s / 16,896 KiB
+peak RSS for two frames and 0.13 s / 17,164 KiB for sixteen frames. This is a
+coarse development observation, not a private-memory/reference-hardware claim.

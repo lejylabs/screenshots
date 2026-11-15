@@ -7,6 +7,7 @@ mod capture_regions;
 mod capture_sequence;
 mod capture_task;
 mod cli;
+mod gif_assembly;
 mod hash_file;
 mod history_audit;
 mod history_manage;
