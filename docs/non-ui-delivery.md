@@ -1776,3 +1776,58 @@ The final whole-workspace rerun passed 511 regular optimized tests, with
 51 opt-in cases excluded and all doctests passing. Final Clippy, formatting
 and Windows GNU test compilation passed. No production change was needed for
 the dense-QR scanner limitation; it remains disclosed above.
+
+### Cancellable history thumbnails and bounded job admission (in progress)
+
+Replace only the existing RGBA thumbnail reduction with a cancellation-aware
+specialization of the pinned image 0.25.10 math. The existing page/preview
+signals can then stop obsolete pixel work. Fresh-context review also identified
+that page clearing forgets a still-running job and direct Quit can bypass its
+completion guard; retain admission until completion and include that job in
+both Quit paths. This changes lifecycle control, not UI design or controls.
+The [contract](image-cancellation.md) retains exact pixels, fixed memory bounds,
+existing decode limitations and upstream license attribution. Tests are pending.
+
+The five focused core fixtures passed, including exact upstream-oracle pixels,
+256 MiB admission and deterministic cancellation within 4096 sampled pixels.
+The first attempt exposed a test-only assumption that all source coordinates
+are visited at extreme dimensions; pinned f32 sampling can skip coordinates,
+so the test now checks actual sampled work and exact cancellation bounds.
+Clippy and Windows GNU compilation passed. The native release built in 2m26s
+and passed package smoke. Archive SHA256
+`370b70b9fd86756b44f4e244eff8914c6c2cf5fee42332f5fce0fc87ded97a5f`;
+binary SHA256
+`940487ca877253f511e84c5935d3ee2ca622c999802d5f0432846e9a80431c33`.
+Lifecycle tests and production-equivalent performance evidence are pending.
+
+Both deterministic GPUI lifecycle tests passed: repeated clear/search/hide/
+reopen retains the actual queued job, discards its obsolete result and admits
+the latest page after completion; both resident and window-only Quit cancel
+and wait for that worker. This is control-state verification with synthetic
+files, not native window/presentation acceptance.
+
+The production-equivalent atomic-flag benchmark exposed an 81% regression
+in the initial per-pixel control loop (8.13 ms vs 4.49 ms median at 4K).
+The implementation now sums row slices in bounded chunks and checks the flag
+between chunks, retaining the 4096-sample bound. All five core fixtures passed
+again. Ten measured interleaved samples after two warmups gave upstream/new
+median 4.443/4.533 ms and p95 4.495/4.612 ms (about 2–3% overhead), with exact
+pixels. This small development observation is not reference-hardware acceptance.
+End-to-end PNG decode plus thumbnail measured 65.25 ms median over five warm
+samples; decoding alone was 59.97 ms. Native decode remains uninterruptible.
+A full-run test-fixture directory collision was separately fixed with UUID
+names; final whole-workspace and artifact checks follow below.
+
+The optimized final release rebuilt in 2m27s and passed archive smoke. Archive
+SHA256 `5b27370bbbd60250f701666968deee5fa4058f06510715b938f619464006dcce`;
+binary SHA256
+`a812895554a3b17609b236ce32458c21134532502529e49b56e2c08fb996c639`.
+Three isolated end-to-end measurement processes passed with median peak RSS
+75,300 KiB; this includes source generation and five decode/thumbnail/editor
+iterations, not just the retained 360,000-byte thumbnail. The raw timing and
+process samples are in `target/verification/thumbnail-performance.json`.
+
+The final whole-workspace run passed 518 regular optimized tests with 52 opt-in
+cases excluded and all doctests passing. The new opt-in case is the synthetic
+thumbnail benchmark, which was also run explicitly as recorded above. Final
+Clippy, formatting and Windows GNU test compilation passed.

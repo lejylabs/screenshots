@@ -336,3 +336,14 @@ requires an object before decoding. The reviewer also corrected an unreachable
 QR-capacity test assumption and requested alternatives/build phases. These
 were resolved. Same-context follow-up found no new blocker; actual renderer
 and executable results are in the delivery record.
+
+## Thumbnail cancellation review (2026-11-15)
+
+Fresh-context `thumbnail_cancel_goldfish` verified the pinned dimension/window
+math and identified an existing admission gap: clearing a page discarded the
+active thumbnail slot before its worker finished. Initial Quit checks also
+omitted that slot. The slice therefore retains the slot until matching
+completion and cancels/waits in both Quit paths, without changing rendering.
+The reviewer required behavioral cancellation fixtures and production-equivalent
+atomic flag reads plus raw samples in performance measurements. These were
+added; runtime results remain separate in the delivery log.

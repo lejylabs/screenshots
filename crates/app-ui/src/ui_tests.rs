@@ -1671,6 +1671,186 @@ fn library_decodes_visible_page_thumbnails_and_releases_them(cx: &mut TestAppCon
 }
 
 #[gpui::test]
+fn library_thumbnail_admission_survives_refresh_hide_and_reopen(cx: &mut TestAppContext) {
+    let handle = open_workspace(cx);
+    let root = std::env::temp_dir().join(format!(
+        "screenshots-thumbnail-admission-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir(&root).unwrap();
+    let database = root.join("history.sqlite3");
+    for name in ["first.png", "second.png"] {
+        let path = root.join(name);
+        image::RgbaImage::from_pixel(2, 3, image::Rgba([7, 20, 110, 255]))
+            .save(&path)
+            .unwrap();
+        app_core::record_saved_capture(&database, &path).unwrap();
+    }
+    let entries = app_core::capture_history_page(&database, None).unwrap();
+    let first = entries
+        .iter()
+        .find(|entry| entry.path.ends_with("first.png"))
+        .unwrap()
+        .clone();
+    let second = entries
+        .iter()
+        .find(|entry| entry.path.ends_with("second.png"))
+        .unwrap()
+        .clone();
+    // No scheduler ticks: the real thumbnail request remains queued throughout these changes.
+    let cancel = handle
+        .update(cx, |this, _, cx| {
+            this.history_database = Some(database);
+            this.history_visible = true;
+            this.history_entries = vec![first.clone()];
+            this.request_history_thumbs(cx);
+            let cancel = this.history_thumb_cancel.clone().unwrap();
+            for _ in 0..3 {
+                this.clear_history_thumbs(cx);
+                this.request_history_thumbs(cx);
+                assert_eq!(this.history_thumb_loading, Some(first.id));
+                assert!(Arc::ptr_eq(
+                    this.history_thumb_cancel.as_ref().unwrap(),
+                    &cancel
+                ));
+            }
+            this.set_history_query("first".into(), cx);
+            this.set_history_query("second".into(), cx);
+            this.hide_history(cx);
+            this.history_visible = true;
+            this.set_history_query("second".into(), cx);
+            this.request_history_thumbs(cx);
+            assert!(cancel.load(std::sync::atomic::Ordering::Relaxed));
+            assert_eq!(this.history_thumb_loading, Some(first.id));
+            assert!(Arc::ptr_eq(
+                this.history_thumb_cancel.as_ref().unwrap(),
+                &cancel
+            ));
+            cancel
+        })
+        .unwrap();
+    let mut saw_next = false;
+    for _ in 0..1000 {
+        if !cx.dispatcher.tick(false) {
+            break;
+        }
+        handle
+            .update(cx, |this, _, _| {
+                assert!(!this.history_thumbs.contains_key(&first.id));
+                if this.history_thumb_loading == Some(second.id) {
+                    saw_next = true;
+                    assert!(!Arc::ptr_eq(
+                        this.history_thumb_cancel.as_ref().unwrap(),
+                        &cancel
+                    ));
+                }
+            })
+            .unwrap();
+    }
+    cx.run_until_parked();
+    handle
+        .update(cx, |this, _, cx| {
+            assert!(
+                saw_next,
+                "The canceled completion did not admit the latest thumbnail"
+            );
+            assert!(this.history_thumb_loading.is_none());
+            assert!(this.history_thumb_cancel.is_none());
+            assert_eq!(
+                this.history_thumbs.keys().copied().collect::<Vec<_>>(),
+                vec![second.id]
+            );
+            assert!(this.history_thumb_failed.is_empty());
+            assert_eq!(this.history_entries.len(), 1);
+            assert_eq!(this.history_entries[0].id, second.id);
+            this.hide_history(cx);
+        })
+        .unwrap();
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[gpui::test]
+fn library_thumbnail_quit_cancels_and_waits_for_the_queued_worker(cx: &mut TestAppContext) {
+    for resident in [false, true] {
+        let handle = open_workspace(cx);
+        let path = std::env::temp_dir().join(format!(
+            "screenshots-thumbnail-quit-{}-{}-{resident}.png",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        image::RgbaImage::from_pixel(2, 3, image::Rgba([7, 20, 110, 255]))
+            .save(&path)
+            .unwrap();
+        let cancel = handle
+            .update(cx, |this, _, cx| {
+                this.history_visible = true;
+                this.history_entries = vec![app_core::HistoryEntry {
+                    id: 42,
+                    path: path.clone(),
+                    width: 2,
+                    height: 3,
+                    created_at: "fixture".into(),
+                }];
+                this.request_history_thumbs(cx);
+                this.history_thumb_cancel.clone().unwrap()
+            })
+            .unwrap();
+        if resident {
+            cx.update_window(handle.into(), |view, _, cx| {
+                let view = view.downcast::<gpui::base::Root>().unwrap();
+                let controller = view
+                    .read(cx)
+                    .view()
+                    .clone()
+                    .downcast::<CaptureWorkspace>()
+                    .unwrap();
+                cx.set_global(ResidentController(controller));
+            })
+            .unwrap();
+        }
+        cx.update(close_application);
+        handle
+            .update(cx, |this, _, _| {
+                assert!(this.quitting);
+                assert!(
+                    this.capture_status
+                        .starts_with("Quitting: waiting for active work")
+                );
+                assert_eq!(this.history_thumb_loading, Some(42));
+                assert!(Arc::ptr_eq(
+                    this.history_thumb_cancel.as_ref().unwrap(),
+                    &cancel
+                ));
+                assert!(cancel.load(std::sync::atomic::Ordering::Relaxed));
+            })
+            .unwrap();
+        cx.run_until_parked();
+        handle
+            .update(cx, |this, window, _| {
+                assert!(this.history_thumb_loading.is_none());
+                assert!(this.history_thumb_cancel.is_none());
+                assert!(this.history_thumbs.is_empty());
+                assert!(this.history_thumb_failed.is_empty());
+                window.remove_window();
+            })
+            .unwrap();
+        if resident {
+            cx.update(|cx| {
+                cx.remove_global::<ResidentController>();
+            });
+        }
+        std::fs::remove_file(path).unwrap();
+    }
+}
+
+#[gpui::test]
 fn upload_setup_validates_without_network_and_discards_closed_form_results(
     cx: &mut TestAppContext,
 ) {

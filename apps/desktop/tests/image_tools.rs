@@ -10,12 +10,8 @@ struct Fixture(PathBuf);
 impl Fixture {
     fn new() -> Self {
         let root = std::env::temp_dir().join(format!(
-            "screenshots-image-tools-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
+            "screenshots-image-tools-{}",
+            uuid::Uuid::new_v4()
         ));
         std::fs::create_dir(&root).unwrap();
         Self(root)

@@ -411,10 +411,7 @@ pub fn load_png_thumbnail(
     anyhow::ensure!(!cancelled(), "Preview canceled");
     let source = load_saved_png(path)?;
     anyhow::ensure!(!cancelled(), "Preview canceled");
-    let (width, height) = (source.width().min(400), source.height().min(240));
-    let thumbnail = image::DynamicImage::ImageRgba8(source)
-        .thumbnail(width, height)
-        .into_rgba8();
+    let thumbnail = crate::history_thumbnail::history_thumbnail_rgba(&source, &cancelled)?;
     anyhow::ensure!(!cancelled(), "Preview canceled");
     Ok(thumbnail)
 }
@@ -938,16 +935,16 @@ mod tests {
             assert!(thumbnail.pixels().all(|pixel| pixel.0 == [11, 22, 33, 90]));
             assert_eq!(std::fs::read(&path)?, before);
         }
-        for cancel_at in [2, 3] {
+        for cancel_at in [2, 3, 4] {
             let calls = std::cell::Cell::new(0);
             assert!(
                 load_png_thumbnail(&path, || {
                     calls.set(calls.get() + 1);
-                    calls.get() == cancel_at
+                    calls.get() >= cancel_at
                 })
                 .is_err()
             );
-            assert_eq!(calls.get(), cancel_at);
+            assert!(calls.get() >= cancel_at);
         }
         std::fs::write(&path, b"invalid PNG")?;
         assert!(load_png_thumbnail(&path, || false).is_err());

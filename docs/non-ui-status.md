@@ -4,9 +4,11 @@ Date: 2026-11-15
 Scope: the user's complete major-feature list, with final GPUI redesign and new
 UI controls excluded. The workstation stays on. The full backlog is **open**.
 
-Snapshot: branch `feat/non-ui-delivery`, committed implementation HEAD `bc37362`,
-including GIF implementation `485386e` and TIFF input `bc37362`. “Delivered
-subset” means an existing CLI/core path, not completion of
+Snapshot: branch `feat/non-ui-delivery`, committed implementation HEAD `17ee7ae`,
+including GIF implementation `485386e`, TIFF input `bc37362` and link-result
+formatting/QR `17ee7ae`. Thumbnail cancellation and admission changes are in
+progress in the working tree. “Delivered subset” means an existing CLI/core
+path, not completion of
 the corresponding product family or native acceptance. Evidence belongs to the
 named build and fixture. No new tests, builds, network calls or captures were
 performed to prepare this checklist.
@@ -30,9 +32,20 @@ performed to prepare this checklist.
   including all seven TIFF core fixtures, with 51 opt-in cases excluded and
   all doctests passing. Implementation commit `bc37362` is pushed.
   [TIFF contract](tiff-input.md), [current evidence](non-ui-delivery.md#bounded-truecolor-tiff-input-in-progress-2026-11-15).
-- [ ] Native CI for `bc37362` was queued on the latest check; the preceding GIF
-  run was still in progress. Neither result is passed evidence. See the
-  [current TIFF run](https://github.com/lejylabs/screenshots/actions/runs/43731771823).
+- [x] Link-result formatting/QR: final rerun passed 511 regular optimized tests,
+  51 opt-in cases excluded, all doctests passed; final Clippy, formatting and
+  Windows GNU test compilation passed. The release passed independent
+  CommonMark/HTML href and label checks, QR decoding and package smoke.
+  The earlier dense-QR scanner failure is disclosed in the
+  [delivery evidence](non-ui-delivery.md); it was not counted as a pass.
+- [ ] Thumbnail cancellation is in progress: stop obsolete reduction work,
+  retain the active job's admission until completion, and make both Quit paths
+  wait for that completion. This repairs control flow without changing UI
+  design or adding controls. Tests remain pending at this snapshot.
+  [Contract](image-cancellation.md).
+- [ ] Read native CI for exact head `17ee7ae` before claiming it passed. The
+  earlier `bc37362` run was queued at its recorded check; its current state was
+  not queried for this documentation update. [Recorded TIFF run](https://github.com/lejylabs/screenshots/actions/runs/43731771823).
 
 ## Delivered CLI/core subsets
 
@@ -44,9 +57,9 @@ separates new headless/core coverage from the remaining workflows below.
 | Everyday capture | Windows primary/chosen/active display, selected/active window, exact/repeat region; six configurable capture bindings; saved 1–60-second UI countdown, output profiles and per-task overrides; up to 16 named rectangles requiring explicit monitor choice. [PLAN implementation details](../PLAN.md#session-handoff--start-here-2026-11-12), [hotkeys](hotkeys.md). |
 | Multi-output and timing | Windows stitched desktop CLI at 100% scale; `capture-regions` takes 1–16 crops from one snapshot per selected display; finite display sequences, explicit one-shot start time, PNG/JPEG/WebP and optional lossy WebP. `capture-task` composes display/window/region → recipe → final save → optional explicit upload. [Desktop](desktop-composite.md), [regions](capture-regions.md), [sequences](capture-sequence.md), [tasks](capture-task.md). |
 | Image tools | Conversion/rotation/flips/downscale, exact nearest-neighbour upscaling, padding/background/watermark, combine/compare/split, exact row/column removal, image dimensions/pixel sampling and SHA256 hash/check. [Tools](image-tools.md), [collections](image-collection.md), [strip removal](strip-removal.md), [info](image-info.md), [hash](file-hashes.md). |
-| Image formats | Shared PNG/JPEG/WebP and narrow truecolor BMP input; PNG/JPEG/lossless WebP outputs, explicit lossy WebP, CLI-only BMP and straight-alpha TIFF output. Narrow classic RGB8/straight-RGBA8 uncompressed TIFF input is the current finishing slice above. GIF assembly is play-once, 2–16 images, binary alpha with unsafe/full palette rejection. [BMP input](bmp-input.md), [BMP output](bmp-export.md), [TIFF output](tiff-export.md), [lossy WebP](lossy-webp.md), [GIF](gif-assembly.md). |
+| Image formats | Shared PNG/JPEG/WebP and narrow truecolor BMP/classic uncompressed RGB8 or straight-RGBA8 TIFF input; PNG/JPEG/lossless WebP outputs, explicit lossy WebP, CLI-only BMP and straight-alpha TIFF output. GIF assembly is play-once, 2–16 images, binary alpha with unsafe/full palette rejection. [BMP input](bmp-input.md), [BMP output](bmp-export.md), [TIFF input](tiff-input.md), [TIFF output](tiff-export.md), [lossy WebP](lossy-webp.md), [GIF](gif-assembly.md). |
 | Shared editing foundation | Crop, drawing/text/pen/number/highlight/spotlight, blur/pixelation/redaction, bounded metadata undo, selection/movement/resize/duplicate/drawing order, and rotation/flips before annotations. Text has multiline, discrete sizes and Bold/Italic; monochrome text emoji are not inserted emoji objects. [PLAN editor details](../PLAN.md#phase-4--image-editor). |
-| Sharing | Generic bounded POST/PUT, image and arbitrary-file sequential batches, named profiles and per-task destination defaults, explicit finalized-pixel upload, supported `.sxcu` subset, bounded JSON/text/header/regex/XML results and thumbnail/deletion links. S3-compatible signed create-only single-object PUT exists, including R2-style endpoint/region configuration. [Image batches](upload-batch.md), [file uploads](file-uploads.md), [S3](s3-uploads.md). |
+| Sharing | Generic bounded POST/PUT, image and arbitrary-file sequential batches, named profiles and per-task destination defaults, explicit finalized-pixel upload, supported `.sxcu` subset, bounded JSON/text/header/regex/XML results and thumbnail/deletion links. S3-compatible signed create-only single-object PUT exists, including R2-style endpoint/region configuration. Standalone `link` formats one upload-result object as plain/Markdown/HTML or saves its URL as QR; it performs no upload or clipboard action. [Image batches](upload-batch.md), [file uploads](file-uploads.md), [S3](s3-uploads.md), [link results](upload-results.md). |
 | Privacy and library | Pixel-only edited exports/uploads, opt-in PNG metadata stripping, bounded PNG/JPEG/WebP structural inventory; capture/upload date/order/text queries, missing-reference audit, import/relink/metadata removal/export, and Linux journaled same-filesystem PNG moves with explicit finish/cancel recovery. Existing UI has visible-page thumbnails and page-local actions. [Metadata](image-metadata.md), [PNG inventory](png-metadata.md), [sanitized export](sanitized-export.md), [queries](history-queries.md), [audit](history-audit.md), [management](history-management.md), [moves](history-file-moves.md). |
 | OCR, QR and workflows | File QR generation/scanning, optional installed-Tesseract file OCR on Unix/Windows, CLI region OCR/QR using in-memory pixels under strict session/scale limits, exact supplied-image scroll assembly, and bounded nine-operation offline recipes. [QR](qr.md), [OCR](ocr.md), [Windows OCR](windows-ocr.md), [region analysis](region-analysis.md), [scroll assembly](scroll-stitch.md), [recipes](workflows.md). |
 | Recording | Optional installed FFmpeg/ffprobe: finite Unix X11 or Windows gdigrab video/GIF, synthetic mode, cursor show/hide, output verification and bounded process/staging cleanup. This is neither audio nor a full recording workflow. [Unix recorder](recording.md), [Windows recorder](recording-windows.md). |
@@ -85,11 +98,10 @@ completion is listed separately.
   bounded SFTP/FTP and OAuth/provider integrations, S3 multipart/STS/refresh or
   remote browsing where required, text/folder/clipboard/URL upload workflows,
   explicit configurable link copying/custom templates/shortening and integrated
-  QR follow-up. The working `link` postprocessor supplies fixed plain/Markdown/
-  HTML formats and explicit QR output from single-result JSON; release and
-  full-workspace verification passed (511 regular tests, 51 opt-in excluded).
-  It does not integrate actions
-  into upload commands. See [result processing](upload-results.md).
+  QR follow-up. The delivered `link` postprocessor supplies fixed plain/Markdown/
+  HTML formats and explicit QR output from single-result JSON; it does not
+  integrate actions into upload commands. Batch/nested input remains unsupported.
+  See [result processing](upload-results.md).
   Unsupported `ErrorMessage` templates currently fail explicitly; they are not
   implemented. [Uploader boundary](file-uploads.md), [S3 limits](s3-uploads.md).
 - [ ] **Library and storage:** cross-page selection/actions; bounded next-page
@@ -98,6 +110,8 @@ completion is listed separately.
   transfer and robust rename; explicit physical-file deletion/retention with
   recoverable file/DB ordering; richer substring/OCR search. Upload-link search
   already exists in CLI queries; integrated Library link search does not.
+  Existing thumbnail cancellation/admission/Quit repair is the active bounded
+  lifecycle slice above, not new prefetch or thumbnail UI.
 - [ ] **Major capabilities and utilities:** actual live scrolling control,
   fixed-header handling and imperfect-match reporting; audio capture and richer
   recording devices/codecs/timeline/trim/transcode workflows; general external

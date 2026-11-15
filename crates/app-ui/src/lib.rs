@@ -3204,8 +3204,7 @@ impl CaptureWorkspace {
 
     fn clear_history_thumbs(&mut self, cx: &mut Context<Self>) {
         self.cancel_history_thumb_job();
-        self.history_thumb_cancel = None;
-        self.history_thumb_loading = None;
+        // The callback releases admission after the canceled worker actually stops.
         self.history_thumb_failed.clear();
         let images: Vec<_> = self
             .history_thumbs
@@ -6507,6 +6506,7 @@ fn close_application(cx: &mut App) {
         let busy = entity.update(cx, |this, cx| {
             this.cancel_capture_delay(cx);
             this.clear_history_preview(cx);
+            this.cancel_history_thumb_job();
             this.cancel_history_export(cx);
             this.cancel_upload(cx);
             this.close_editor(cx);
@@ -6517,6 +6517,7 @@ fn close_application(cx: &mut App) {
                 || this.switching_graphics
                 || this.settings_saving
                 || this.history_mutating
+                || this.history_thumb_loading.is_some()
                 || this.upload_config_loading
                 || this.upload_cancel.is_some()
                 || this.editor_closing;
@@ -6537,6 +6538,7 @@ fn close_application(cx: &mut App) {
                 .update(cx, |this, _, cx| {
                     this.cancel_capture_delay(cx);
                     this.clear_history_preview(cx);
+                    this.cancel_history_thumb_job();
                     this.cancel_history_export(cx);
                     this.cancel_upload(cx);
                     this.quitting = true;
@@ -6545,6 +6547,7 @@ fn close_application(cx: &mut App) {
                         || this.saving
                         || this.settings_saving
                         || this.history_mutating
+                        || this.history_thumb_loading.is_some()
                         || this.upload_config_loading
                         || this.upload_cancel.is_some()
                         || this.editor_closing;

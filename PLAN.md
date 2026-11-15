@@ -1218,6 +1218,17 @@ row. Native keyboard/IME/accessibility, GPU reclamation, unavailable storage
 and full process/GPU/resource acceptance remain open; no new performance
 measurement is claimed for this bounded decode.
 
+Thumbnail cancellation follow-up (2026-11-15, in progress): the existing
+reduction call checks cancellation only before and after its pixel work. The
+[bounded cancellation plan](docs/image-cancellation.md) adds checks during
+reduction while retaining exact pinned-thumbnail pixels. It also retains an
+active canceled job's admission until its matching callback completes and makes
+both Quit paths wait for that completion. Page changes still release visible
+cached images immediately. This is control-flow and worker-lifecycle work,
+without UI design changes, new controls, workers or timers. Verification is
+pending; earlier thumbnail fixtures and measurements do not validate the new
+path. PNG decoding and native I/O remain noninterruptible within their calls.
+
 #### Current feature slice: configurable Windows global hotkeys
 
 Implemented in the working tree (2026-11-12): three editable/disableable bindings

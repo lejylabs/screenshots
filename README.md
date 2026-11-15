@@ -236,6 +236,12 @@ Uploads stream the saved PNG without image decoding, preserve its existing bytes
 
 **Preview** on a history entry shows an aspect-preserving image up to 400×240 pixels without opening another application. The visible library page also loads those thumbnails automatically, one at a time, and keeps only the current 20. Clicking a name expands the cached image when it is ready. **Hide preview** closes the expanded view and keeps the page cache; changing pages/filters/search or closing history releases both. Preview never changes the PNG, clipboard or history and uses the existing image-size limit. Decoding temporarily holds the full source image. Next-page prefetch is not included.
 
+The [thumbnail cancellation follow-up](docs/image-cancellation.md) is in
+progress: it stops obsolete reduction work and preserves job admission/Quit
+cleanup until completion. This changes worker control flow, not the design or
+controls; new verification remains pending, and PNG decode/native I/O still
+cannot be interrupted mid-call.
+
 **Export selected…** copies up to 20 selected history images into a folder chosen through the native picker. Original filenames and PNG bytes/metadata are preserved. Existing targets or duplicate filenames are reported as failures; no file is overwritten. **Cancel export** stops remaining work and discards the unfinished copy while keeping completed ones. The result reports exported/failed/not-exported counts. Export streams bytes on one worker without decoding pixels and leaves originals, clipboard, last capture and history unchanged. A confirmed export may continue while history is hidden; quitting requests cancellation and waits for cleanup.
 
 **Add PNGs…** inside Capture history adds references to up to 100 selected existing PNG files through the native picker. This is useful for older files under 	arget/captures. It checks PNG headers and the decoded-size admission limit without decoding full image frames; it does not copy, move or alter originals. Exact paths already listed are skipped. The result reports added/existing/skipped counts and up to three file errors. Valid selections are committed in one metadata transaction; invalid files are skipped with errors. Moving or deleting an original later makes its history reference unavailable. Full pixel decoding happens only when explicitly copying an image.
