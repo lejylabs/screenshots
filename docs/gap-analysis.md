@@ -42,6 +42,9 @@ main 523bc3c, the feature branch adds the following **CLI/core subsets**:
 - Read-only date/text/history-link queries and explicit import/relink/remove
   metadata commands, missing-file audit and opt-in metadata-stripped PNG exports;
   corresponding Library UI and physical-file management remain open.
+- Explicit Linux single-file history moves now use a durable intent journal and
+  finish/cancel recovery. Windows/macOS moves, cross-filesystem transfer and
+  integrated Library controls remain open; see [move recovery](history-file-moves.md).
 - Optional Unix X11/FFmpeg and Windows gdigrab video/GIF implementations; audio,
   native Windows runtime acceptance, macOS/Wayland recording and controls remain open.
   Per-invocation recording cursor inclusion/exclusion is available; still-image

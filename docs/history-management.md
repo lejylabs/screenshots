@@ -1,12 +1,17 @@
 # Explicit history management
 
 Status: headless metadata operations using the existing capture-history APIs.
-No command deletes, moves, rewrites, uploads or copies an image file.
+The original metadata commands do not change image files. Explicit Linux
+[journaled file moves](history-file-moves.md) now rename one referenced PNG
+without replacing another file, with pending-operation inspection and recovery.
 
 ```sh
 screenshots history-manage import DATABASE PNG [PNG...]
 screenshots history-manage remove DATABASE ID [ID...]
 screenshots history-manage relink DATABASE ID PNG
+screenshots history-manage move DATABASE ID NEW.png
+screenshots history-manage pending-move DATABASE
+screenshots history-manage recover-move DATABASE OPERATION finish|cancel
 ```
 
 Import accepts 1–100 PNG paths, resolves relative inputs against the invoking

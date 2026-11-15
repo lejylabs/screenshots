@@ -57,9 +57,10 @@ mod settings;
 mod upload;
 mod upload_credentials;
 pub use history::{
-    HistoryEntry, HistoryFilter, ImportReport, UploadHistoryEntry, capture_history_page,
-    capture_history_page_filtered, history_database_path, import_capture_files,
-    lookup_history_entry, record_saved_capture, record_uploaded_png, relink_history_entry,
+    HistoryEntry, HistoryFilter, ImportReport, MoveOutcome, MoveRecovery, PendingMove,
+    UploadHistoryEntry, capture_history_page, capture_history_page_filtered, history_database_path,
+    import_capture_files, lookup_history_entry, move_history_file, pending_history_move,
+    record_saved_capture, record_uploaded_png, recover_history_move, relink_history_entry,
     remove_history_entries, remove_history_entry, remove_upload_history_entry,
     search_capture_history, upload_history_page,
 };

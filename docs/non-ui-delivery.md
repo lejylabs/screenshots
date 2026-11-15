@@ -1527,3 +1527,29 @@ The 1Password commit signer became unavailable during this slice; commit
 `e522ba4` was deliberately written unsigned using a per-command override, with
 no global Git configuration change. Subsequent unattended commits use the same
 override while no interactive signer access is available.
+
+### Recoverable history file moves (in progress, 2026-11-15)
+
+Implement an explicit Linux same-filesystem PNG move with a version-5 singleton
+journal, reserved capture row/paths and explicit finish/cancel recovery. The
+native rename never replaces a destination and never falls back to copy/delete.
+Before native mutation, persist the intent and reacquire an IMMEDIATE database
+transaction; verify the exact journal/row and hold that reservation through
+rename, file/directory sync and finalization. Review caught the cancel-before-
+rename race and a missing destination-file sync in recovery; both were fixed.
+Unconfirmed outcomes direct callers to inspect instead of promising the journal
+or filesystem remained unchanged. Exact protocol and external-writer limitations
+are in [history file moves](history-file-moves.md).
+
+Seven focused journal tests passed, including deterministic cancellation races,
+reservations, conflict retention and post-rename recovery. The existing format
+version guards and backup expectations now include schema 5. Clippy and Windows
+cross-compilation passed; Windows/macOS mutation is explicitly unsupported in
+this first native slice. Additional native/executable and full regression checks
+are running; no production history or user image was moved during testing.
+
+Nine focused core tests (two native and seven journal) and all three executable
+move tests passed. These verify real no-replace renames of synthetic images,
+exact bytes/IDs/FTS updates, collision preservation and explicit recovery states.
+Updated contexts report unconfirmed outcomes honestly after ambiguous commits.
+Full workspace and final release verification remain in progress.

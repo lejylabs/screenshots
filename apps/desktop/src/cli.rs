@@ -36,6 +36,9 @@ Headless commands (no desktop UI, clipboard writes or implicit uploads):
   screenshots history-audit DATABASE [--cursor ID]
   screenshots history-manage import|remove|relink DATABASE ARGUMENTS...
   screenshots history-manage export DATABASE DIRECTORY original|strip-metadata ID...
+  screenshots history-manage move DATABASE ID NEW.png
+  screenshots history-manage pending-move DATABASE
+  screenshots history-manage recover-move DATABASE OPERATION finish|cancel
   screenshots history-query captures|uploads DATABASE [--order newest|oldest]
       [--cursor ID] [--from YYYY-MM-DD] [--through YYYY-MM-DD]
       [--search TEXT] [--source all|captures|imports]

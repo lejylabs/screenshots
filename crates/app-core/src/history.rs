@@ -7,6 +7,13 @@ use std::{
     time::Duration,
 };
 
+#[path = "history_file_ops.rs"]
+mod file_ops;
+pub use file_ops::{
+    MoveOutcome, MoveRecovery, PendingMove, move_history_file, pending_history_move,
+    recover_history_move,
+};
+
 #[derive(Clone)]
 pub struct HistoryEntry {
     pub id: i64,
@@ -131,6 +138,23 @@ fn migrations() -> Migrations<'static> {
             origin TEXT NOT NULL CHECK(length(origin)<=2048),
             url TEXT NOT NULL CHECK(length(url)<=2048), created_at TEXT NOT NULL
         );"),
+        M::up("CREATE TABLE pending_file_move (
+            singleton INTEGER PRIMARY KEY CHECK(singleton=1),
+            operation_id TEXT NOT NULL,
+            capture_id INTEGER NOT NULL,
+            source_path TEXT NOT NULL,
+            destination_path TEXT NOT NULL,
+            payload TEXT NOT NULL CHECK(length(CAST(payload AS BLOB))<=16384)
+        );
+        CREATE TRIGGER captures_move_insert BEFORE INSERT ON captures
+        WHEN EXISTS(SELECT 1 FROM pending_file_move WHERE new.id=capture_id OR new.file_path IN (source_path,destination_path))
+        BEGIN SELECT RAISE(ABORT,'History file move is pending; recover it first'); END;
+        CREATE TRIGGER captures_move_update BEFORE UPDATE ON captures
+        WHEN EXISTS(SELECT 1 FROM pending_file_move WHERE old.id=capture_id OR new.id=capture_id OR old.file_path IN (source_path,destination_path) OR new.file_path IN (source_path,destination_path))
+        BEGIN SELECT RAISE(ABORT,'History file move is pending; recover it first'); END;
+        CREATE TRIGGER captures_move_delete BEFORE DELETE ON captures
+        WHEN EXISTS(SELECT 1 FROM pending_file_move WHERE old.id=capture_id OR old.file_path IN (source_path,destination_path))
+        BEGIN SELECT RAISE(ABORT,'History file move is pending; recover it first'); END;"),
     ])
 }
 
@@ -856,7 +880,7 @@ mod tests {
         let connection = open(&database)?;
         assert_eq!(
             connection.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))?,
-            4
+            5
         );
         assert_eq!(
             connection.query_row("SELECT count(*) FROM captures", [], |row| row

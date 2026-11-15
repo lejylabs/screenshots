@@ -72,8 +72,56 @@ pub fn run(args: &[OsString]) -> Result<()> {
     let command = args
         .first()
         .and_then(|value| value.to_str())
-        .context("Use history-manage import, remove or relink")?;
+        .context("Use a history-manage command; see --help")?;
     match command {
+        "move" => {
+            ensure!(
+                args.len() == 4,
+                "Usage: screenshots history-manage move DATABASE ID NEW.png"
+            );
+            let database = bounded_path(&args[1])?;
+            existing_database(database)?;
+            let id = positive_id(&args[2])?;
+            let destination = absolute_path(&args[3])?;
+            let outcome = app_core::move_history_file(database, id, &destination)?;
+            print_result(
+                serde_json::to_value(outcome)?,
+                "History file move committed",
+            )
+        }
+        "pending-move" => {
+            ensure!(
+                args.len() == 2,
+                "Usage: screenshots history-manage pending-move DATABASE"
+            );
+            let database = bounded_path(&args[1])?;
+            existing_database(database)?;
+            print_result(
+                serde_json::json!({"pending": app_core::pending_history_move(database)?}),
+                "Could not report pending history move",
+            )
+        }
+        "recover-move" => {
+            ensure!(
+                args.len() == 4,
+                "Usage: screenshots history-manage recover-move DATABASE OPERATION finish|cancel"
+            );
+            let database = bounded_path(&args[1])?;
+            existing_database(database)?;
+            let operation = args[2]
+                .to_str()
+                .context("Move operation ID must be UTF-8")?;
+            let action = match args[3].to_str() {
+                Some("finish") => app_core::MoveRecovery::Finish,
+                Some("cancel") => app_core::MoveRecovery::Cancel,
+                _ => bail!("Choose finish or cancel for move recovery"),
+            };
+            let outcome = app_core::recover_history_move(database, operation, action)?;
+            print_result(
+                serde_json::to_value(outcome)?,
+                "History move recovery committed",
+            )
+        }
         "export" => {
             ensure!(
                 (5..=24).contains(&args.len()),
