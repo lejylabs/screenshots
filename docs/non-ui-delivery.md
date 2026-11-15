@@ -484,3 +484,108 @@ Archive SHA256: `541d7425d2fbdbd6103a9386d0d94a664c1ce6b589ad3f1b9b8f14c6a1eb3ca
 Binary SHA256: `0a3b2d1bdcb10327dc2a0ce7e8b75627ffd6351cf0146c6d7312f6c3e866ff96`.
 This local development artifact records dirty documentation provenance; it is
 not a signed production release. The PC remains on, as explicitly requested.
+
+### Image collection utilities
+
+Create `apps/desktop/src/image_collection.rs`,
+`apps/desktop/tests/image_collection.rs` and `docs/image-collection.md`; wire
+`apps/desktop/src/main.rs`/`cli.rs` only. Add explicit horizontal/vertical image
+combination (2–16 images), same-dimension pixel comparison and exact grid
+splitting (at most 64 tiles). Reuse the bounded decoder, native path handling and
+atomic image exporter. Combined source and result pixels each stay within 256 MiB;
+split retains one source and one tile, never all decoded tile copies. Failed
+multi-file split preserves earlier completed tiles and never overwrites existing
+files. These are file utilities, not live scrolling or native screen selection.
+
+Image collection verification: eight actual-executable tests passed for combine,
+raw-pixel comparison, alpha, split reassembly, limits and native path handling.
+The recorder gained Linux parent-death handling; nine recording tests (including
+real synthetic FFmpeg and controller-SIGKILL behavior) pass. The complete
+post-collection workspace run is recorded after it finishes. No desktop pixels
+or real service credentials were used in these tests.
+
+Latest post-collection optimized workspace verification passed 274 regular tests
+with 46 explicit opt-in tests excluded; all doc-test phases passed. Recording
+focused tests also passed the real FFmpeg fixture separately. Existing native
+platform gates and remote CI remain distinct.
+
+GIF recorder follow-up: extend `apps/desktop/src/record.rs`, its executable tests
+and `docs/recording.md` using `.gif` output selection. GIF has stricter limits:
+1–30 nominal seconds, 1–15 fps, at most 1280×720 and 450 frames. Use the builtin
+GIF encoder with a fixed RGB332 palette, without palette-generation history or
+an added frame buffer. Verify GIF header/codec/container/dimensions/frame count
+and centisecond-quantized frame timing before publication. Existing FFV1 output,
+resource/process controls and no-bundle licensing decision remain unchanged.
+
+Image inspection follow-up: create `apps/desktop/src/image_info.rs`,
+`apps/desktop/tests/image_info.rs` and `docs/image-info.md`; route `image info`
+and `image pixel` through the existing headless dispatch. Decode with existing
+format/size/EXIF rules; return only dimensions, observed encoded size, decoded
+RGBA size or the selected raw RGBA sample. No hidden clipboard writes or color
+management claim. Invalid coordinates fail, and source pixels are released
+before writing the bounded JSON result.
+
+The GIF-focused real-engine run passed all 13 recording fixtures, including
+centisecond timing and odd dimensions. Image information/color sampling passed
+five executable fixtures. The latest full optimized workspace run passed 282
+regular tests with 47 opt-in tests excluded; all doctests passed. The subsequent
+small parent-death setup-race fix passed the full 13 recording fixtures again.
+
+### Explicit generic-file sharing
+
+Create `apps/desktop/src/upload_file.rs`, `apps/desktop/tests/upload_file.rs` and
+`docs/file-uploads.md`; extend `crates/app-core/src/upload.rs` with a separate
+generic-file entrypoint and expose it through `lib.rs` and CLI. Keep PNG upload
+validation unchanged. Generic input is one existing absolute regular file,
+streamed through the existing single upload job with a bounded 64 MiB extent.
+Use application/octet-stream and generic file.bin multipart naming; preserve
+HTTPS/credential/redirect/timeout rules. No directory traversal, archive
+extraction, filename disclosure or JSON/base64 generic upload in this slice.
+Real process tests use local loopback and exact arbitrary binary bytes.
+
+Generic-file upload verification: four loopback executable tests passed (binary
+and empty PUT, multipart octet-stream filename/privacy, oversize/directory/JSON
+rejection, named-pipe preflight); Clippy passed with existing warnings. Output
+write/flush failures explicitly report that the uploaded remote file persists.
+The new entrypoint shares the original PNG transport and does not relax PNG
+signature checks in existing commands.
+
+After generic-file sharing, the final local optimized workspace run passed 286
+regular tests with 47 opt-in cases ignored and all doctest phases passing.
+Clippy and formatting passed. Current source/CI state is on the feature branch;
+CI jobs remain separate native evidence and are not marked successful while
+pending. PC shutdown remains revoked.
+
+### Exact scroll-image assembly
+
+Create `apps/desktop/src/scroll_stitch.rs`,
+`apps/desktop/tests/scroll_stitch.rs` and `docs/scroll-stitch.md`; wire main/CLI.
+`stitch-scroll OUTPUT MIN_OVERLAP INPUT INPUT...` accepts 2–16 already captured
+images with equal widths and unique exact row overlaps. It must reject absent
+or ambiguous seams instead of inventing content. All sources fit the existing
+256 MiB combined decoded limit, output fits 256 MiB, and exact seam verification
+has a separate 256 MiB byte-work cap. Detect all seams before allocating/output.
+No live scrolling, input injection, network or history is performed. Native
+scroll capture remains open rather than being claimed by an assembly helper.
+
+Exact scroll-image assembly passed six executable fixtures and two algorithm
+fixtures, including a raw-overlap oracle and collision verification. Clippy
+passed. The output joins supplied images only; the unimplemented native scroll
+controller and application-specific scrolling behavior remain open.
+
+Post-scroll-assembly full optimized workspace verification passed 294 regular
+tests with 47 opt-in cases excluded; all doctest phases passed. PC remains on.
+
+### Explicit reference management
+
+Added `history-manage import`, `remove` and `relink` through existing atomic
+metadata operations. Remove/relink cannot create a missing database and reject
+final database symlinks; lookup is bounded and read-only. No image file is
+deleted, moved or rewritten. Six actual-executable fixtures and eight existing
+core history regressions passed. Clippy passed after a test-only ownership fix.
+Details and partial-import/optimistic-update limits: history-management.md.
+
+Final local full-workspace verification after metadata management passed 300
+regular tests with 47 opt-in checks excluded, including all doctest phases.
+The latest native CI run is still pending/running separately; no platform
+acceptance is inferred from these Linux results. The workstation stays on.

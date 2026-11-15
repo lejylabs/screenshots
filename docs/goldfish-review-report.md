@@ -91,3 +91,39 @@ frame-rate metadata rather than Matroska's derived r_frame_rate, which can diffe
 from requested FPS. Real synthetic recording found that mismatch before commit.
 Resource-limit tests also revealed child core dumps on SIGXFSZ; child RLIMIT_CORE
 is now zero, test dumps were removed, and the tests passed again without dumps.
+
+Recording follow-up review identified that Linux piped core collectors may
+ignore RLIMIT_CORE. The documentation now limits the no-core claim to ordinary
+file dumps and records system crash collection as outside the child guarantee.
+This machine uses file-based `core`; no promise is made for other system policy.
+
+Image collection same-reviewer inspection found no concrete defects in argument
+limits, raw-alpha preservation, output bounds, row-major splitting or partial
+publication status. Eight executable collection tests passed. Recording's
+Linux parent-death setup now kills the direct engine; a SIGKILL-controller
+regression passed. Nine recording process tests including actual synthetic
+FFmpeg output passed after those changes. System crash-collector and deliberate
+escaped-descendant limits remain explicitly documented.
+
+GIF/image-info same-context review found no data-path issue but identified a
+parent-death setup race. The expected controller PID is now captured before
+spawning and checked before and after Linux PR_SET_PDEATHSIG. Thirteen focused
+recording fixtures including actual GIF/video output passed after the fix.
+
+Generic file-upload same-context review identified ambiguous stdout failure
+after confirmed remote success and an overstated wall-clock deadline. Checked
+write/flush now states remote persistence, and docs preserve the uninterruptible
+filesystem/runtime-shutdown limitation. Four loopback process tests, including
+a named pipe rejected before opening, passed after the metadata preflight was
+included in the rebuilt binary. Existing image-upload validation is unchanged.
+
+Scroll-image assembly same-context review found no concrete defect in KMP
+candidate discovery, exact-byte seam validation, ambiguity rejection, bounded
+source/output/verification work, or no-replace publication. Six executable
+fixtures and two algorithm fixtures (including exhaustive small-sequence oracle
+and hash-collision checks) passed. No native scrolling was performed.
+
+History-reference-management same-context review found no new implementation
+defect. Wording was narrowed to the actual optimistic path/date identity check;
+import/create and remove/relink/no-create semantics are documented. Six CLI
+fixtures and eight core history regressions passed without modifying images.
