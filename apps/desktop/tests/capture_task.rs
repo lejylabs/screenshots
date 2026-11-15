@@ -111,7 +111,7 @@ fn strict_arguments_fail_without_waiting_capture_or_user_state() {
         fixture.reject(&arguments(&output, &extra), error);
     }
     let mut args = arguments(&output, &[]);
-    args[0] = OsStr::new("window");
+    args[0] = OsStr::new("unknown");
     fixture.reject(&args, "Usage:");
     args[0] = OsStr::new("display");
     args[1] = OsStr::new("");
@@ -119,6 +119,51 @@ fn strict_arguments_fail_without_waiting_capture_or_user_state() {
     let long_id = "x".repeat(65);
     args[1] = OsStr::new(&long_id);
     fixture.reject(&args, "Display ID must contain");
+    assert!(!output.exists());
+}
+
+#[test]
+fn region_bounds_and_upload_profiles_fail_before_wait_or_native_capture() {
+    let fixture = Fixture::new();
+    let output = fixture.path("region.png");
+    for (values, message) in [
+        (["-1", "0", "1", "1"], "Region coordinates must be whole"),
+        (["0", "0", "0", "1"], "empty frame"),
+        (["0", "0", "65536", "65536"], "256 MiB"),
+        (["4294967295", "0", "2", "1"], "Region coordinates overflow"),
+        (["0", "4294967295", "1", "2"], "Region coordinates overflow"),
+        (["2147483648", "0", "1", "1"], "Region origin must fit"),
+    ] {
+        let mut args = vec![OsStr::new("region"), OsStr::new("fixture")];
+        args.extend(values.iter().map(OsStr::new));
+        args.push(output.as_os_str());
+        args.extend([OsStr::new("--delay-ms"), OsStr::new("3600000")]);
+        fixture.reject(&args, message);
+    }
+    let profile = fixture.path("invalid.json");
+    std::fs::write(&profile, b"{}").unwrap();
+    for target in ["display", "window"] {
+        let args = vec![
+            OsStr::new(target),
+            OsStr::new("fixture"),
+            output.as_os_str(),
+            OsStr::new("--upload"),
+            profile.as_os_str(),
+            OsStr::new("--delay-ms"),
+            OsStr::new("3600000"),
+        ];
+        fixture.reject(&args, "missing field");
+    }
+    let args = vec![
+        OsStr::new("display"),
+        OsStr::new("fixture"),
+        output.as_os_str(),
+        OsStr::new("--upload"),
+        profile.as_os_str(),
+        OsStr::new("--upload"),
+        profile.as_os_str(),
+    ];
+    fixture.reject(&args, "Duplicate --upload");
     assert!(!output.exists());
 }
 
