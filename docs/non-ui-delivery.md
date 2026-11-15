@@ -1203,3 +1203,30 @@ Windows/macOS native region behavior, Wayland support and editor integration
 remain open. Current-context EGM code/readiness review found documentation gaps;
 the exact grammar, backing geometry, 256 MiB full-display metadata gate and
 shared result contracts were added. No new fresh-review convergence claimed.
+
+Final region verification: 402 regular optimized workspace tests passed, 50
+opt-in cases excluded, all doctests passed. Clippy and the Windows GNU app/test
+cross-check passed. Six packaging fixtures passed. The release build completed
+in 1m55s and its isolated Xvfb script passed five QR and five real-Tesseract
+invocations; median process-inclusive times were 4.87 ms and 155.40 ms. The
+release archive passed checksum/extraction/help/version smoke with no user
+state. Archive SHA256
+`4ad6dc53e6169b05b0f4ac7dbf231cb5767b566933c84958c6a72f64d5d86020`;
+binary SHA256
+`bf420cb0086ae6f6a633343b5e4f7ff606d25b1c70bf24c04d9441cf7c856e42`.
+All 47 non-vendored project Markdown files had valid local links. CI for the
+branch was still running when queried; these local results do not assert CI
+or native Windows/macOS acceptance.
+
+### Explicit recording cursor policy (planned, 2026-11-15)
+
+Add `record x11|gdigrab ... --cursor show|hide` without changing the current
+hidden-cursor default. The existing FFmpeg paths already pass `-draw_mouse 0`;
+select its value from an optional enum validated before spawning an engine.
+Reject the option for synthetic `test` input. Only include a `cursor` result
+field when explicitly requested. This changes capture input arguments, not
+codec, frame budgets, output validation, process cleanup or native ownership.
+Modify record.rs, record_windows.rs, executable recording tests, CLI help and
+recording docs; use parser/argument fixtures plus isolated X11 evidence if
+possible. Still-image cursor composition requires different native APIs and
+remains open; this does not close all capture-default work.
