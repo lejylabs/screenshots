@@ -1429,3 +1429,14 @@ extraction/help/version smoke. Archive SHA256
 binary SHA256
 `ff67fc2867fcb7ebaa191ab601c49525f536a88f69cb90fcb4d2942c73eb062a`.
 Final complete workspace execution is still running; do not infer its result.
+
+The first full TIFF-tree run exposed a pre-existing parallel test-fixture
+collision: cli.rs named temporary directories with process ID and wall-clock
+nanoseconds, and two tests received the same path. Replace that fixture name
+with UUID, preserving the tests' behavior; rerun the full workspace. This was
+a test setup failure before image I/O, not a passed suite or product regression.
+
+The final TIFF-tree run passed 439 regular optimized workspace tests, with 51
+opt-in tests excluded and all doctests passing. Current core TIFF tests passed
+all three cases after the I/O-error fix. The release build completed in 2m29s
+and its independent pixel/tag and package checks passed as recorded above.

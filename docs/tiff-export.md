@@ -2,7 +2,7 @@
 
 Author: NewtTheWolf
 Date: 2026-11-15
-Status: implemented, final whole-workspace verification in progress.
+Status: implemented and locally verified; native product acceptance remains separate.
 
 Extend only `image convert INPUT OUTPUT.tif|OUTPUT.tiff`, matching extensions
 case-insensitively and reporting JSON `format: "tiff"`. Keep PNG/JPEG/WebP
