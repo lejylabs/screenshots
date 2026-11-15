@@ -645,6 +645,23 @@ mod tests {
     use super::*;
 
     #[test]
+    fn encoded_png_publication_preserves_bytes_and_refuses_replacement() {
+        let root =
+            std::env::temp_dir().join(format!("screenshots-encoded-png-{}", uuid::Uuid::new_v4()));
+        fs::create_dir(&root).unwrap();
+        let path = root.join("output.png");
+        let pixels = RgbaImage::from_pixel(2, 1, Rgba([13, 27, 44, 71]));
+        let bytes = encode_png_bytes(&pixels).unwrap();
+        save_png_bytes(&path, &bytes).unwrap();
+        assert_eq!(fs::read(&path).unwrap(), bytes);
+        assert_eq!(image::open(&path).unwrap().into_rgba8(), pixels);
+        assert!(save_png_bytes(&path, &bytes).is_err());
+        assert!(save_png_bytes(&root.join("invalid.png"), b"not png").is_err());
+        assert_eq!(fs::read_dir(&root).unwrap().count(), 1);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn scaled_exports_use_final_pixels_preserve_sources_and_refuse_overwrite() -> anyhow::Result<()>
     {
         let root = std::env::temp_dir().join(format!(
@@ -1770,6 +1787,23 @@ pub(crate) fn encode_png_bytes(pixels: &RgbaImage) -> Result<Vec<u8>, CaptureErr
         ));
     }
     Ok(bytes)
+}
+
+/// Publish an already encoded PNG without replacing files or encoding a second time.
+/// The caller supplies a trusted encoder result; this checks byte admission, not PNG validity.
+pub fn save_png_bytes(destination: &Path, png: &[u8]) -> Result<(), CaptureError> {
+    if png.len() < 8
+        || png.len() as u64 > MAX_CAPTURE_BYTES + 16 * 1024 * 1024
+        || png[..8] != [137, 80, 78, 71, 13, 10, 26, 10]
+    {
+        return Err(CaptureError::Backend(
+            "Invalid or oversized encoded PNG".into(),
+        ));
+    }
+    write_output(destination, |file| {
+        file.write_all(png)?;
+        Ok(())
+    })
 }
 
 fn write_image_export(

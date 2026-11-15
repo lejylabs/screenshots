@@ -103,7 +103,7 @@ pub use capture::{
     CaptureBackend, CaptureCapabilities, CaptureError, CaptureRequest, CapturedImage,
     DisplayGeometry, DisplayInfo, ImageExportFormat, MAX_CAPTURE_BYTES, PixelFormat,
     RememberedRegion, WindowInfo, XcapBackend, capture_output_dir, export_saved_png,
-    export_saved_png_as, png_without_metadata, validate_image_size,
+    export_saved_png_as, png_without_metadata, save_png_bytes, validate_image_size,
 };
 
 pub fn version() -> &'static str {
