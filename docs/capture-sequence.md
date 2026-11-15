@@ -9,11 +9,24 @@ screenshots capture-sequence display DISPLAY_ID captures --count 10 --interval-m
 ```
 
 `--count` is required and accepts 1–1000. `--interval-ms` is required and accepts
-100–3600000 milliseconds. `--start-at` is optional. Options may appear in any
-order, once each; duplicates and unknown options are rejected. The
+100–3600000 milliseconds. `--start-at`, `--format` and `--jpeg-quality` are optional.
+Options may appear in any order, once each; duplicates and unknown options are
+rejected. The
 display ID must contain 1–64 UTF-8 bytes and identify an available display on
 the current platform. Window/region sequences, video encoding, audio and
 unbounded monitoring are outside this command.
+
+PNG remains the default. Select `--format png`, `--format jpeg` or `--format webp`
+for the entire invocation. JPEG uses quality 90 by default; override it with
+`--jpeg-quality 1` through `--jpeg-quality 100` and an explicit `--format jpeg`.
+Quality with PNG, WebP or an omitted format is rejected instead of ignored.
+These options do not read or change saved UI export preferences. PNG and WebP
+preserve alpha and pixels losslessly; JPEG is lossy and refuses any non-opaque
+pixel instead of silently flattening it. The original dimensions are preserved.
+
+```sh
+screenshots capture-sequence display DISPLAY_ID captures --count 10 --interval-ms 1000 --format jpeg --jpeg-quality 85
+```
 
 To start one finite sequence later, supply an RFC 3339 timestamp with an explicit
 timezone: `Z` or a numeric offset such as `+01:00`.
@@ -57,8 +70,9 @@ The shared exporter creates missing parent directories during each save: if this
 directory is removed between validation and output it can be recreated. Existing
 files are never overwritten, but this is not a pinned-directory guarantee.
 
-Each invocation generates one UUID prefix and saves separate PNGs named
-`capture-UUID-0001.png`, `capture-UUID-0002.png` and so on. The core export path
+Each invocation generates one UUID prefix and saves separate images named
+`capture-UUID-0001.png`, `capture-UUID-0002.png` and so on by default. Explicit
+JPEG uses `.jpg`, and WebP uses `.webp`. The core export path
 publishes each completed image atomically without replacing an existing file.
 This remains the final collision protection if directory contents change after
 validation. A directory rename or symlink change during execution follows normal
@@ -94,18 +108,20 @@ original native path. ASCII generated basenames are exact and do not duplicate
 the full directory path for every frame.
 Only scheduled invocations add `"start_at":"2030-01-01T08:30:00Z"` to the
 successful object: the accepted requested instant normalized to UTC, not the
-actual capture time. Immediate invocations retain their existing JSON fields.
+actual capture time. Explicit `--format` adds `"format":"png"`, `"format":"jpeg"`
+or `"format":"webp"`; JPEG also adds the effective `"jpeg_quality":90` (or the
+requested quality). Omitting `--format` retains the existing JSON fields.
 
 A capture or save failure stops the sequence immediately. Stderr states the
 number of completed captures, the directory and the invocation's prefix; no
-success JSON is printed. Completed PNGs remain. Earlier captures are never
+success JSON is printed. Completed images remain. Earlier captures are never
 rolled back or deleted because a later display or filesystem operation failed.
 
 Ctrl+C or process termination uses the existing headless OS termination behavior.
 No custom signal handling is added. During either the initial scheduled wait or
 an interval it stops the process;
 during a synchronous capture or save, cancellation and native stalls retain the
-platform's existing limits. An abrupt exit can leave completed PNGs and one
+platform's existing limits. An abrupt exit can leave completed images and one
 unpublished UUID `.part` file. `storage inspect-parts` can report such candidates
 without deleting them. No cooperative cancellation, hard native-call timeout or
 whole-sequence transaction is claimed. With the maximum count and interval,
@@ -115,7 +131,7 @@ process to stop early. Termination during the initial wait leaves no captured
 pixels or output files from this invocation.
 
 The command reuses Xcap still capture and the existing 256 MiB per-frame decoded
-admission ceiling. It keeps only one frame through PNG export, drops it, then
+admission ceiling. It keeps only one frame through export, drops it, then
 waits. Existing native capture and encoder scratch remain additional bounded
 costs; process high-water memory and native latency are not measured by the unit
 tests. Completion metadata consists of at most 1000 short basenames. Scheduling
@@ -125,6 +141,10 @@ The only other sleeps are the intervals between successful captures. There are
 no additional worker threads, runtimes, network requests, streams, history writes,
 clipboard changes, uploads, UI windows or changes to resident startup. No timer
 or retained pixels remain after the invocation exits.
+Format selection adds two small per-invocation values and reuses the existing
+encoders and their scratch allocations; no new image-sized buffer, dependency,
+queue or cache is added by the sequence command. Encoder and process high-water
+memory remain part of the existing unmeasured native acceptance work.
 
 Default tests do not read desktop pixels. Deterministic unit fixtures supply
 synthetic capture, save and wait callbacks to prove serial ordering, exact saved
@@ -132,13 +152,16 @@ pixels, frame release before waiting, and stopping after capture/save/wait
 failure while retaining completed results. Injected validation time and wait
 callbacks cover timezone normalization, nanosecond boundaries, immediate-start
 compatibility, and initial waiting/revalidation before native initialization or
-pixel allocation. Executable tests reject malformed arguments, invalid schedules
-and missing, non-directory or occupied destinations before any future wait or
-capture. Two additional executable checks exercise a real two-second initial
+pixel allocation. Format fixtures check exact PNG/WebP alpha and pixels, JPEG
+dimensions and alpha rejection, correct extensions, configured quality,
+unchanged default PNG bytes, no-overwrite behavior and frame release before the
+next wait. Executable tests reject malformed arguments, invalid export options,
+invalid schedules and missing, non-directory or occupied destinations before any
+future wait or capture. Two additional executable checks exercise a real two-second initial
 wait followed by destination revalidation, and forced termination during a
 far-future wait. Both remove native display/session access and verify unchanged
 destination contents, no capture output and no user state. They do not capture
-desktop pixels. The optimized focused checks passed 11 unit tests and 7 CLI
+desktop pixels. The optimized focused checks passed 15 unit tests and 8 CLI
 tests; the native capture test below remained ignored. These short functional
 checks do not establish timer accuracy or reference-hardware resource budgets.
 The ignored `native_cli_captures_two_explicit_stills_without_user_state` test

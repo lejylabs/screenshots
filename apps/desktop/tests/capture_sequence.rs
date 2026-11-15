@@ -306,6 +306,74 @@ fn invalid_schedules_fail_before_directory_checks_native_capture_or_user_state()
 }
 
 #[test]
+fn invalid_formats_and_quality_fail_before_a_scheduled_wait_or_native_access() {
+    let fixture = Fixture::new();
+    let missing = fixture.path("missing");
+    let future = (chrono::Utc::now() + chrono::Duration::hours(1)).to_rfc3339();
+    for (extra, message) in [
+        (vec!["--format", "jpg"], "Format must be png, jpeg or webp"),
+        (vec!["--format", "PNG"], "Format must be png, jpeg or webp"),
+        (vec!["--format", "gif"], "Format must be png, jpeg or webp"),
+        (
+            vec!["--format", "../png"],
+            "Format must be png, jpeg or webp",
+        ),
+        (vec!["--format", ""], "Format must be png, jpeg or webp"),
+        (
+            vec!["--format", "png", "--format", "jpeg"],
+            "Duplicate --format",
+        ),
+        (
+            vec!["--format", "jpeg", "--jpeg-quality", "0"],
+            "JPEG quality must be 1..100",
+        ),
+        (
+            vec!["--format", "jpeg", "--jpeg-quality", "101"],
+            "JPEG quality must be 1..100",
+        ),
+        (
+            vec!["--format", "jpeg", "--jpeg-quality", "256"],
+            "JPEG quality must be a whole number",
+        ),
+        (
+            vec!["--format", "jpeg", "--jpeg-quality", "-1"],
+            "JPEG quality must be a whole number",
+        ),
+        (
+            vec!["--format", "jpeg", "--jpeg-quality", "1.5"],
+            "JPEG quality must be a whole number",
+        ),
+        (vec!["--jpeg-quality", "80"], "requires --format jpeg"),
+        (
+            vec!["--format", "png", "--jpeg-quality", "80"],
+            "requires --format jpeg",
+        ),
+        (
+            vec!["--format", "webp", "--jpeg-quality", "80"],
+            "requires --format jpeg",
+        ),
+        (
+            vec!["--jpeg-quality", "80", "--jpeg-quality", "90"],
+            "Duplicate --jpeg-quality",
+        ),
+        (vec!["--format"], "Usage:"),
+        (vec!["--jpeg-quality"], "Usage:"),
+    ] {
+        let mut options = vec![
+            "--count",
+            "1",
+            "--interval-ms",
+            "100",
+            "--start-at",
+            &future,
+        ];
+        options.extend(extra);
+        fixture.reject(&args(&missing, &options), message);
+    }
+    assert!(!missing.exists());
+}
+
+#[test]
 fn scheduled_destination_errors_return_before_the_future_wait() {
     let fixture = Fixture::new();
     let future = (chrono::Utc::now() + chrono::Duration::hours(1)).to_rfc3339();

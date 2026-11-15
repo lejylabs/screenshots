@@ -1,7 +1,7 @@
 //! Finite explicit still captures, with one frame owned at a time.
 
 use anyhow::{Context, Result, bail, ensure};
-use app_core::{CaptureBackend, XcapBackend};
+use app_core::{CaptureBackend, CapturedImage, ExportSize, ImageExportFormat, XcapBackend};
 use chrono::{DateTime, SecondsFormat, Utc};
 use std::{
     ffi::OsString,
@@ -22,12 +22,14 @@ struct Options<'a> {
     count: u16,
     interval: Duration,
     start: Option<ScheduledStart>,
+    format: Option<ImageExportFormat>,
+    jpeg_quality: u8,
 }
 
 fn options(args: &[OsString], now: DateTime<Utc>, monotonic_now: Instant) -> Result<Options<'_>> {
     ensure!(
         args.len() >= 3 && args.len() % 2 == 1 && args[0] == "display",
-        "Usage: screenshots capture-sequence display ID DIRECTORY --count N --interval-ms MS [--start-at RFC3339]"
+        "Usage: screenshots capture-sequence display ID DIRECTORY --count N --interval-ms MS [--start-at RFC3339] [--format png|jpeg|webp] [--jpeg-quality 1..100]"
     );
     let display_id = args[1].to_str().context("Display ID must be UTF-8")?;
     ensure!(
@@ -37,6 +39,8 @@ fn options(args: &[OsString], now: DateTime<Utc>, monotonic_now: Instant) -> Res
     let mut count = None;
     let mut interval = None;
     let mut start = None;
+    let mut format = None;
+    let mut jpeg_quality = None;
     for pair in args[3..].chunks_exact(2) {
         let value = pair[1].to_str().context("Option value must be UTF-8")?;
         match pair[0].to_str() {
@@ -87,11 +91,32 @@ fn options(args: &[OsString], now: DateTime<Utc>, monotonic_now: Instant) -> Res
                     .context("Scheduled start exceeds the monotonic clock range")?;
                 start = Some(ScheduledStart { at, deadline });
             }
+            Some("--format") => {
+                ensure!(format.is_none(), "Duplicate --format option");
+                format = Some(match value {
+                    "png" => ImageExportFormat::Png,
+                    "jpeg" => ImageExportFormat::Jpeg,
+                    "webp" => ImageExportFormat::WebP,
+                    _ => bail!("Format must be png, jpeg or webp"),
+                });
+            }
+            Some("--jpeg-quality") => {
+                ensure!(jpeg_quality.is_none(), "Duplicate --jpeg-quality option");
+                let value: u8 = value
+                    .parse()
+                    .context("JPEG quality must be a whole number")?;
+                ensure!((1..=100).contains(&value), "JPEG quality must be 1..100");
+                jpeg_quality = Some(value);
+            }
             _ => bail!("Unknown capture-sequence option; use --help"),
         }
     }
     let count = count.context("Missing --count option")?;
     let interval = interval.context("Missing --interval-ms option")?;
+    ensure!(
+        jpeg_quality.is_none() || format == Some(ImageExportFormat::Jpeg),
+        "--jpeg-quality requires --format jpeg"
+    );
     let directory = Path::new(&args[2]);
     validate_directory(directory)?;
     Ok(Options {
@@ -100,6 +125,8 @@ fn options(args: &[OsString], now: DateTime<Utc>, monotonic_now: Instant) -> Res
         count,
         interval,
         start,
+        format,
+        jpeg_quality: jpeg_quality.unwrap_or(app_core::DEFAULT_JPEG_QUALITY),
     })
 }
 
@@ -162,6 +189,22 @@ fn run_sequence<T>(
     }
 }
 
+fn save_frame(
+    options: &Options<'_>,
+    prefix: &str,
+    frame: CapturedImage,
+    index: u16,
+) -> Result<String> {
+    let format = options.format.unwrap_or_default();
+    let name = format!("{prefix}-{index:04}.{}", format.extension());
+    frame.save_image_as(
+        &options.directory.join(&name),
+        options.jpeg_quality,
+        ExportSize::Original,
+    )?;
+    Ok(name)
+}
+
 pub fn run(args: &[OsString]) -> Result<()> {
     let now = Utc::now();
     let options = options(args, now, Instant::now())?;
@@ -179,11 +222,7 @@ pub fn run(args: &[OsString]) -> Result<()> {
                 options.count,
                 options.interval,
                 || Ok(backend.capture_display(options.display_id)?),
-                |frame, index| {
-                    let name = format!("{prefix}-{index:04}.png");
-                    frame.save_png_as(&options.directory.join(&name))?;
-                    Ok(name)
-                },
+                |frame, index| save_frame(&options, &prefix, frame, index),
                 |interval| {
                     std::thread::sleep(interval);
                     Ok(())
@@ -191,8 +230,9 @@ pub fn run(args: &[OsString]) -> Result<()> {
             )
             .map_err(|failure| {
                 failure.cause.context(format!(
-                    "Capture sequence stopped after {} completed capture(s); saved files matching {prefix}-*.png remain in {}",
+                    "Capture sequence stopped after {} completed capture(s); saved files matching {prefix}-*.{} remain in {}",
                     failure.files.len(),
+                    options.format.unwrap_or_default().extension(),
                     options.directory.display()
                 ))
             })
@@ -212,6 +252,12 @@ fn summary(options: &Options<'_>, files: Vec<String>) -> serde_json::Value {
     });
     if let Some(start) = &options.start {
         result["start_at"] = start.at.to_rfc3339_opts(SecondsFormat::AutoSi, true).into();
+    }
+    if let Some(format) = options.format {
+        result["format"] = serde_json::to_value(format).expect("image format is serializable");
+        if format == ImageExportFormat::Jpeg {
+            result["jpeg_quality"] = options.jpeg_quality.into();
+        }
     }
     result
 }
@@ -454,9 +500,212 @@ mod tests {
         .unwrap();
         let result = summary(&parsed, result);
         assert!(result.get("start_at").is_none());
+        assert!(result.get("format").is_none());
+        assert!(result.get("jpeg_quality").is_none());
         assert_eq!(result["completed"], 1);
         assert_eq!(result["interval_ms"], 100);
         assert_eq!(result["files"], serde_json::json!(["fixture.png"]));
+    }
+
+    #[test]
+    fn format_and_quality_are_explicit_snapshots_with_strict_validation() {
+        let directory = Directory::new();
+        for (format, expected) in [
+            ("png", ImageExportFormat::Png),
+            ("jpeg", ImageExportFormat::Jpeg),
+            ("webp", ImageExportFormat::WebP),
+        ] {
+            let mut args = directory.args(None);
+            args.splice(3..3, ["--format".into(), format.into()]);
+            let parsed = options(&args, validation_time(), Instant::now()).unwrap();
+            assert_eq!(parsed.format, Some(expected));
+            assert_eq!(parsed.jpeg_quality, app_core::DEFAULT_JPEG_QUALITY);
+            let json = summary(&parsed, vec![]);
+            assert_eq!(json["format"], format);
+            assert_eq!(
+                json.get("jpeg_quality"),
+                (expected == ImageExportFormat::Jpeg)
+                    .then_some(&serde_json::json!(app_core::DEFAULT_JPEG_QUALITY))
+            );
+        }
+        for quality in [1, 100] {
+            let mut args = directory.args(None);
+            args.splice(3..3, ["--jpeg-quality".into(), quality.to_string().into()]);
+            args.extend(["--format".into(), "jpeg".into()]);
+            let parsed = options(&args, validation_time(), Instant::now()).unwrap();
+            assert_eq!(parsed.jpeg_quality, quality);
+            assert_eq!(summary(&parsed, vec![])["jpeg_quality"], quality);
+        }
+        for extra in [
+            vec!["--format", "jpg"],
+            vec!["--format", "PNG"],
+            vec!["--format", "gif"],
+            vec!["--format", "../png"],
+            vec!["--format", ""],
+            vec!["--format", "png", "--format", "jpeg"],
+            vec!["--jpeg-quality", "0", "--format", "jpeg"],
+            vec!["--jpeg-quality", "101", "--format", "jpeg"],
+            vec!["--jpeg-quality", "256", "--format", "jpeg"],
+            vec!["--jpeg-quality", "-1", "--format", "jpeg"],
+            vec!["--jpeg-quality", "1.5", "--format", "jpeg"],
+            vec!["--jpeg-quality", "80"],
+            vec!["--format", "png", "--jpeg-quality", "80"],
+            vec!["--format", "webp", "--jpeg-quality", "80"],
+            vec!["--jpeg-quality", "80", "--jpeg-quality", "90"],
+        ] {
+            let mut args = directory.args(Some("2030-01-01T00:00:01Z"));
+            args.extend(extra.iter().map(OsString::from));
+            assert!(
+                options(&args, validation_time(), Instant::now()).is_err(),
+                "{extra:?}"
+            );
+        }
+        assert!(std::fs::read_dir(&directory.0).unwrap().next().is_none());
+    }
+
+    #[test]
+    fn configured_formats_keep_pixels_dimensions_and_one_frame_lifetime() {
+        for (format, extension, expected_format) in [
+            ("png", "png", image::ImageFormat::Png),
+            ("jpeg", "jpg", image::ImageFormat::Jpeg),
+            ("webp", "webp", image::ImageFormat::WebP),
+        ] {
+            let directory = Directory::new();
+            let mut args = directory.args(None);
+            args.extend(["--format".into(), format.into()]);
+            if format == "jpeg" {
+                args.extend(["--jpeg-quality".into(), "91".into()]);
+            }
+            let parsed = options(&args, validation_time(), Instant::now()).unwrap();
+            let previous = RefCell::new(None::<std::sync::Weak<image::RgbaImage>>);
+            let mut captured = 0u8;
+            let files = run_sequence(
+                2,
+                parsed.interval,
+                || {
+                    assert!(
+                        previous
+                            .borrow()
+                            .as_ref()
+                            .is_none_or(|p| p.upgrade().is_none())
+                    );
+                    captured += 1;
+                    let frame = crate::cli::frame(image::RgbaImage::from_pixel(
+                        3,
+                        2,
+                        image::Rgba([captured, 42, 170, if format == "jpeg" { 255 } else { 93 }]),
+                    ));
+                    *previous.borrow_mut() = Some(Arc::downgrade(&frame.pixels));
+                    Ok(frame)
+                },
+                |frame, index| save_frame(&parsed, "fixture", frame, index),
+                |_| {
+                    assert!(previous.borrow().as_ref().unwrap().upgrade().is_none());
+                    Ok(())
+                },
+            )
+            .unwrap_or_else(|failure| panic!("{}", failure.cause));
+            assert!(previous.borrow().as_ref().unwrap().upgrade().is_none());
+            assert_eq!(
+                files,
+                [
+                    format!("fixture-0001.{extension}"),
+                    format!("fixture-0002.{extension}")
+                ]
+            );
+            for (index, name) in files.iter().enumerate() {
+                let bytes = std::fs::read(directory.0.join(name)).unwrap();
+                assert_eq!(image::guess_format(&bytes).unwrap(), expected_format);
+                let image = image::load_from_memory(&bytes).unwrap().into_rgba8();
+                assert_eq!(image.dimensions(), (3, 2));
+                if format != "jpeg" {
+                    assert_eq!(
+                        image,
+                        image::RgbaImage::from_pixel(
+                            3,
+                            2,
+                            image::Rgba([index as u8 + 1, 42, 170, 93])
+                        )
+                    );
+                }
+                let collision = crate::cli::frame(image::RgbaImage::from_pixel(
+                    3,
+                    2,
+                    image::Rgba([9, 9, 9, 255]),
+                ));
+                assert!(save_frame(&parsed, "fixture", collision, index as u16 + 1).is_err());
+                assert_eq!(std::fs::read(directory.0.join(name)).unwrap(), bytes);
+            }
+            assert_eq!(std::fs::read_dir(&directory.0).unwrap().count(), 2);
+        }
+    }
+
+    #[test]
+    fn jpeg_refuses_alpha_before_output_and_releases_failed_frame() {
+        let directory = Directory::new();
+        let mut args = directory.args(None);
+        args.extend(["--format".into(), "jpeg".into()]);
+        let parsed = options(&args, validation_time(), Instant::now()).unwrap();
+        let frame = crate::cli::frame(image::RgbaImage::from_pixel(
+            2,
+            1,
+            image::Rgba([1, 2, 3, 93]),
+        ));
+        let pixels = Arc::downgrade(&frame.pixels);
+        let error = save_frame(&parsed, "fixture", frame, 1).unwrap_err();
+        assert!(error.to_string().contains("transparency"), "{error}");
+        assert!(pixels.upgrade().is_none());
+        assert!(std::fs::read_dir(&directory.0).unwrap().next().is_none());
+    }
+
+    #[test]
+    fn configured_quality_reaches_encoder_and_default_png_bytes_stay_identical() {
+        let directory = Directory::new();
+        let pixels = image::RgbaImage::from_fn(64, 64, |x, y| {
+            image::Rgba([
+                ((x * 47 + y * 13) % 256) as u8,
+                ((y * 71 + x * 19) % 256) as u8,
+                ((x + y) * 31 % 256) as u8,
+                255,
+            ])
+        });
+        let args = directory.args(None);
+        let parsed = options(&args, validation_time(), Instant::now()).unwrap();
+        let frame = crate::cli::frame(pixels.clone());
+        frame
+            .save_png_as(&directory.0.join("original.png"))
+            .unwrap();
+        let name = save_frame(&parsed, "default", frame, 1).unwrap();
+        assert_eq!(
+            std::fs::read(directory.0.join(name)).unwrap(),
+            std::fs::read(directory.0.join("original.png")).unwrap()
+        );
+        std::fs::remove_file(directory.0.join("original.png")).unwrap();
+        std::fs::remove_file(directory.0.join("default-0001.png")).unwrap();
+        let mut error = Vec::new();
+        for quality in [10, 100] {
+            let mut args = directory.args(None);
+            args.extend([
+                "--format".into(),
+                "jpeg".into(),
+                "--jpeg-quality".into(),
+                quality.to_string().into(),
+            ]);
+            let parsed = options(&args, validation_time(), Instant::now()).unwrap();
+            let name =
+                save_frame(&parsed, "quality", crate::cli::frame(pixels.clone()), 1).unwrap();
+            let decoded = image::open(directory.0.join(&name)).unwrap().into_rgba8();
+            error.push(
+                decoded
+                    .as_raw()
+                    .iter()
+                    .zip(pixels.as_raw())
+                    .map(|(a, b)| u64::from(a.abs_diff(*b)))
+                    .sum::<u64>(),
+            );
+            std::fs::remove_file(directory.0.join(name)).unwrap();
+        }
+        assert!(error[1] < error[0], "{error:?}");
     }
 
     #[test]
