@@ -25,11 +25,17 @@ jobs:
           - os: ubuntu-24.04
             target: x86_64-unknown-linux-gnu
             binary: screenshots
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            binary: screenshots
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             binary: screenshots.exe
           - os: macos-15
             target: aarch64-apple-darwin
+            binary: screenshots
+          - os: macos-15-intel
+            target: x86_64-apple-darwin
             binary: screenshots
     runs-on: ${{ matrix.os }}
     timeout-minutes: 90
@@ -55,6 +61,26 @@ jobs:
         with:
           python-version: "3.12"
       - uses: actions/cache@v4
+        if: runner.os == 'Windows'
+        with:
+          path: |
+            target/vcpkg-installed
+            target/vcpkg-downloads
+          key: native-sftp-${{ runner.os }}-${{ hashFiles('packaging/windows/vcpkg.json') }}
+      - name: Build pinned Windows SFTP engine dependencies
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          git clone --filter=blob:none --no-checkout https://github.com/microsoft/vcpkg.git target/vcpkg
+          git -C target/vcpkg checkout 8f363bdc11359ede4bc51e5eb32a2617538049c8
+          & target/vcpkg/bootstrap-vcpkg.bat -disableMetrics
+          $env:VCPKG_DOWNLOADS = Join-Path $PWD 'target/vcpkg-downloads'
+          & target/vcpkg/vcpkg.exe install --triplet x64-windows-static-md --x-manifest-root=packaging/windows --x-install-root=target/vcpkg-installed --disable-metrics
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          "VCPKG_ROOT=$(Join-Path $PWD 'target/vcpkg')" >> $env:GITHUB_ENV
+          "VCPKG_INSTALLED_ROOT=$(Join-Path $PWD 'target/vcpkg-installed')" >> $env:GITHUB_ENV
+          "VCPKGRS_TRIPLET=x64-windows-static-md" >> $env:GITHUB_ENV
+      - uses: actions/cache@v4
         with:
           path: |
             ~/.cargo/registry
@@ -79,6 +105,12 @@ jobs:
           cargo test -p app-core --profile release-fast --locked upload::tests::request_url_mode_ -- --ignored --test-threads=1
       - name: Verify packaging logic
         run: python scripts/test-package.py
+      - name: Verify user installation and authenticated updates
+        shell: bash
+        run: |
+          openssl version
+          python scripts/test-install-user.py
+          python scripts/test-package-app.py
       - name: Package native executable
         run: python scripts/package.py --target ${{ matrix.target }} --binary target/release/${{ matrix.binary }}
       - name: Smoke extracted archive without a display or user data
@@ -87,8 +119,16 @@ jobs:
           for archive in target/packages/*.tar.gz target/packages/*.zip; do
             if [ -f "$archive" ]; then python scripts/test-package-smoke.py "$archive"; fi
           done
+      - name: Build native application installer
+        shell: bash
+        run: |
+          for archive in target/packages/*.tar.gz target/packages/*.zip; do
+            if [ -f "$archive" ]; then python scripts/package-app.py --package "$archive" --output target/native-packages; fi
+          done
       - uses: actions/upload-artifact@v4
         with:
           name: screenshots-${{ matrix.target }}
-          path: target/packages/*
+          path: |
+            target/packages/*
+            target/native-packages/*
           if-no-files-found: error

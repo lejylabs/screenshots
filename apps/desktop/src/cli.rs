@@ -10,6 +10,8 @@ Open image: screenshots --open FILE
 Headless commands (no desktop UI, clipboard writes or implicit uploads):
   screenshots --help | --version
   screenshots autostart status|enable|disable
+  screenshots desktop associations status|enable|disable
+  screenshots desktop notify TITLE BODY
   screenshots hash-file FILE [--expect SHA256_HEX]
   screenshots image convert INPUT OUTPUT [--width N] [--height N]
       [--rotate 90|180|270] [--flip-horizontal] [--flip-vertical]
@@ -142,6 +144,7 @@ pub fn run(args: Vec<OsString>) -> Result<bool> {
         "capture-regions" => crate::capture_regions::run(&args[1..])?,
         "capture-sequence" => crate::capture_sequence::run(&args[1..])?,
         "capture-task" => crate::capture_task::run(&args[1..])?,
+        "desktop" => crate::desktop_integration::run(&args[1..])?,
         "autostart" => crate::autostart::run(&args[1..])?,
         "history" => history(&args[1..])?,
         "history-audit" => crate::history_audit::run(&args[1..])?,

@@ -8,6 +8,7 @@ mod capture_regions;
 mod capture_sequence;
 mod capture_task;
 mod cli;
+mod desktop_integration;
 mod gif_assembly;
 mod hash_file;
 mod history_audit;

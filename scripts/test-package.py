@@ -22,6 +22,50 @@ smoke_spec.loader.exec_module(smoke_module)
 
 
 class PackagingTests(unittest.TestCase):
+    def test_static_windows_native_notices_are_required_bounded_and_packaged(self):
+        target = "x86_64-pc-windows-msvc"
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            self.assertEqual(module.native_licenses("x86_64-unknown-linux-gnu"), [])
+            with mock.patch.dict(os.environ, {"VCPKG_INSTALLED_ROOT": str(root), "VCPKGRS_TRIPLET": "x64-windows-static-md"}):
+                with self.assertRaises(FileNotFoundError):
+                    module.native_licenses(target)
+                share = root / "x64-windows-static-md/share"
+                for name in ["curl", "libssh2", "openssl", "zlib"]:
+                    (share / name).mkdir(parents=True)
+                    (share / name / "copyright").write_bytes((name + " native notice").encode())
+                notices = module.native_licenses(target)
+                self.assertEqual(len(notices), 4)
+                copyright = share / "curl/copyright"
+                copyright.write_bytes(b"x" * (1024 * 1024 + 1))
+                with self.assertRaises(ValueError):
+                    module.native_licenses(target)
+                copyright.write_bytes(b"curl native notice")
+                binary = root / "binary"
+                binary.write_bytes(b"synthetic executable")
+                rust_license = root / "LICENSE-fixture"
+                rust_license.write_bytes(b"existing Rust notice")
+                rust = {"name": "rust-fixture", "version": "1", "license_files": [str(rust_license)]}
+                archive = module.package(binary, root / "packages", "native-test", target, 0, {}, [rust, *notices])
+                with zipfile.ZipFile(archive) as stream:
+                    dependencies = json.loads(stream.read("native-test/licenses/dependencies.json"))
+                    self.assertEqual({item["name"] for item in dependencies},
+                                     {"rust-fixture", "native-curl", "native-libssh2", "native-openssl", "native-zlib"})
+                    for item in notices:
+                        path = f"native-test/licenses/{item['name']}-{item['version']}/copyright"
+                        self.assertEqual(stream.read(path), (item["name"][7:] + " native notice").encode())
+                    self.assertEqual(stream.read("native-test/licenses/rust-fixture-1/LICENSE-fixture"), b"existing Rust notice")
+                    self.assertNotIn(str(root).encode(), stream.read("native-test/licenses/dependencies.json"))
+                copyright.unlink()
+                if os.name != "nt":
+                    copyright.symlink_to(rust_license)
+                    with self.assertRaises((OSError, ValueError)):
+                        module.native_licenses(target)
+                    copyright.unlink()
+                    os.mkfifo(copyright)
+                    with self.assertRaises(ValueError):
+                        module.native_licenses(target)
+
     def test_bundled_webp_notices_are_required_and_packaged(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

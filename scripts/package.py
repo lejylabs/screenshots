@@ -8,6 +8,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import stat
 import subprocess
 import tarfile
 import tempfile
@@ -40,6 +41,37 @@ def license_files(item):
     return sorted(set(map(str, files)))
 
 
+def bounded_license(path):
+    descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_NOFOLLOW", 0))
+    with os.fdopen(descriptor, "rb") as source:
+        metadata, named = os.fstat(source.fileno()), path.lstat()
+        if (not stat.S_ISREG(metadata.st_mode) or not stat.S_ISREG(named.st_mode)
+                or (metadata.st_dev, metadata.st_ino) != (named.st_dev, named.st_ino)
+                or not 1 <= metadata.st_size <= 1024 * 1024):
+            raise ValueError("Native dependency notice must be a regular file of at most 1 MiB")
+        content = source.read(metadata.st_size)
+        if len(content) != metadata.st_size:
+            raise ValueError("Native dependency notice was truncated")
+        return content
+
+
+def native_licenses(target):
+    if "windows" not in target:
+        return []
+    installed = os.environ.get("VCPKG_INSTALLED_ROOT")
+    if not installed or not Path(installed).is_absolute() or os.environ.get("VCPKGRS_TRIPLET") != "x64-windows-static-md":
+        raise ValueError("Windows packaging requires the pinned static vcpkg installation and triplet")
+    baseline = json.loads((ROOT / "packaging/windows/vcpkg.json").read_text(encoding="utf-8"))["builtin-baseline"]
+    result = []
+    for name, license in [("curl", "curl"), ("libssh2", "BSD-3-Clause"), ("openssl", "Apache-2.0"), ("zlib", "Zlib")]:
+        path = Path(installed) / "x64-windows-static-md/share" / name / "copyright"
+        bounded_license(path)
+        result.append({"name": "native-" + name, "version": "vcpkg-" + baseline,
+                       "license": license, "source": "vcpkg baseline " + baseline,
+                       "license_files": [str(path)], "bounded_native_notice": True})
+    return result
+
+
 def package(binary, output, name, target, epoch, info, licenses):
     """Stage complete files, then publish without replacing an existing archive."""
     if not binary.is_file() or binary.is_symlink():
@@ -64,12 +96,14 @@ def package(binary, output, name, target, epoch, info, licenses):
         for source in ["LICENSE", "THIRD_PARTY_NOTICES.md", "README.md", "Cargo.lock"]:
             shutil.copyfile(ROOT / source, folder / source)
         shutil.copyfile(ROOT / "docs/packaging.md", folder / "PACKAGING.md")
+        shutil.copyfile(ROOT / "scripts/install-user.py", folder / "install-user.py")
+        shutil.copyfile(ROOT / "docs/desktop-integration.md", folder / "DESKTOP-INTEGRATION.md")
         if "linux" in target:
             shutil.copyfile(ROOT / "packaging/screenshots.desktop", folder / "screenshots.desktop")
         license_dir = folder / "licenses"
         license_dir.mkdir()
         write_text(license_dir / "dependencies.json", json.dumps([
-            {key: value for key, value in item.items() if key != "license_files"}
+            {key: value for key, value in item.items() if key not in ("license_files", "bounded_native_notice")}
             for item in licenses
         ], indent=2) + "\n")
         for item in licenses:
@@ -78,7 +112,10 @@ def package(binary, output, name, target, epoch, info, licenses):
                 source = Path(source)
                 relative = license_dir / (item["name"] + "-" + item["version"]) / source.name
                 relative.parent.mkdir(exist_ok=True)
-                shutil.copyfile(source, relative)
+                if item.get("bounded_native_notice"):
+                    relative.write_bytes(bounded_license(source))
+                else:
+                    shutil.copyfile(source, relative)
         archive = staging / filename
         if windows:
             # ZIP timestamps cannot represent dates before 1980.
@@ -134,6 +171,7 @@ def main():
     licenses = []
     for item in sorted(metadata["packages"], key=lambda item: (item["name"], item["version"])):
         licenses.append({"name": item["name"], "version": item["version"], "license": item["license"], "source": item["source"], "license_files": license_files(item)})
+    licenses.extend(native_licenses(host))
     commit = command("git", "rev-parse", "HEAD")
     epoch = int(os.environ.get("SOURCE_DATE_EPOCH", command("git", "show", "-s", "--format=%ct", "HEAD")))
     info = {"version": version, "target": host, "commit": commit, "dirty": bool(command("git", "status", "--porcelain")), "rustc": command("rustc", "-vV"), "source_date_epoch": epoch, "binary_input": "explicit prebuilt binary" if args.binary else "cargo build --locked --release", "signing": "unsigned; native runtime acceptance is separate"}
