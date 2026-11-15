@@ -6,9 +6,11 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import sys
 import tarfile
 import tempfile
 import unittest
+from unittest import mock
 import zipfile
 
 spec = importlib.util.spec_from_file_location("package", Path(__file__).with_name("package.py"))
@@ -20,6 +22,23 @@ smoke_spec.loader.exec_module(smoke_module)
 
 
 class PackagingTests(unittest.TestCase):
+    def test_commands_decode_utf8_independently_of_the_platform_locale(self):
+        expected = '{"description":"Zażółć 中文 😀"}'
+        self.assertEqual(module.command(
+            sys.executable, "-c", "import sys; sys.stdout.buffer.write(bytes.fromhex('" + expected.encode("utf-8").hex() + "'))"
+        ), expected)
+        with mock.patch.object(module.subprocess, "check_output", return_value='{"description":"Zażółć 中文 😀"}\n') as run:
+            self.assertEqual(module.command("cargo", "metadata"), '{"description":"Zażółć 中文 😀"}')
+        run.assert_called_once_with(
+            ("cargo", "metadata"), cwd=module.ROOT, text=True, encoding="utf-8"
+        )
+
+    def test_generated_text_is_utf8_with_lf_newlines(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "text.json"
+            module.write_text(path, '{"name":"Zażółć 中文 😀"}\n')
+            self.assertEqual(path.read_bytes(), '{"name":"Zażółć 中文 😀"}\n'.encode("utf-8"))
+
     def test_archives_are_repeatable_and_never_replace_outputs(self):
         for target in ["x86_64-unknown-linux-gnu", "x86_64-pc-windows-msvc", "aarch64-apple-darwin"]:
             with self.subTest(target=target), tempfile.TemporaryDirectory() as temporary:
@@ -27,15 +46,16 @@ class PackagingTests(unittest.TestCase):
                 binary = root / "binary"
                 binary.write_bytes(b"synthetic executable fixture\x00")
                 license_file = root / "LICENSE-test"
-                license_file.write_text("Synthetic license fixture\n")
+                license_file.write_text("Synthetic license fixture\n", encoding="utf-8", newline="\n")
                 license_info = [{"name": "fixture", "version": "1", "license": "MIT", "license_files": [str(license_file)]}]
                 first = module.package(binary, root / "one", "screenshots-test", target, 1700000000, {"fixture": True}, license_info)
                 second = module.package(binary, root / "two", "screenshots-test", target, 1700000000, {"fixture": True}, license_info)
                 self.assertEqual(first.read_bytes(), second.read_bytes())
                 with self.assertRaises(FileExistsError):
                     module.package(binary, root / "one", "screenshots-test", target, 1700000000, {}, [])
-                checksum = first.with_name(first.name + ".sha256").read_text()
+                checksum = first.with_name(first.name + ".sha256").read_text(encoding="utf-8")
                 self.assertEqual(checksum, hashlib.sha256(first.read_bytes()).hexdigest() + "  " + first.name + "\n")
+                self.assertNotIn(b"\r", first.with_name(first.name + ".sha256").read_bytes())
                 if first.suffix == ".zip":
                     with zipfile.ZipFile(first) as archive:
                         files = {name: archive.read(name) for name in archive.namelist()}
@@ -66,10 +86,10 @@ class PackagingTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             binary = root / "fixture"
-            binary.write_text("#!/bin/sh\nprintf 'screenshots package fixture\\n'\n")
+            binary.write_text("#!/bin/sh\nprintf 'screenshots package fixture\\n'\n", encoding="utf-8", newline="\n")
             archive = module.package(binary, root / "packages", "screenshots-test", "x86_64-unknown-linux-gnu", 1700000000, {}, [])
             smoke_module.smoke(archive)
-            archive.with_name(archive.name + ".sha256").write_text("invalid checksum\n")
+            archive.with_name(archive.name + ".sha256").write_text("invalid checksum\n", encoding="utf-8", newline="\n")
             with self.assertRaises(ValueError):
                 smoke_module.smoke(archive)
 

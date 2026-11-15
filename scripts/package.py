@@ -18,7 +18,11 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def command(*args):
-    return subprocess.check_output(args, cwd=ROOT, text=True).strip()
+    return subprocess.check_output(args, cwd=ROOT, text=True, encoding="utf-8").strip()
+
+
+def write_text(path, text):
+    path.write_text(text, encoding="utf-8", newline="\n")
 
 
 def package(binary, output, name, target, epoch, info, licenses):
@@ -41,7 +45,7 @@ def package(binary, output, name, target, epoch, info, licenses):
         executable.chmod(0o755)
         with binary.open("rb") as content:
             info = dict(info, binary_sha256=hashlib.file_digest(content, "sha256").hexdigest())
-        (folder / "BUILD-INFO.json").write_text(json.dumps(info, indent=2) + "\n")
+        write_text(folder / "BUILD-INFO.json", json.dumps(info, indent=2) + "\n")
         for source in ["LICENSE", "THIRD_PARTY_NOTICES.md", "README.md", "Cargo.lock"]:
             shutil.copyfile(ROOT / source, folder / source)
         shutil.copyfile(ROOT / "docs/packaging.md", folder / "PACKAGING.md")
@@ -49,7 +53,7 @@ def package(binary, output, name, target, epoch, info, licenses):
             shutil.copyfile(ROOT / "packaging/screenshots.desktop", folder / "screenshots.desktop")
         license_dir = folder / "licenses"
         license_dir.mkdir()
-        (license_dir / "dependencies.json").write_text(json.dumps([
+        write_text(license_dir / "dependencies.json", json.dumps([
             {key: value for key, value in item.items() if key != "license_files"}
             for item in licenses
         ], indent=2) + "\n")
@@ -87,7 +91,7 @@ def package(binary, output, name, target, epoch, info, licenses):
         with archive.open("rb") as content:
             digest = hashlib.file_digest(content, "sha256").hexdigest()
         staged_checksum = staging / checksum.name
-        staged_checksum.write_text(digest + "  " + filename + "\n")
+        write_text(staged_checksum, digest + "  " + filename + "\n")
         # Hard links provide atomic no-replace publication on the destination filesystem.
         os.link(archive, destination)
         try:

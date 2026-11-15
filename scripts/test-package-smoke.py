@@ -13,7 +13,7 @@ import zipfile
 
 
 def smoke(archive):
-    checksum = archive.with_name(archive.name + ".sha256").read_text()
+    checksum = archive.with_name(archive.name + ".sha256").read_text(encoding="utf-8")
     with archive.open("rb") as content:
         digest = hashlib.file_digest(content, "sha256").hexdigest()
     if checksum != digest + "  " + archive.name + "\n":
@@ -44,7 +44,7 @@ def smoke(archive):
             raise ValueError("Package must contain one application folder")
         folder = folders[0]
         binary = folder / ("screenshots.exe" if os.name == "nt" else "screenshots")
-        info = json.loads((folder / "BUILD-INFO.json").read_text())
+        info = json.loads((folder / "BUILD-INFO.json").read_text(encoding="utf-8"))
         with binary.open("rb") as content:
             if hashlib.file_digest(content, "sha256").hexdigest() != info["binary_sha256"]:
                 raise ValueError("Packaged binary hash does not match build info")
@@ -56,7 +56,7 @@ def smoke(archive):
             isolated.mkdir()
             environment[variable] = str(isolated)
         for argument in ["--version", "--help"]:
-            result = subprocess.run([str(binary), argument], env=environment, cwd=root, capture_output=True, text=True, timeout=15, check=True)
+            result = subprocess.run([str(binary), argument], env=environment, cwd=root, capture_output=True, text=True, encoding="utf-8", timeout=15, check=True)
             if "screenshots" not in result.stdout.lower():
                 raise ValueError("Headless command did not identify screenshots")
         for variable in ["HOME", "USERPROFILE", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME", "APPDATA", "LOCALAPPDATA"]:

@@ -32,6 +32,11 @@ the commit time or `SOURCE_DATE_EPOCH`. The same binary, metadata and timestamp
 produce the same archive; this is not a claim that recompiling produces an
 identical binary. Runtime system libraries are not bundled.
 
+Cargo/rustc/git command output is decoded explicitly as UTF-8, including Cargo
+metadata on Windows hosts whose default code page is not UTF-8. Generated JSON
+and checksum files are UTF-8 with LF newlines on every platform. Copied license
+and source files retain their original bytes.
+
 ## Install and update manually
 
 Verify the SHA-256 sidecar, extract into a new versioned folder, and test it
