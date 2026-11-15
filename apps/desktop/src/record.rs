@@ -349,6 +349,16 @@ mod unix {
         // Bound file growth in the child; a cap hit cannot be mistaken for a full recording.
         unsafe {
             command.pre_exec(|| {
+                #[cfg(target_os = "linux")]
+                {
+                    let parent = libc::getppid();
+                    if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL) != 0 {
+                        return Err(std::io::Error::last_os_error());
+                    }
+                    if libc::getppid() != parent {
+                        return Err(std::io::Error::other("Recording parent exited"));
+                    }
+                }
                 let limit = libc::rlimit {
                     rlim_cur: MAX_OUTPUT_BYTES as libc::rlim_t,
                     rlim_max: MAX_OUTPUT_BYTES as libc::rlim_t,

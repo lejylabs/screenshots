@@ -47,7 +47,9 @@ two codec threads, one filter thread, a one-packet input queue and a one-packet
 initial mux queue. No unbounded application frame queue or raw frame copy enters
 the Rust process. A 1920×1080 four-byte frame is about 7.9 MiB; external codec
 references, X11 buffers and encoder/filter scratch add to this. Each external
-allocation is limited to 64 MiB with FFmpeg's `max_alloc`, which is **not** a
+allocation through FFmpeg's own allocation helpers is limited to 64 MiB with
+`max_alloc`. X11, libc and external-library allocations are outside this bound;
+it is **not** a
 total-process memory limit. The actual combined application/subprocess peak
 RSS and CPU require measurement; native performance acceptance is not implied.
 
@@ -62,9 +64,11 @@ background recording, eager runtime, network check or additional idle work.
 
 The overall deadline is the requested duration plus 10 seconds, including the
 verification phase. An OS `RLIMIT_FSIZE` of 256 MiB applies to child processes,
-so a cap hit cannot grow the recording past that limit. Child core dumps are
-disabled with `RLIMIT_CORE=0`, including limit-triggered termination, to avoid
-persisting raw process memory. Missing executables,
+so a cap hit cannot grow the recording past that limit. Ordinary file-based child core dumps are limited with `RLIMIT_CORE=0`. Linux
+piped core collectors can ignore this limit; system crash collection may still
+retain process memory or captured pixels. This is not a guarantee against
+system-level crash dumps. Configure that system policy separately for sensitive
+work. Missing executables,
 overflow, nonzero exits, cancellation and deadline expiry fail the operation.
 Native process spawning, filesystem calls and kernel waits can still block;
 the deadline is checked around them, not a hard interruption guarantee for
@@ -127,3 +131,11 @@ source result is not an X11 capture timing, total concurrent-memory measurement
 or reference-hardware gate. Frames have a nominal one-second timeline; the
 synthetic source can be produced faster than wall time. Native capture remains
 unrun. The known per-process external memory cost is additional to app admission.
+
+On Linux, each direct encoder/probe child receives a parent-death SIGKILL via
+`prctl`, closing its capture when the invoking process dies unexpectedly. This
+is not a process-tree guarantee for descendants that deliberately escape the
+managed group. Other Unix platforms have no equivalent parent-death setup in
+this implementation: a SIGKILL/crash of the controller can leave the direct
+engine running until its frame count finishes, and removes controller deadlines.
+Graceful SIGINT/SIGTERM still use the documented process-group cleanup.

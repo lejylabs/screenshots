@@ -379,6 +379,60 @@ fn cancellation_terminates_engine_group_and_cleans_unpublished_output() {
     }
 }
 
+#[cfg(target_os = "linux")]
+#[test]
+fn killing_controller_stops_the_direct_recording_engine() {
+    use std::{
+        process::Stdio,
+        time::{Duration, Instant},
+    };
+    let fixture = Fixture::new();
+    let engines = fixture.engines(
+        "printf '%s' \"$$\" > \"$RECORD_MARKER\"\nexec /bin/sleep 60",
+        PROBE,
+    );
+    let output = fixture.path("output.mkv");
+    let marker = fixture.path("pid");
+    let mut controller = fixture
+        .command()
+        .args(fixture.arguments(&output))
+        .env("PATH", engines)
+        .env("RECORD_MARKER", &marker)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let engine = loop {
+        if let Ok(value) = std::fs::read_to_string(&marker) {
+            if let Ok(pid) = value.parse::<i32>() {
+                break pid;
+            }
+        }
+        if Instant::now() > deadline {
+            let _ = controller.kill();
+            let _ = controller.wait();
+            panic!("Engine never started");
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    };
+    controller.kill().unwrap();
+    controller.wait().unwrap();
+    while !process_stopped(engine) && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    if !process_stopped(engine) {
+        unsafe {
+            libc::kill(engine, libc::SIGKILL);
+        }
+    }
+    assert!(
+        process_stopped(engine),
+        "Direct engine survived controller death"
+    );
+    assert!(!output.exists());
+}
+
 #[cfg(unix)]
 #[test]
 #[ignore = "requires installed FFmpeg and ffprobe; synthetic pixels only"]
