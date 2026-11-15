@@ -5,8 +5,9 @@ Date: 2026-11-15
 Status: implemented and locally verified; native product acceptance remains separate.
 
 Extend only `image convert INPUT OUTPUT.tif|OUTPUT.tiff`, matching extensions
-case-insensitively and reporting JSON `format: "tiff"`. Keep PNG/JPEG/WebP
-input, existing transforms/downscale, defaults and the editor format enum.
+case-insensitively and reporting JSON `format: "tiff"`. Keep shared image
+input (including [supported BMP](bmp-input.md)), existing transforms/downscale,
+defaults and the editor format enum.
 Use the already locked `tiff 0.11.3` package directly to write one uncompressed
 RGBA8 image with `ExtraSamples=[2]` (unassociated alpha). The image wrapper's
 default RGBA encoder omits that explicit alpha tag; a synthetic source decoded

@@ -12,7 +12,8 @@ screenshots image compare FIRST SECOND OUTPUT.png
 screenshots image split INPUT DIRECTORY --columns N --rows N
 ```
 
-Combine accepts 2–16 PNG/JPEG/WebP files in command-line order. Horizontal places
+Combine accepts 2–16 PNG/JPEG/WebP or [supported truecolor BMP](bmp-input.md)
+files in command-line order. Horizontal places
 them left to right, aligned at the top; vertical places them top to bottom,
 aligned at the left. Remaining canvas pixels are transparent black. Source RGBA
 bytes are copied unchanged, including RGB values under zero alpha. There is no
@@ -50,7 +51,7 @@ background job.
 ## Resource contract
 
 The existing decoder admits at most 32 MiB encoded bytes per file, supports only
-PNG/JPEG/WebP and validates dimensions before pixel allocation. Combine and
+PNG/JPEG/WebP and supported truecolor BMP, validating dimensions before pixel allocation. Combine and
 compare admit each next decoder against the remaining 256 MiB total decoded
 source budget. Combine separately admits the complete bounding canvas against
 256 MiB, then releases source buffers before encoding. Its peak retained pixel

@@ -17,20 +17,20 @@ main 523bc3c, the feature branch adds the following **CLI/core subsets**:
   persisted/repeating schedules, machine wake-up and UI controls remain open.
 - Explicit lossy WebP quality in conversion, capture tasks and finite sequences;
   default WebP remains lossless and editor preference work remains open.
-- Exact RGBA BMP output from `image convert`, independently decoded in tests;
-  BMP input, editor format selection and other new output formats remain open.
+- Exact RGBA BMP output from `image convert` and bounded truecolor BMP input,
+  independently decoded in tests; broader BMP variants and editor format selection remain open.
 - Uncompressed TIFF conversion output with explicit straight-alpha metadata;
   independent TIFF-tag and pixel checks passed. TIFF input, multi-page editing
   and editor format selection remain open.
-- Offline image recipes including ordered blur/pixelation, combine/compare/split, file pixel sampling and image
+- Offline image recipes including ordered blur/pixelation and exact row/column strip removal, combine/compare/split, file pixel sampling and image
   info, SHA256 file hashing and bounded PNG chunk inventory; editor tool
   integration, native screen color picker and general metadata inspection remain
   open.
 - `image metadata` also reports bounded JPEG markers and WebP chunks without
   printing metadata payloads. It is a partial structure inventory, not a full
   metadata-value inspector or proof that an image contains no private data.
-- Arbitrary file and image-batch uploads, including direct use of the existing
-  ShareX profile subset and FileUploader-only profiles for `upload-file`;
+- Arbitrary file and image/file-batch uploads, including direct use of the existing
+  ShareX profile subset and FileUploader-only profiles for `upload-file` and `upload-files`;
   provider/OAuth integration, batch UI
   and full after-capture/upload chains remain open. Explicit CLI capture-task
   now composes display/window/region capture, a recipe, file output and optional
@@ -41,7 +41,7 @@ main 523bc3c, the feature branch adds the following **CLI/core subsets**:
   remain open. See [S3 upload limits](s3-uploads.md).
 - Read-only date/text/history-link queries and explicit import/relink/remove
   metadata commands, missing-file audit and opt-in metadata-stripped PNG exports;
-  corresponding Library UI and physical-file management remain open.
+  corresponding Library UI, cross-platform moves and retention/deletion remain open.
 - Explicit Linux single-file history moves now use a durable intent journal and
   finish/cancel recovery. Windows/macOS moves, cross-filesystem transfer and
   integrated Library controls remain open; see [move recovery](history-file-moves.md).

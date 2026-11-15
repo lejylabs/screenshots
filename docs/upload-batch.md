@@ -1,7 +1,7 @@
 # Explicit image upload batches
 
 `screenshots upload-images PROFILE IMAGE...` sends one to twenty PNG,
-JPEG or WebP images through the existing uploader. The command itself is the
+JPEG, WebP or [supported truecolor BMP](bmp-input.md) images through the existing uploader. The command itself is the
 explicit network action; merely opening images, loading profiles or starting the
 desktop app does not upload them. It changes no source file, clipboard, capture
 history or settings. Duplicate paths are allowed and upload again in argument
@@ -11,7 +11,7 @@ non-UTF-8 paths remain usable where the OS supports them.
 `PROFILE` selects the [documented ShareX ImageUploader subset](../README.md#capture-home)
 when its extension is `.sxcu`, ignoring ASCII case (`.SXCU` also works). Every
 other extension selects native destination JSON; contents are not auto-detected.
-The same extension selection applies to `upload`; `upload-file` additionally
+The same extension selection applies to `upload`; `upload-file` and `upload-files` additionally
 accepts the bounded FileUploader profile subset. ShareX requires HTTPS
 and keeps its existing supported bodies, response parsers and nonsecret-field
 validation; this does not add full ShareX compatibility. The optional profile

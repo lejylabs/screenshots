@@ -3,7 +3,7 @@
 `screenshots image convert INPUT OUTPUT.webp --webp-quality 1..100` explicitly
 selects lossy WebP. Omit the flag to keep the existing lossless WebP behavior.
 PNG and JPEG defaults and other image commands are unchanged. Input uses the
-existing PNG/JPEG/WebP loader and transformations; the final WebP contains only
+shared PNG/JPEG/WebP and [truecolor BMP](bmp-input.md) loader and transformations; the final WebP contains only
 encoded pixels, without copied source metadata. Quality is not a file-size
 guarantee and quality 100 is still a lossy RGB encoding.
 

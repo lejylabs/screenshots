@@ -14,7 +14,8 @@ folder reached through a symlink work. The final database component is checked
 without following it and must be a regular file; final symlinks remain rejected.
 Missing paths are not created. No application
 migrations, WAL-mode changes or history writes run. It accepts the known history
-schema versions 1–4, checks the expected columns and runs `quick_check(1)`.
+schema versions 1–5, checks the expected columns and runs `quick_check(1)`.
+Version 5 also requires the pending-file-move table and reservation triggers.
 Unknown versions, foreign databases without the expected schema and corruption
 fail explicitly. A successful result gives the schema version and `ok`; it is
 not a complete filesystem or power-loss durability guarantee.

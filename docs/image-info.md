@@ -23,7 +23,7 @@ Coordinates outside the image fail without sampling. Transparent pixels retain
 their stored RGB channel values; this is raw decoded-pixel sampling rather than
 a color composited against a background.
 
-Both operations reuse the existing PNG/JPEG/WebP decoder, with at most 32 MiB
+Both operations reuse the shared PNG/JPEG/WebP and [truecolor BMP](bmp-input.md) loader, with at most 32 MiB
 encoded input and 256 MiB decoded RGBA. The input format is recognized by the
 decoder rather than inferred from the extension, but is not reported because
 the shared loader does not return a trustworthy encoding label. These are basic

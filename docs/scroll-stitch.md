@@ -8,7 +8,7 @@ capture.
 screenshots stitch-scroll OUTPUT MIN_OVERLAP INPUT INPUT [INPUT...]
 ```
 
-Supply 2–16 PNG/JPEG/WebP inputs in top-to-bottom order and a minimum overlap of
+Supply 2–16 PNG/JPEG/WebP or [supported truecolor BMP](bmp-input.md) inputs in top-to-bottom order and a minimum overlap of
 1–4096 rows. Images must have equal widths and heights of 2–16,384 rows. For each
 adjacent pair, the command finds an exact suffix of the earlier image matching
 the prefix of the next. An overlap must be at least `MIN_OVERLAP` and less than

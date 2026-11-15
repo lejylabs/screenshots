@@ -43,5 +43,5 @@ explicit built executable:
 python3 scripts/test-bmp-export.py --binary target/release-fast/screenshots
 ```
 
-TIFF and GIF still output are separate work: verify TIFF alpha tags first, and
-define GIF palette/partial-alpha loss and encoder resource limits explicitly.
+[TIFF conversion output](tiff-export.md) now writes explicit straight-alpha tags.
+GIF still output needs separately defined palette/partial-alpha loss and encoder resource limits.

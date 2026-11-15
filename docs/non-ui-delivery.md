@@ -142,7 +142,7 @@ Result<bool>: true for a completed headless action, false only for existing
 desktop --show/resource-probe/exit-after launch arguments or no arguments.
 Unknown commands exit 1 before GPUI; help/version exit 0. Headless actions print
 one JSON value to stdout (help/version use plain text), except `upload-images`
-which flushes NDJSON progress/results and a final summary. Errors go to stderr and
+and `upload-files`, which flush NDJSON progress/results and a final summary. Errors go to stderr and
 exit 1. Paths use native OsString and resolve relative to the invoking directory.
 Upload paths are made absolute before calling the existing uploader. No CLI
 command records history or copies clipboard data implicitly. `history DATABASE`
