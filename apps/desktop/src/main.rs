@@ -2,6 +2,7 @@ mod cli;
 mod image_tools;
 mod ocr;
 mod qr;
+mod workflow;
 
 fn main() {
     match cli::run(std::env::args_os().skip(1).collect()) {

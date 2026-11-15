@@ -14,7 +14,7 @@ fn number(value: &OsString) -> Result<u32> {
         .context("Expected a nonnegative whole number")
 }
 
-fn color(value: &OsString) -> Result<Rgba<u8>> {
+pub(crate) fn color(value: &OsString) -> Result<Rgba<u8>> {
     let value = text(value)?;
     ensure!(
         matches!(value.len(), 6 | 8) && value.bytes().all(|byte| byte.is_ascii_hexdigit()),
@@ -48,7 +48,7 @@ fn save(pixels: RgbaImage, destination: &Path) -> Result<()> {
     Ok(())
 }
 
-fn overlay(output: &mut RgbaImage, source: &RgbaImage, x: u32, y: u32) {
+pub(crate) fn overlay(output: &mut RgbaImage, source: &RgbaImage, x: u32, y: u32) {
     let width = source.width().min(output.width().saturating_sub(x));
     let height = source.height().min(output.height().saturating_sub(y));
     for source_y in 0..height {
@@ -160,6 +160,12 @@ fn resize(args: &[OsString]) -> Result<()> {
     let height = number(&args[4])?;
     app_core::validate_image_size(width, height)?;
     let source = app_core::load_editor_image(Path::new(&args[1]))?;
+    save(resize_pixels(&source, width, height)?, destination)
+}
+
+pub(crate) fn resize_pixels(source: &RgbaImage, width: u32, height: u32) -> Result<RgbaImage> {
+    app_core::validate_image_size(source.width(), source.height())?;
+    app_core::validate_image_size(width, height)?;
     // Center-sampled nearest neighbour keeps RGBA exact without a float intermediate.
     let output = RgbaImage::from_fn(width, height, |x, y| {
         let source_x =
@@ -168,5 +174,5 @@ fn resize(args: &[OsString]) -> Result<()> {
             ((u64::from(y) * 2 + 1) * u64::from(source.height()) / (u64::from(height) * 2)) as u32;
         *source.get_pixel(source_x, source_y)
     });
-    save(output, destination)
+    Ok(output)
 }

@@ -1,0 +1,105 @@
+# Offline image workflows
+
+Run an explicit saved recipe without opening the desktop application:
+
+```sh
+screenshots workflow recipe.json input.png output.webp
+```
+
+All three paths are native command-line paths. Relative paths resolve from the
+invoking directory, including when the recipe lives in another directory.
+Recipes contain operations only, so moving or sharing one does not embed input
+paths, output paths, credentials or executable commands.
+
+```json
+{
+  "version": 1,
+  "steps": [
+    { "op": "crop", "x": 20, "y": 10, "width": 640, "height": 480 },
+    { "op": "redact", "x": 10, "y": 10, "width": 120, "height": 30 },
+    { "op": "resize", "width": 320, "height": 240 },
+    { "op": "canvas", "padding": 8, "background": "FFFFFF" }
+  ]
+}
+```
+
+Version 1 requires between 1 and 16 steps. JSON objects reject unknown and
+duplicate fields; missing fields, unsupported operations and other versions
+are errors. The recipe must be a regular file containing at most 64 KiB of JSON,
+including whitespace. There are no includes, variables or implicit defaults.
+
+| Operation | Required fields besides `op` | Behavior |
+| --- | --- | --- |
+| `crop` | `x`, `y`, `width`, `height` | Keep an in-bounds rectangle. |
+| `rotate` | `degrees` | Rotate clockwise by 90, 180 or 270 degrees. |
+| `flip` | `axis` | Mirror `horizontal` or `vertical`. |
+| `resize` | `width`, `height` | Exact center-sampled nearest-neighbour resize; permits upscaling. |
+| `canvas` | `padding`, `background` | Add equal padding on all four sides and composite over the specified background. |
+| `redact` | `x`, `y`, `width`, `height` | Replace an in-bounds rectangle with opaque black pixels. |
+
+Coordinates and dimensions are nonnegative whole numbers; widths and heights
+must be positive. Rectangle coordinates refer to the current image after all
+earlier steps, with `(0, 0)` at its top-left corner. Backgrounds use six or eight
+hexadecimal digits, `RRGGBB` or `RRGGBBAA`, without a `#` prefix; six digits mean
+opaque. Canvas compositing matches `image compose`, including alpha blending.
+Resize matches `image resize`; it preserves exact selected RGBA pixels and does
+not interpolate. Image input decoding applies EXIF orientation before the first
+step, matching the existing image commands.
+
+Steps run sequentially on flattened pixels. A redaction removes the original
+pixels from that rectangle before later steps run, so later crop, rotation,
+resize or canvas operations cannot recover those pixels. This is an offline
+raster recipe, not editable document layers or arbitrary editor effect ordering.
+Redaction does not infer what content is sensitive; its coordinates must cover
+the intended content in the image state at that step.
+
+Inputs are PNG, JPEG or WebP, detected from file contents, with the existing
+32 MiB encoded and 256 MiB decoded limits. Every output and intermediate image
+must have a nonzero size and fit 256 MiB as RGBA; dimension arithmetic and
+rectangles are checked before allocating their result. This byte limit also
+bounds each dimension, without imposing a different workflow-only side limit.
+One current image and at most one replacement image are held during each step,
+then the previous image is dropped. The worst-case transform therefore holds
+512 MiB of RGBA buffers, plus bounded recipe data and existing decoder/encoder
+scratch. It keeps no undo history or retained original image. Existing export
+encoder limits and scratch costs still apply; this is an allocation contract,
+not a measured total-process memory result.
+
+Only the final image is exported, through the existing atomic no-replace export
+path. The destination extension selects PNG, JPEG or lossless WebP; JPEG uses
+the application's default quality and rejects remaining transparency. Existing
+files, including the input and recipe, are never replaced. A parse, validation
+or transform failure produces no output. An export error retains the existing
+temporary-file cleanup behavior. Successful stdout contains one JSON object:
+
+```json
+{"version":1,"steps":4,"format":"webp","width":336,"height":256}
+```
+
+The command performs no uploads, subprocesses, shell evaluation, clipboard
+operations, history writes or configuration changes. It has no resident tasks,
+timers, network runtime or added worker threads; work runs only in the explicit
+headless process and all image state is released when it finishes.
+
+Cancellation retains the existing headless process semantics: Ctrl+C or process
+termination stops the command. There is no cooperative cancellation or hard
+deadline for synchronous image or filesystem calls. Interruption before export
+writes no image; interruption during export can leave an unpublished UUID
+`.part` file, which the explicit storage inspection command can report. A final
+file already published before termination remains a completed output. Native
+filesystem stalls and full platform resource acceptance remain open; no timeout
+or hardware-performance acceptance is claimed here.
+
+The executable fixtures in `apps/desktop/tests/workflow.rs` cover ordered exact
+pixels for all six operations, opaque redaction followed by resizing, alpha,
+invocation-relative paths, recipe and step boundaries, strict schema rejection,
+oversized input/transform rejection, source preservation, existing outputs and
+output-free failures. These are test definitions; passing-run and optimized
+measurement evidence belong in `docs/non-ui-delivery.md` after verification.
+
+An unchanged-result recipe (same-size resize, whole-image crop or cancelling
+flips) still requires a fresh output and re-encodes decoded pixels. It does not
+copy source bytes or retain source metadata. Extensions are case-insensitive;
+`.jpg` and `.jpeg` both report `"jpg"`. JPEG quality defaults to 90. Missing
+output parent directories are created by the shared exporter. Errors produce
+stderr with exit 1 and no success JSON.

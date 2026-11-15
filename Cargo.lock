@@ -7506,6 +7506,7 @@ dependencies = [
  "qrcode",
  "quircs",
  "rfd",
+ "serde",
  "serde_json",
  "shared",
  "signal-hook",

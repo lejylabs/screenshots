@@ -17,7 +17,11 @@ Headless commands (no desktop UI, clipboard writes or implicit uploads):
   screenshots list displays|windows
   screenshots capture display|window ID OUTPUT
   screenshots capture region DISPLAY X Y WIDTH HEIGHT OUTPUT
+  screenshots capture desktop OUTPUT
   screenshots history DATABASE [--before ID] [--search WORDS]
+  screenshots history-query captures|uploads DATABASE [--order newest|oldest]
+      [--cursor ID] [--from YYYY-MM-DD] [--through YYYY-MM-DD]
+      [--search TEXT] [--source all|captures|imports]
   screenshots storage check DATABASE
   screenshots storage backup DATABASE NEW_DATABASE
   screenshots storage inspect-parts DIRECTORY
@@ -26,6 +30,7 @@ Headless commands (no desktop UI, clipboard writes or implicit uploads):
   screenshots qr generate TEXT OUTPUT_PNG
   screenshots qr scan INPUT
   screenshots ocr INPUT [--language LANG]
+  screenshots workflow RECIPE INPUT OUTPUT
 
 Image input: PNG/JPEG/WebP, <=32 MiB encoded and <=256 MiB decoded.
 Output: PNG/JPEG/lossless WebP; existing files are never replaced.
@@ -69,10 +74,12 @@ pub fn run(args: Vec<OsString>) -> Result<bool> {
         "list" => list(&args[1..])?,
         "capture" => capture(&args[1..])?,
         "history" => history(&args[1..])?,
+        "history-query" => history_query(&args[1..])?,
         "storage" => storage(&args[1..])?,
         "credentials" => credentials(&args[1..])?,
         "qr" => crate::qr::run(&args[1..])?,
         "ocr" => crate::ocr::run(&args[1..])?,
+        "workflow" => crate::workflow::run(&args[1..])?,
         "upload" => {
             ensure!(
                 args.len() == 3,
@@ -222,6 +229,21 @@ fn list(args: &[OsString]) -> Result<()> {
 }
 
 fn capture(args: &[OsString]) -> Result<()> {
+    if args.first().is_some_and(|arg| arg == "desktop") {
+        ensure!(args.len() == 2, "Usage: screenshots capture desktop OUTPUT");
+        let destination = Path::new(&args[1]);
+        app_core::ImageExportFormat::from_path(destination)?;
+        ensure!(!destination.try_exists()?, "Output already exists");
+        let image =
+            app_core::capture_stitched_desktop(&XcapBackend::new(std::path::PathBuf::new()))?;
+        image.save_image_as(
+            destination,
+            app_core::DEFAULT_JPEG_QUALITY,
+            ExportSize::Original,
+        )?;
+        println!("{}", json!({"width": image.width, "height": image.height}));
+        return Ok(());
+    }
     ensure!(
         args.len() >= 3,
         "Usage: screenshots capture display|window ID OUTPUT; or region DISPLAY X Y WIDTH HEIGHT OUTPUT"
@@ -301,6 +323,58 @@ fn history(args: &[OsString]) -> Result<()> {
         "height": entry.height, "created_at": entry.created_at
     })).collect::<Vec<_>>(), "has_more": has_more, "next_before": if has_more {cursor} else {None}})
     );
+    Ok(())
+}
+
+fn history_query(args: &[OsString]) -> Result<()> {
+    ensure!(
+        args.len() >= 2 && args.len().is_multiple_of(2),
+        "Usage: screenshots history-query captures|uploads DATABASE [options]"
+    );
+    let kind = text(&args[0])?;
+    ensure!(
+        matches!(kind, "captures" | "uploads"),
+        "Choose captures or uploads"
+    );
+    let mut query = app_core::HistoryQuery::default();
+    let mut seen = std::collections::HashSet::new();
+    for pair in args[2..].chunks_exact(2) {
+        let option = text(&pair[0])?;
+        ensure!(seen.insert(option), "Duplicate history-query option");
+        let value = text(&pair[1])?;
+        match option {
+            "--order" => {
+                query.sort = match value {
+                    "newest" => app_core::HistorySort::Newest,
+                    "oldest" => app_core::HistorySort::Oldest,
+                    _ => bail!("Order must be newest or oldest"),
+                }
+            }
+            "--cursor" => query.cursor = Some(number(&pair[1])?),
+            "--from" => query.from = Some(value.into()),
+            "--through" => query.through = Some(value.into()),
+            "--search" => query.text = value.into(),
+            "--source" => {
+                query.filter = match value {
+                    "all" => app_core::HistoryFilter::All,
+                    "captures" => app_core::HistoryFilter::Captures,
+                    "imports" => app_core::HistoryFilter::Imports,
+                    _ => bail!("Source must be all, captures or imports"),
+                }
+            }
+            _ => bail!("Unknown history-query option"),
+        }
+    }
+    let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let database = Path::new(&args[1]);
+    let result = if kind == "captures" {
+        let page = app_core::query_capture_history(database, &query, cancel)?;
+        json!({"entries":page.entries.into_iter().map(|entry| json!({"id":entry.id,"path":entry.path,"width":entry.width,"height":entry.height,"created_at":entry.created_at})).collect::<Vec<_>>(),"has_more":page.has_more,"next_cursor":page.next_cursor})
+    } else {
+        let page = app_core::query_upload_history(database, &query, cancel)?;
+        json!({"entries":page.entries.into_iter().map(|entry| json!({"id":entry.id,"filename":entry.filename,"origin":entry.origin,"url":entry.url,"created_at":entry.created_at})).collect::<Vec<_>>(),"has_more":page.has_more,"next_cursor":page.next_cursor})
+    };
+    println!("{result}");
     Ok(())
 }
 
