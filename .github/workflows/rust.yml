@@ -71,6 +71,12 @@ jobs:
         run: cargo build --workspace --release --locked
       - name: Run optimized deterministic tests
         run: cargo test --workspace --profile release-fast --locked
+      - name: Verify explicit upload flows against loopback only
+        shell: bash
+        run: |
+          cargo test -p app-core --profile release-fast --locked upload::tests::upload_ -- --ignored --test-threads=1
+          cargo test -p app-core --profile release-fast --locked upload::tests::probe_upload_sends_ -- --ignored --test-threads=1
+          cargo test -p app-core --profile release-fast --locked upload::tests::request_url_mode_ -- --ignored --test-threads=1
       - name: Verify packaging logic
         run: python scripts/test-package.py
       - name: Package native executable
