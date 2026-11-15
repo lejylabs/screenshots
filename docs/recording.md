@@ -1,5 +1,11 @@
 # Optional Unix screen recording
 
+Audio follow-up: `record-audio` records explicit native/synthetic sources as
+PCM WAV; Matroska screen recordings also accept `--audio-mode`,
+`--audio-device` and `--audio-channels`. See [audio capture and combined A/V](audio-recording.md)
+for sample-count verification and device/permission limits. The original
+video-only behavior described below remains unchanged when these flags are omitted.
+
 The separate [Windows recorder](recording-windows.md) uses bounded pipe output
 and a Windows Job Object. The Unix process/limit guarantees below describe only
 this Unix backend.

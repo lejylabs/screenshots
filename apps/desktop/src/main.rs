@@ -1,4 +1,5 @@
 mod autostart;
+mod audio_record;
 #[cfg(any(target_os = "macos", all(test, unix)))]
 mod autostart_macos;
 #[cfg(target_os = "windows")]

@@ -1,6 +1,8 @@
 //! Finite Windows recording with parent-enforced encoded-output bounds.
 
-use crate::record::{Options, OutputFormat, verify_probe};
+use crate::record::{
+    Options, OutputFormat, audio_sample_probe, verify_audio_samples, verify_probe,
+};
 use anyhow::{Context, Result, ensure};
 use std::{
     fs::{File, OpenOptions},
@@ -65,9 +67,9 @@ impl Drop for Engine {
     }
 }
 
-struct Staging {
+pub(crate) struct Staging {
     directory: PathBuf,
-    file: PathBuf,
+    pub(crate) file: PathBuf,
 }
 
 fn private_directory(path: &Path) -> Result<()> {
@@ -268,7 +270,7 @@ fn verify_directory(path: &[u16], expected: PSECURITY_DESCRIPTOR) -> Result<()> 
 }
 
 impl Staging {
-    fn new(parent: &Path, format: OutputFormat) -> Result<Self> {
+    pub(crate) fn new(parent: &Path, format: OutputFormat) -> Result<Self> {
         let directory = parent.join(format!(".screenshots-record-{}", uuid::Uuid::new_v4()));
         private_directory(&directory)?;
         let file = directory.join(if format == OutputFormat::Gif {
@@ -278,7 +280,7 @@ impl Staging {
         });
         Ok(Self { directory, file })
     }
-    fn cleanup(&self) -> Result<()> {
+    pub(crate) fn cleanup(&self) -> Result<()> {
         if let Err(error) = std::fs::remove_file(&self.file) {
             if error.kind() != std::io::ErrorKind::NotFound {
                 return Err(error.into());
@@ -378,7 +380,11 @@ fn await_engine(
     }
 }
 
-fn engine(mut command: Command, stage: Option<&Path>, deadline: Instant) -> Result<Vec<u8>> {
+pub(crate) fn engine(
+    mut command: Command,
+    stage: Option<&Path>,
+    deadline: Instant,
+) -> Result<Vec<u8>> {
     ensure!(
         Instant::now() < deadline,
         "Recording exceeded its duration plus 10 second deadline"
@@ -507,10 +513,16 @@ fn encoder(options: &Options<'_>) -> Command {
             ),
         ]);
     }
+    if let Some(audio) = options.audio {
+        audio.append_input(&mut command);
+    }
+    command.args(["-map", "0:v:0"]);
+    if options.audio.is_some() {
+        command.args(["-map", "1:a:0"]);
+    } else {
+        command.arg("-an");
+    }
     command.args([
-        "-map",
-        "0:v:0",
-        "-an",
         "-sn",
         "-dn",
         "-map_metadata",
@@ -537,6 +549,9 @@ fn encoder(options: &Options<'_>) -> Command {
         ]);
     } else {
         command.args(["-c:v", "gif", "-pix_fmt", "rgb8", "-loop", "-1"]);
+    }
+    if let Some(audio) = options.audio {
+        audio.append_pcm(&mut command, options.seconds, true);
     }
     command.args([
         "-threads",
@@ -578,9 +593,15 @@ pub(crate) fn record(options: Options<'_>) -> Result<()> {
             "Recording header does not match its output format"
         );
         let mut probe = Command::new("ffprobe.exe");
-        probe.args(["-hide_banner","-loglevel","error","-max_alloc","67108864","-threads","2","-protocol_whitelist","file","-f",options.format.container(),"-max_streams","1","-count_frames","-show_entries","stream=codec_name,codec_type,width,height,avg_frame_rate,nb_read_frames,duration:format=format_name","-of","json","-i"]);
+        probe.args(["-hide_banner","-loglevel","error","-max_alloc","67108864","-threads","2","-protocol_whitelist","file","-f",options.format.container(),"-max_streams",if options.audio.is_some() { "2" } else { "1" },"-count_frames","-show_entries",if options.audio.is_some() { "stream=codec_name,codec_type,width,height,avg_frame_rate,nb_read_frames,duration,sample_rate,channels,bits_per_sample:format=format_name" } else { "stream=codec_name,codec_type,width,height,avg_frame_rate,nb_read_frames,duration:format=format_name" },"-of","json","-i"]);
         probe.arg(&staging.file);
         verify_probe(&engine(probe, None, deadline)?, &options)?;
+        if options.audio.is_some() {
+            verify_audio_samples(
+                &engine(audio_sample_probe(&staging.file, true), None, deadline)?,
+                options.seconds,
+            )?;
+        }
         file.sync_all()?;
         drop(file);
         ensure!(
@@ -673,6 +694,7 @@ mod tests {
                 y: 4,
                 format,
                 cursor: None,
+                audio: None,
             };
             let command = encoder(&options);
             let args = command
@@ -709,6 +731,7 @@ mod tests {
                 y: 0,
                 format: OutputFormat::Matroska,
                 cursor,
+                audio: None,
             };
             let command = encoder(&options);
             let args = command

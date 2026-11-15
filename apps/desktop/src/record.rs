@@ -37,6 +37,7 @@ pub(crate) struct Options<'a> {
     pub(crate) y: u32,
     pub(crate) format: OutputFormat,
     pub(crate) cursor: Option<bool>,
+    pub(crate) audio: Option<crate::audio_record::AudioInput<'a>>,
 }
 
 impl Options<'_> {
@@ -53,14 +54,17 @@ impl Options<'_> {
         if let Some(show) = self.cursor {
             result["cursor"] = if show { "show" } else { "hide" }.into();
         }
+        if let Some(audio) = self.audio {
+            result["audio"] = audio.summary(self.seconds);
+        }
         result
     }
 }
 
 fn options(args: &[OsString]) -> Result<Options<'_>> {
     ensure!(
-        matches!(args.len(), 10 | 12 | 14 | 16),
-        "Usage: screenshots record MODE OUTPUT.mkv|OUTPUT.gif --seconds N --fps N --width N --height N [--x X --y Y] [--cursor show|hide]"
+        (10..=22).contains(&args.len()) && args.len().is_multiple_of(2),
+        "Usage: screenshots record MODE OUTPUT.mkv|OUTPUT.gif --seconds N --fps N --width N --height N [--x X --y Y] [--cursor show|hide] [--audio-mode MODE --audio-device NAME --audio-channels 1|2]"
     );
     let mode = args[0].to_str().context("Recording mode must be UTF-8")?;
     ensure!(
@@ -86,7 +90,37 @@ fn options(args: &[OsString]) -> Result<Options<'_>> {
     );
     let mut values = [None; 6];
     let mut cursor = None;
+    let mut audio_mode = None;
+    let mut audio_device = None;
+    let mut audio_channels = None;
     for pair in args[2..].chunks_exact(2) {
+        match pair[0].to_str() {
+            Some("--audio-mode") => {
+                ensure!(audio_mode.is_none(), "Duplicate --audio-mode option");
+                audio_mode = Some(pair[1].to_str().context("Audio mode must be UTF-8")?);
+                continue;
+            }
+            Some("--audio-device") => {
+                ensure!(audio_device.is_none(), "Duplicate --audio-device option");
+                audio_device = Some(pair[1].to_str().context("Audio device must be UTF-8")?);
+                continue;
+            }
+            Some("--audio-channels") => {
+                ensure!(
+                    audio_channels.is_none(),
+                    "Duplicate --audio-channels option"
+                );
+                audio_channels = Some(
+                    pair[1]
+                        .to_str()
+                        .context("Audio channels must be UTF-8")?
+                        .parse::<u16>()
+                        .context("Audio channels must be a whole number")?,
+                );
+                continue;
+            }
+            _ => {}
+        }
         if pair[0] == "--cursor" {
             ensure!(cursor.is_none(), "Duplicate --cursor option");
             cursor = Some(match pair[1].to_str() {
@@ -148,6 +182,23 @@ fn options(args: &[OsString]) -> Result<Options<'_>> {
         "Cursor option applies only to desktop recording"
     );
     let (x, y) = (x.unwrap_or(0), y.unwrap_or(0));
+    let audio = if let Some(mode) = audio_mode {
+        ensure!(
+            format == OutputFormat::Matroska,
+            "Audio recording requires Matroska output; GIF has no audio"
+        );
+        Some(crate::audio_record::AudioInput::new(
+            mode,
+            audio_device,
+            audio_channels,
+        )?)
+    } else {
+        ensure!(
+            audio_device.is_none() && audio_channels.is_none(),
+            "Audio device/channels require --audio-mode"
+        );
+        None
+    };
     ensure!(
         x.checked_add(width)
             .is_some_and(|end| end <= i32::MAX as u32)
@@ -166,6 +217,7 @@ fn options(args: &[OsString]) -> Result<Options<'_>> {
         y,
         format,
         cursor,
+        audio,
     })
 }
 
@@ -200,7 +252,7 @@ pub fn run(args: &[OsString]) -> Result<()> {
 }
 
 #[cfg(unix)]
-mod unix {
+pub(crate) mod unix {
     use super::*;
     use std::{
         fs::{DirBuilder, File},
@@ -222,14 +274,14 @@ mod unix {
     const MAX_DIAGNOSTIC_BYTES: usize = 16 * 1024;
     const CHECK_INTERVAL: Duration = Duration::from_millis(25);
 
-    struct Cancellation {
+    pub(crate) struct Cancellation {
         flag: Arc<AtomicBool>,
         finished: Arc<AtomicBool>,
         handlers: Vec<signal_hook::SigId>,
     }
 
     impl Cancellation {
-        fn new() -> Result<Self> {
+        pub(crate) fn new() -> Result<Self> {
             let mut result = Self {
                 flag: Arc::new(AtomicBool::new(false)),
                 finished: Arc::new(AtomicBool::new(false)),
@@ -249,13 +301,17 @@ mod unix {
             Ok(result)
         }
 
-        fn check(&self, deadline: Instant) -> Result<()> {
+        pub(crate) fn check(&self, deadline: Instant) -> Result<()> {
             ensure!(!self.flag.load(Ordering::Relaxed), "Recording canceled");
             ensure!(
                 Instant::now() < deadline,
                 "Recording exceeded its duration plus 10 second deadline"
             );
             Ok(())
+        }
+
+        pub(crate) fn output_phase(&self, active: bool) {
+            self.finished.store(active, Ordering::SeqCst);
         }
     }
 
@@ -268,13 +324,13 @@ mod unix {
         }
     }
 
-    struct Staging {
+    pub(crate) struct Staging {
         directory: PathBuf,
-        file: PathBuf,
+        pub(crate) file: PathBuf,
     }
 
     impl Staging {
-        fn new(parent: &Path, format: OutputFormat) -> Result<Self> {
+        pub(crate) fn new(parent: &Path, format: OutputFormat) -> Result<Self> {
             let directory = parent.join(format!(".screenshots-record-{}", uuid::Uuid::new_v4()));
             DirBuilder::new().mode(0o700).create(&directory)?;
             let file = directory.join(if format == OutputFormat::Gif {
@@ -285,7 +341,7 @@ mod unix {
             Ok(Self { directory, file })
         }
 
-        fn cleanup(&self) -> Result<()> {
+        pub(crate) fn cleanup(&self) -> Result<()> {
             match std::fs::remove_file(&self.file) {
                 Ok(()) => {}
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
@@ -403,7 +459,7 @@ mod unix {
         }
     }
 
-    fn engine(
+    pub(crate) fn engine(
         mut command: Command,
         probe: bool,
         cancellation: &Cancellation,
@@ -559,10 +615,16 @@ mod unix {
                 ),
             ]);
         }
+        if let Some(audio) = options.audio {
+            audio.append_input(&mut command);
+        }
+        command.args(["-map", "0:v:0"]);
+        if options.audio.is_some() {
+            command.args(["-map", "1:a:0"]);
+        } else {
+            command.arg("-an");
+        }
         command.args([
-            "-map",
-            "0:v:0",
-            "-an",
             "-sn",
             "-dn",
             "-map_metadata",
@@ -590,6 +652,9 @@ mod unix {
         } else {
             // RGB8 uses a fixed small palette; no whole-video palette generation pass.
             command.args(["-c:v", "gif", "-pix_fmt", "rgb8", "-loop", "-1"]);
+        }
+        if let Some(audio) = options.audio {
+            audio.append_pcm(&mut command, options.seconds, true);
         }
         command.args([
             "-threads",
@@ -641,9 +706,20 @@ mod unix {
                 "Recording header does not match its output format"
             );
             let mut probe = Command::new("ffprobe");
-            probe.args(["-hide_banner", "-loglevel", "error", "-max_alloc", "67108864", "-threads", "2", "-protocol_whitelist", "file", "-f", options.format.container(), "-max_streams", "1", "-count_frames", "-show_entries", "stream=codec_name,codec_type,width,height,avg_frame_rate,nb_read_frames,duration:format=format_name", "-of", "json", "-i"]);
+            probe.args(["-hide_banner", "-loglevel", "error", "-max_alloc", "67108864", "-threads", "2", "-protocol_whitelist", "file", "-f", options.format.container(), "-max_streams", if options.audio.is_some() { "2" } else { "1" }, "-count_frames", "-show_entries", if options.audio.is_some() { "stream=codec_name,codec_type,width,height,avg_frame_rate,nb_read_frames,duration,sample_rate,channels,bits_per_sample:format=format_name" } else { "stream=codec_name,codec_type,width,height,avg_frame_rate,nb_read_frames,duration:format=format_name" }, "-of", "json", "-i"]);
             probe.arg(&staging.file);
             verify_probe(&engine(probe, true, &cancellation, deadline)?, &options)?;
+            if options.audio.is_some() {
+                verify_audio_samples(
+                    &engine(
+                        audio_sample_probe(&staging.file, false),
+                        true,
+                        &cancellation,
+                        deadline,
+                    )?,
+                    options.seconds,
+                )?;
+            }
             file.sync_all()?;
             cancellation.check(deadline)?;
             std::fs::hard_link(&staging.file, &destination)
@@ -685,16 +761,86 @@ struct Format {
 struct Stream {
     codec_name: String,
     codec_type: String,
+    #[serde(default)]
     width: u32,
+    #[serde(default)]
     height: u32,
+    #[serde(default)]
     avg_frame_rate: String,
+    #[serde(default)]
     nb_read_frames: String,
     duration: Option<String>,
+    sample_rate: Option<String>,
+    channels: Option<u16>,
+    bits_per_sample: Option<u16>,
+}
+
+pub(crate) fn audio_sample_probe(path: &Path, windows: bool) -> std::process::Command {
+    let mut command = std::process::Command::new(if windows { "ffprobe.exe" } else { "ffprobe" });
+    command
+        .args([
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-max_alloc",
+            "67108864",
+            "-threads",
+            "2",
+            "-protocol_whitelist",
+            "file",
+            "-f",
+            "matroska",
+            "-max_streams",
+            "2",
+            "-select_streams",
+            "a:0",
+            "-show_entries",
+            "frame=nb_samples",
+            "-of",
+            "csv=p=0",
+            "-i",
+        ])
+        .arg(path);
+    command
+}
+
+pub(crate) fn verify_audio_samples(bytes: &[u8], seconds: u32) -> Result<()> {
+    ensure!(
+        bytes.len() <= 8192 && (1..=60).contains(&seconds),
+        "Audio sample verification exceeds its limits"
+    );
+    let text = std::str::from_utf8(bytes).context("Invalid audio sample verification result")?;
+    let mut total = 0u32;
+    let mut frames = 0u32;
+    for line in text.lines().filter(|line| !line.is_empty()) {
+        ensure!(
+            line.bytes().all(|byte| byte.is_ascii_digit()),
+            "Invalid audio sample count"
+        );
+        let samples = line.parse::<u32>().context("Invalid audio sample count")?;
+        ensure!(
+            (1..=crate::audio_record::RATE).contains(&samples),
+            "Audio sample frame exceeds its limit"
+        );
+        frames += 1;
+        ensure!(
+            frames <= seconds + 1,
+            "Audio contains too many sample frames"
+        );
+        total = total
+            .checked_add(samples)
+            .context("Audio sample count overflow")?;
+    }
+    ensure!(
+        total == seconds * crate::audio_record::RATE,
+        "Recording is incomplete: audio sample count does not match the request"
+    );
+    Ok(())
 }
 
 pub(crate) fn verify_probe(bytes: &[u8], options: &Options<'_>) -> Result<()> {
-    let probe: Probe =
-        serde_json::from_slice(bytes).context("Invalid recording verification result")?;
+    let probe: Probe = serde_json::from_slice(bytes)
+        .map_err(|_| anyhow::anyhow!("Invalid recording verification result"))?;
     ensure!(
         probe
             .format
@@ -704,10 +850,38 @@ pub(crate) fn verify_probe(bytes: &[u8], options: &Options<'_>) -> Result<()> {
         "Recording container verification failed"
     );
     ensure!(
-        probe.streams.len() == 1,
+        probe.streams.len() == if options.audio.is_some() { 2 } else { 1 },
+        "Recording stream count does not match the request"
+    );
+    let videos = probe
+        .streams
+        .iter()
+        .filter(|stream| stream.codec_type == "video")
+        .collect::<Vec<_>>();
+    ensure!(
+        videos.len() == 1,
         "Recording must contain exactly one video stream"
     );
-    let stream = &probe.streams[0];
+    let stream = videos[0];
+    if let Some(audio) = options.audio {
+        let audios = probe
+            .streams
+            .iter()
+            .filter(|stream| stream.codec_type == "audio")
+            .collect::<Vec<_>>();
+        ensure!(
+            audios.len() == 1,
+            "Recording must contain exactly one requested audio stream"
+        );
+        let recorded = audios[0];
+        ensure!(
+            recorded.codec_name == "pcm_s16le"
+                && recorded.sample_rate.as_deref() == Some("48000")
+                && recorded.channels == Some(audio.channels)
+                && recorded.bits_per_sample == Some(16),
+            "Recording audio codec, rate or channels verification failed"
+        );
+    }
     ensure!(
         stream.codec_name == options.format.codec() && stream.codec_type == "video",
         "Recording codec verification failed"
@@ -763,6 +937,139 @@ pub(crate) fn verify_probe(bytes: &[u8], options: &Options<'_>) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn optional_audio_is_explicit_matroska_only_and_preserves_silent_summary() {
+        let output = std::env::temp_dir().join(format!(
+            "screenshots-av-options-{}.mkv",
+            uuid::Uuid::new_v4()
+        ));
+        let base = vec![
+            "test".into(),
+            output.into_os_string(),
+            "--seconds".into(),
+            "1".into(),
+            "--fps".into(),
+            "2".into(),
+            "--width".into(),
+            "16".into(),
+            "--height".into(),
+            "12".into(),
+        ];
+        assert!(options(&base).unwrap().summary(12).get("audio").is_none());
+        let mut valid = base.clone();
+        valid.extend([
+            "--audio-mode".into(),
+            "test".into(),
+            "--audio-channels".into(),
+            "1".into(),
+        ]);
+        let parsed = options(&valid).unwrap();
+        assert_eq!(
+            parsed.summary(12)["audio"],
+            serde_json::json!({"mode":"test","codec":"pcm_s16le","sample_rate":48000,"channels":1,"samples":48000})
+        );
+        for extra in [
+            vec!["--audio-device", "default"],
+            vec!["--audio-channels", "1"],
+            vec!["--audio-mode", "test", "--audio-mode", "test"],
+            vec!["--audio-mode", "test", "--audio-device", "default"],
+            vec!["--audio-mode", "test", "--audio-channels", "3"],
+        ] {
+            let mut invalid = base.clone();
+            invalid.extend(extra.into_iter().map(OsString::from));
+            assert!(options(&invalid).is_err());
+        }
+        let mut gif = valid;
+        gif[1] = std::env::temp_dir()
+            .join(format!(
+                "screenshots-av-options-{}.gif",
+                uuid::Uuid::new_v4()
+            ))
+            .into_os_string();
+        assert!(options(&gif).is_err());
+    }
+
+    #[test]
+    fn combined_probe_requires_both_complete_streams_and_exact_audio_samples() {
+        let options = Options {
+            mode: "test",
+            destination: Path::new("unused.mkv"),
+            seconds: 2,
+            fps: 3,
+            width: 16,
+            height: 12,
+            x: 0,
+            y: 0,
+            format: OutputFormat::Matroska,
+            cursor: None,
+            audio: Some(crate::audio_record::AudioInput::new("test", None, Some(2)).unwrap()),
+        };
+        let valid = serde_json::json!({"streams":[{"codec_name":"pcm_s16le","codec_type":"audio","sample_rate":"48000","channels":2,"bits_per_sample":16},{"codec_name":"ffv1","codec_type":"video","width":16,"height":12,"avg_frame_rate":"3/1","nb_read_frames":"6"}],"format":{"format_name":"matroska,webm"}});
+        verify_probe(&serde_json::to_vec(&valid).unwrap(), &options).unwrap();
+        for field in [
+            "codec_name",
+            "codec_type",
+            "sample_rate",
+            "channels",
+            "bits_per_sample",
+        ] {
+            let mut invalid = valid.clone();
+            invalid["streams"][0][field] = if matches!(field, "channels" | "bits_per_sample") {
+                1.into()
+            } else {
+                "invalid".into()
+            };
+            assert!(verify_probe(&serde_json::to_vec(&invalid).unwrap(), &options).is_err());
+        }
+        let mut missing = valid;
+        missing["streams"].as_array_mut().unwrap().remove(0);
+        assert!(verify_probe(&serde_json::to_vec(&missing).unwrap(), &options).is_err());
+        verify_audio_samples(b"48000\n48000\n", 2).unwrap();
+        for invalid in [
+            b"".as_slice(),
+            b"0\n96000\n",
+            b"48000\n47999\n",
+            b"48001\n47999\n",
+            b"48000\n48000\n1\n",
+            b"nb_samples=96000\n",
+            b"48000,48000\n",
+        ] {
+            assert!(verify_audio_samples(invalid, 2).is_err());
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn combined_encoder_has_two_explicit_inputs_and_bounded_pcm_frames() {
+        let options = Options {
+            mode: "test",
+            destination: Path::new("unused.mkv"),
+            seconds: 2,
+            fps: 3,
+            width: 16,
+            height: 12,
+            x: 0,
+            y: 0,
+            format: OutputFormat::Matroska,
+            cursor: None,
+            audio: Some(crate::audio_record::AudioInput::new("test", None, Some(1)).unwrap()),
+        };
+        let command = unix::encoder(&options, Path::new("stage.mkv"), None);
+        let args = command
+            .get_args()
+            .map(|arg| arg.to_str().unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(args.iter().filter(|arg| **arg == "-i").count(), 2);
+        assert!(!args.contains(&"-an"));
+        assert!(args.windows(2).any(|pair| pair == ["-map", "1:a:0"]));
+        assert!(args.windows(2).any(|pair| pair == ["-c:a", "pcm_s16le"]));
+        assert!(args.windows(2).any(|pair| pair == ["-ac", "1"]));
+        assert!(
+            args.iter()
+                .any(|arg| arg.ends_with("asetnsamples=n=48000:p=0"))
+        );
+    }
 
     #[test]
     fn cursor_option_is_explicit_desktop_only_and_defaults_preserve_json() {
@@ -826,6 +1133,7 @@ mod tests {
                 y: 0,
                 format: OutputFormat::Matroska,
                 cursor,
+                audio: None,
             };
             let command = unix::encoder(&options, Path::new("stage.mkv"), Some(":9"));
             let args = command
@@ -856,6 +1164,7 @@ mod tests {
             y: 0,
             format: OutputFormat::Matroska,
             cursor: None,
+            audio: None,
         };
         let valid = serde_json::json!({"streams":[{"codec_name":"ffv1","codec_type":"video","width":16,"height":12,"avg_frame_rate":"2/1","nb_read_frames":"2"}],"format":{"format_name":"matroska,webm"}});
         verify_probe(&serde_json::to_vec(&valid).unwrap(), &options).unwrap();
