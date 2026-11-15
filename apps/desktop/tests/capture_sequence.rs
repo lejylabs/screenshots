@@ -182,6 +182,44 @@ fn invalid_arguments_fail_before_any_native_capture_or_output() {
 }
 
 #[test]
+fn lossy_webp_option_errors_precede_scheduled_wait_and_capture() {
+    let fixture = Fixture::new();
+    let directory = fixture.path("captures");
+    std::fs::create_dir(&directory).unwrap();
+    let future = (chrono::Utc::now() + chrono::Duration::hours(1)).to_rfc3339();
+    for (extra, message) in [
+        (vec!["--webp-quality", "0"], "WebP quality must be 1..100"),
+        (vec!["--webp-quality", "101"], "WebP quality must be 1..100"),
+        (vec!["--webp-quality", "-1"], "WebP quality must be a whole"),
+        (
+            vec!["--webp-quality", "1.5"],
+            "WebP quality must be a whole",
+        ),
+        (
+            vec!["--webp-quality", "20", "--webp-quality", "30"],
+            "Duplicate --webp-quality",
+        ),
+        (
+            vec!["--webp-quality", "20", "--jpeg-quality", "80"],
+            "Use only one",
+        ),
+        (vec!["--webp-quality", "20"], "requires --format webp"),
+    ] {
+        let mut options = vec![
+            "--count",
+            "1",
+            "--interval-ms",
+            "100",
+            "--start-at",
+            &future,
+        ];
+        options.extend(extra);
+        fixture.reject(&args(&directory, &options), message);
+    }
+    assert!(std::fs::read_dir(directory).unwrap().next().is_none());
+}
+
+#[test]
 fn destination_must_exist_be_a_directory_and_be_empty() {
     let fixture = Fixture::new();
     let missing = fixture.path("missing");

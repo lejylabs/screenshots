@@ -38,6 +38,9 @@ Optional arguments may appear in any order, at most once:
 - `--jpeg-quality N` accepts 1–100 and requires a JPEG output path. JPEG defaults
   to quality 90 and rejects remaining transparent pixels; it does not flatten
   them. PNG and WebP retain alpha losslessly.
+- `--webp-quality N` accepts 1–100 and requires a WebP output path. It explicitly
+  selects lossy RGB encoding while preserving alpha exactly. Without this flag,
+  WebP remains lossless. It cannot be combined with `--jpeg-quality`.
 - `--upload PROFILE` reads a native upload JSON profile or `.sxcu` ShareX profile
   using the existing uploader. The profile is validated and retained before the
   delay. Only after local save succeeds are the finalized PNG bytes
@@ -69,6 +72,7 @@ requested, a successful upload:
 upload adds `"upload":{"url":"https://…","thumbnail":null,"deletion":null}`.
 Thumbnail and deletion links are included when supplied by the validated
 profile response; the command does not open or follow them.
+Explicit lossy WebP adds `"webp_quality":N`; the field is absent otherwise.
 Errors use stderr and exit status 1. If the file was saved but upload fails,
 the error says the local file remains and a remote file may exist. If stdout
 fails after upload, it reports that the image was saved and uploaded.
@@ -99,6 +103,16 @@ decoded final pixels are released before transfer. The uploader currently admits
 at most the 256 MiB capture limit plus 16 MiB encoded PNG overhead. These bounds are not process-memory or
 latency measurements.
 
+Explicit lossy WebP has a smaller final-image admission limit: each dimension
+must be 1–16383 and the finalized RGBA pixels must fit 64 MiB. Its encoder bounds
+output at 32 MiB, uses a cooperative 30-second deadline and adds native
+YUV/alpha storage plus codec scratch. The input cap is not a hard bound on those
+native allocations. These checks run on final
+pixels after recipe processing; a rejected image is not published or uploaded.
+Native capture still uses its existing limit. The lossy local file and an
+explicit upload represent different encodings: upload remains lossless PNG of
+the finalized pixels.
+
 Synthetic unit fixtures cover delay-before-capture ordering, recipe snapshotting,
 final-only pixels, unchanged alpha, released source frames, delay/output failures,
 JPEG transparency rejection, display/window/region routing, upload-after-save
@@ -107,7 +121,7 @@ use isolated temporary paths with native display/session access removed. They
 never capture the real desktop. Native capture permissions, display loss, actual
 delay timing and hardware resource acceptance remain separate checks.
 
-The optimized focused checks passed 10 unit and 4 CLI fixtures, including a synthetic capture
+The optimized focused checks passed 12 unit and 5 CLI fixtures, including a synthetic capture
 and redaction followed by the real uploader to an explicitly allowed loopback
 HTTP server. It verified the local file existed before the request and that the
 uploaded PNG matched the saved final pixels. This uses no external endpoint and

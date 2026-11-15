@@ -23,6 +23,7 @@ struct Options<'a> {
     recipe: Option<crate::workflow::Recipe>,
     delay: Duration,
     jpeg_quality: u8,
+    webp_quality: Option<u8>,
     upload: Option<UploadDestination>,
 }
 
@@ -92,6 +93,7 @@ fn options(args: &[OsString]) -> Result<Options<'_>> {
     let mut recipe_path = None;
     let mut delay = None;
     let mut quality = None;
+    let mut webp_quality = None;
     let mut upload_path = None;
     for pair in args[positional..].chunks_exact(2) {
         match pair[0].to_str() {
@@ -115,6 +117,16 @@ fn options(args: &[OsString]) -> Result<Options<'_>> {
                 ensure!((1..=100).contains(&value), "JPEG quality must be 1..100");
                 quality = Some(value);
             }
+            Some("--webp-quality") => {
+                ensure!(webp_quality.is_none(), "Duplicate --webp-quality option");
+                let value: u8 = pair[1]
+                    .to_str()
+                    .context("WebP quality must be UTF-8")?
+                    .parse()
+                    .context("WebP quality must be a whole number")?;
+                ensure!((1..=100).contains(&value), "WebP quality must be 1..100");
+                webp_quality = Some(value);
+            }
             Some("--upload") => {
                 ensure!(upload_path.is_none(), "Duplicate --upload option");
                 upload_path = Some(Path::new(&pair[1]));
@@ -125,8 +137,16 @@ fn options(args: &[OsString]) -> Result<Options<'_>> {
     let destination = Path::new(&args[positional - 1]);
     let format = ImageExportFormat::from_path(destination)?;
     ensure!(
+        quality.is_none() || webp_quality.is_none(),
+        "Use only one of --jpeg-quality and --webp-quality"
+    );
+    ensure!(
         quality.is_none() || format == ImageExportFormat::Jpeg,
         "--jpeg-quality requires a JPEG output path"
+    );
+    ensure!(
+        webp_quality.is_none() || format == ImageExportFormat::WebP,
+        "--webp-quality requires a WebP output path"
     );
     ensure_new_output(destination)?;
     let recipe = recipe_path.map(crate::workflow::Recipe::read).transpose()?;
@@ -139,6 +159,7 @@ fn options(args: &[OsString]) -> Result<Options<'_>> {
         recipe,
         delay: delay.unwrap_or_default(),
         jpeg_quality: quality.unwrap_or(app_core::DEFAULT_JPEG_QUALITY),
+        webp_quality,
         upload,
     })
 }
@@ -187,6 +208,9 @@ fn execute_with_upload(
         let png = frame.png_bytes()?;
         app_core::save_png_bytes(options.destination, &png)?;
         Some(png)
+    } else if let Some(quality) = options.webp_quality {
+        app_core::save_lossy_webp(&frame.pixels, options.destination, quality, || false)?;
+        None
     } else {
         frame.save_image_as(
             options.destination,
@@ -197,6 +221,9 @@ fn execute_with_upload(
     };
     let mut result = serde_json::json!({"format":format.extension(), "width":frame.width, "height":frame.height,
         "steps":steps, "delay_ms":options.delay.as_millis()});
+    if let Some(quality) = options.webp_quality {
+        result["webp_quality"] = quality.into();
+    }
     if let Some(destination) = options.upload {
         let png = match shared_png {
             Some(png) => png,
@@ -344,6 +371,7 @@ mod tests {
         assert!(weak.upgrade().is_none());
         assert_eq!(result["steps"], 0);
         assert_eq!(result["delay_ms"], 0);
+        assert!(result.get("webp_quality").is_none());
         assert_eq!(
             *image::open(fixture.0.join("final.png"))
                 .unwrap()
@@ -647,6 +675,81 @@ mod tests {
         )
         .unwrap();
         assert_eq!(result["upload"]["url"], "https://example.invalid/final");
+    }
+
+    #[test]
+    fn lossy_webp_is_explicit_preserves_alpha_and_uploads_final_pixels_as_png() {
+        let fixture = Fixture::new();
+        let profile = upload_profile(&fixture);
+        let mut args = fixture.args("final.webp", &["--webp-quality", "20"]);
+        args.extend(["--upload".into(), profile]);
+        let pixels = image::RgbaImage::from_fn(32, 24, |x, y| {
+            image::Rgba([
+                ((x * 31 + y * 11) % 256) as u8,
+                ((x * 13 + y * 47) % 256) as u8,
+                ((x + y) * 7) as u8,
+                [0, 64, 128, 255][x as usize % 4],
+            ])
+        });
+        let result = execute_with_upload(
+            options(&args).unwrap(),
+            |_| panic!("no delay"),
+            |_| Ok(crate::cli::frame(pixels.clone())),
+            |_, png| {
+                assert_eq!(image::load_from_memory(&png).unwrap().into_rgba8(), pixels);
+                Ok(UploadOutcome {
+                    url: "https://example.invalid/image".into(),
+                    thumbnail: None,
+                    deletion: None,
+                })
+            },
+        )
+        .unwrap();
+        assert_eq!(result["webp_quality"], 20);
+        let decoded = image::open(fixture.0.join("final.webp"))
+            .unwrap()
+            .into_rgba8();
+        assert_ne!(decoded, pixels);
+        assert!(
+            decoded
+                .pixels()
+                .zip(pixels.pixels())
+                .all(|(a, b)| a[3] == b[3])
+        );
+        for extra in [
+            vec!["--webp-quality", "0"],
+            vec!["--webp-quality", "101"],
+            vec!["--webp-quality", "-1"],
+            vec!["--webp-quality", "1.5"],
+            vec!["--webp-quality", "20", "--webp-quality", "30"],
+            vec!["--webp-quality", "20", "--jpeg-quality", "80"],
+        ] {
+            assert!(options(&fixture.args("other.webp", &extra)).is_err());
+        }
+        assert!(options(&fixture.args("other.png", &["--webp-quality", "20"])).is_err());
+    }
+
+    #[test]
+    fn lossy_webp_size_refusal_never_saves_or_uploads() {
+        let fixture = Fixture::new();
+        let profile = upload_profile(&fixture);
+        let mut args = fixture.args("wide.webp", &["--webp-quality", "75"]);
+        args.extend(["--upload".into(), profile]);
+        let frame = crate::cli::frame(image::RgbaImage::from_pixel(
+            16_384,
+            1,
+            image::Rgba([1, 2, 3, 255]),
+        ));
+        let weak = Arc::downgrade(&frame.pixels);
+        let result = execute_with_upload(
+            options(&args).unwrap(),
+            |_| panic!("no delay"),
+            |_| Ok(frame),
+            |_, _| panic!("invalid output must not upload"),
+        );
+        assert!(result.unwrap_err().to_string().contains("1–16383"));
+        assert!(weak.upgrade().is_none());
+        assert!(!fixture.0.join("wide.webp").exists());
     }
 
     #[test]

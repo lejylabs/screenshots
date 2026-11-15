@@ -9,7 +9,8 @@ screenshots capture-sequence display DISPLAY_ID captures --count 10 --interval-m
 ```
 
 `--count` is required and accepts 1–1000. `--interval-ms` is required and accepts
-100–3600000 milliseconds. `--start-at`, `--format` and `--jpeg-quality` are optional.
+100–3600000 milliseconds. `--start-at`, `--format`, `--jpeg-quality` and
+`--webp-quality` are optional.
 Options may appear in any order, once each; duplicates and unknown options are
 rejected. The
 display ID must contain 1–64 UTF-8 bytes and identify an available display on
@@ -19,10 +20,16 @@ unbounded monitoring are outside this command.
 PNG remains the default. Select `--format png`, `--format jpeg` or `--format webp`
 for the entire invocation. JPEG uses quality 90 by default; override it with
 `--jpeg-quality 1` through `--jpeg-quality 100` and an explicit `--format jpeg`.
-Quality with PNG, WebP or an omitted format is rejected instead of ignored.
-These options do not read or change saved UI export preferences. PNG and WebP
+JPEG quality with PNG, WebP or an omitted format is rejected instead of ignored.
+These options do not read or change saved UI export preferences. PNG and default WebP
 preserve alpha and pixels losslessly; JPEG is lossy and refuses any non-opaque
 pixel instead of silently flattening it. The original dimensions are preserved.
+
+`--webp-quality 1` through `--webp-quality 100` explicitly selects lossy RGB WebP
+and requires `--format webp`. Alpha remains exact. WebP without a quality flag
+remains lossless. JPEG and WebP quality flags cannot be combined. Lossy WebP
+accepts at most 64 MiB of RGBA input and dimensions 1–16383; larger frames stop
+the sequence without publishing that frame. Already completed files remain.
 
 ```sh
 screenshots capture-sequence display DISPLAY_ID captures --count 10 --interval-ms 1000 --format jpeg --jpeg-quality 85
@@ -111,6 +118,7 @@ successful object: the accepted requested instant normalized to UTC, not the
 actual capture time. Explicit `--format` adds `"format":"png"`, `"format":"jpeg"`
 or `"format":"webp"`; JPEG also adds the effective `"jpeg_quality":90` (or the
 requested quality). Omitting `--format` retains the existing JSON fields.
+Explicit lossy WebP also adds `"webp_quality":N`; it is absent otherwise.
 
 A capture or save failure stops the sequence immediately. Stderr states the
 number of completed captures, the directory and the invocation's prefix; no
@@ -145,6 +153,11 @@ Format selection adds two small per-invocation values and reuses the existing
 encoders and their scratch allocations; no new image-sized buffer, dependency,
 queue or cache is added by the sequence command. Encoder and process high-water
 memory remain part of the existing unmeasured native acceptance work.
+Explicit lossy WebP uses the bounded core encoder with a 32 MiB encoded-output
+cap and cooperative 30-second deadline. Its admitted source is at most 64 MiB;
+libwebp imports YUV/alpha storage and codec scratch, released after each frame.
+Those native allocations are not a hard total-memory bound. No extra queue or
+retained frame is introduced.
 
 Default tests do not read desktop pixels. Deterministic unit fixtures supply
 synthetic capture, save and wait callbacks to prove serial ordering, exact saved
@@ -161,7 +174,7 @@ future wait or capture. Two additional executable checks exercise a real two-sec
 wait followed by destination revalidation, and forced termination during a
 far-future wait. Both remove native display/session access and verify unchanged
 destination contents, no capture output and no user state. They do not capture
-desktop pixels. The optimized focused checks passed 15 unit tests and 8 CLI
+desktop pixels. The optimized focused checks passed 17 unit tests and 9 CLI
 tests; the native capture test below remained ignored. These short functional
 checks do not establish timer accuracy or reference-hardware resource budgets.
 The ignored `native_cli_captures_two_explicit_stills_without_user_state` test

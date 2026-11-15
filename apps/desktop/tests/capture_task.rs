@@ -123,6 +123,37 @@ fn strict_arguments_fail_without_waiting_capture_or_user_state() {
 }
 
 #[test]
+fn lossy_webp_option_errors_precede_delay_and_capture() {
+    let fixture = Fixture::new();
+    let output = fixture.path("final.webp");
+    for (extra, message) in [
+        (vec!["--webp-quality", "0"], "WebP quality must be 1..100"),
+        (vec!["--webp-quality", "101"], "WebP quality must be 1..100"),
+        (vec!["--webp-quality", "-1"], "WebP quality must be a whole"),
+        (
+            vec!["--webp-quality", "1.5"],
+            "WebP quality must be a whole",
+        ),
+        (
+            vec!["--webp-quality", "20", "--webp-quality", "30"],
+            "Duplicate --webp-quality",
+        ),
+        (
+            vec!["--webp-quality", "20", "--jpeg-quality", "80"],
+            "Use only one",
+        ),
+    ] {
+        let mut options = extra;
+        options.extend(["--delay-ms", "3600000"]);
+        fixture.reject(&arguments(&output, &options), message);
+    }
+    fixture.reject(
+        &arguments(&fixture.path("final.png"), &["--webp-quality", "20"]),
+        "requires a WebP output",
+    );
+}
+
+#[test]
 fn region_bounds_and_upload_profiles_fail_before_wait_or_native_capture() {
     let fixture = Fixture::new();
     let output = fixture.path("region.png");

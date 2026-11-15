@@ -134,3 +134,35 @@ fn invalid_lossy_requests_fail_without_publication_or_source_access() {
     assert!(!source.exists());
     f.no_state();
 }
+
+#[test]
+fn lossy_downscale_keeps_existing_alpha_resampling_semantics() {
+    let f = Fixture::new();
+    let source = f.0.join("alpha.png");
+    let pixels = RgbaImage::from_fn(8, 4, |x, y| {
+        Rgba([(x * 31) as u8, (y * 71) as u8, 90, ((x + y) * 17) as u8])
+    });
+    pixels.save(&source).unwrap();
+    let expected = app_core::downscale_export(&pixels, app_core::ExportSize::Exact(4, 2)).unwrap();
+    let output = f.0.join("small.webp");
+    let result = f.run(
+        &source,
+        &output,
+        &["--width", "4", "--height", "2", "--webp-quality", "75"],
+    );
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    let decoded = image::open(output).unwrap().into_rgba8();
+    assert_eq!(decoded.dimensions(), (4, 2));
+    assert!(
+        decoded
+            .pixels()
+            .zip(expected.pixels())
+            .all(|(a, b)| a[3] == b[3])
+    );
+    assert_eq!(image::open(source).unwrap().into_rgba8(), pixels);
+    f.no_state();
+}

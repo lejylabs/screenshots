@@ -27,9 +27,9 @@ Headless commands (no desktop UI, clipboard writes or implicit uploads):
   screenshots capture region DISPLAY X Y WIDTH HEIGHT OUTPUT
   screenshots capture desktop OUTPUT
   screenshots capture-sequence display ID DIRECTORY --count N --interval-ms MS
-      [--start-at RFC3339] [--format png|jpeg|webp] [--jpeg-quality 1..100]
+      [--start-at RFC3339] [--format png|jpeg|webp] [--jpeg-quality 1..100] [--webp-quality 1..100]
   screenshots capture-task display|window ID OUTPUT [--recipe FILE]
-      [--delay-ms 0..3600000] [--jpeg-quality 1..100] [--upload PROFILE]
+      [--delay-ms 0..3600000] [--jpeg-quality 1..100] [--webp-quality 1..100] [--upload PROFILE]
   screenshots capture-task region DISPLAY X Y WIDTH HEIGHT OUTPUT [same options]
   screenshots history DATABASE [--before ID] [--search WORDS]
   screenshots history-audit DATABASE [--cursor ID]

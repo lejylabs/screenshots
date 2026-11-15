@@ -24,12 +24,13 @@ struct Options<'a> {
     start: Option<ScheduledStart>,
     format: Option<ImageExportFormat>,
     jpeg_quality: u8,
+    webp_quality: Option<u8>,
 }
 
 fn options(args: &[OsString], now: DateTime<Utc>, monotonic_now: Instant) -> Result<Options<'_>> {
     ensure!(
         args.len() >= 3 && args.len() % 2 == 1 && args[0] == "display",
-        "Usage: screenshots capture-sequence display ID DIRECTORY --count N --interval-ms MS [--start-at RFC3339] [--format png|jpeg|webp] [--jpeg-quality 1..100]"
+        "Usage: screenshots capture-sequence display ID DIRECTORY --count N --interval-ms MS [--start-at RFC3339] [--format png|jpeg|webp] [--jpeg-quality 1..100] [--webp-quality 1..100]"
     );
     let display_id = args[1].to_str().context("Display ID must be UTF-8")?;
     ensure!(
@@ -41,6 +42,7 @@ fn options(args: &[OsString], now: DateTime<Utc>, monotonic_now: Instant) -> Res
     let mut start = None;
     let mut format = None;
     let mut jpeg_quality = None;
+    let mut webp_quality = None;
     for pair in args[3..].chunks_exact(2) {
         let value = pair[1].to_str().context("Option value must be UTF-8")?;
         match pair[0].to_str() {
@@ -108,14 +110,30 @@ fn options(args: &[OsString], now: DateTime<Utc>, monotonic_now: Instant) -> Res
                 ensure!((1..=100).contains(&value), "JPEG quality must be 1..100");
                 jpeg_quality = Some(value);
             }
+            Some("--webp-quality") => {
+                ensure!(webp_quality.is_none(), "Duplicate --webp-quality option");
+                let value: u8 = value
+                    .parse()
+                    .context("WebP quality must be a whole number")?;
+                ensure!((1..=100).contains(&value), "WebP quality must be 1..100");
+                webp_quality = Some(value);
+            }
             _ => bail!("Unknown capture-sequence option; use --help"),
         }
     }
     let count = count.context("Missing --count option")?;
     let interval = interval.context("Missing --interval-ms option")?;
     ensure!(
+        jpeg_quality.is_none() || webp_quality.is_none(),
+        "Use only one of --jpeg-quality and --webp-quality"
+    );
+    ensure!(
         jpeg_quality.is_none() || format == Some(ImageExportFormat::Jpeg),
         "--jpeg-quality requires --format jpeg"
+    );
+    ensure!(
+        webp_quality.is_none() || format == Some(ImageExportFormat::WebP),
+        "--webp-quality requires --format webp"
     );
     let directory = Path::new(&args[2]);
     validate_directory(directory)?;
@@ -127,6 +145,7 @@ fn options(args: &[OsString], now: DateTime<Utc>, monotonic_now: Instant) -> Res
         start,
         format,
         jpeg_quality: jpeg_quality.unwrap_or(app_core::DEFAULT_JPEG_QUALITY),
+        webp_quality,
     })
 }
 
@@ -197,11 +216,20 @@ fn save_frame(
 ) -> Result<String> {
     let format = options.format.unwrap_or_default();
     let name = format!("{prefix}-{index:04}.{}", format.extension());
-    frame.save_image_as(
-        &options.directory.join(&name),
-        options.jpeg_quality,
-        ExportSize::Original,
-    )?;
+    if let Some(quality) = options.webp_quality {
+        app_core::save_lossy_webp(
+            &frame.pixels,
+            &options.directory.join(&name),
+            quality,
+            || false,
+        )?;
+    } else {
+        frame.save_image_as(
+            &options.directory.join(&name),
+            options.jpeg_quality,
+            ExportSize::Original,
+        )?;
+    }
     Ok(name)
 }
 
@@ -258,6 +286,9 @@ fn summary(options: &Options<'_>, files: Vec<String>) -> serde_json::Value {
         if format == ImageExportFormat::Jpeg {
             result["jpeg_quality"] = options.jpeg_quality.into();
         }
+    }
+    if let Some(quality) = options.webp_quality {
+        result["webp_quality"] = quality.into();
     }
     result
 }
@@ -502,9 +533,104 @@ mod tests {
         assert!(result.get("start_at").is_none());
         assert!(result.get("format").is_none());
         assert!(result.get("jpeg_quality").is_none());
+        assert!(result.get("webp_quality").is_none());
         assert_eq!(result["completed"], 1);
         assert_eq!(result["interval_ms"], 100);
         assert_eq!(result["files"], serde_json::json!(["fixture.png"]));
+    }
+
+    #[test]
+    fn lossy_webp_sequence_preserves_alpha_and_releases_each_frame_before_wait() {
+        let directory = Directory::new();
+        let mut args = directory.args(None);
+        args.extend([
+            "--format".into(),
+            "webp".into(),
+            "--webp-quality".into(),
+            "20".into(),
+        ]);
+        let parsed = options(&args, validation_time(), Instant::now()).unwrap();
+        let pixels = image::RgbaImage::from_fn(32, 24, |x, y| {
+            image::Rgba([
+                ((x * 31 + y * 11) % 256) as u8,
+                ((x * 13 + y * 47) % 256) as u8,
+                ((x + y) * 7) as u8,
+                [0, 64, 128, 255][x as usize % 4],
+            ])
+        });
+        let previous = RefCell::new(None::<std::sync::Weak<image::RgbaImage>>);
+        let files = run_sequence(
+            2,
+            Duration::from_millis(100),
+            || {
+                assert!(
+                    previous
+                        .borrow()
+                        .as_ref()
+                        .is_none_or(|p| p.upgrade().is_none())
+                );
+                let frame = crate::cli::frame(pixels.clone());
+                *previous.borrow_mut() = Some(Arc::downgrade(&frame.pixels));
+                Ok(frame)
+            },
+            |frame, index| save_frame(&parsed, "fixture", frame, index),
+            |_| {
+                assert!(previous.borrow().as_ref().unwrap().upgrade().is_none());
+                Ok(())
+            },
+        )
+        .unwrap_or_else(|e| panic!("{}", e.cause));
+        assert_eq!(summary(&parsed, files.clone())["webp_quality"], 20);
+        for name in files {
+            let decoded = image::open(directory.0.join(name)).unwrap().into_rgba8();
+            assert_ne!(decoded, pixels);
+            assert!(
+                decoded
+                    .pixels()
+                    .zip(pixels.pixels())
+                    .all(|(a, b)| a[3] == b[3])
+            );
+        }
+        for extra in [
+            vec!["--webp-quality", "0"],
+            vec!["--webp-quality", "101"],
+            vec!["--webp-quality", "-1"],
+            vec!["--webp-quality", "1.5"],
+            vec!["--webp-quality", "20", "--webp-quality", "30"],
+            vec!["--webp-quality", "20", "--jpeg-quality", "80"],
+        ] {
+            let empty = Directory::new();
+            let mut args = empty.args(None);
+            args.extend(extra.into_iter().map(OsString::from));
+            assert!(options(&args, validation_time(), Instant::now()).is_err());
+        }
+    }
+
+    #[test]
+    fn lossy_webp_size_refusal_drops_frame_without_a_partial_file() {
+        let directory = Directory::new();
+        let mut args = directory.args(None);
+        args.extend([
+            "--format".into(),
+            "webp".into(),
+            "--webp-quality".into(),
+            "75".into(),
+        ]);
+        let parsed = options(&args, validation_time(), Instant::now()).unwrap();
+        let frame = crate::cli::frame(image::RgbaImage::from_pixel(
+            16_384,
+            1,
+            image::Rgba([1, 2, 3, 255]),
+        ));
+        let weak = Arc::downgrade(&frame.pixels);
+        assert!(
+            save_frame(&parsed, "fixture", frame, 1)
+                .unwrap_err()
+                .to_string()
+                .contains("1–16383")
+        );
+        assert!(weak.upgrade().is_none());
+        assert!(std::fs::read_dir(&directory.0).unwrap().next().is_none());
     }
 
     #[test]
