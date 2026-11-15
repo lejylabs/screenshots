@@ -1516,3 +1516,14 @@ exports. The focused core case and all five regular profile executable tests
 passed, including rejection before a local listener receives any connection and
 suppression of configured payloads in errors. Clippy and Windows GNU compilation
 passed. The current full workspace and release checks are still running.
+
+Final verification passed 451 regular optimized workspace tests, with 51 opt-in
+cases excluded and all doctests passing. The 2m39s release passed the S3 TLS
+regression and archive checksum/extraction/help/version smoke. Archive SHA256
+`594fc68afc9581313c82e4f0f3c3eed251d6b872beb65d34e87a095da40b5141`;
+binary SHA256
+`7ed8886bd65cc310f2442e51af6219fd9d580d3064f8b714ed01d03fd2d54a82`.
+The 1Password commit signer became unavailable during this slice; commit
+`e522ba4` was deliberately written unsigned using a per-command override, with
+no global Git configuration change. Subsequent unattended commits use the same
+override while no interactive signer access is available.
