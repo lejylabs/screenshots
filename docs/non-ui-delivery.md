@@ -1089,3 +1089,13 @@ The full capture-chain workspace run passed 377 regular tests with 49 opt-in
 cases excluded, all doctests passed. Clippy and Windows GNU app/tests check
 passed. The native synthetic-window chain is recorded separately above; these
 results do not imply native Windows/macOS capture or actual-provider acceptance.
+
+Capture-chain release verification: the optimized native Linux binary rebuilt
+in 2m 21s; the exact same synthetic X11 capture/recipe/save/upload chain passed
+with matching 32x24 decoded pixels and byte-identical saved/uploaded PNG. The
+87 MiB archive passed checksum, extraction, help and version smoke checks with
+unchanged user state. Archive SHA256:
+`5e020f24269633d6a4ba616a9242d257eaa2aa57eaea01c8d2a8c5b45ff7c0b8`;
+binary SHA256:
+`7448569dc1e7725365b05013af8d15d9101c338ae225248fb5f665325a172fdb`.
+The broader list and native CI remain open; the workstation stays powered on.
