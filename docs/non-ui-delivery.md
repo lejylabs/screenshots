@@ -1593,3 +1593,13 @@ binary/empty payload order, first confirmed NDJSON surviving a second-request
 failure, no third upload, and invalid later inputs rejected before any request.
 Clippy and Windows GNU compilation passed. Full workspace and release checks
 are running; the batch does not imply provider acceptance or UI integration.
+
+Final file-batch verification passed 469 regular optimized workspace tests,
+with 51 opt-in cases excluded and all doctests passing. The 1m55s release passed
+the standalone exact-byte/partial-failure loopback script and package smoke.
+Archive SHA256
+`bb2919970711105dc81c929a0658f9b807ded2f439105fc7cf28064cb72d5b78`;
+binary SHA256
+`ceace6b9404e57016996aa7768e9b01beb737fa968fc58145e56921a54949c6a`.
+The new `scripts/test-upload-files.py` reproduces these synthetic native-CLI
+checks without accounts, user inputs or remote services.
