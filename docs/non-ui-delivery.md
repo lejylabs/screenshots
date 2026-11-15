@@ -1463,3 +1463,11 @@ Both PNG and generic-file FIFO inputs return before contacting a server, and
 the previous per-mode failure contexts remain. Clippy and Windows GNU app/test
 checks passed. Full workspace/release checks are in progress; other native
 filesystem stalls remain outside the FIFO-specific guarantee.
+
+Final verification passed 441 regular optimized workspace tests, with 51 opt-in
+cases excluded and all doctests passing. Release build 2m33s passed the S3
+independent TLS regression and package checksum/extraction/help/version smoke.
+Archive SHA256
+`6b1922be37473f748b9d022bb81f8423e52efd6e873c7747b51e903851e3108d`;
+binary SHA256
+`135d32cd7274884f15a77a31384b32496c06c48826c80a708de172218a20419e`.
