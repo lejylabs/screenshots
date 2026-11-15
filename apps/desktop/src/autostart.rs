@@ -10,8 +10,10 @@ pub fn run(args: &[OsString]) -> Result<()> {
     );
     #[cfg(target_os = "linux")]
     return linux::run(args[0].to_str().unwrap());
-    #[cfg(not(target_os = "linux"))]
-    anyhow::bail!("Autostart management is supported only on Linux")
+    #[cfg(target_os = "windows")]
+    return crate::autostart_windows::run(args[0].to_str().unwrap());
+    #[cfg(not(any(target_os = "linux", target_os = "windows")))]
+    anyhow::bail!("Autostart management is supported only on Linux and Windows")
 }
 
 #[cfg(target_os = "linux")]

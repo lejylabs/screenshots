@@ -1,4 +1,6 @@
 mod autostart;
+#[cfg(target_os = "windows")]
+mod autostart_windows;
 mod capture_sequence;
 mod cli;
 mod hash_file;

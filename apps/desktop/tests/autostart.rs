@@ -275,7 +275,7 @@ mod linux {
     }
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", target_os = "windows")))]
 #[test]
 fn other_platforms_report_explicitly_unsupported() {
     let root = std::env::temp_dir().join(format!("screenshots-autostart-{}", uuid::Uuid::new_v4()));
