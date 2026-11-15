@@ -3,7 +3,7 @@ use std::ffi::OsString;
 use std::{
     ffi::OsStr,
     path::{Path, PathBuf},
-    process::{Command, Output},
+    process::{Command, Output, Stdio},
 };
 
 struct Fixture(PathBuf);
@@ -44,7 +44,28 @@ impl Fixture {
     }
 
     fn run(&self, args: &[&OsStr]) -> Output {
-        self.command(false).args(args).output().unwrap()
+        let mut child = self
+            .command(false)
+            .args(args)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            if child.try_wait().unwrap().is_some() {
+                return child.wait_with_output().unwrap();
+            }
+            if std::time::Instant::now() >= deadline {
+                child.kill().unwrap();
+                let output = child.wait_with_output().unwrap();
+                panic!(
+                    "argument rejection must not wait for a scheduled start: {}",
+                    String::from_utf8_lossy(&output.stderr)
+                );
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
     }
 
     fn reject(&self, args: &[&OsStr], message: &str) {
@@ -175,6 +196,130 @@ fn destination_must_exist_be_a_directory_and_be_empty() {
     assert_eq!(std::fs::read(existing).unwrap(), b"existing bytes");
     assert_eq!(std::fs::read_dir(occupied).unwrap().count(), 1);
     fixture.no_user_state();
+}
+
+#[test]
+fn invalid_schedules_fail_before_directory_checks_native_capture_or_user_state() {
+    let fixture = Fixture::new();
+    let missing = fixture.path("missing");
+    for start in [
+        "",
+        "tomorrow",
+        "2030-01-01",
+        "2030-01-01T00:00:00",
+        "2030-01-01T00:00:00+25:00",
+        "2030-02-30T00:00:00Z",
+        "2030-01-01T00:00:00Zjunk",
+    ] {
+        fixture.reject(
+            &args(
+                &missing,
+                &["--count", "1", "--interval-ms", "100", "--start-at", start],
+            ),
+            "Start time must be RFC 3339 with an explicit timezone",
+        );
+    }
+    for start in ["2000-01-01T00:00:00Z", "9999-12-31T23:59:59Z"] {
+        fixture.reject(
+            &args(
+                &missing,
+                &["--start-at", start, "--interval-ms", "100", "--count", "1"],
+            ),
+            "Scheduled start must be in the future and no more than 7 days away",
+        );
+    }
+    fixture.reject(
+        &args(
+            &missing,
+            &[
+                "--count",
+                "1",
+                "--interval-ms",
+                "100",
+                "--start-at",
+                "2030-01-01T00:00:00-00:00",
+            ],
+        ),
+        "Start time must use a known timezone",
+    );
+    fixture.reject(
+        &args(
+            &missing,
+            &[
+                "--count",
+                "1",
+                "--interval-ms",
+                "100",
+                "--start-at",
+                "2030-01-01T00:00:00.0000000001Z",
+            ],
+        ),
+        "Start time supports at most 9 fractional second digits",
+    );
+    let future = (chrono::Utc::now() + chrono::Duration::hours(1)).to_rfc3339();
+    fixture.reject(
+        &args(
+            &missing,
+            &[
+                "--start-at",
+                &future,
+                "--count",
+                "1",
+                "--start-at",
+                &future,
+                "--interval-ms",
+                "100",
+            ],
+        ),
+        "Duplicate --start-at",
+    );
+    for (options, message) in [
+        (
+            vec!["--start-at", &future, "--count", "1"],
+            "Missing --interval-ms",
+        ),
+        (
+            vec!["--start-at", &future, "--interval-ms", "100"],
+            "Missing --count",
+        ),
+        (
+            vec!["--count", "1", "--interval-ms", "100", "--start-at"],
+            "Usage:",
+        ),
+        (
+            vec!["--start-at", &future, "--count", "1", "--unknown", "100"],
+            "Unknown capture-sequence option",
+        ),
+    ] {
+        fixture.reject(&args(&missing, &options), message);
+    }
+    assert!(!missing.exists());
+}
+
+#[test]
+fn scheduled_destination_errors_return_before_the_future_wait() {
+    let fixture = Fixture::new();
+    let future = (chrono::Utc::now() + chrono::Duration::hours(1)).to_rfc3339();
+    let options = [
+        "--start-at",
+        &future,
+        "--count",
+        "1",
+        "--interval-ms",
+        "100",
+    ];
+    let file = fixture.path("file");
+    std::fs::write(&file, b"keep").unwrap();
+    fixture.reject(
+        &args(&file, &options),
+        "must be an existing empty directory",
+    );
+    let occupied = fixture.path("occupied");
+    std::fs::create_dir(&occupied).unwrap();
+    std::fs::write(occupied.join("keep.png"), b"keep").unwrap();
+    fixture.reject(&args(&occupied, &options), "destination must be empty");
+    assert_eq!(std::fs::read(file).unwrap(), b"keep");
+    assert_eq!(std::fs::read(occupied.join("keep.png")).unwrap(), b"keep");
 }
 
 #[cfg(unix)]

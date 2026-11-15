@@ -26,6 +26,7 @@ Headless commands (no desktop UI, clipboard writes or implicit uploads):
   screenshots capture region DISPLAY X Y WIDTH HEIGHT OUTPUT
   screenshots capture desktop OUTPUT
   screenshots capture-sequence display ID DIRECTORY --count N --interval-ms MS
+      [--start-at RFC3339]
   screenshots history DATABASE [--before ID] [--search WORDS]
   screenshots history-audit DATABASE [--cursor ID]
   screenshots history-manage import|remove|relink DATABASE ARGUMENTS...

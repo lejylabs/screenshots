@@ -31,6 +31,7 @@ qrcode = { version = "=0.14.1", default-features = false }
 quircs = "=0.10.3"
 sha2 = "0.11.0"
 crc32fast = "1.5.0"
+chrono.workspace = true
 
 [target.'cfg(unix)'.dependencies]
 signal-hook = "=0.3.18"

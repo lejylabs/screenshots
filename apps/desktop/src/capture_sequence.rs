@@ -2,19 +2,32 @@
 
 use anyhow::{Context, Result, bail, ensure};
 use app_core::{CaptureBackend, XcapBackend};
-use std::{ffi::OsString, path::Path, time::Duration};
+use chrono::{DateTime, SecondsFormat, Utc};
+use std::{
+    ffi::OsString,
+    path::Path,
+    time::{Duration, Instant},
+};
+
+const MAX_START_DELAY: Duration = Duration::from_secs(7 * 24 * 60 * 60);
+
+struct ScheduledStart {
+    at: DateTime<Utc>,
+    deadline: Instant,
+}
 
 struct Options<'a> {
     display_id: &'a str,
     directory: &'a Path,
     count: u16,
     interval: Duration,
+    start: Option<ScheduledStart>,
 }
 
-fn options(args: &[OsString]) -> Result<Options<'_>> {
+fn options(args: &[OsString], now: DateTime<Utc>, monotonic_now: Instant) -> Result<Options<'_>> {
     ensure!(
-        args.len() == 7 && args[0] == "display",
-        "Usage: screenshots capture-sequence display ID DIRECTORY --count N --interval-ms MS"
+        args.len() >= 3 && args.len() % 2 == 1 && args[0] == "display",
+        "Usage: screenshots capture-sequence display ID DIRECTORY --count N --interval-ms MS [--start-at RFC3339]"
     );
     let display_id = args[1].to_str().context("Display ID must be UTF-8")?;
     ensure!(
@@ -23,6 +36,7 @@ fn options(args: &[OsString]) -> Result<Options<'_>> {
     );
     let mut count = None;
     let mut interval = None;
+    let mut start = None;
     for pair in args[3..].chunks_exact(2) {
         let value = pair[1].to_str().context("Option value must be UTF-8")?;
         match pair[0].to_str() {
@@ -41,12 +55,55 @@ fn options(args: &[OsString]) -> Result<Options<'_>> {
                 );
                 interval = Some(Duration::from_millis(value));
             }
+            Some("--start-at") => {
+                ensure!(start.is_none(), "Duplicate --start-at option");
+                let at = DateTime::parse_from_rfc3339(value)
+                    .context("Start time must be RFC 3339 with an explicit timezone (Z or ±HH:MM)")?
+                    .with_timezone(&Utc);
+                ensure!(
+                    !value.ends_with("-00:00"),
+                    "Start time must use a known timezone; use Z or +00:00 for UTC"
+                );
+                // Chrono truncates extra fractional digits, which could cross the admission bound.
+                let fraction_digits = value
+                    .get(19..)
+                    .and_then(|suffix| suffix.strip_prefix('.'))
+                    .map_or(0, |fraction| {
+                        fraction.bytes().take_while(u8::is_ascii_digit).count()
+                    });
+                ensure!(
+                    fraction_digits <= 9,
+                    "Start time supports at most 9 fractional second digits"
+                );
+                let delay = at.signed_duration_since(now).to_std().context(
+                    "Scheduled start must be in the future and no more than 7 days away",
+                )?;
+                ensure!(
+                    !delay.is_zero() && delay <= MAX_START_DELAY,
+                    "Scheduled start must be in the future and no more than 7 days away"
+                );
+                let deadline = monotonic_now
+                    .checked_add(delay)
+                    .context("Scheduled start exceeds the monotonic clock range")?;
+                start = Some(ScheduledStart { at, deadline });
+            }
             _ => bail!("Unknown capture-sequence option; use --help"),
         }
     }
     let count = count.context("Missing --count option")?;
     let interval = interval.context("Missing --interval-ms option")?;
     let directory = Path::new(&args[2]);
+    validate_directory(directory)?;
+    Ok(Options {
+        display_id,
+        directory,
+        count,
+        interval,
+        start,
+    })
+}
+
+fn validate_directory(directory: &Path) -> Result<()> {
     ensure!(
         directory.metadata()?.is_dir(),
         "Capture-sequence destination must be an existing empty directory"
@@ -55,12 +112,22 @@ fn options(args: &[OsString]) -> Result<Options<'_>> {
         std::fs::read_dir(directory)?.next().transpose()?.is_none(),
         "Capture-sequence destination must be empty"
     );
-    Ok(Options {
-        display_id,
-        directory,
-        count,
-        interval,
-    })
+    Ok(())
+}
+
+fn after_scheduled_start<T>(
+    options: &Options<'_>,
+    now: Instant,
+    wait: impl FnOnce(Duration) -> Result<()>,
+    capture: impl FnOnce() -> Result<T>,
+) -> Result<T> {
+    if let Some(start) = &options.start {
+        wait(start.deadline.saturating_duration_since(now))
+            .context("Scheduled start wait failed")?;
+        // Another process may have filled or removed the destination while we slept.
+        validate_directory(options.directory)?;
+    }
+    capture()
 }
 
 struct SequenceFailure {
@@ -96,41 +163,57 @@ fn run_sequence<T>(
 }
 
 pub fn run(args: &[OsString]) -> Result<()> {
-    let options = options(args)?;
-    let prefix = format!("capture-{}", uuid::Uuid::new_v4());
-    let backend = XcapBackend::new(std::path::PathBuf::new());
-    let files = run_sequence(
-        options.count,
-        options.interval,
-        || Ok(backend.capture_display(options.display_id)?),
-        |frame, index| {
-            let name = format!("{prefix}-{index:04}.png");
-            frame.save_png_as(&options.directory.join(&name))?;
-            Ok(name)
-        },
-        |interval| {
-            std::thread::sleep(interval);
+    let now = Utc::now();
+    let options = options(args, now, Instant::now())?;
+    let files = after_scheduled_start(
+        &options,
+        Instant::now(),
+        |delay| {
+            std::thread::sleep(delay);
             Ok(())
         },
-    )
-    .map_err(|failure| {
-        failure.cause.context(format!(
-            "Capture sequence stopped after {} completed capture(s); saved files matching {prefix}-*.png remain in {}",
-            failure.files.len(),
-            options.directory.display()
-        ))
-    })?;
-    println!(
-        "{}",
-        serde_json::json!({
-            "completed": files.len(),
-            "interval_ms": options.interval.as_millis(),
-            "directory": options.directory.to_string_lossy(),
-            "path_encoding": "lossy-native",
-            "files": files,
-        })
-    );
+        || {
+            let prefix = format!("capture-{}", uuid::Uuid::new_v4());
+            let backend = XcapBackend::new(std::path::PathBuf::new());
+            run_sequence(
+                options.count,
+                options.interval,
+                || Ok(backend.capture_display(options.display_id)?),
+                |frame, index| {
+                    let name = format!("{prefix}-{index:04}.png");
+                    frame.save_png_as(&options.directory.join(&name))?;
+                    Ok(name)
+                },
+                |interval| {
+                    std::thread::sleep(interval);
+                    Ok(())
+                },
+            )
+            .map_err(|failure| {
+                failure.cause.context(format!(
+                    "Capture sequence stopped after {} completed capture(s); saved files matching {prefix}-*.png remain in {}",
+                    failure.files.len(),
+                    options.directory.display()
+                ))
+            })
+        },
+    )?;
+    println!("{}", summary(&options, files));
     Ok(())
+}
+
+fn summary(options: &Options<'_>, files: Vec<String>) -> serde_json::Value {
+    let mut result = serde_json::json!({
+        "completed": files.len(),
+        "interval_ms": options.interval.as_millis(),
+        "directory": options.directory.to_string_lossy(),
+        "path_encoding": "lossy-native",
+        "files": files,
+    });
+    if let Some(start) = &options.start {
+        result["start_at"] = start.at.to_rfc3339_opts(SecondsFormat::AutoSi, true).into();
+    }
+    result
 }
 
 #[cfg(test)]
@@ -138,8 +221,49 @@ mod tests {
     use super::*;
     use std::{cell::RefCell, rc::Rc, sync::Arc};
 
+    struct Directory(std::path::PathBuf);
+
+    impl Directory {
+        fn new() -> Self {
+            let path = std::env::temp_dir().join(format!(
+                "screenshots-sequence-schedule-{}",
+                uuid::Uuid::new_v4()
+            ));
+            std::fs::create_dir(&path).unwrap();
+            Self(path)
+        }
+
+        fn args(&self, start: Option<&str>) -> Vec<OsString> {
+            let mut args = vec![
+                "display".into(),
+                "fixture".into(),
+                self.0.as_os_str().to_owned(),
+                "--count".into(),
+                "2".into(),
+                "--interval-ms".into(),
+                "100".into(),
+            ];
+            if let Some(start) = start {
+                args.extend(["--start-at".into(), start.into()]);
+            }
+            args
+        }
+    }
+
+    impl Drop for Directory {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+            let _ = std::fs::remove_file(&self.0);
+        }
+    }
+
+    fn validation_time() -> DateTime<Utc> {
+        "2030-01-01T00:00:00Z".parse().unwrap()
+    }
+
     #[derive(Clone, Copy, Debug, PartialEq)]
     enum Event {
+        Backend,
         Capture,
         Save(u16),
         Drop,
@@ -171,7 +295,7 @@ mod tests {
                 OsString::from("--count"),
                 OsString::from(count),
             ];
-            let parsed = options(&args).unwrap();
+            let parsed = options(&args, Utc::now(), Instant::now()).unwrap();
             assert_eq!(parsed.count, count.parse::<u16>().unwrap());
             assert_eq!(
                 parsed.interval,
@@ -181,6 +305,218 @@ mod tests {
         }
         assert!(std::fs::read_dir(&root).unwrap().next().is_none());
         std::fs::remove_dir(root).unwrap();
+    }
+
+    #[test]
+    fn scheduled_start_accepts_exact_bounds_offsets_and_any_option_order() {
+        let directory = Directory::new();
+        for (start, delay, normalized) in [
+            (
+                "2030-01-01T00:00:00.000000001Z",
+                Duration::from_nanos(1),
+                "2030-01-01T00:00:00.000000001Z",
+            ),
+            (
+                "2030-01-08T00:00:00Z",
+                MAX_START_DELAY,
+                "2030-01-08T00:00:00Z",
+            ),
+            (
+                "2030-01-08T05:30:00+05:30",
+                MAX_START_DELAY,
+                "2030-01-08T00:00:00Z",
+            ),
+            (
+                "2029-12-31T16:00:01-08:00",
+                Duration::from_secs(1),
+                "2030-01-01T00:00:01Z",
+            ),
+        ] {
+            for start_position in [3, 5, 7] {
+                let mut args = directory.args(None);
+                args.splice(
+                    start_position..start_position,
+                    ["--start-at".into(), start.into()],
+                );
+                let now = Instant::now();
+                let parsed = options(&args, validation_time(), now).unwrap();
+                assert_eq!(parsed.start.as_ref().unwrap().deadline - now, delay);
+                assert_eq!(summary(&parsed, vec![])["start_at"], normalized);
+            }
+        }
+    }
+
+    #[test]
+    fn malformed_past_and_too_distant_start_times_fail_without_output() {
+        let directory = Directory::new();
+        for start in [
+            "",
+            "tomorrow",
+            "2030-01-01",
+            "2030-01-01T00:00:01",
+            "2030-01-01T00:00:01+25:00",
+            "2030-01-01T00:00:01-00:00",
+            "2030-02-30T00:00:01Z",
+            "2030-01-01T00:00:01Zjunk",
+            "2030-01-01T00:00:00Z",
+            "2029-12-31T23:59:59.999999999Z",
+            "2030-01-08T00:00:00.000000001Z",
+            "2030-01-08T00:00:00.0000000001Z",
+            "2030-01-07T20:00:00-05:00",
+            "9999-12-31T23:59:59Z",
+        ] {
+            let args = directory.args(Some(start));
+            assert!(
+                options(&args, validation_time(), Instant::now()).is_err(),
+                "{start}"
+            );
+        }
+        let mut args = directory.args(Some("2030-01-01T00:00:01Z"));
+        args.extend(["--start-at".into(), "2030-01-01T00:00:02Z".into()]);
+        let error = options(&args, validation_time(), Instant::now())
+            .err()
+            .unwrap();
+        assert!(error.to_string().contains("Duplicate --start-at"));
+        assert!(std::fs::read_dir(&directory.0).unwrap().next().is_none());
+    }
+
+    #[test]
+    fn scheduled_wait_precedes_backend_and_pixels_and_preserves_frame_lifetime() {
+        let directory = Directory::new();
+        let args = directory.args(Some("2030-01-01T00:00:01Z"));
+        let now = Instant::now();
+        let parsed = options(&args, validation_time(), now).unwrap();
+        let events = Rc::new(RefCell::new(Vec::new()));
+        let files = after_scheduled_start(
+            &parsed,
+            now,
+            |delay| {
+                assert_eq!(delay, Duration::from_secs(1));
+                assert!(events.borrow().is_empty());
+                events.borrow_mut().push(Event::Wait);
+                Ok(())
+            },
+            || {
+                assert_eq!(*events.borrow(), [Event::Wait]);
+                events.borrow_mut().push(Event::Backend);
+                run_sequence(
+                    parsed.count,
+                    parsed.interval,
+                    || {
+                        events.borrow_mut().push(Event::Capture);
+                        Ok(Frame(events.clone()))
+                    },
+                    |frame, index| {
+                        events.borrow_mut().push(Event::Save(index));
+                        drop(frame);
+                        Ok(format!("{index}.png"))
+                    },
+                    |interval| {
+                        assert_eq!(interval, Duration::from_millis(100));
+                        assert_eq!(events.borrow().last(), Some(&Event::Drop));
+                        events.borrow_mut().push(Event::Wait);
+                        Ok(())
+                    },
+                )
+                .map_err(|failure| failure.cause)
+            },
+        )
+        .unwrap();
+        assert_eq!(files, ["1.png", "2.png"]);
+        assert_eq!(
+            *events.borrow(),
+            [
+                Event::Wait,
+                Event::Backend,
+                Event::Capture,
+                Event::Save(1),
+                Event::Drop,
+                Event::Wait,
+                Event::Capture,
+                Event::Save(2),
+                Event::Drop,
+            ]
+        );
+    }
+
+    #[test]
+    fn immediate_start_has_no_initial_wait_or_scheduled_json_field() {
+        let directory = Directory::new();
+        let args = directory.args(None);
+        let parsed = options(&args, validation_time(), Instant::now()).unwrap();
+        assert!(parsed.start.is_none());
+        let result = after_scheduled_start(
+            &parsed,
+            Instant::now(),
+            |_| panic!("immediate capture must not wait"),
+            || Ok(vec!["fixture.png".to_owned()]),
+        )
+        .unwrap();
+        let result = summary(&parsed, result);
+        assert!(result.get("start_at").is_none());
+        assert_eq!(result["completed"], 1);
+        assert_eq!(result["interval_ms"], 100);
+        assert_eq!(result["files"], serde_json::json!(["fixture.png"]));
+    }
+
+    #[test]
+    fn validation_time_does_not_extend_the_monotonic_deadline() {
+        let directory = Directory::new();
+        let args = directory.args(Some("2030-01-01T00:00:01Z"));
+        let now = Instant::now();
+        let parsed = options(&args, validation_time(), now).unwrap();
+        for (elapsed, remaining) in [
+            (Duration::from_millis(400), Duration::from_millis(600)),
+            (Duration::from_secs(2), Duration::ZERO),
+        ] {
+            after_scheduled_start(
+                &parsed,
+                now + elapsed,
+                |delay| {
+                    assert_eq!(delay, remaining);
+                    Ok(())
+                },
+                || Ok(()),
+            )
+            .unwrap();
+        }
+    }
+
+    #[test]
+    fn failed_wait_or_changed_destination_prevents_backend_and_pixels() {
+        for change in ["cancel", "occupied", "missing", "file"] {
+            let directory = Directory::new();
+            let args = directory.args(Some("2030-01-01T00:00:01Z"));
+            let parsed = options(&args, validation_time(), Instant::now()).unwrap();
+            let error = after_scheduled_start(
+                &parsed,
+                Instant::now(),
+                |_| {
+                    match change {
+                        "cancel" => bail!("fixture cancellation"),
+                        "occupied" => std::fs::write(directory.0.join("new.png"), b"keep")?,
+                        "missing" => std::fs::remove_dir(&directory.0)?,
+                        "file" => {
+                            std::fs::remove_dir(&directory.0)?;
+                            std::fs::write(&directory.0, b"keep")?;
+                        }
+                        _ => unreachable!(),
+                    }
+                    Ok(())
+                },
+                || -> Result<()> { panic!("invalid schedule must not create a native backend") },
+            )
+            .unwrap_err();
+            if change == "cancel" {
+                assert!(error.to_string().contains("Scheduled start wait failed"));
+            }
+            if change == "occupied" {
+                assert_eq!(std::fs::read(directory.0.join("new.png")).unwrap(), b"keep");
+            }
+            if change == "file" {
+                assert_eq!(std::fs::read(&directory.0).unwrap(), b"keep");
+            }
+        }
     }
 
     #[test]
