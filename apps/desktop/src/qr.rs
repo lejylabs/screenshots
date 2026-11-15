@@ -34,6 +34,21 @@ fn generate(text: &OsString, destination: &Path) -> Result<()> {
         "QR output must be PNG"
     );
     ensure!(!destination.try_exists()?, "Output already exists");
+    let pixels = generate_pixels(text)?;
+    let side = pixels.width();
+    crate::cli::frame(pixels).save_png_as(destination)?;
+    println!(
+        "{}",
+        serde_json::json!({"format": "png", "width": side, "height": side, "error_correction": "M"})
+    );
+    Ok(())
+}
+
+pub(crate) fn generate_pixels(text: &str) -> Result<RgbaImage> {
+    ensure!(
+        !text.is_empty() && text.len() <= MAX_GENERATED_TEXT_BYTES,
+        "QR text must contain 1–2048 UTF-8 bytes"
+    );
     let code = QrCode::with_error_correction_level(text.as_bytes(), EcLevel::M)
         .context("Text cannot fit a normal QR code")?;
     // Normal QR versions 1–40 have widths 21–177; no Micro QR output is implied.
@@ -52,12 +67,7 @@ fn generate(text: &OsString, destination: &Path) -> Result<()> {
         let level = if dark { 0 } else { 255 };
         Rgba([level, level, level, 255])
     });
-    crate::cli::frame(pixels).save_png_as(destination)?;
-    println!(
-        "{}",
-        serde_json::json!({"format": "png", "width": side, "height": side, "error_correction": "M"})
-    );
-    Ok(())
+    Ok(pixels)
 }
 
 fn scan(source: &Path) -> Result<()> {

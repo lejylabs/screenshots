@@ -84,8 +84,12 @@ completion is listed separately.
 - [ ] **Sharing:** remaining `.sxcu` methods/body/template/parser compatibility,
   bounded SFTP/FTP and OAuth/provider integrations, S3 multipart/STS/refresh or
   remote browsing where required, text/folder/clipboard/URL upload workflows,
-  explicit configurable link copying/format templates/shortening/QR follow-up.
-  Standalone QR generation and returned URLs are not upload-linked actions.
+  explicit configurable link copying/custom templates/shortening and integrated
+  QR follow-up. The working `link` postprocessor supplies fixed plain/Markdown/
+  HTML formats and explicit QR output from single-result JSON; release and
+  full-workspace verification passed (511 regular tests, 51 opt-in excluded).
+  It does not integrate actions
+  into upload commands. See [result processing](upload-results.md).
   Unsupported `ErrorMessage` templates currently fail explicitly; they are not
   implemented. [Uploader boundary](file-uploads.md), [S3 limits](s3-uploads.md).
 - [ ] **Library and storage:** cross-page selection/actions; bounded next-page

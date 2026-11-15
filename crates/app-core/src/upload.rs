@@ -175,6 +175,30 @@ pub struct UploadOutcome {
     pub deletion: Option<String>,
 }
 
+impl UploadOutcome {
+    /// Validate inert result links and return their canonical HTTP(S) URLs.
+    pub fn validate_links(mut self) -> Result<Self> {
+        const INVALID: &str = "Upload result link is invalid or exceeds 2048 bytes";
+        for link in std::iter::once(&mut self.url)
+            .chain(self.thumbnail.iter_mut())
+            .chain(self.deletion.iter_mut())
+        {
+            ensure!(
+                (1..=2048).contains(&link.len())
+                    && link.trim() == link.as_str()
+                    && !link
+                        .chars()
+                        .any(|value| value.is_control() || matches!(value, '\u{2028}' | '\u{2029}')),
+                INVALID
+            );
+            let canonical = validate_link(link).map_err(|_| anyhow::anyhow!(INVALID))?;
+            ensure!(canonical.len() <= 2048, INVALID);
+            *link = canonical;
+        }
+        Ok(self)
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum UploadAuthentication {
@@ -2993,6 +3017,115 @@ pub(crate) fn validate_link(value: &str) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn outcome_links_canonicalize_all_urls_and_preserve_optional_fields() -> Result<()> {
+        let result = UploadOutcome {
+            url: "HTTPS://EXAMPLE.INVALID:443/a/../image?token=abc%2Fdef#part".into(),
+            thumbnail: Some("http://EXAMPLE.INVALID:80/thumb image.png".into()),
+            deletion: Some("https://bücher.example/café?delete=1&key=a%2Fb".into()),
+        }
+        .validate_links()?;
+        assert_eq!(
+            result.url,
+            "https://example.invalid/image?token=abc%2Fdef#part"
+        );
+        assert_eq!(
+            result.thumbnail.as_deref(),
+            Some("http://example.invalid/thumb%20image.png")
+        );
+        assert_eq!(
+            result.deletion.as_deref(),
+            Some("https://xn--bcher-kva.example/caf%C3%A9?delete=1&key=a%2Fb")
+        );
+        let result = UploadOutcome {
+            url: "http://localhost".into(),
+            thumbnail: None,
+            deletion: None,
+        }
+        .validate_links()?;
+        assert_eq!(result.url, "http://localhost/");
+        assert_eq!(result.thumbnail, None);
+        assert_eq!(result.deletion, None);
+        Ok(())
+    }
+
+    #[test]
+    fn outcome_links_reject_invalid_values_in_every_field_without_echoing_input() {
+        for invalid in [
+            "",
+            " ",
+            " https://example.invalid/secret",
+            "https://example.invalid/secret\u{a0}",
+            "\u{2003}https://example.invalid/secret",
+            "https://example.invalid/a\nb",
+            "https://example.invalid/a\u{85}b",
+            "https://example.invalid/a\u{2028}b",
+            "https://example.invalid/a\u{2029}b",
+            "https://user:secret@example.invalid/",
+            "https://secret@example.invalid/",
+            "javascript:secret",
+            "file:///secret",
+            "/secret",
+            "https://[secret/",
+        ] {
+            for field in 0..3 {
+                let mut outcome = UploadOutcome {
+                    url: "https://example.invalid/image".into(),
+                    thumbnail: None,
+                    deletion: None,
+                };
+                match field {
+                    0 => outcome.url = invalid.into(),
+                    1 => outcome.thumbnail = Some(invalid.into()),
+                    _ => outcome.deletion = Some(invalid.into()),
+                }
+                let error = outcome.validate_links().unwrap_err();
+                assert_eq!(
+                    format!("{error:#}"),
+                    "Upload result link is invalid or exceeds 2048 bytes"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn outcome_links_enforce_original_and_canonical_byte_limits() -> Result<()> {
+        let prefix = "https://example.invalid/";
+        let boundary = format!("{prefix}{}", "a".repeat(2048 - prefix.len()));
+        let result = UploadOutcome {
+            url: boundary.clone(),
+            thumbnail: Some(boundary.clone()),
+            deletion: Some(boundary.clone()),
+        }
+        .validate_links()?;
+        assert_eq!(result.url, boundary);
+        assert_eq!(result.thumbnail.as_deref(), Some(boundary.as_str()));
+        assert_eq!(result.deletion.as_deref(), Some(boundary.as_str()));
+        for value in [
+            format!("{boundary}a"),
+            format!("{prefix}{}", "é".repeat(600)),
+        ] {
+            let outcome = UploadOutcome {
+                url: value,
+                thumbnail: None,
+                deletion: None,
+            };
+            assert_eq!(
+                format!("{:#}", outcome.validate_links().unwrap_err()),
+                "Upload result link is invalid or exceeds 2048 bytes"
+            );
+        }
+        let encoded = UploadOutcome {
+            url: format!("{prefix}{}", "é".repeat((2048 - prefix.len()) / 6)),
+            thumbnail: None,
+            deletion: None,
+        }
+        .validate_links()?;
+        assert!(encoded.url.len() <= 2048);
+        assert!(encoded.url.contains("%C3%A9"));
+        Ok(())
+    }
 
     #[cfg(unix)]
     #[test]

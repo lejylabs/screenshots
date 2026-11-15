@@ -72,6 +72,13 @@ requested, a successful upload:
 upload adds `"upload":{"url":"https://…","thumbnail":null,"deletion":null}`.
 Thumbnail and deletion links are included when supplied by the validated
 profile response; the command does not open or follow them.
+
+The standalone [link formatter/QR commands](upload-results.md) do not accept
+this nested task result; they require a single-upload object with top-level
+`url` and optional `thumbnail`/`deletion`. No formatter, QR file, automatic
+clipboard copy, shortening or additional network action is added to
+`capture-task` by those commands.
+
 Explicit lossy WebP adds `"webp_quality":N`; the field is absent otherwise.
 Errors use stderr and exit status 1. If the file was saved but upload fails,
 the error says the local file remains and a remote file may exist. If stdout

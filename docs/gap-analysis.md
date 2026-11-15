@@ -43,6 +43,10 @@ main 523bc3c, the feature branch adds the following **CLI/core subsets**:
   native credential namespace. Independent loopback HTTPS signing tests passed;
   real S3/R2 account compatibility, multipart uploads, OAuth and provider UI
   remain open. See [S3 upload limits](s3-uploads.md).
+- Standalone `link` postprocessing formats one upload-result JSON as plain,
+  Markdown or HTML text, or writes a QR PNG. Automatic copying, shortening,
+  arbitrary templates and integrated after-upload chains remain open; see
+  [explicit result processing](upload-results.md).
 - Read-only date/text/history-link queries and explicit import/relink/remove
   metadata commands, missing-file audit and opt-in metadata-stripped PNG exports;
   corresponding Library UI, cross-platform moves and retention/deletion remain open.

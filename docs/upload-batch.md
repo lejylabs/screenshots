@@ -50,6 +50,12 @@ store by the existing uploader, never from secret command-line arguments.
 ## Result stream and partial failures
 
 Unlike single-image commands, a batch prints **newline-delimited JSON** (NDJSON).
+The standalone [link formatter/QR commands](upload-results.md) accept one
+single-upload JSON object, not this NDJSON stream. Do not pipe a batch directly
+to `link`, select its first line as proof of completion, or discard the final
+summary. The postprocessor does not add automatic copying, shortening or a
+new network action to this batch.
+
 Each confirmed upload is written and flushed immediately:
 
 ```json

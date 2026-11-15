@@ -8,6 +8,15 @@ never replaced. Generation prints `format`, `width`, `height` and
 `error_correction:"M"` as JSON, without echoing
 the supplied text to logs.
 
+`screenshots link qr OUTPUT.png` provides a separate explicit
+[upload-result input](upload-results.md): it reads one JSON object of at most
+8 KiB from nonterminal stdin, validates its `url` and optional
+`thumbnail`/`deletion` links, then encodes the canonical primary URL with the
+same QR settings. It reports the same PNG metadata fields and never replaces
+an existing output. Batch NDJSON and nested `capture-task` results are not
+accepted. It neither uploads nor contacts, shortens, opens or copies any URL;
+the formatted text variants are `link format plain|markdown|html`.
+
 `screenshots qr scan INPUT` reads PNG, JPEG, WebP,
 [supported truecolor BMP](bmp-input.md) or [supported classic TIFF](tiff-input.md)
 through the shared bounded image loader. It prints one JSON object containing

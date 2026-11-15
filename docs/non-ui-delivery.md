@@ -1733,3 +1733,46 @@ binary SHA256
 The final TIFF workspace passed 499 regular optimized tests with 51 opt-in
 cases excluded; all doctests passed. All seven TIFF core fixtures are included.
 The implementation is committed and pushed as `bc37362`.
+
+### Explicit upload-result formatting and QR (in progress, 2026-11-15)
+
+Add a standalone bounded `link` postprocessor for one JSON upload result.
+It emits plain/Markdown/HTML text or a QR PNG, without new network requests,
+clipboard writes or saved settings. The [contract](upload-results.md) records
+strict object parsing, URL/output bounds and unsupported batch/nested inputs.
+Fresh-context review found CommonMark entity decoding could alter URLs and
+derived struct deserialization could accept arrays; explicit ampersand escaping
+and an object-prefix guard resolve those issues. The review also corrected
+QR capacity assumptions and required explicit alternatives/build phases.
+
+Three core URL-boundary tests and six actual-CLI tests passed, including a
+single local upload feeding HTML and QR with exactly one request. Independent
+CommonMark/HTML parsing checked eight generated links and exact labels; QR
+scanning recovered the inert URL. Final Clippy and Windows GNU compilation
+passed. Complete workspace and final release verification continue.
+
+The final release built in 2m26s and passed independent CommonMark/HTML href
+and exact-label checks plus QR decoding. Three-run synthetic observations gave
+median peak RSS 10,928 KiB for Markdown and 12,360 KiB for QR; wrapper times
+1.84/9.54 ms include startup and are below GNU time's useful timing resolution.
+These are development observations, not performance acceptance.
+
+Package smoke passed. Archive SHA256
+`d374cae5dfdb27749696c6dbd952c5b72d27bb9a88c781a7784dac267516b963`;
+binary SHA256
+`bca6e3e60b845d203380fae1834c2d33b65ded32cc0243186ffd4468e92117f4`.
+
+Final review added output-race, saved-PNG/stdout-failure and exact-2048-byte
+QR coverage. A repeated-`x` maximum URL produced a valid code decoded exactly
+by ZBar and ZXing, while the existing quircs scanner reported DataEcc; this is
+a recorded scanner limitation, not silent truncation or a passed scan. The
+regular maximum-URL fixture uses a repeated-`z` payload independently decoded
+by quircs; the external script also verifies the `x` case with ZBar. All nine
+focused executable cases and the updated external release script passed.
+The first full run hit that scanner fixture failure; the final regression
+rerun follows the corrected tests and remains separate evidence.
+
+The final whole-workspace rerun passed 511 regular optimized tests, with
+51 opt-in cases excluded and all doctests passing. Final Clippy, formatting
+and Windows GNU test compilation passed. No production change was needed for
+the dense-QR scanner limitation; it remains disclosed above.

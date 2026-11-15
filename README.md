@@ -56,6 +56,22 @@ its own contract; earlier output-format checks do not establish input support.
 `upload-files` provides [sequential unchanged-file batches](docs/file-uploads.md#explicit-file-batches),
 with flushed per-file results and no automatic retries.
 
+The explicit [upload-result postprocessor](docs/upload-results.md) reads one
+`upload` or `upload-file` JSON result from nonterminal stdin:
+
+```sh
+screenshots link format markdown --label Screenshot < upload-result.json
+screenshots link qr share.png < upload-result.json
+```
+
+`link format plain|markdown|html` returns JSON with `format` and copy-ready
+`text`; `link qr` saves a PNG of the primary URL. Input is limited to 8 KiB and
+must be one object with `url` and optional `thumbnail`/`deletion` links.
+Batch NDJSON, nested `capture-task` output and S3 bucket/key results are rejected.
+No link is uploaded, fetched, shortened, opened or copied to the clipboard.
+When piping an uploader into this command, check both process exit statuses:
+valid input alone cannot prove the upstream workflow completed.
+
 Explicit [S3-compatible object uploads](docs/s3-uploads.md) use a separate
 credential profile and signed create-only PUT. Provider runtime acceptance is
 tracked separately from local signing tests.

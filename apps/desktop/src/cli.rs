@@ -50,6 +50,8 @@ Headless commands (no desktop UI, clipboard writes or implicit uploads):
   screenshots upload-images PROFILE IMAGE...
   screenshots upload-file PROFILE FILE
   screenshots upload-files PROFILE FILE... (1–20 files)
+  screenshots link format plain|markdown|html [--label TEXT] (upload-result JSON on stdin)
+  screenshots link qr OUTPUT.png (upload-result JSON on stdin)
   screenshots s3-upload PROFILE FILE
   screenshots s3-credentials target|store|remove PROFILE
   screenshots credentials target|store|remove PROFILE_JSON [--username NAME]
@@ -152,6 +154,7 @@ pub fn run(args: Vec<OsString>) -> Result<bool> {
         "upload-images" => crate::upload_batch::run(&args[1..])?,
         "upload-file" => crate::upload_file::run(&args[1..])?,
         "upload-files" => crate::upload_files::run(&args[1..])?,
+        "link" => crate::upload_results::run(&args[1..])?,
         "s3-upload" => crate::s3::upload(&args[1..])?,
         "s3-credentials" => crate::s3::credentials(&args[1..])?,
         "upload" => {

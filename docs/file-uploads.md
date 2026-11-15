@@ -52,6 +52,21 @@ local output files. It sends data only because the explicit command was invoked.
 `upload` and `upload-images` keep their separate PNG/image validation; arbitrary
 bytes do not become accepted by those commands.
 
+The single `upload-file` result can feed the explicit
+[link postprocessor](upload-results.md), for example:
+
+```sh
+screenshots upload-file PROFILE FILE | screenshots link format markdown --label Screenshot
+```
+
+It returns JSON containing `format` and copy-ready `text`; `link qr OUTPUT.png`
+instead writes a QR PNG of the primary URL. Input must be one complete object
+of at most 8 KiB with `url` and optional `thumbnail`/`deletion` fields. The
+postprocessor performs no upload, network request, shortening, browser action
+or clipboard copy. Check both pipeline processes' exit statuses; processing a
+valid result cannot establish that the upstream command completed successfully.
+The `upload-files` batch stream is not accepted by these link commands.
+
 Redirects and retries remain disabled. An interrupted or failed transfer may
 already have created a remote object; the command does not retry or remove it.
 PUT retains `If-None-Match: *`; no-overwrite behavior depends on the remote service
@@ -99,6 +114,11 @@ earlier lines remain valid; no completion line, retry or later upload follows.
 The failed request may have created a remote file. A stdout failure can leave
 the current line partial after the remote upload; the error identifies the
 current ordinal and prior confirmed result count.
+
+This NDJSON stream cannot be passed directly to the
+[single-result link formatter or QR command](upload-results.md). Its uploaded
+rows and final completion marker must not be reduced to a first-line result
+that hides later failures.
 
 The existing 5-second connect/60-second per-request limits apply; there is no
 separate whole-batch deadline. Native calls retain the limits above. Binary PUT

@@ -30,6 +30,7 @@ mod scroll_stitch;
 mod upload_batch;
 mod upload_file;
 mod upload_files;
+mod upload_results;
 mod workflow;
 
 fn main() {

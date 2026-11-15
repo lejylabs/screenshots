@@ -326,3 +326,13 @@ layout, file ownership and execution phases; those were added. Same-context
 follow-ups found no parser or integration blocker and requested the public
 budget/PNG-only regression, which was added. Source reviews do not establish
 runtime results or a fresh multi-round convergence claim.
+
+## Upload-result postprocessing review (2026-11-15)
+
+Fresh-context `upload_results_goldfish` identified two implementation hazards:
+CommonMark entity decoding in link destinations, and sequence-form acceptance
+by derived JSON struct decoding. The implementation escapes URL ampersands and
+requires an object before decoding. The reviewer also corrected an unreachable
+QR-capacity test assumption and requested alternatives/build phases. These
+were resolved. Same-context follow-up found no new blocker; actual renderer
+and executable results are in the delivery record.
