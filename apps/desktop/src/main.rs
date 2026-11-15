@@ -28,6 +28,13 @@ mod record;
 mod record_windows;
 mod region_analysis;
 mod s3;
+mod sharing_provider;
+#[cfg(any(unix, target_os = "windows"))]
+mod sharing_provider_worker;
+#[cfg(unix)]
+mod sharing_provider_unix;
+#[cfg(target_os = "windows")]
+mod sharing_provider_windows;
 mod scroll_stitch;
 mod scroll_capture;
 mod upload_batch;

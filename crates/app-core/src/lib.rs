@@ -60,6 +60,8 @@ pub use blur::blur_preview_bgra;
 pub use webp_lossy::save_lossy_webp;
 mod selection;
 pub use pixelation::PixelationGrid;
+mod provider_credentials;
+pub use provider_credentials::{read_provider_credentials, remove_provider_credentials, save_provider_credentials};
 mod s3_credentials;
 mod s3_upload;
 mod settings;

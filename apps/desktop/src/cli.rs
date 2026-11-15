@@ -56,6 +56,8 @@ Headless commands (no desktop UI, clipboard writes or implicit uploads):
   screenshots link format plain|markdown|html [--label TEXT] (upload-result JSON on stdin)
   screenshots link qr OUTPUT.png (upload-result JSON on stdin)
   screenshots s3-upload PROFILE FILE
+  screenshots provider-upload PROFILE FILE
+  screenshots provider-credentials target|store|remove PROFILE
   screenshots s3-credentials target|store|remove PROFILE
   screenshots credentials target|store|remove PROFILE_JSON [--username NAME]
   screenshots qr generate TEXT OUTPUT_PNG
@@ -172,6 +174,10 @@ pub fn run(args: Vec<OsString>) -> Result<bool> {
         "upload-files" => crate::upload_files::run(&args[1..])?,
         "link" => crate::upload_results::run(&args[1..])?,
         "s3-upload" => crate::s3::upload(&args[1..])?,
+        "provider-upload" => crate::sharing_provider::upload(&args[1..])?,
+        "provider-credentials" => crate::sharing_provider::credentials(&args[1..])?,
+        #[cfg(any(unix, target_os = "windows"))]
+        "provider-engine" => crate::sharing_provider_worker::run(&args[1..])?,
         "s3-credentials" => crate::s3::credentials(&args[1..])?,
         "upload" => {
             ensure!(args.len() == 3, "Usage: screenshots upload PROFILE PNG");
