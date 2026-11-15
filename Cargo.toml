@@ -91,6 +91,6 @@ codegen-units = 1
 
 [profile.release-fast]
 inherits = "release"
-debug = "full"
+debug = "limited"
 lto = false
 codegen-units = 16
