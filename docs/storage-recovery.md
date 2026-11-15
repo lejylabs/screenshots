@@ -8,7 +8,11 @@ They never delete capture images or history records.
 ## Inspect a database
 
 `check_history_database(path)` opens an existing regular file with SQLite's
-read-only and no-follow flags. Missing paths are not created. No application
+read-only and no-follow flags. Existing parent directories are canonicalized
+before opening, so operating-system aliases such as macOS `/var` and a selected
+folder reached through a symlink work. The final database component is checked
+without following it and must be a regular file; final symlinks remain rejected.
+Missing paths are not created. No application
 migrations, WAL-mode changes or history writes run. It accepts the known history
 schema versions 1–4, checks the expected columns and runs `quick_check(1)`.
 Unknown versions, foreign databases without the expected schema and corruption
@@ -31,7 +35,8 @@ per step and checks cancellation between steps. Busy/locked sources fail with a
 retry message rather than spinning. The operation has a 30-second deadline,
 observed between native calls. It verifies the copied database before publication.
 
-The destination directory must already exist. The destination and its `-wal`,
+The destination directory must already exist and is canonicalized before
+staging and publication. The destination and its `-wal`,
 `-shm` and `-journal` siblings must be absent. Existing files, including dangling
 symlinks, are never replaced. A uniquely named staging database is converted to
 standalone journal mode, closed and synced, then published without replacement.

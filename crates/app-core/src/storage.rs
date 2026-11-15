@@ -31,8 +31,20 @@ pub struct PartInspection {
     pub truncated: bool,
 }
 
-fn open_read_only(path: &Path) -> Result<Connection> {
-    let metadata = fs::symlink_metadata(path).context("History database is unavailable")?;
+fn resolve_parent(path: &Path) -> Result<PathBuf> {
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    let name = path.file_name().context("Choose a database file path")?;
+    Ok(parent.canonicalize()?.join(name))
+}
+
+pub(crate) fn open_read_only(path: &Path) -> Result<Connection> {
+    // SQLite NOFOLLOW rejects ancestor links too, including macOS /var -> /private/var.
+    // Resolve existing ancestry only; the selected file itself must never be followed.
+    let path = resolve_parent(path)?;
+    let metadata = fs::symlink_metadata(&path).context("History database is unavailable")?;
     ensure!(
         metadata.is_file() && !metadata.file_type().is_symlink(),
         "Choose a regular history database, not a symlink"
@@ -42,7 +54,7 @@ fn open_read_only(path: &Path) -> Result<Connection> {
         "History database exceeds the 1 GiB maintenance limit"
     );
     let mut connection = Connection::open_with_flags(
-        path,
+        &path,
         OpenFlags::SQLITE_OPEN_READ_ONLY
             | OpenFlags::SQLITE_OPEN_NO_MUTEX
             | OpenFlags::SQLITE_OPEN_NOFOLLOW,
@@ -154,14 +166,15 @@ pub fn backup_history_database(
         Ok(())
     };
     check()?;
+    let destination = resolve_parent(destination)?;
     ensure!(
-        fs::symlink_metadata(destination)
+        fs::symlink_metadata(&destination)
             .is_err_and(|error| error.kind() == std::io::ErrorKind::NotFound),
         "Backup destination already exists or is unavailable"
     );
     for suffix in ["-wal", "-shm", "-journal"] {
         ensure!(
-            fs::symlink_metadata(sidecar(destination, suffix))
+            fs::symlink_metadata(sidecar(&destination, suffix))
                 .is_err_and(|error| error.kind() == std::io::ErrorKind::NotFound),
             "Backup destination has existing SQLite sidecars"
         );
@@ -170,14 +183,7 @@ pub fn backup_history_database(
     source_connection.execute_batch("BEGIN DEFERRED")?;
     check_connection(&source_connection)?;
     check()?;
-    let parent = destination
-        .parent()
-        .filter(|path| !path.as_os_str().is_empty())
-        .unwrap_or(Path::new("."));
-    ensure!(
-        fs::symlink_metadata(parent)?.is_dir(),
-        "Backup directory must exist and must not be a symlink"
-    );
+    let parent = destination.parent().context("Invalid backup directory")?;
     let temporary = parent.join(format!(".screenshots-{}.part", uuid::Uuid::new_v4()));
     let mut options = fs::OpenOptions::new();
     options.write(true).create_new(true);
@@ -224,7 +230,7 @@ pub fn backup_history_database(
         file.sync_all()?;
     }
     check()?;
-    crate::capture::publish_output(&part.0, destination)?;
+    crate::capture::publish_output(&part.0, &destination)?;
     Ok(())
 }
 
@@ -447,6 +453,41 @@ mod tests {
         assert_eq!(result.candidates.len(), MAX_PART_CANDIDATES);
         assert!(result.truncated);
         assert_eq!(fs::read_dir(&fixture.0)?.count(), 110);
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn linked_ancestors_preserve_live_wal_backup_but_final_file_links_are_rejected() -> Result<()> {
+        use std::os::unix::fs::symlink;
+        let fixture = Fixture::new();
+        let source = fixture.database()?;
+        let writer = Connection::open(&source)?;
+        writer.execute_batch("PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=0; INSERT INTO uploads(filename,origin,url,created_at) VALUES('wal-only.png','https://example.invalid','https://example.invalid/wal','2026-11-15');")?;
+        let root = fixture.0.canonicalize()?;
+        let alias = root.join("parent-link");
+        symlink(&root, &alias)?;
+        let linked_source = alias.join("history.sqlite3");
+        let destination = alias.join("backup.sqlite3");
+        let source_before = fs::read(&source)?;
+        let wal_before = fs::read(sidecar(&source, "-wal"))?;
+        assert_eq!(check_history_database(&linked_source)?.schema_version, 4);
+        backup_history_database(&linked_source, &destination, || false)?;
+        let copied = Connection::open_with_flags(&destination, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+        assert_eq!(
+            copied.query_row("SELECT count(*) FROM uploads", [], |row| row
+                .get::<_, i64>(0))?,
+            2
+        );
+        assert_eq!(fs::read(&source)?, source_before);
+        assert_eq!(fs::read(sidecar(&source, "-wal"))?, wal_before);
+        let final_link = alias.join("file-link.sqlite3");
+        symlink(&source, &final_link)?;
+        assert!(check_history_database(&final_link).is_err());
+        assert!(
+            backup_history_database(&final_link, &alias.join("unused.sqlite3"), || false).is_err()
+        );
+        assert!(!root.join("unused.sqlite3").exists());
         Ok(())
     }
 
