@@ -1084,3 +1084,8 @@ all expected pixels (SHA256
 No user desktop pixels, state or external service were involved. Source review
 caught and fixed duplicate PNG encoding; Clippy passed. Native region/display
 variants and real provider behavior remain separate checks.
+
+The full capture-chain workspace run passed 377 regular tests with 49 opt-in
+cases excluded, all doctests passed. Clippy and Windows GNU app/tests check
+passed. The native synthetic-window chain is recorded separately above; these
+results do not imply native Windows/macOS capture or actual-provider acceptance.
