@@ -70,7 +70,7 @@ jobs:
       - name: Build optimized application
         run: cargo build --workspace --release --locked
       - name: Run optimized deterministic tests
-        run: cargo test --workspace --release --locked
+        run: cargo test --workspace --profile release-fast --locked
       - name: Verify packaging logic
         run: python scripts/test-package.py
       - name: Package native executable

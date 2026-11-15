@@ -62,6 +62,11 @@ does not establish Wayland capture acceptance.
 ## Artifact checks
 
 CI runs optimized tests and packages native Linux, Windows and macOS executables.
+Deterministic tests use the existing optimized `release-fast` profile, avoiding
+thin-LTO relinking for every integration-test binary. The packaged application
+still uses the production `release` profile with thin LTO. Native artifact smoke
+tests execute that packaged release binary; test-profile success is not a
+substitute for final binary or hardware acceptance.
 Downloaded workflow artifacts are development artifacts, not published releases.
 Hardware-dependent tests remain opt-in. Test capture/clipboard/permissions and
 install/update/uninstall using the actual extracted binary on every supported
