@@ -240,3 +240,7 @@ RGBA8 old/new medians were 3.559/3.265 ms, p95 3.783/3.430 ms; RGBA16 medians
 Encoded inputs were 33,182,358 and 66,362,488 bytes, demonstrating that this path
 does not inherit the editor's 32 MiB cap. These warm synthetic observations show
 no regression here, not universal latency improvement or hardware acceptance.
+Three isolated executions of the complete comparison fixture observed median
+peak RSS 312,536 KiB, including encoding and overlapping old/new decoder results;
+that number must not be presented as the production loader's peak memory.
+Exact commands and raw samples are in `target/verification/saved-png-performance.json`.

@@ -1865,3 +1865,13 @@ excluded and all doctests passing. The subsequently added timing-only ignored
 fixture and post-open assertion passed in the focused run (8 passed, 1 ignored).
 Test totals above have been audited to count only outer suites: subprocess
 fixtures print their own summaries and must not be counted again.
+
+Three isolated saved-PNG benchmark processes also passed; median peak RSS was
+312,536 KiB. This is the entire encoding/oracle comparison fixture with both
+bit depths and temporarily overlapping old/new images, not production-only
+memory. Raw timings, exact commands and this limitation are recorded in
+`target/verification/saved-png-performance.json`.
+
+The final frozen-tree repeat passed 523 regular tests, 53 opt-in cases excluded
+and all doctests. The extra opt-in case is the saved-PNG timing fixture, already
+run separately. No required test remained pending in this local slice.

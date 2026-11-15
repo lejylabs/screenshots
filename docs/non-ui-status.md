@@ -4,9 +4,10 @@ Date: 2026-11-15
 Scope: the user's complete major-feature list, with final GPUI redesign and new
 UI controls excluded. The workstation stays on. The full backlog is **open**.
 
-Snapshot: branch `feat/non-ui-delivery`, committed implementation HEAD `bf34ac5`,
+Snapshot: branch `feat/non-ui-delivery`, committed implementation HEAD `27e63a9`,
 including GIF implementation `485386e`, TIFF input `bc37362` and link-result
-formatting/QR `17ee7ae`, and thumbnail cancellation/admission `bf34ac5`.
+formatting/QR `17ee7ae`, thumbnail cancellation/admission `bf34ac5` and saved-PNG
+admission `27e63a9`.
 “Delivered subset” means an existing CLI/core
 path, not completion of
 the corresponding product family or native acceptance. Evidence belongs to the
@@ -48,11 +49,11 @@ performed to prepare this checklist.
 - [x] Saved-PNG admission now checks regular files and a 272 MiB readable extent,
   plus native/RGBA byte limits before decoding. Compatibility/FIFO cases and
   release/package checks passed; the complete run passed 523 regular tests and
-  all doctests, with 52 opt-in cases excluded. The new timing-only opt-in test
+  all doctests, with 53 opt-in cases excluded. The new timing-only opt-in test
   also passed separately. [Contract](saved-png-admission.md).
-- [ ] Native CI for `bf34ac5` was still running at the latest check. Earlier
+- [ ] Native CI for `27e63a9` was still running at the latest check. Earlier
   runs were canceled as newer pushes arrived. Local results above do not
-  establish native CI success. [Current thumbnail run](https://github.com/lejylabs/screenshots/actions/runs/43734938633).
+  establish native CI success. [Current PNG run](https://github.com/lejylabs/screenshots/actions/runs/43735986296).
 
 ## Delivered CLI/core subsets
 
