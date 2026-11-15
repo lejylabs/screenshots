@@ -23,9 +23,12 @@ Coordinates outside the image fail without sampling. Transparent pixels retain
 their stored RGB channel values; this is raw decoded-pixel sampling rather than
 a color composited against a background.
 
-Both operations reuse the shared PNG/JPEG/WebP and [truecolor BMP](bmp-input.md) loader, with at most 32 MiB
-encoded input and 256 MiB decoded RGBA. The input format is recognized by the
-decoder rather than inferred from the extension, but is not reported because
+Both operations reuse the shared PNG/JPEG/WebP, [truecolor BMP](bmp-input.md)
+and [classic TIFF](tiff-input.md) loader, with at most 32 MiB encoded input and
+256 MiB decoded RGBA. TIFF accepts one uncompressed RGB8 or explicit
+straight-RGBA8 image in top-left chunky strips; profiles, compression, other
+orientations and multiple pages are rejected. The input format is recognized
+by the decoder rather than inferred from the extension, but is not reported because
 the shared loader does not return a trustworthy encoding label. These are basic
 decoded-image details, not a full EXIF/ancillary-metadata inspector. No embedded
 GPS, comments, thumbnails, ICC profile, or arbitrary metadata payload is emitted.
@@ -36,7 +39,9 @@ The source buffer is released before output. Result JSON is small and flushed
 explicitly; output errors are reported as failures. No new dependency, runtime,
 thread, timer, cache or background task is introduced. Full decoding is required
 even for information/single-pixel commands; peak decoder scratch and encoded
-input are additional to the 256 MiB retained-pixel bound. Existing synchronous
+input are additional to the 256 MiB retained-pixel bound. TIFF's immutable
+snapshot and temporary decoded raster are accounted for in its
+[input contract](tiff-input.md#resource-cost-and-cancellation). Existing synchronous
 decoder calls cannot be canceled mid-call; Ctrl+C terminates the explicit CLI
 process. No file, directory or image output is created on success or failure.
 

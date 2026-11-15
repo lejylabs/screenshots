@@ -1,8 +1,8 @@
 # Explicit OCR
 
-`screenshots ocr INPUT [--language LANG]` recognizes a PNG/JPEG/WebP or
-[supported truecolor BMP](bmp-input.md) file through
-an optional, already-installed `tesseract` executable. The default language is
+`screenshots ocr INPUT [--language LANG]` recognizes a PNG/JPEG/WebP,
+[supported truecolor BMP](bmp-input.md) or [supported classic TIFF](tiff-input.md)
+file through an optional, already-installed `tesseract` executable. The default language is
 `eng`; a bounded name such as `deu+eng` selects installed language data. The app
 does not install an engine, download trained data or contact a network service.
 Missing engines or language data fail explicitly. The Unix launcher uses a
@@ -25,9 +25,13 @@ pixels through the same processor. It creates no screenshot file. The
 coordinate and source limits; Wayland, rotated displays and scale other than
 100% are rejected for this path. Native acceptance is tracked separately.
 
-Input is limited to 32 MiB encoded and 16 MiB decoded RGBA. The existing decoder
-applies EXIF orientation and admission before pixel decode. Pixels are encoded
-once to an in-memory PNG, at most 32 MiB, and released before the engine starts;
+Input is limited to 32 MiB encoded and 16 MiB decoded RGBA. TIFF input is one
+uncompressed RGB8 or explicit straight-RGBA8 image in top-left chunky strips;
+profiles, compression, other orientations and multiple pages are rejected.
+The existing decoder applies admission before pixel decode and EXIF
+orientation for applicable formats. TIFF's immutable snapshot and temporary
+decoder raster follow its [input memory contract](tiff-input.md#resource-cost-and-cancellation).
+Pixels are encoded once to an in-memory PNG, at most 32 MiB, and released before the engine starts;
 there is no image-file handoff. One invocation owns at most three pipe workers
 with requested 256 KiB stacks, one three-message channel, 256 KiB recognized
 output and an 8 KiB read chunk per reader. Stderr is capped at 16 KiB and never

@@ -9,7 +9,12 @@ Add `gif OUTPUT.gif --delay-ms N INPUT INPUT...` for 2–16 explicit image files
 Require equal dimensions, at most 1280×720 per frame and 64 MiB cumulative
 decoded RGBA. Delay is 10–60000 milliseconds, divisible by 10, and is stored
 exactly in centiseconds. Playback is once: omit a loop extension. This command
-does not capture or sleep. Inputs use the existing bounded image loader.
+does not capture or sleep. Inputs use the shared bounded image loader:
+PNG/JPEG/WebP, supported truecolor BMP and [supported classic TIFF](tiff-input.md).
+TIFF accepts one uncompressed RGB8 or explicit straight-RGBA8 image in top-left
+chunky strips; profiles, compression, other orientations and multiple pages
+are rejected. GIF's smaller per-frame and cumulative budgets still apply.
+The earlier GIF verification below does not establish TIFF input acceptance.
 
 GIF supports only binary transparency: reject alpha values other than 0/255
 instead of silently flattening. More than 256 colors are quantized, with fixed
@@ -40,7 +45,9 @@ pixels; explicit storage inspection can report it. No automatic janitor is added
 
 At most one 3.52 MiB RGBA frame, 0.88 MiB palette-index frame, encoder LZW buffer
 and bounded quantizer/palette state are active, in addition to loader scratch
-and its 32 MiB encoded admission. No full animation buffer or frame collection.
+and its 32 MiB encoded admission. TIFF's immutable snapshot and temporary
+decoded raster follow its [input memory contract](tiff-input.md#resource-cost-and-cancellation).
+No full animation buffer or frame collection.
 There is no hard mid-quantization cancellation deadline; Ctrl+C terminates the
 headless process. This is not a reference-hardware timing or memory claim.
 

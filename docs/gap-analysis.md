@@ -20,8 +20,9 @@ main 523bc3c, the feature branch adds the following **CLI/core subsets**:
 - Exact RGBA BMP output from `image convert` and bounded truecolor BMP input,
   independently decoded in tests; broader BMP variants and editor format selection remain open.
 - Uncompressed TIFF conversion output with explicit straight-alpha metadata;
-  independent TIFF-tag and pixel checks passed. TIFF input, multi-page editing
-  and editor format selection remain open.
+  independent TIFF-tag and pixel checks passed. Bounded classic single-image
+  RGB8/straight-RGBA8 input is being verified separately; compressed/profiled
+  variants, multi-page editing and editor format selection remain open.
 - Offline image recipes including ordered blur/pixelation and exact row/column strip removal, combine/compare/split, file pixel sampling and image
   info, SHA256 file hashing and bounded PNG chunk inventory; editor tool
   integration, native screen color picker and general metadata inspection remain

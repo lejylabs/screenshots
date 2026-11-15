@@ -22,7 +22,8 @@ See [delivery status and open work](docs/non-ui-delivery.md),
 [explicit lossy WebP](docs/lossy-webp.md),
 [output-only BMP conversion](docs/bmp-export.md),
 [bounded BMP input](docs/bmp-input.md),
-[output-only TIFF conversion](docs/tiff-export.md),
+[explicit TIFF conversion output](docs/tiff-export.md),
+[bounded TIFF input](docs/tiff-input.md),
 [storage recovery](docs/storage-recovery.md) and [portable packaging](docs/packaging.md).
 Additional commands support strict [offline image recipes](docs/workflows.md),
 [filtered read-only history](docs/history-queries.md),
@@ -41,6 +42,15 @@ FFmpeg/ffprobe pair for bounded FFV1/Matroska or GIF output; it is not bundled a
 not imply macOS/Wayland recorder support. The separate
 [Windows recording path](docs/recording-windows.md) has bounded staging and process
 tests; native gdigrab/FFmpeg runtime acceptance remains open.
+
+The shared image loader accepts PNG/JPEG/WebP, supported truecolor BMP and a
+[narrow classic TIFF subset](docs/tiff-input.md): one uncompressed RGB8 or
+explicit straight-RGBA8 image in chunky strips, with top-left orientation.
+TIFF input keeps the 32 MiB encoded and caller-specific decoded limits; it
+rejects profiles, compression, other orientations and multiple pages. This adds
+no output default, picker control or history-import format. `image metadata`
+retains its separate PNG/JPEG/WebP scope. TIFF input verification is tracked in
+its own contract; earlier output-format checks do not establish input support.
 
 `upload-files` provides [sequential unchanged-file batches](docs/file-uploads.md#explicit-file-batches),
 with flushed per-file results and no automatic retries.
@@ -168,9 +178,12 @@ not allowed. A unique suffix and `.png` are always appended. Click **Save filena
 template** to apply; an empty value restores default names. Existing files and
 manual **Save as** names are preserved.
 
-**Library → Open image…** opens PNG, JPEG, WebP or supported truecolor BMP directly in the editor without
+**Library → Open image…** opens PNG, JPEG, WebP, supported truecolor BMP or
+[supported classic TIFF](docs/tiff-input.md) directly in the editor without
 importing it. The original file stays unchanged; Copy/Save remain explicit actions.
-BMP support has [explicit header/size restrictions](docs/bmp-input.md).
+BMP support has [explicit header/size restrictions](docs/bmp-input.md). TIFF is
+limited to one uncompressed RGB8 or straight-RGBA8 image in top-left chunky
+strips; this adds no picker control or TIFF editor-output preference.
 
 **Save as (.png / .jpg / .webp)…** exports the latest finalized capture through a
 native save dialog. Choose the format by filename: `.png`, `.jpg`/`.jpeg` or

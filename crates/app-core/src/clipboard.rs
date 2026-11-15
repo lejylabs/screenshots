@@ -105,9 +105,10 @@ fn load_image_input(
                     | image::ImageFormat::Jpeg
                     | image::ImageFormat::WebP
                     | image::ImageFormat::Bmp
+                    | image::ImageFormat::Tiff
             )
         ),
-        "Choose a PNG, JPEG, WebP or supported truecolor BMP image"
+        "Choose a PNG, JPEG, WebP, supported truecolor BMP or uncompressed TIFF image"
     );
     if reader.format() == Some(image::ImageFormat::WebP) {
         use std::io::{Read as _, Seek as _};
@@ -143,6 +144,21 @@ fn load_image_input(
         reader.limits(limits);
         return decode_editor_pixels_with_limit(
             reader.into_decoder()?,
+            max_decoded_bytes,
+            Some(image::metadata::Orientation::NoTransforms),
+        );
+    }
+    if reader.format() == Some(image::ImageFormat::Tiff) {
+        use std::io::{Read as _, Seek as _};
+        // TIFF parses IFDs before limits apply; validate the exact snapshot it decodes.
+        let mut input = reader.into_inner();
+        input.seek(std::io::SeekFrom::Start(0))?;
+        let mut bytes = vec![0; usize::try_from(length)?];
+        input.read_exact(&mut bytes)?;
+        crate::tiff_input::validate_tiff(&bytes, max_decoded_bytes)?;
+        let decoder = image::codecs::tiff::TiffDecoder::new(std::io::Cursor::new(bytes))?;
+        return decode_editor_pixels_with_limit(
+            decoder,
             max_decoded_bytes,
             Some(image::metadata::Orientation::NoTransforms),
         );

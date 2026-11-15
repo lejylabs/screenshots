@@ -316,3 +316,13 @@ using all 256 indices are rejected. A same-context follow-up requested explicit
 255/256-color boundaries and a flush failure through the real atomic writer.
 Those tests were added and passed. The follow-up is not a fresh convergence
 round or a native-player acceptance claim.
+
+## TIFF input review (2026-11-15)
+
+The fresh-context `tiff_input_goldfish` read the implementation-readiness,
+feature-spec and re-implementation standards and audited the contract against
+the pinned TIFF/image source. It requested explicit classic IFD/inline/endian
+layout, file ownership and execution phases; those were added. Same-context
+follow-ups found no parser or integration blocker and requested the public
+budget/PNG-only regression, which was added. Source reviews do not establish
+runtime results or a fresh multi-round convergence claim.

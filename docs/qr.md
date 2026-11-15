@@ -8,14 +8,22 @@ never replaced. Generation prints `format`, `width`, `height` and
 `error_correction:"M"` as JSON, without echoing
 the supplied text to logs.
 
-`screenshots qr scan INPUT` reads PNG, JPEG, WebP or
-[supported truecolor BMP](bmp-input.md) through the shared bounded
-image loader. It prints one JSON object containing `codes`, with `text` and
+`screenshots qr scan INPUT` reads PNG, JPEG, WebP,
+[supported truecolor BMP](bmp-input.md) or [supported classic TIFF](tiff-input.md)
+through the shared bounded image loader. It prints one JSON object containing
+`codes`, with `text` and
 `version` for each decoded code. These are inert strings: a URL, command or Wi-Fi
 payload is never opened, executed, copied or acted upon. Non-UTF-8 payloads,
 unsupported/corrupt codes and images without a detected code fail explicitly;
 there is no partial-success output. Alpha is composited onto white before
 recognition, so hidden RGB cannot produce an invisible QR code.
+
+TIFF scanning accepts one uncompressed RGB8 or explicit straight-RGBA8 image
+in top-left chunky strips. Profiles, compression, other orientations and
+multiple pages are rejected before decoding. The 32 MiB encoded limit and
+the scan-specific decoded limits below still apply. The TIFF input contract
+also accounts for its immutable snapshot and temporary decoder raster;
+generation remains PNG-only.
 
 `screenshots qr-region DISPLAY X Y WIDTH HEIGHT` captures one display-local
 rectangle directly into the same processor, without a screenshot file. See the

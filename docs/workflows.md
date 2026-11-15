@@ -71,9 +71,14 @@ layers or arbitrary editor effect ordering.
 Redaction does not infer what content is sensitive; its coordinates must cover
 the intended content in the image state at that step.
 
-Inputs are PNG, JPEG, WebP or [supported truecolor BMP](bmp-input.md), detected from file contents, with the existing
-32 MiB encoded and 256 MiB decoded limits. Every output and intermediate image
-must have a nonzero size and fit 256 MiB as RGBA; dimension arithmetic and
+Inputs are PNG, JPEG, WebP, [supported truecolor BMP](bmp-input.md) or
+[supported classic TIFF](tiff-input.md), detected from file contents, with the
+existing 32 MiB encoded and 256 MiB decoded limits. TIFF accepts one uncompressed
+RGB8 or explicit straight-RGBA8 image in top-left chunky strips; profiles,
+compression, other orientations and multiple pages are rejected. Its immutable
+snapshot and temporary decoded raster follow the TIFF input memory contract.
+Every output and intermediate image must have a nonzero size and fit 256 MiB
+as RGBA; dimension arithmetic and
 rectangles are checked before allocating their result. This byte limit also
 bounds each dimension, without imposing a different workflow-only side limit.
 One current image and at most one replacement image are held during each step,

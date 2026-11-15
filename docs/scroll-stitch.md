@@ -8,14 +8,21 @@ capture.
 screenshots stitch-scroll OUTPUT MIN_OVERLAP INPUT INPUT [INPUT...]
 ```
 
-Supply 2–16 PNG/JPEG/WebP or [supported truecolor BMP](bmp-input.md) inputs in top-to-bottom order and a minimum overlap of
-1–4096 rows. Images must have equal widths and heights of 2–16,384 rows. For each
+Supply 2–16 PNG/JPEG/WebP, [supported truecolor BMP](bmp-input.md) or
+[supported classic TIFF](tiff-input.md) inputs in top-to-bottom order and a
+minimum overlap of 1–4096 rows. Images must have equal widths and heights of
+2–16,384 rows. For each
 adjacent pair, the command finds an exact suffix of the earlier image matching
 the prefix of the next. An overlap must be at least `MIN_OVERLAP` and less than
 both image heights, so each input contributes new rows. Exactly one overlap must
 match; no match, multiple matches, identical complete images or excess matching
 work fail before any output is created. Repeating flat regions can therefore
 cause an explicit ambiguity error. There is no guessed seam or fuzzy matching.
+
+TIFF accepts one uncompressed RGB8 or explicit straight-RGBA8 image in top-left
+chunky strips. Profiles, compression, other orientations and multiple pages
+are rejected before decoding. The shared encoded limit and this command's
+combined source and dimension limits remain in force.
 
 Matching compares raw decoded RGBA8 values after EXIF orientation. Different RGB
 values under transparent pixels count as different, and lossy JPEG differences
@@ -41,6 +48,8 @@ are checked against a separate 256 MiB RGBA budget before allocation. Source
 buffers are released during assembly and all are gone before export. Retained
 pixel buffers therefore peak at at most 512 MiB, plus decoder/encoder scratch
 and bounded encoded input; this is not a total-process memory measurement.
+TIFF's immutable input snapshot and temporary decoder raster are accounted for
+in its [input contract](tiff-input.md#resource-cost-and-cancellation).
 
 Rows are hashed once per input and retained as at most 262,144 `u64` values
 (2 MiB). The prefix-function workspace is at most 16,384 `usize` values

@@ -64,7 +64,7 @@ Headless commands (no desktop UI, clipboard writes or implicit uploads):
   screenshots record x11|gdigrab|test OUTPUT.mkv|OUTPUT.gif --seconds N --fps N --width N --height N
       [--x X --y Y] [--cursor show|hide]
 
-Image input: PNG/JPEG/WebP or supported truecolor BMP, <=32 MiB encoded and <=256 MiB decoded.
+Image input: PNG/JPEG/WebP, supported truecolor BMP or uncompressed TIFF, <=32 MiB encoded and <=256 MiB decoded.
 Output: PNG/JPEG/WebP; image convert also supports BMP/TIFF output.
 WebP is lossless unless --webp-quality is explicit.
 Existing files are never replaced.

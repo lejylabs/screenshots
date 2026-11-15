@@ -8,6 +8,15 @@ Extend only `image convert INPUT OUTPUT.tif|OUTPUT.tiff`, matching extensions
 case-insensitively and reporting JSON `format: "tiff"`. Keep shared image
 input (including [supported BMP](bmp-input.md)), existing transforms/downscale,
 defaults and the editor format enum.
+
+The separate [bounded TIFF input contract](tiff-input.md) admits this output
+for shared-loader operations only while it fits the 32 MiB encoded input limit.
+It accepts one uncompressed RGB8 or explicit straight-RGBA8 image in top-left
+chunky strips, with strict directory/range checks; compression, profiles, other
+orientations and multiple pages remain unsupported. Input acceptance does not
+add TIFF to editor/capture output defaults or PNG-only history import. The
+output verification recorded below is not evidence for the new input path.
+
 Use the already locked `tiff 0.11.3` package directly to write one uncompressed
 RGBA8 image with `ExtraSamples=[2]` (unassociated alpha). The image wrapper's
 default RGBA encoder omits that explicit alpha tag; a synthetic source decoded

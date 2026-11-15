@@ -2,9 +2,13 @@
 
 These commands run without initializing GPUI. They do not alter the editor UI,
 clipboard, history, configuration or network. Source files stay unchanged and
-existing destinations are never overwritten. PNG/JPEG/WebP and
-[supported truecolor BMP input](bmp-input.md) use the shared
-bounded decoder and EXIF orientation handling; output uses the shared PNG/JPEG/
+existing destinations are never overwritten. PNG/JPEG/WebP,
+[supported truecolor BMP input](bmp-input.md) and
+[supported classic TIFF input](tiff-input.md) use the shared bounded decoder.
+TIFF accepts one uncompressed RGB8 or explicit straight-RGBA8 image in chunky
+strips, with top-left orientation; profiles, other orientations, compression
+and multiple pages are rejected. Existing EXIF orientation handling remains
+in use for the other applicable formats. Output uses the shared PNG/JPEG/
 lossless WebP exporter. JPEG still rejects transparency instead of flattening it
 implicitly. The shared exporter creates missing output parent directories.
 
@@ -16,8 +20,9 @@ quality flags are rejected for BMP output.
 
 `image convert` also accepts `.tif` and `.tiff` for explicit
 [uncompressed TIFF output](tiff-export.md), with a tagged straight-alpha fourth
-channel. This output-only option uses the same transforms/downscale and does
-not add TIFF input support or alter editor/capture format preferences.
+channel. This conversion-output option uses the same transforms/downscale and
+does not alter editor/capture format preferences. TIFF input is governed
+separately by the narrow shared-loader contract linked above.
 
 `image remove-strip INPUT OUTPUT horizontal|vertical START LENGTH` removes
 an entire band of rows or columns and joins the retained pixels exactly.
@@ -58,8 +63,11 @@ the existing default of 90.
 Resource cost: one operation, decoded source pixels and one final RGBA buffer.
 Composition additionally retains one watermark, with combined source/watermark
 RGBA admission limited to 256 MiB; the final canvas independently has the same
-limit. Each encoded input retains the shared 32 MiB limit. Nearest resizing writes
-directly into its result without a full-image float intermediate. Shared decoder
+limit. Each encoded input retains the shared 32 MiB limit. TIFF decoding adds
+one bounded encoded snapshot and the installed decoder's temporary raster;
+its [input contract](tiff-input.md#resource-cost-and-cancellation) accounts for
+those allocations. Nearest resizing writes directly into its result without a
+full-image float intermediate. Shared decoder
 and encoder scratch allocations still apply. No cache, undo snapshots, threads,
 timer, runtime or idle work is added.
 

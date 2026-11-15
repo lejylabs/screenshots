@@ -37,6 +37,7 @@ pub use bmp_export::save_bmp;
 pub use gif_assembly::assemble_gif;
 pub use strip::remove_image_strip;
 mod tiff_export;
+mod tiff_input;
 pub use tiff_export::save_tiff;
 mod text;
 pub use text::TextAnnotation;

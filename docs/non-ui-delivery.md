@@ -1696,3 +1696,36 @@ coarse development observation, not a private-memory/reference-hardware claim.
 The final whole-workspace GIF tree passed 487 regular optimized tests, with
 51 opt-in cases excluded and all doctests passing. Final Clippy and Windows GNU
 test compilation passed. The feature was committed and pushed as `485386e`.
+
+### Bounded truecolor TIFF input (in progress, 2026-11-15)
+
+The [reviewed TIFF contract](tiff-input.md) adds an immutable admission pass
+before the existing decoder. The narrow classic single-image RGB8/straight-RGBA8
+subset rejects compression, unsupported color/alpha/layout metadata and
+overlapping file ranges. Existing callers keep their decoded-byte limits;
+there are no new dependencies, UI controls or background work. Fresh-context
+readiness review requested explicit IFD byte layout, inline-value rules and
+execution/file lists; these were supplied. Same-context parser review found no
+blocking issue. Integration and actual executable verification are in progress.
+
+Six initial core fixtures and all three actual-executable TIFF fixtures passed.
+The independent FFmpeg script verified little/big-endian RGB/RGBA multi-strip
+sources, partial last strips, exact alpha and hidden RGB, own-export round trips,
+info/pixel commands, 25 malformed refusals and inert QR decoding. Existing files,
+sources and isolated user state stayed unchanged. A seventh core fixture now
+checks exact shared-loader budget forwarding and the PNG-only export guard;
+the final whole-workspace run includes it. Final Clippy and Windows GNU checks
+passed; release and full-regression verification continue.
+
+The final native release built in 2m26s and passed the same independent input
+script. Three synthetic 2048×2048 observations measured median peak RSS of
+48,480 KiB (RGB TIFF) and 60,760 KiB (RGBA TIFF), against 39,672/43,652 KiB for
+equivalent BMP inputs. This confirms the documented temporary TIFF raster
+overhead on this fixture, not reference-hardware acceptance. Timings were below
+the measurement's useful resolution. Source hashes and isolated state stayed
+unchanged.
+
+The archive smoke test passed. Archive SHA256
+`7632d806df44ea02e73f1866fe3a20c887d95b3e48fafd10f8632be3eb83e6ab`;
+binary SHA256
+`31929f554c6646a146da591d888ab7a5c9772465b47af5b60825d2640b93925a`.
