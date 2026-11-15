@@ -178,3 +178,11 @@ context. It returned no unresolved actionable finding. Root execution evidence
 includes GNU Windows full-app/test cross-check and the three Wine process tests;
 neither reviewer ran native Windows tests. These are completed reviews of two
 scoped slices, not full-backlog or native-platform acceptance.
+
+
+The direct-ShareX bridge received a same-context codebase review: no actionable
+blocker/major in extension selection, existing HTTPS/secret validation, bounded
+profile reads or JSON-only credential commands. The optional ShareX name is
+discarded and no profile is persisted. This is a follow-up inspection, not another
+fresh-context convergence round. Root/implementer execution separately passed the
+synthetic parser tests and eight local TLS uploads.

@@ -737,3 +737,30 @@ symlink-following compatibility and reject growing oversized files. Tests cover
 both parsers/extension cases, supported loopback upload, preserved files/state,
 invalid/secret-bearing profiles and special files. No new dependency, background
 work or implicit persistence; this is direct profile use, not full ShareX parity.
+
+
+Installed-engine regression after the direct-profile work began: the isolated
+Unix Tesseract fixture passed again with synthetic printed `HELLO 123` and
+installed `deu` data. No desktop, remote provider or real document was used.
+
+### glib FFI backport
+
+The remaining GitHub glib advisory describes VariantStrIter passing an immutable
+Rust reference to C as an output pointer. Preserve the GTK3 dependency family and
+vendor exactly glib 0.18.5, applying upstream commit
+b5a4071e439bef2b5eea76c3aa25e5ae84839e34: make the pointer local mutable and pass
+`&mut p`. Add a patch entry in workspace Cargo.toml and a provenance note in the
+vendored source; run upstream iterator unit tests optimized plus normal affected
+workspace checks. Do not invent a patched release version or suppress advisories.
+The version-based GitHub alert remains open until the dependency family can be
+upgraded. This backport adds source files only, no runtime allocation or idle work.
+
+
+Direct-profile verification passed: three regular CLI parser/rejection fixtures
+and one explicitly enabled Linux TLS fixture, including eight real loopback HTTPS
+uploads across `.sxcu`/`.SXCU`, PNG, two-image batches and arbitrary files. Exact
+payloads, returned links/NDJSON, unchanged inputs/profiles and absent user state
+were checked. Existing image-batch (5), file-upload (4) and CLI upload (2) fixtures
+also passed. Three new core profile-reader tests passed exact byte limits,
+regular-file/symlink behavior and timeout-safe FIFO rejection. Workspace Clippy
+passed before the subsequent glib source override. No external service was used.
