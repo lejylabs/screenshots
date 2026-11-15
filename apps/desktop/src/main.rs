@@ -1,6 +1,7 @@
 mod capture_sequence;
 mod cli;
 mod image_collection;
+mod image_info;
 mod image_tools;
 mod ocr;
 mod qr;

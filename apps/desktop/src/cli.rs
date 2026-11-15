@@ -17,6 +17,8 @@ Headless commands (no desktop UI, clipboard writes or implicit uploads):
   screenshots image combine horizontal|vertical OUTPUT INPUT INPUT [INPUT...]
   screenshots image compare FIRST SECOND OUTPUT.png
   screenshots image split INPUT DIRECTORY --columns N --rows N
+  screenshots image info INPUT
+  screenshots image pixel INPUT X Y
   screenshots list displays|windows
   screenshots capture display|window ID OUTPUT
   screenshots capture region DISPLAY X Y WIDTH HEIGHT OUTPUT
@@ -83,6 +85,13 @@ pub fn run(args: Vec<OsString>) -> Result<bool> {
                 .is_some_and(|arg| arg == "combine" || arg == "compare" || arg == "split") =>
         {
             crate::image_collection::run(&args[1..])?
+        }
+        "image"
+            if args
+                .get(1)
+                .is_some_and(|arg| arg == "info" || arg == "pixel") =>
+        {
+            crate::image_info::run(&args[1..])?
         }
         "image" => convert(&args[1..])?,
         "list" => list(&args[1..])?,
