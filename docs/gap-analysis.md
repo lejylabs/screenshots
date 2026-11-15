@@ -1,6 +1,6 @@
 # Functional gap analysis: screenshots and ShareX
 
-## Current reconciliation: feature branch through 4e6a58c (2026-11-15)
+## Current reconciliation: feature branch, 2026-11-15
 
 The historical tables below are not the current delivery checklist. Relative to
 main 523bc3c, the feature branch adds the following **CLI/core subsets**:
@@ -30,8 +30,11 @@ main 523bc3c, the feature branch adds the following **CLI/core subsets**:
 - Exact assembly of supplied overlapping screenshots; live scrolling control,
   fixed-header handling and fuzzy matching remain open.
 - Optional installed-Tesseract file OCR on Windows with Job Object cleanup;
-  native Windows runtime and region/editor integration remain open. GNU Windows
-  cross-check and three Wine process-lifecycle tests passed.
+  GNU Windows cross-check and three Wine process-lifecycle tests passed. Explicit
+  CLI region OCR/QR now reuse the in-memory processors, with native synthetic
+  Linux X11 testing; Wayland, scaled/rotated displays, native Windows/macOS
+  region acceptance and editor integration remain open. See the
+  [region analysis contract](region-analysis.md).
 
 Portable packaging, image import/conversion/upscaling, file OCR/QR, native secret
 store adapters and storage backup already existed at 523bc3c. A synthetic Linux

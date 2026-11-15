@@ -20,6 +20,7 @@ mod qr;
 mod record;
 #[cfg(target_os = "windows")]
 mod record_windows;
+mod region_analysis;
 mod scroll_stitch;
 mod upload_batch;
 mod upload_file;

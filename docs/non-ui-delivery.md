@@ -1182,3 +1182,24 @@ binary SHA256:
 `49f9970b91f24cc71fb90a9aa1cd010e6b350fb6ee6d1bcdce1b8e09b168b9da`.
 The complete backlog, native CI and hardware/OS acceptance remain separate;
 workstation shutdown remains revoked.
+
+### In-memory region OCR and QR (2026-11-15)
+
+Add explicit `ocr-region` and `qr-region` commands using existing pixel
+processors and `ExactRegion` geometry checks. Preserve file-command JSON,
+16 MiB analysis admission, QR detector limits and OCR process cleanup. Restrict
+native analysis initially to unrotated 100% displays, reject Wayland before any
+portal access, guard X11 wire coordinates and set scoped Windows per-monitor
+DPI awareness. The full contract and exact limits are in
+[region analysis](region-analysis.md). No UI, image-file handoff, implicit
+upload, history entry, clipboard action, resident timer or new dependency.
+
+The independent native fixture uses a private authenticated Xvfb server and
+synthetic QR/text. Five invocations each returned the exact inert URL and
+`HELLO 123`, without stderr or user-state files; the server was terminated.
+Observed synthetic medians were 6.05 ms QR and 177.64 ms OCR, including process
+startup. These are not reference-hardware resource or physical-display results.
+Windows/macOS native region behavior, Wayland support and editor integration
+remain open. Current-context EGM code/readiness review found documentation gaps;
+the exact grammar, backing geometry, 256 MiB full-display metadata gate and
+shared result contracts were added. No new fresh-review convergence claimed.

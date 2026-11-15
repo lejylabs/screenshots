@@ -16,6 +16,11 @@ unsupported/corrupt codes and images without a detected code fail explicitly;
 there is no partial-success output. Alpha is composited onto white before
 recognition, so hidden RGB cannot produce an invisible QR code.
 
+`screenshots qr-region DISPLAY X Y WIDTH HEIGHT` captures one display-local
+rectangle directly into the same processor, without a screenshot file. See the
+[region analysis contract](region-analysis.md) for geometry/session restrictions
+and native verification limits. This does not add an editor action.
+
 Scanning admits at most 16 MiB of decoded RGBA source, 4 MiB of grayscale
 bytes, and 4096 pixels per side. Source RGBA is released before detector buffers
 are allocated. At most seven result strings of 8192 bytes each are retained. The

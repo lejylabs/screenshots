@@ -1,4 +1,4 @@
-# Explicit file OCR
+# Explicit OCR
 
 `screenshots ocr INPUT [--language LANG]` recognizes a PNG/JPEG/WebP file through
 an optional, already-installed `tesseract` executable. The default language is
@@ -15,7 +15,14 @@ creates image/output files, modifies history/configuration, copies the clipboard
 opens recognized URLs or uploads anything. Recognized content appears only in
 the explicit result; engine diagnostics are counted and discarded, not logged.
 Errors use fixed engine messages rather than echoing captured text or paths from
-external diagnostics. This is a file utility, not region OCR or an editor action.
+external diagnostics. The file utility does not expose an editor action.
+
+`screenshots ocr-region DISPLAY X Y WIDTH HEIGHT [--language LANG]` instead
+captures an explicitly selected display-local rectangle and sends its owned
+pixels through the same processor. It creates no screenshot file. The
+[region analysis contract](region-analysis.md) describes session, scale,
+coordinate and source limits; Wayland, rotated displays and scale other than
+100% are rejected for this path. Native acceptance is tracked separately.
 
 Input is limited to 32 MiB encoded and 16 MiB decoded RGBA. The existing decoder
 applies EXIF orientation and admission before pixel decode. Pixels are encoded
