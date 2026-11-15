@@ -1285,3 +1285,40 @@ cases excluded and all doctests passing. A same-context EGM review found a
 trailing slash/dot symlink-check bypass; normalize these path components before
 the final-component check and cover direct/trailing-slash/trailing-dot variants.
 This does not strengthen parent-path race guarantees beyond the stated contract.
+
+Post-fix seven-unit regression, final Clippy and Windows GNU app/test checks
+passed. The rebuilt release passed the private-Xvfb exact-pixel/overlap check
+again and its archive passed checksum/extraction/help/version smoke. Release
+build: 1m53s. Archive SHA256
+`f6f9f2876e15142f2b6f88da0dc5f2a11dae1e74f2b1e106e0761cd5e69fc9b3`;
+binary SHA256
+`ecd52a883273dffe500c0bcbf1751ee2f00a2cf2f93766877e96ba5daf91cf5a`.
+All 48 project Markdown files had valid local links. No physical multi-monitor,
+native Windows/macOS or reference-hardware acceptance is inferred.
+
+### Context-specific ShareX file profiles (2026-11-15)
+
+Allow `FileUploader` in `.sxcu` only for the explicit `upload-file` command;
+image commands and UI import still require `ImageUploader`. Keep previously
+accepted ImageUploader file profiles compatible. Use existing multipart POST
+or binary PUT transport and preserve HTTPS, profile limits, secret rejection,
+generic source filename, no redirects and no retries. Reject JSON bodies for
+the file-specific import before any network access, including mixed destination
+flags. Reuse the existing importer through an explicit file-context API rather
+than weakening its global image requirement. Modify core upload.rs, desktop
+upload-file routing, focused core/executable/TLS fixtures and upload docs.
+
+Source verification found that the current flat JSON `Data` map and bare
+`{base64}` placeholder are local extensions, not official ShareX image/file
+JSON support. Correct documentation/export interoperability wording separately;
+do not silently reinterpret these existing local profiles. Official reference:
+[CustomFileUploader](https://github.com/ShareX/ShareX/blob/develop/ShareX.UploadersLib/FileUploaders/CustomFileUploader.cs),
+[CustomImageUploader](https://github.com/ShareX/ShareX/blob/develop/ShareX.UploadersLib/ImageUploaders/CustomImageUploader.cs),
+[CustomUploaderItem](https://github.com/ShareX/ShareX/blob/develop/ShareX.UploadersLib/CustomUploader/CustomUploaderItem.cs).
+This is still a bounded compatibility subset, not full `.sxcu` parity.
+
+Implemented a file-context import API while preserving ImageUploader admission
+for image/UI callers. Same-context review found no additional blocker; static
+analysis and Windows GNU app/test compilation passed. Tests cover source/profile
+preservation and loopback HTTPS PUT/multipart byte delivery; final execution
+results are recorded below once the runs finish.
