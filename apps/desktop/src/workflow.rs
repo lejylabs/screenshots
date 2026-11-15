@@ -10,9 +10,28 @@ const MAX_STEPS: usize = 16;
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct Recipe {
+pub(crate) struct Recipe {
     version: u32,
     steps: Vec<Step>,
+}
+
+impl Recipe {
+    pub(crate) fn read(path: &Path) -> Result<Self> {
+        read_recipe(path)
+    }
+
+    pub(crate) fn step_count(&self) -> usize {
+        self.steps.len()
+    }
+
+    pub(crate) fn apply(self, mut pixels: RgbaImage) -> Result<RgbaImage> {
+        for (index, step) in self.steps.into_iter().enumerate() {
+            pixels = step
+                .apply(pixels)
+                .with_context(|| format!("Workflow step {} failed", index + 1))?;
+        }
+        Ok(pixels)
+    }
 }
 
 #[derive(Deserialize)]
@@ -281,14 +300,9 @@ pub fn run(args: &[OsString]) -> Result<()> {
     let destination = Path::new(&args[2]);
     app_core::ImageExportFormat::from_path(destination)?;
     ensure!(!destination.try_exists()?, "Output already exists");
-    let recipe = read_recipe(Path::new(&args[0]))?;
-    let step_count = recipe.steps.len();
-    let mut pixels = app_core::load_editor_image(Path::new(&args[1]))?;
-    for (index, step) in recipe.steps.into_iter().enumerate() {
-        pixels = step
-            .apply(pixels)
-            .with_context(|| format!("Workflow step {} failed", index + 1))?;
-    }
+    let recipe = Recipe::read(Path::new(&args[0]))?;
+    let step_count = recipe.step_count();
+    let pixels = recipe.apply(app_core::load_editor_image(Path::new(&args[1]))?)?;
     let (width, height) = pixels.dimensions();
     let format = crate::cli::frame(pixels).save_image_as(
         destination,

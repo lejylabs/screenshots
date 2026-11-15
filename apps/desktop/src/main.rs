@@ -4,6 +4,7 @@ mod autostart_macos;
 #[cfg(target_os = "windows")]
 mod autostart_windows;
 mod capture_sequence;
+mod capture_task;
 mod cli;
 mod hash_file;
 mod history_audit;

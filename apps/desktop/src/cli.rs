@@ -28,6 +28,8 @@ Headless commands (no desktop UI, clipboard writes or implicit uploads):
   screenshots capture desktop OUTPUT
   screenshots capture-sequence display ID DIRECTORY --count N --interval-ms MS
       [--start-at RFC3339] [--format png|jpeg|webp] [--jpeg-quality 1..100]
+  screenshots capture-task display ID OUTPUT [--recipe FILE]
+      [--delay-ms 0..3600000] [--jpeg-quality 1..100]
   screenshots history DATABASE [--before ID] [--search WORDS]
   screenshots history-audit DATABASE [--cursor ID]
   screenshots history-manage import|remove|relink DATABASE ARGUMENTS...
@@ -111,6 +113,7 @@ pub fn run(args: Vec<OsString>) -> Result<bool> {
         "list" => list(&args[1..])?,
         "capture" => capture(&args[1..])?,
         "capture-sequence" => crate::capture_sequence::run(&args[1..])?,
+        "capture-task" => crate::capture_task::run(&args[1..])?,
         "autostart" => crate::autostart::run(&args[1..])?,
         "history" => history(&args[1..])?,
         "history-audit" => crate::history_audit::run(&args[1..])?,
