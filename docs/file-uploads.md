@@ -20,7 +20,7 @@ POST form fields, custom nonsecret headers/query parameters, HTTPS defaults,
 origin-scoped credentials and existing response parsers remain available.
 Image-specific JSON/base64 request bodies are rejected before the upload runtime
 starts. A `.sxcu` profile must include `FileUploader` or the previously supported
-`ImageUploader` token and use HTTPS. Only this explicit file command accepts
+`ImageUploader` token and use HTTPS. The explicit file commands accept
 FileUploader-only profiles; image commands and UI import still require
 ImageUploader. JSON bodies are rejected even when both destination tokens are
 present. The profile parser, secret rejection and transport limits remain the
@@ -79,3 +79,30 @@ and after opening one handle on the existing blocking pool. On Unix it uses
 This does not promise interruptible network/FUSE/device calls or an atomic
 snapshot of a concurrently modified regular file. Other platforms retain
 their native open behavior; avoid concurrently replacing upload inputs.
+
+## Explicit file batches
+
+`screenshots upload-files PROFILE FILE...` accepts 1–20 files and uses the same
+profile rules and unchanged-byte transport as `upload-file`. All paths receive
+metadata/type/size preflight as regular files of at most 64 MiB before the first
+request; profile and absolute input path strings are limited to 4096 native
+encoded bytes. Empty files and duplicate paths are allowed. A duplicate is
+uploaded again in argument order. Symlinks to regular files remain usable.
+Preflight is not a snapshot: each handle is opened and revalidated only when
+that file is uploaded, so a later open/read failure can follow earlier success.
+
+One file is uploaded at a time, with no decode, local copy or retained batch
+buffer. Each completed request emits and flushes one NDJSON object containing
+`type: "uploaded"`, `index` (one-based), `total`, `url`, `thumbnail` and `deletion`.
+Full completion adds `{"type":"complete","uploaded":N}`. On a later failure,
+earlier lines remain valid; no completion line, retry or later upload follows.
+The failed request may have created a remote file. A stdout failure can leave
+the current line partial after the remote upload; the error identifies the
+current ordinal and prior confirmed result count.
+
+The existing 5-second connect/60-second per-request limits apply; there is no
+separate whole-batch deadline. Native calls retain the limits above. Binary PUT
+profiles reuse their configured endpoint and `If-None-Match: *`, so servers that
+enforce create-only semantics may reject the second file unless the endpoint
+supports distinct remote objects. The command does not silently alter URLs,
+discover names, open links, update history or copy the clipboard.

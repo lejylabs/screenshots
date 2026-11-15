@@ -28,6 +28,7 @@ mod s3;
 mod scroll_stitch;
 mod upload_batch;
 mod upload_file;
+mod upload_files;
 mod workflow;
 
 fn main() {

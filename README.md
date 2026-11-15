@@ -38,6 +38,9 @@ not imply macOS/Wayland recorder support. The separate
 [Windows recording path](docs/recording-windows.md) has bounded staging and process
 tests; native gdigrab/FFmpeg runtime acceptance remains open.
 
+`upload-files` provides [sequential unchanged-file batches](docs/file-uploads.md#explicit-file-batches),
+with flushed per-file results and no automatic retries.
+
 Explicit [S3-compatible object uploads](docs/s3-uploads.md) use a separate
 credential profile and signed create-only PUT. Provider runtime acceptance is
 tracked separately from local signing tests.

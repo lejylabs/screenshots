@@ -1585,3 +1585,11 @@ upload_file profile loader for reuse, and wire headless CLI/main/help. Tests cov
 exact binary/empty bytes, ordering, a failing middle request, invalid later input
 before any upload and absent user-state writes. Native filesystem stalls and
 in-place changes retain the single-file limits; preflight is not a snapshot.
+
+Implemented sequential file batches and factored only the existing file-profile
+loader for reuse. The preflight unit and four batch executable tests passed;
+the combined file/profile regression suite also passed. Tests check exact
+binary/empty payload order, first confirmed NDJSON surviving a second-request
+failure, no third upload, and invalid later inputs rejected before any request.
+Clippy and Windows GNU compilation passed. Full workspace and release checks
+are running; the batch does not imply provider acceptance or UI integration.
