@@ -293,6 +293,39 @@ fn file_only_profiles_are_scoped_to_upload_file_and_reject_json_before_connectin
     f.assert_no_state();
 }
 
+#[test]
+fn unsupported_error_message_fails_before_connecting_without_echoing_its_contents() {
+    let f = Fixture::new();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let url = format!("https://{}/upload", listener.local_addr().unwrap());
+    let source = f.image();
+    let original = std::fs::read(&source).unwrap();
+    for value in [
+        json!("private-server-secret"),
+        json!("{json:private_server_secret}"),
+        json!({"private-server-secret":true}),
+        json!(["private-server-secret"]),
+        json!(false),
+        json!(17),
+    ] {
+        let mut profile = sharex(&url);
+        profile["ErrorMessage"] = value;
+        let path = f.profile("unsupported.sxcu", &profile);
+        let before = std::fs::read(&path).unwrap();
+        for command in COMMANDS {
+            let output = f.run(f.command(command).arg(&path).arg(&source));
+            let error = rejected(&output);
+            assert!(error.contains("ShareX ErrorMessage parsing is not supported"));
+            assert!(!error.contains("private-server-secret"));
+        }
+        assert_eq!(std::fs::read(path).unwrap(), before);
+    }
+    assert!(listener.accept().is_err());
+    assert_eq!(std::fs::read(source).unwrap(), original);
+    f.assert_no_state();
+}
+
 #[cfg(unix)]
 #[test]
 fn non_utf8_profile_name_keeps_native_extension_selection() {

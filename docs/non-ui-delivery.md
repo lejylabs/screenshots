@@ -1498,3 +1498,21 @@ archive checksum/extraction/help/version smoke passed. Archive SHA256
 binary SHA256
 `4ae9decaa0785da5a39d2fab9c7ac1b9e0be1a783de0e63f805392e2cfa55c1e`.
 PNG schema and values remain compatible; JSON object key order is not fixed.
+
+### Unsupported ShareX error parser admission (planned, 2026-11-15)
+
+Stop silently accepting configured `.sxcu` ErrorMessage templates. Official
+ShareX parses these only on unsuccessful HTTP responses; existing URL parsers
+are not interchangeable with arbitrary error text. Explicitly admit the field
+for validation, accept absent/null/empty/whitespace strings, and reject configured
+or non-string values with a fixed message before network work. Do not echo the
+template. Keep supported URL/header/body fields and current HTTP failure
+semantics; no change to general unknown-field policy. Update both image/file
+import tests and actual executable pre-connect fixtures. This clarifies an
+unsupported feature rather than pretending complete ErrorMessage support.
+
+Implemented the explicit admission rule and omitted the empty field from
+exports. The focused core case and all five regular profile executable tests
+passed, including rejection before a local listener receives any connection and
+suppression of configured payloads in errors. Clippy and Windows GNU compilation
+passed. The current full workspace and release checks are still running.

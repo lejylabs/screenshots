@@ -26,6 +26,10 @@ ImageUploader. JSON bodies are rejected even when both destination tokens are
 present. The profile parser, secret rejection and transport limits remain the
 same bounded subset, not full ShareX/FileUploader compatibility.
 
+Configured `.sxcu` `ErrorMessage` templates are rejected before network access;
+absent, null or empty/whitespace strings are accepted. The app does not silently
+discard a requested error parser or expose its potentially sensitive template.
+
 Official [ShareX FileUploader](https://github.com/ShareX/ShareX/blob/develop/ShareX.UploadersLib/FileUploaders/CustomFileUploader.cs)
 and [ImageUploader](https://github.com/ShareX/ShareX/blob/develop/ShareX.UploadersLib/ImageUploaders/CustomImageUploader.cs)
 implement multipart and binary upload bodies. The app's existing object-valued

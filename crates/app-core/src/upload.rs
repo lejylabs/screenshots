@@ -898,10 +898,23 @@ struct ShareXCustomUploader {
     arguments: Option<serde_json::Value>,
     #[serde(rename = "Data", default, skip_serializing_if = "Option::is_none")]
     data: Option<serde_json::Value>,
+    #[serde(
+        rename = "ErrorMessage",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    error_message: Option<serde_json::Value>,
 }
 
 impl ShareXCustomUploader {
     fn into_destination(self, file_upload: bool) -> Result<(UploadDestination, Option<String>)> {
+        ensure!(
+            self.error_message
+                .as_ref()
+                .is_none_or(|value| value.is_null()
+                    || value.as_str().is_some_and(|text| text.trim().is_empty())),
+            "ShareX ErrorMessage parsing is not supported"
+        );
         ensure!(
             self.destination_type
                 .split(',')
@@ -1111,6 +1124,7 @@ impl ShareXCustomUploader {
             } else {
                 Some(serde_json::to_value(&destination.json)?)
             },
+            error_message: None,
         })
     }
 }
@@ -4516,6 +4530,67 @@ mod tests {
         let blocked = other.join("backup.json");
         assert!(configuration.save_at(&blocked).is_err());
         assert_eq!(std::fs::read(&other)?, b"keep-settings");
+        std::fs::remove_dir_all(root)?;
+        Ok(())
+    }
+
+    #[test]
+    fn sharex_error_message_is_rejected_without_echoing_values() -> Result<()> {
+        let root =
+            std::env::temp_dir().join(format!("screenshots-sharex-error-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&root)?;
+        let path = root.join("profile.sxcu");
+        let base = serde_json::json!({"DestinationType":"ImageUploader, FileUploader","RequestURL":"https://example.invalid/upload","URL":"{response}"});
+        let mut accepted = vec![base.clone()];
+        for value in [
+            serde_json::Value::Null,
+            serde_json::json!(""),
+            serde_json::json!(" \t\r\n"),
+        ] {
+            let mut profile = base.clone();
+            profile["ErrorMessage"] = value;
+            accepted.push(profile);
+        }
+        for profile in accepted {
+            std::fs::write(&path, serde_json::to_vec(&profile)?)?;
+            for file in [false, true] {
+                let (destination, _) = if file {
+                    UploadDestination::from_sharex_for_file(&path)?
+                } else {
+                    UploadDestination::from_sharex(&path)?
+                };
+                let exported = root.join(format!("{}.sxcu", uuid::Uuid::new_v4()));
+                destination.to_sharex(&exported)?;
+                assert!(!std::fs::read_to_string(exported)?.contains("ErrorMessage"));
+            }
+        }
+        for value in [
+            serde_json::json!("private-server-secret"),
+            serde_json::json!("{json:private_server_secret}"),
+            serde_json::json!({"private-server-secret":true}),
+            serde_json::json!(["private-server-secret"]),
+            serde_json::json!(42),
+            serde_json::json!(false),
+        ] {
+            let mut profile = base.clone();
+            profile["ErrorMessage"] = value;
+            let original = serde_json::to_vec(&profile)?;
+            std::fs::write(&path, &original)?;
+            for file in [false, true] {
+                let result = if file {
+                    UploadDestination::from_sharex_for_file(&path)
+                } else {
+                    UploadDestination::from_sharex(&path)
+                };
+                let error = result.err().unwrap();
+                assert_eq!(
+                    error.to_string(),
+                    "ShareX ErrorMessage parsing is not supported"
+                );
+                assert!(!format!("{error:#}").contains("private-server-secret"));
+            }
+            assert_eq!(std::fs::read(&path)?, original);
+        }
         std::fs::remove_dir_all(root)?;
         Ok(())
     }

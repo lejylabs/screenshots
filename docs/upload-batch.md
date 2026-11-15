@@ -26,6 +26,10 @@ ShareX image/file uploaders support multipart or binary input; its text uploader
 uses a string `Data` template. This implementation preserves the local extension
 for existing image profiles, while file uploads reject JSON bodies.
 
+An explicitly configured `ErrorMessage` template is unsupported and rejected
+before connecting. Missing/null/empty values remain compatible. This applies
+to both image and file profile imports.
+
 The complete argument count, destination profile and each input's regular-file
 metadata/32 MiB size limit are checked before the first request. Image contents
 are decoded one at a time with the shared loader's 256 MiB decoded admission,
