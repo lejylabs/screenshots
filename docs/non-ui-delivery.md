@@ -1239,4 +1239,31 @@ argument check passed. The new isolated `scripts/test-record-cursor.py` fixture
 recorded the real X11 input and independently decoded it: omitted/hide matched,
 show changed exactly the expected 8×8 pointer patch, no user state was written,
 and the private X server shut down. A small subsequent parser admission change
-retains at most 16 command arguments; focused verification follows it.
+retains at most 16 command arguments; all four focused tests and the full Windows
+app/test cross-check passed again after that change. The final optimized release
+built in 2m01s and the actual release binary passed the private-Xvfb cursor check.
+Its archive passed checksum/extraction/help/version smoke. Archive SHA256
+`d9e4b8c4d0b9b29e05d0b1c920581ede92252a2843375ea656da11623b188af7`;
+binary SHA256
+`07abbbb1e4516a108ad0ac74ddf80263616a22d28da844e8c0de9bc445af9464`.
+
+### Multiple crops from admitted display snapshots (planned, 2026-11-15)
+
+Next implement explicit CLI `capture-regions DIRECTORY DISPLAY X Y WIDTH HEIGHT
+[DISPLAY X Y WIDTH HEIGHT]...`, admitting 1–16 regions and only PNG output.
+Capture each distinct display once, then crop each requested region from that
+frozen frame. Regions on one display share the same snapshot; different displays
+are captured sequentially, not simultaneously. Validate all display identities,
+geometry and region bounds first; bound total distinct full-display RGBA to
+256 MiB and requested crop RGBA to 256 MiB. Keep only one crop and its PNG encode
+at a time in addition to source frames. Reject Wayland and non-100%/rotated
+geometry until those coordinate and in-memory paths are calibrated.
+
+Use an existing empty destination directory and 1–16 fresh numbered PNG paths;
+never replace a file. A capture/geometry failure before publication writes no
+output. Save errors must state the number already published and preserve those
+files, with no retry or misleading rollback. Reuse the core capture batch,
+crop_snapshot and atomic PNG save; do not add streams, timers, background
+runtime, history, clipboard or upload. New module/executable fixtures, CLI
+routing/help and a dedicated contract document will record the resource cost
+and source-snapshot semantics. Native work continues only in private Xvfb tests.
