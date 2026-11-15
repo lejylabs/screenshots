@@ -291,6 +291,69 @@ pub struct XcapBackend {
 }
 
 impl XcapBackend {
+    pub fn capture_focused_window(&self) -> Result<CapturedImage, CaptureError> {
+        let window = focused_window()?;
+        let process_id = window.pid().map_err(backend_error)?;
+        let id = window.id().map_err(backend_error)?.to_string();
+        let frame = self
+            .capture_batch(vec![CaptureRequest::ForegroundWindow {
+                window_id: id,
+                process_id,
+            }])?
+            .pop()
+            .ok_or(CaptureError::EmptyFrame)?;
+        if window.pid().ok() != Some(process_id) || !window.is_focused().unwrap_or(false) {
+            return Err(CaptureError::Unsupported(
+                "foreground window changed during capture",
+            ));
+        }
+        Ok(frame)
+    }
+
+    pub fn capture_focused_display(&self) -> Result<CapturedImage, CaptureError> {
+        let window = focused_window()?;
+        let process_id = window.pid().map_err(backend_error)?;
+        #[cfg(not(target_os = "linux"))]
+        let id = monitor_id(&window.current_monitor().map_err(backend_error)?)?;
+        #[cfg(target_os = "linux")]
+        let id = {
+            let x = i64::from(window.x().map_err(backend_error)?);
+            let y = i64::from(window.y().map_err(backend_error)?);
+            let right = x + i64::from(window.width().map_err(backend_error)?);
+            let bottom = y + i64::from(window.height().map_err(backend_error)?);
+            self.list_displays()?
+                .into_iter()
+                .filter(|d| d.scale_factor == 1.0 && d.rotation == 0.0)
+                .map(|d| {
+                    let area = i128::from(
+                        (right.min(i64::from(d.x) + i64::from(d.width)) - x.max(i64::from(d.x)))
+                            .max(0),
+                    ) * i128::from(
+                        (bottom.min(i64::from(d.y) + i64::from(d.height)) - y.max(i64::from(d.y)))
+                            .max(0),
+                    );
+                    (area, d.id)
+                })
+                .filter(|(area, _)| *area > 0)
+                .max_by_key(|(area, _)| *area)
+                .map(|(_, id)| id)
+                .ok_or(CaptureError::Unsupported(
+                    "focused window has no matching unscaled display",
+                ))?
+        };
+        if !window.is_focused().unwrap_or(false) {
+            return Err(CaptureError::Unsupported(
+                "foreground window changed before capture",
+            ));
+        }
+        let frame = self.capture_display(&id)?;
+        if window.pid().ok() != Some(process_id) || !window.is_focused().unwrap_or(false) {
+            return Err(CaptureError::Unsupported(
+                "foreground window changed during capture",
+            ));
+        }
+        Ok(frame)
+    }
     pub fn new(output_dir: impl Into<PathBuf>) -> Self {
         Self {
             output_dir: output_dir.into(),
@@ -505,6 +568,22 @@ impl XcapBackend {
             display_geometry: None,
         })
     }
+}
+
+fn focused_window() -> Result<Window, CaptureError> {
+    let mut focused = Window::all()
+        .map_err(backend_error)?
+        .into_iter()
+        .filter(|window| window.is_focused().unwrap_or(false));
+    let window = focused
+        .next()
+        .ok_or(CaptureError::Unsupported("no focused window is available"))?;
+    if focused.next().is_some() {
+        return Err(CaptureError::Unsupported(
+            "focused window identity is ambiguous",
+        ));
+    }
+    Ok(window)
 }
 
 impl CaptureBackend for XcapBackend {

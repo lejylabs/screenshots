@@ -1,5 +1,5 @@
-mod autostart;
 mod audio_record;
+mod autostart;
 #[cfg(any(target_os = "macos", all(test, unix)))]
 mod autostart_macos;
 #[cfg(target_os = "windows")]
@@ -28,15 +28,18 @@ mod record;
 mod record_windows;
 mod region_analysis;
 mod s3;
+mod scroll_capture;
+mod scroll_stitch;
 mod sharing_provider;
-#[cfg(any(unix, target_os = "windows"))]
-mod sharing_provider_worker;
 #[cfg(unix)]
 mod sharing_provider_unix;
 #[cfg(target_os = "windows")]
 mod sharing_provider_windows;
-mod scroll_stitch;
-mod scroll_capture;
+#[cfg(any(unix, target_os = "windows"))]
+mod sharing_provider_worker;
+mod task;
+mod task_clipboard;
+mod task_host;
 mod upload_batch;
 mod upload_file;
 mod upload_files;

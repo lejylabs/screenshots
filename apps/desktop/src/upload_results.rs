@@ -130,7 +130,7 @@ fn html(text: &mut String, value: &str) -> Result<()> {
     Ok(())
 }
 
-fn format_link(format: &str, label: &str, url: &str) -> Result<String> {
+pub(crate) fn format_link(format: &str, label: &str, url: &str) -> Result<String> {
     let mut text = String::with_capacity(url.len() + label.len() + 32);
     match format {
         "plain" => append(&mut text, url)?,

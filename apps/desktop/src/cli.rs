@@ -7,7 +7,7 @@ const HELP: &str = "screenshots — native capture and image tools
 
 Desktop: screenshots [--show]
 Open image: screenshots --open FILE
-Headless commands (no desktop UI, clipboard writes or implicit uploads):
+Headless commands (no desktop UI; outputs and uploads require explicit actions):
   screenshots --help | --version
   screenshots autostart status|enable|disable
   screenshots desktop associations status|enable|disable
@@ -66,6 +66,11 @@ Headless commands (no desktop UI, clipboard writes or implicit uploads):
   screenshots ocr-region DISPLAY X Y WIDTH HEIGHT [--language LANG]
   screenshots qr-region DISPLAY X Y WIDTH HEIGHT
   screenshots workflow RECIPE INPUT OUTPUT
+  screenshots task run|validate PROFILE.json
+  screenshots task-host validate CONFIG.json
+  screenshots task-host serve CONFIG.json ENDPOINT.json
+  screenshots task-host trigger ENDPOINT.json PROFILE_ID
+  screenshots task-host status|stop ENDPOINT.json
   screenshots gif OUTPUT.gif --delay-ms N INPUT INPUT... (2–16 images)
   screenshots stitch-scroll OUTPUT MIN_OVERLAP INPUT INPUT [INPUT...]
   screenshots scroll-capture WINDOW OUTPUT.png --region X Y WIDTH HEIGHT [--steps N] [--wheel N] [--settle-ms N] [--delay-ms N] [--min-overlap N] [--tolerance N] [--trim-top N] [--trim-bottom N]
@@ -146,7 +151,6 @@ pub fn run(args: Vec<OsString>) -> Result<bool> {
         "capture-regions" => crate::capture_regions::run(&args[1..])?,
         "capture-sequence" => crate::capture_sequence::run(&args[1..])?,
         "capture-task" => crate::capture_task::run(&args[1..])?,
-        "desktop" => crate::desktop_integration::run(&args[1..])?,
         "autostart" => crate::autostart::run(&args[1..])?,
         "history" => history(&args[1..])?,
         "history-audit" => crate::history_audit::run(&args[1..])?,
@@ -164,11 +168,14 @@ pub fn run(args: Vec<OsString>) -> Result<bool> {
             crate::region_analysis::run(&args[1..], crate::region_analysis::Analysis::Qr)?
         }
         "workflow" => crate::workflow::run(&args[1..])?,
+        "task" => crate::task::run(&args[1..])?,
+        "task-host" => crate::task_host::run(&args[1..])?,
         "gif" => crate::gif_assembly::run(&args[1..])?,
         "stitch-scroll" => crate::scroll_stitch::run(&args[1..])?,
         "scroll-capture" => crate::scroll_capture::run(&args[1..])?,
         "record" => crate::record::run(&args[1..])?,
         "record-audio" => crate::audio_record::run(&args[1..])?,
+        "desktop" => crate::desktop_integration::run(&args[1..])?,
         "upload-images" => crate::upload_batch::run(&args[1..])?,
         "upload-file" => crate::upload_file::run(&args[1..])?,
         "upload-files" => crate::upload_files::run(&args[1..])?,

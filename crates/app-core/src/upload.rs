@@ -1907,11 +1907,67 @@ impl UploadConfiguration {
     }
 }
 
+#[derive(Default)]
+struct UploadCancellationState {
+    notify: tokio::sync::Notify,
+    canceled: std::sync::atomic::AtomicBool,
+}
+
 #[derive(Clone, Default)]
-pub struct UploadCancellation(Arc<tokio::sync::Notify>);
+pub struct UploadCancellation {
+    state: Arc<UploadCancellationState>,
+    signal: Option<Arc<std::sync::atomic::AtomicBool>>,
+}
 impl UploadCancellation {
+    /// Observe an operation's existing signal flag without installing handlers.
+    pub fn with_atomic_flag(flag: Arc<std::sync::atomic::AtomicBool>) -> Self {
+        Self {
+            signal: Some(flag),
+            ..Self::default()
+        }
+    }
+
     pub fn cancel(&self) {
-        self.0.notify_one();
+        self.state
+            .canceled
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        self.state.notify.notify_one();
+    }
+
+    pub fn is_canceled(&self) -> bool {
+        self.state
+            .canceled
+            .load(std::sync::atomic::Ordering::Relaxed)
+            || self
+                .signal
+                .as_ref()
+                .is_some_and(|flag| flag.load(std::sync::atomic::Ordering::Relaxed))
+    }
+
+    pub(crate) fn check(&self) -> Result<()> {
+        ensure!(
+            !self.is_canceled(),
+            "Upload canceled. The server may already have received the file."
+        );
+        Ok(())
+    }
+
+    pub(crate) async fn wait(&self) {
+        if self.is_canceled() {
+            return;
+        }
+        if self.signal.is_none() {
+            self.state.notify.notified().await;
+            return;
+        }
+        // Only a running CLI transfer observes a signal flag; ordinary UI
+        // cancellation stays event-driven and creates no timer.
+        while !self.is_canceled() {
+            tokio::select! {
+                _ = self.state.notify.notified() => return,
+                _ = tokio::time::sleep(Duration::from_millis(25)) => {}
+            }
+        }
     }
 }
 
@@ -2064,6 +2120,7 @@ fn run_upload(
     cancel: UploadCancellation,
     progress: Option<UploadProgressReporter>,
 ) -> Result<UploadOutcome> {
+    cancel.check()?;
     let url = destination.validate()?;
     ensure!(
         !matches!(&source, UploadPng::FilePath(_)) || destination.json.is_empty(),
@@ -2076,7 +2133,7 @@ fn run_upload(
     runtime.block_on(async {
         tokio::select! {
             biased;
-            _ = cancel.0.notified() => anyhow::bail!("Upload canceled. The server may already have received the file."),
+            _ = cancel.wait() => anyhow::bail!("Upload canceled. The server may already have received the file."),
             result = tokio::time::timeout(Duration::from_secs(60), transfer(destination, source, url, progress)) => {
                 result.context("Upload exceeded its 60 second deadline; the server may have received the file")?
             }
@@ -6204,6 +6261,23 @@ mod tests {
                 .contains("307")
         );
         task.join().unwrap();
+        let (sent, received) = mpsc::sync_channel(1);
+        let (url, task) = server(Vec::new(), Some(sent), Duration::from_millis(150));
+        let flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let cancel = UploadCancellation::with_atomic_flag(flag.clone());
+        let image = path.clone();
+        let worker = thread::spawn(move || upload_png(&destination(url), &image, cancel));
+        received.recv_timeout(Duration::from_secs(3)).unwrap();
+        flag.store(true, std::sync::atomic::Ordering::SeqCst);
+        assert!(
+            worker
+                .join()
+                .unwrap()
+                .unwrap_err()
+                .to_string()
+                .contains("canceled")
+        );
+        task.join().unwrap();
         assert_eq!(
             forbidden.accept().unwrap_err().kind(),
             std::io::ErrorKind::WouldBlock
@@ -6238,5 +6312,20 @@ mod tests {
             .contains("canceled")
         );
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn signal_cancellation_refuses_upload_before_file_admission() {
+        let flag = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let cancel = UploadCancellation::with_atomic_flag(flag);
+        let result = upload_file(
+            &destination("http://127.0.0.1:9/upload".into()),
+            Path::new("absent-canceled-input"),
+            cancel,
+        );
+        assert!(result.unwrap_err().to_string().contains("canceled"));
+        let cancel = UploadCancellation::default();
+        cancel.cancel();
+        assert!(cancel.is_canceled());
     }
 }

@@ -313,6 +313,10 @@ pub(crate) mod unix {
         pub(crate) fn output_phase(&self, active: bool) {
             self.finished.store(active, Ordering::SeqCst);
         }
+
+        pub(crate) fn flag(&self) -> Arc<AtomicBool> {
+            self.flag.clone()
+        }
     }
 
     impl Drop for Cancellation {

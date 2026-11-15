@@ -33,11 +33,11 @@ mod bmp_export;
 mod bmp_input;
 mod gif_assembly;
 mod history_thumbnail;
-mod strip;
 mod scrolling;
-pub use scrolling::{ScrollAssembler, ScrollMatchOptions, ScrollAppend};
+mod strip;
 pub use bmp_export::save_bmp;
 pub use gif_assembly::assemble_gif;
+pub use scrolling::{ScrollAppend, ScrollAssembler, ScrollMatchOptions};
 pub use strip::remove_image_strip;
 mod tiff_export;
 mod tiff_input;
@@ -61,8 +61,10 @@ pub use webp_lossy::save_lossy_webp;
 mod selection;
 pub use pixelation::PixelationGrid;
 mod provider_credentials;
-pub use provider_credentials::{read_provider_credentials, remove_provider_credentials, save_provider_credentials};
 mod s3_credentials;
+pub use provider_credentials::{
+    read_provider_credentials, remove_provider_credentials, save_provider_credentials,
+};
 mod s3_upload;
 mod settings;
 mod upload;
@@ -76,7 +78,9 @@ pub use history::{
     search_capture_history, upload_history_page,
 };
 pub use s3_credentials::{read_s3_credentials, remove_s3_credentials, save_s3_credentials};
-pub use s3_upload::{S3Credentials, S3Outcome, S3Profile, upload_s3_file};
+pub use s3_upload::{
+    S3Credentials, S3Outcome, S3Profile, upload_s3_file, upload_s3_file_with_cancellation,
+};
 pub use selection::{
     FrameAnnotation, PixelRegion, crop_snapshot, edit_snapshot, redact_snapshot,
     render_annotated_snapshot, render_document_snapshot, render_edited_snapshot,

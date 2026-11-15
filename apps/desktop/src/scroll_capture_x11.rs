@@ -13,7 +13,7 @@ use std::{
 
 type Display = c_void;
 type Window = c_ulong;
-type ErrorHandler = unsafe extern "C" fn(*mut Display, *mut XErrorEvent) -> c_int;
+type ErrorHandler = unsafe extern "C" fn(*mut Display, *mut c_void) -> c_int;
 static CONNECTION: Mutex<()> = Mutex::new(());
 static X_ERROR: AtomicI32 = AtomicI32::new(0);
 
@@ -132,7 +132,8 @@ unsafe extern "C" {
     ) -> c_int;
 }
 
-unsafe extern "C" fn error_handler(_: *mut Display, event: *mut XErrorEvent) -> c_int {
+unsafe extern "C" fn error_handler(_: *mut Display, event: *mut c_void) -> c_int {
+    let event = event.cast::<XErrorEvent>();
     if !event.is_null() {
         X_ERROR.store(unsafe { (*event).error } as i32, Ordering::Relaxed);
     }
