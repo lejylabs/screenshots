@@ -5,6 +5,11 @@ The application uses GPUI Kit (Apache-2.0) and the matching GPUI snapshot
 https://github.com/longbridge/gpui-kit and https://github.com/zed-industries/zed.
 The vendored Windows backend retains its upstream Apache-2.0 license.
 
+The vendored glib 0.18.5 retains its upstream MIT license in
+`vendor/glib/LICENSE` and copyright notice in `vendor/glib/COPYRIGHT`.
+Its two-line VariantStrIter safety backport and upstream commit are documented
+in `vendor/glib/LOCAL-PATCH.md`; the package version is unchanged.
+
 The selected embedded UI icons are provided by Lucide. Their notices follow.
 
 ISC License
