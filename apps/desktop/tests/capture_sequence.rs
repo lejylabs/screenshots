@@ -3,7 +3,7 @@ use std::ffi::OsString;
 use std::{
     ffi::OsStr,
     path::{Path, PathBuf},
-    process::{Command, Output, Stdio},
+    process::{Child, Command, Output, Stdio},
 };
 
 struct Fixture(PathBuf);
@@ -38,19 +38,24 @@ impl Fixture {
             .env("XDG_DATA_HOME", self.path("data"))
             .env("XDG_CACHE_HOME", self.path("cache"));
         if !native {
-            command.env_remove("DISPLAY").env_remove("WAYLAND_DISPLAY");
+            command
+                .env_remove("DISPLAY")
+                .env_remove("WAYLAND_DISPLAY")
+                .env_remove("DBUS_SESSION_BUS_ADDRESS");
         }
         command
     }
 
-    fn run(&self, args: &[&OsStr]) -> Output {
-        let mut child = self
-            .command(false)
+    fn spawn(&self, args: &[&OsStr]) -> Child {
+        self.command(false)
             .args(args)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
-            .unwrap();
+            .unwrap()
+    }
+
+    fn wait(mut child: Child) -> Output {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
         loop {
             if child.try_wait().unwrap().is_some() {
@@ -60,12 +65,16 @@ impl Fixture {
                 child.kill().unwrap();
                 let output = child.wait_with_output().unwrap();
                 panic!(
-                    "argument rejection must not wait for a scheduled start: {}",
+                    "capture-sequence test exceeded its 10-second deadline: {}",
                     String::from_utf8_lossy(&output.stderr)
                 );
             }
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
+    }
+
+    fn run(&self, args: &[&OsStr]) -> Output {
+        Self::wait(self.spawn(args))
     }
 
     fn reject(&self, args: &[&OsStr], message: &str) {
@@ -320,6 +329,75 @@ fn scheduled_destination_errors_return_before_the_future_wait() {
     fixture.reject(&args(&occupied, &options), "destination must be empty");
     assert_eq!(std::fs::read(file).unwrap(), b"keep");
     assert_eq!(std::fs::read(occupied.join("keep.png")).unwrap(), b"keep");
+}
+
+#[test]
+fn scheduled_wait_rechecks_changed_destination_before_native_capture() {
+    let fixture = Fixture::new();
+    let directory = fixture.path("scheduled");
+    std::fs::create_dir(&directory).unwrap();
+    let future = (chrono::Utc::now() + chrono::Duration::seconds(2)).to_rfc3339();
+    let started = std::time::Instant::now();
+    let mut child = fixture.spawn(&args(
+        &directory,
+        &[
+            "--count",
+            "1",
+            "--interval-ms",
+            "100",
+            "--start-at",
+            &future,
+        ],
+    ));
+    // Let the executable validate the initially empty directory and enter its wait.
+    std::thread::sleep(std::time::Duration::from_millis(200));
+    let waiting = child.try_wait().unwrap().is_none();
+    let blocker = directory.join("blocker.txt");
+    std::fs::write(&blocker, b"preserve scheduled destination contents").unwrap();
+    let output = Fixture::wait(child);
+    assert!(waiting, "scheduled command exited before its initial wait");
+    assert!(started.elapsed() >= std::time::Duration::from_millis(1500));
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty());
+    let error = String::from_utf8_lossy(&output.stderr);
+    assert!(error.contains("destination must be empty"), "{error}");
+    assert_eq!(
+        std::fs::read(&blocker).unwrap(),
+        b"preserve scheduled destination contents"
+    );
+    assert_eq!(std::fs::read_dir(&directory).unwrap().count(), 1);
+    fixture.no_user_state();
+}
+
+#[test]
+fn scheduled_wait_can_be_terminated_without_capture_or_user_state() {
+    let fixture = Fixture::new();
+    let directory = fixture.path("cancelled");
+    std::fs::create_dir(&directory).unwrap();
+    let future = (chrono::Utc::now() + chrono::Duration::hours(1)).to_rfc3339();
+    let mut child = fixture.spawn(&args(
+        &directory,
+        &[
+            "--start-at",
+            &future,
+            "--count",
+            "1",
+            "--interval-ms",
+            "100",
+        ],
+    ));
+    std::thread::sleep(std::time::Duration::from_millis(200));
+    let waiting = child.try_wait().unwrap().is_none();
+    if waiting {
+        child.kill().unwrap();
+    }
+    let output = child.wait_with_output().unwrap();
+    assert!(waiting, "future schedule did not keep the process waiting");
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty());
+    assert!(output.stderr.is_empty());
+    assert!(std::fs::read_dir(&directory).unwrap().next().is_none());
+    fixture.no_user_state();
 }
 
 #[cfg(unix)]

@@ -134,7 +134,13 @@ callbacks cover timezone normalization, nanosecond boundaries, immediate-start
 compatibility, and initial waiting/revalidation before native initialization or
 pixel allocation. Executable tests reject malformed arguments, invalid schedules
 and missing, non-directory or occupied destinations before any future wait or
-capture. They do not wait for a real scheduled start.
+capture. Two additional executable checks exercise a real two-second initial
+wait followed by destination revalidation, and forced termination during a
+far-future wait. Both remove native display/session access and verify unchanged
+destination contents, no capture output and no user state. They do not capture
+desktop pixels. The optimized focused checks passed 11 unit tests and 7 CLI
+tests; the native capture test below remained ignored. These short functional
+checks do not establish timer accuracy or reference-hardware resource budgets.
 The ignored `native_cli_captures_two_explicit_stills_without_user_state` test
 requires both `SCREENSHOTS_NATIVE_CAPTURE=1` and `SCREENSHOTS_TEST_DISPLAY_ID`;
 it reads the selected display and writes only to an isolated temporary directory.
