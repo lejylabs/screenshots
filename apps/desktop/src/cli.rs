@@ -27,6 +27,7 @@ Headless commands (no desktop UI, clipboard writes or implicit uploads):
   screenshots storage backup DATABASE NEW_DATABASE
   screenshots storage inspect-parts DIRECTORY
   screenshots upload PROFILE_JSON PNG
+  screenshots upload-images PROFILE_JSON IMAGE...
   screenshots credentials target|store|remove PROFILE_JSON [--username NAME]
   screenshots qr generate TEXT OUTPUT_PNG
   screenshots qr scan INPUT
@@ -82,6 +83,7 @@ pub fn run(args: Vec<OsString>) -> Result<bool> {
         "qr" => crate::qr::run(&args[1..])?,
         "ocr" => crate::ocr::run(&args[1..])?,
         "workflow" => crate::workflow::run(&args[1..])?,
+        "upload-images" => crate::upload_batch::run(&args[1..])?,
         "upload" => {
             ensure!(
                 args.len() == 3,
