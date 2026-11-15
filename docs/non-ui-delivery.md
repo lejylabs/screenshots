@@ -940,3 +940,9 @@ only SVG dependencies does not close that second advisory. The three D-Bus
 unmaintained modules require the zbus 6 family transition. None is hidden with
 an ignore or mislabeled resolved. These wider dependency changes are not part
 of the tested small helper substitutions above.
+
+Combined verification after all helper migrations and workflow changes passed:
+354 regular workspace tests, 49 opt-in cases excluded, all doctests successful.
+Workspace Clippy and Windows GNU application/test compilation passed. These are
+source/platform-build checks, not native Windows or reference-hardware acceptance.
+The latest optimized release is rebuilt separately for archive smoke verification.
