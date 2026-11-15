@@ -72,9 +72,11 @@ the real secret store. The opt-in
 `native_credential_round_trip_is_scoped_and_removed` fixture creates, reads,
 overwrites and deletes one uniquely named synthetic native entry, checks another
 origin cannot find it and retries deletion. It requires an already accessible
-store and never unlocks or prompts. It has not been run on the user's keyring;
-macOS runtime, provider interoperability and native resource/latency acceptance
-remain open.
+store and never unlocks or prompts. On 2026-11-15 the Linux fixture passed against
+the accessible local Secret Service using only its unique synthetic entry. It
+verified create/read/overwrite, origin separation and idempotent deletion; the
+entry was removed. No existing account secret was read or changed. macOS runtime,
+provider interoperability and native resource/latency acceptance remain open.
 
 ## Headless credential setup
 

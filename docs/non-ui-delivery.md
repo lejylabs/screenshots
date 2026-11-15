@@ -662,3 +662,71 @@ whitespace checks passed. Five packaging tests passed; all 39 project Markdown
 files had valid local links. Release archive smoke and real release-binary
 hash/export/missing-reference checks passed with unchanged user state. Native
 CI remains a separate outstanding gate; no runtime acceptance is inferred.
+
+### Windows OCR continuation
+
+Implement optional installed-Tesseract OCR for Windows without changing the UI
+or Unix path. Create `apps/desktop/src/ocr_windows.rs`,
+`apps/desktop/tests/ocr_windows.rs` and `docs/windows-ocr.md`; modify shared OCR
+entrypoint cfgs, desktop main and target-specific windows-sys features only.
+The child starts suspended, enters a kill-on-close Job Object, then its one
+initial thread is resumed after ownership validation. Job-assignment or resume
+failure must terminate the still-suspended child; no uncontained engine starts.
+Three bounded pipe workers retain existing output/input caps and 30-second
+operation deadline. Job termination precedes pipe joins; close kills descendants
+on controller exit. Real Windows process and console behavior needs native CI
+evidence and separate user-session acceptance. No auto-install or credential use.
+
+Windows OCR implementation is now present. An independent codebase-detail
+review found no unresolved blocker/major after fixing shared documentation and
+making the absent-engine fixture independent of Windows executable search paths.
+The entire desktop app and tests passed GNU Windows cross-check; the isolated
+optimized lifecycle binary passed three tests under Wine (one internal fixture
+ignored), including descendant pipe cleanup on timeout. This is emulated evidence,
+not native Windows or real-engine acceptance. The small parent-death window before
+job assignment remains documented; no engine code runs before assignment.
+
+### One-shot scheduled capture
+
+The existing finite `capture-sequence` command now accepts `--start-at` with a
+known RFC 3339 offset, nanosecond precision and a future horizon of at most seven
+days. It sleeps once against a monotonic deadline before constructing the native
+backend, then rechecks the destination. Immediate invocation/output stays
+compatible. No service, persisted schedule, machine wake-up or idle timer is added.
+Eleven optimized unit tests and seven executable tests passed, including a real
+two-second wait/revalidation and termination during a future wait; native
+capture remained excluded. The separate codebase-detail review found no actionable
+finding. See [the exact contract](capture-sequence.md).
+
+### Additional opt-in verification
+
+Previously ignored loopback upload tests exposed three test bugs: whole multipart
+requests containing binary PNG data were decoded as UTF-8. Assertions now inspect
+header/text byte ranges. The six focused wire tests passed after correction;
+production upload code is unchanged. CI now explicitly runs the loopback-only
+response, body, header, cancellation and probe fixtures, keeping real credential
+and native capture checks out of that automatic step.
+
+Full optimized workspace verification after OCR/scheduling passed 333 regular
+tests with 47 opt-in tests excluded and all doctests successful. The two additional
+scheduled-process tests passed separately afterward (335 regular tests in total).
+The full opt-in upload filter passed 18 tests, including a unique synthetic Linux
+Secret Service roundtrip and a missing-credential/no-network check. The synthetic
+entry was removed; no existing account credential was accessed. Clippy, formatting,
+whitespace and five packaging unit checks passed; 39 Markdown files had no broken
+local links. The final release artifact is checked separately after rebuilding.
+
+### Direct ShareX profiles in headless uploads
+
+Next slice: reuse the existing documented `.sxcu` importer directly from the
+three explicit upload commands. Add `load_upload_profile` in desktop cli.rs;
+case-insensitive `.sxcu` selects that importer, other suffixes retain native JSON.
+Wire upload, upload_batch.rs and upload_file.rs; credential commands stay JSON.
+The existing ImageUploader-only subset and validation remain unchanged. Share
+one bounded regular-file reader in core upload.rs for the two profile formats,
+reject special files before reading, close the Unix replacement-to-FIFO race with
+nonblocking open, recheck the opened file and retain the 16 KiB byte limit. Keep
+symlink-following compatibility and reject growing oversized files. Tests cover
+both parsers/extension cases, supported loopback upload, preserved files/state,
+invalid/secret-bearing profiles and special files. No new dependency, background
+work or implicit persistence; this is direct profile use, not full ShareX parity.

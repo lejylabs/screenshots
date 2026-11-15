@@ -1,29 +1,36 @@
 # Functional gap analysis: screenshots and ShareX
 
-## Current reconciliation: feature branch through 500ee38 (2026-11-15)
+## Current reconciliation: feature branch through ec45a9b (2026-11-15)
 
 The historical tables below are not the current delivery checklist. Relative to
 main 523bc3c, the feature branch adds the following **CLI/core subsets**:
 
 - Stitched desktop output on Windows at 100% scaling; native mixed-DPI and
   cross-monitor interactive selection remain open.
-- Finite interval still-capture sequences; scheduled activation and UI controls
-  remain open.
+- Finite interval still-capture sequences and one-shot RFC 3339 start times;
+  persisted/repeating schedules, machine wake-up and UI controls remain open.
 - Offline image recipes, combine/compare/split, file pixel sampling and image
-  info; editor tool integration, native screen color picker and full metadata
-  inspection remain open.
+  info, SHA256 file hashing and bounded PNG chunk inventory; editor tool
+  integration, native screen color picker and general metadata inspection remain
+  open.
 - Arbitrary file and image-batch uploads; provider/OAuth integration, batch UI
   and after-capture/upload chains remain open.
 - Read-only date/text/history-link queries and explicit import/relink/remove
-  metadata commands; corresponding Library UI and physical-file management
-  remain open.
+  metadata commands, missing-file audit and opt-in metadata-stripped PNG exports;
+  corresponding Library UI and physical-file management remain open.
 - Optional Unix X11/FFmpeg video and GIF recording; audio, native Windows/macOS/
   Wayland recording and interactive controls remain open.
 - Exact assembly of supplied overlapping screenshots; live scrolling control,
   fixed-header handling and fuzzy matching remain open.
+- Optional installed-Tesseract file OCR on Windows with Job Object cleanup;
+  native Windows runtime and region/editor integration remain open. GNU Windows
+  cross-check and three Wine process-lifecycle tests passed.
 
 Portable packaging, image import/conversion/upscaling, file OCR/QR, native secret
-store adapters and storage backup already existed at 523bc3c. Implementation
+store adapters and storage backup already existed at 523bc3c. A synthetic Linux
+Secret Service create/read/update/delete roundtrip now passed against the already
+accessible local store; macOS runtime and real provider acceptance remain open.
+Implementation
 does not imply native acceptance. The latest CI result must be read separately
 from local synthetic tests. See [the delivery record](non-ui-delivery.md).
 

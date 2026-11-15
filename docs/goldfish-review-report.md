@@ -159,3 +159,22 @@ and found no functional blocker. Its documentation findings were addressed with
 exact palette/APNG/bit-depth acceptance and one-input/JSON/exit-status semantics.
 Five subprocess tests and two unit tests passed; no image pixels or metadata
 values are printed by the command.
+
+## Windows OCR and scheduled-capture review
+
+`windows_ocr_review` read the Codebase Details persona and Re-Implementation
+Standard, repository rules, native API documentation and both OCR launch paths.
+No production-code blocker/major remained. It caught stale Unix-only wording,
+incorrect job-handle-lifetime wording, and a missing-engine test that assumed
+PATH was Windows' only executable search location. Those were corrected; a
+unique absolute absent path now checks the failure separately from CLI lookup.
+The later same-context inspection of scheduled capture found no actionable
+finding in timestamp admission, monotonic waiting, output or frame lifetimes.
+That second work-package inspection is not a new fresh-context convergence round.
+
+`ocr_schedule_readiness` separately read the Implementation Readiness persona
+and standard, both contracts, implementation/tests and CI wiring in a fresh
+context. It returned no unresolved actionable finding. Root execution evidence
+includes GNU Windows full-app/test cross-check and the three Wine process tests;
+neither reviewer ran native Windows tests. These are completed reviews of two
+scoped slices, not full-backlog or native-platform acceptance.
