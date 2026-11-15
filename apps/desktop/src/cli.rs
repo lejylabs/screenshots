@@ -39,6 +39,7 @@ Headless commands (no desktop UI, clipboard writes or implicit uploads):
   screenshots qr scan INPUT
   screenshots ocr INPUT [--language LANG]
   screenshots workflow RECIPE INPUT OUTPUT
+  screenshots stitch-scroll OUTPUT MIN_OVERLAP INPUT INPUT [INPUT...]
   screenshots record x11|test OUTPUT.mkv|OUTPUT.gif --seconds N --fps N --width N --height N
       [--x X --y Y]
 
@@ -105,6 +106,7 @@ pub fn run(args: Vec<OsString>) -> Result<bool> {
         "qr" => crate::qr::run(&args[1..])?,
         "ocr" => crate::ocr::run(&args[1..])?,
         "workflow" => crate::workflow::run(&args[1..])?,
+        "stitch-scroll" => crate::scroll_stitch::run(&args[1..])?,
         "record" => crate::record::run(&args[1..])?,
         "upload-images" => crate::upload_batch::run(&args[1..])?,
         "upload-file" => crate::upload_file::run(&args[1..])?,

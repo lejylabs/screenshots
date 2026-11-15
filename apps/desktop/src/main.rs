@@ -6,6 +6,7 @@ mod image_tools;
 mod ocr;
 mod qr;
 mod record;
+mod scroll_stitch;
 mod upload_batch;
 mod upload_file;
 mod workflow;
