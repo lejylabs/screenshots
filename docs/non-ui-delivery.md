@@ -982,3 +982,43 @@ Post-autostart full optimized verification passed 360 regular tests with 49
 opt-in cases excluded, all doctests passed. Clippy, Windows GNU application/test
 compilation and five packaging tests passed. This does not prove next-login
 behavior or native Windows/macOS integration.
+
+### Explicit Windows autostart control
+
+Extend the same verbs to an exact owned REG_SZ value under the current user's
+Run key. Quote the canonical executable with Windows command-line rules; normal
+Windows launch keeps its existing resident behavior. Do not modify any other
+value or remove the key. Bound UTF-16 input and preserve edited/wrong-type values.
+No-clobber checks before mutation are cooperative, not atomic registry CAS;
+document that limitation. Native tests use a unique temporary registry key,
+never the real Run key. No shell, new runtime or account credentials are needed.
+
+Windows autostart is implemented and reviewed. Three optimized isolated module
+checks passed under Wine, including quoted canonical-path CreateProcess launch
+of a harmless test command and byte-preserving registry conflicts. The actual
+Run key was never changed by tests. Full Windows GNU application/test compilation
+and Linux Clippy passed. Native login/Startup Apps policy remains unverified.
+
+### Explicit macOS autostart file
+
+Add the same verbs for an exact owned LaunchAgent plist under the current user's
+Library/LaunchAgents. ProgramArguments stores the canonical executable plus
+--show using XML text escaping. Enable only creates the file for a subsequent
+login; it never bootstraps/loads a service or changes current GUI state. Preserve
+foreign/edited/symlink files, bounded nofollow reads, atomic no-replace creation
+and cooperative removal checks. Tests inject temporary paths and synthetic
+executables, never the user's Library or login services. Native macOS login,
+signing and permissions remain separate acceptance requirements.
+
+macOS LaunchAgent file management passed three optimized temporary-path tests
+on Linux, including escaped Unicode/XML, idempotent private publication and
+foreign/symlink/FIFO preservation. Review prompted using directory fsync rather
+than the Apple File::sync_all/F_FULLFSYNC path; regular-file sync remains stronger.
+No launchctl command or real Library/LaunchAgents change occurred. Native macOS
+filesystem/login/signing acceptance remains open; test definitions and Linux
+execution do not close it.
+
+Full optimized workspace verification after all three autostart entry points
+passed 363 regular tests, 49 opt-in cases excluded, all doctests passed. Clippy
+passed. Mac-specific file logic was exercised via test-only Unix compilation;
+actual macOS launchd/runtime acceptance remains open.

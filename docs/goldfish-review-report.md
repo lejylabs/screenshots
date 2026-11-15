@@ -246,3 +246,11 @@ Exact ownership, no-replace creation and quoting were reviewed against the XDG
 specification. Scope is only its managed user entry; system-wide startup and the
 final hostile unlink race are documented. Six isolated tests and desktop-file
 validation passed; no real autostart entry was changed.
+
+
+Windows autostart same-context review found no implementation blocker after
+canonical-prefix CreateProcess coverage was added. The temporary registry
+fixture remains outside the real Run key. macOS file-only autostart review
+confirmed XML/ownership semantics and recommended directory fsync; that change
+passed the three focused tests. Wine/Linux evidence does not establish native
+Windows or macOS login acceptance.
