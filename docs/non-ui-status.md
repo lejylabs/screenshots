@@ -4,7 +4,7 @@ Date: 2026-11-16
 Scope: the user's complete major-feature list, with final GPUI redesign and new
 UI controls excluded. The workstation stays on. The full backlog is **open**.
 
-Verification base: branch `feat/non-ui-delivery`, pushed `6b668b1`, including the
+Verification base: branch `feat/non-ui-delivery`, pushed `32398b6`, including the
 reviewed persistence, logging, managed-color and portable packaging follow-ups.
 Committed follow-ups include native defaults/templates and process isolation,
 Library lifecycle/reservations, bounded image cancellation, modern SXCU execution,
@@ -98,8 +98,12 @@ remains powered on; no shutdown will be performed.
   release/package checks passed; the complete run passed 523 regular tests and
   all doctests, with 53 opt-in cases excluded. The new timing-only opt-in test
   also passed separately. [Contract](saved-png-admission.md).
-- [ ] Exact-head native CI remains an acceptance gate; read the current run
-  separately from historical local evidence above.
+- [ ] Native SDK/private fixtures for exact committed source `32398b6` are
+  scheduled in [run 43946653508](https://github.com/lejylabs/screenshots/actions/runs/43946653508).
+  Its auxiliary snapshot `ab7b99c` changes only the workflow; no held feature
+  files are included. The run was queued when recorded, so it supplies no
+  completed result yet. Physical hardware and permission acceptance remain
+  separate from SDK/private-process checks.
 - [x] Maintained native font/SVG and D-Bus families: active production graph
   passes default `cargo deny check advisories` without ignores. Actual private
   D-Bus AccessKit activation/actions/update/reactivation, SVG/text and Windows
@@ -296,11 +300,11 @@ themes and editor controls are preserved, not redesigned.
   the [delivery request](non-ui-delivery.md#request-and-constraints) and PLAN's
   performance/privacy contract.
 
-Coverage update: the hidden-path sweep inventories **149 Markdown files**
-(87 project and 62 vendor), excluding target and .git. Its snapshot hashes,
+Coverage update: the latest hidden-path sweep inventories **160 Markdown files**
+(94 project and 66 vendor), excluding target and .git. Its snapshot hashes,
 requirement/status extracts and exact per-file reading depth are recorded in the
-local reconciliation report. Full semantic review of historical long documents
-and upstream vendor prose remains partial; inventory/hash coverage does not
+local reconciliation reports. Full semantic review of historical long documents
+and upstream vendor prose is continuing; inventory/hash coverage does not
 claim otherwise. Current code checks include the PLAN performance, phase and
 Definition-of-Done requirements and revealed additional logging/fuzz/resident
 work above. Historical evidence remains dated; this checklist does not declare

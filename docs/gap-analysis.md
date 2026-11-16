@@ -2,8 +2,8 @@
 
 ## Historical reconciliation: feature branch, 2026-11-15
 
-The [current checklist](non-ui-status.md) reconciles all project Markdown and
-the complete requested feature list; this file retains the historical detail.
+The [current checklist](non-ui-status.md) tracks the complete requested feature
+list and Markdown-review coverage; this file retains the historical detail.
 
 The current continuation commits native defaults/templates and isolation,
 portable Library lifecycle/retention, bounded raster cancellation, modern SXCU,
