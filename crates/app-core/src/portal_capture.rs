@@ -1,6 +1,6 @@
 //! An explicitly selected portal source has no saved physical monitor identity.
 use crate::{
-    CaptureError, CapturedImage, NativeCaptureCall, NativeCaptureCheck, NativeCaptureReply,
+    CaptureError, CapturedImage, NativeCaptureCheck,
 };
 use serde::{Deserialize, Serialize};
 
