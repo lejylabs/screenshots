@@ -56,6 +56,15 @@ pub fn load_editor_image_with_identity(
     load_image_input_guarded(path, crate::MAX_CAPTURE_BYTES, false, Some(expected))
 }
 
+/// Verify the consumed opened object while admitting only the remaining decoded budget.
+pub fn load_editor_image_with_identity_and_limit(
+    path: &std::path::Path,
+    expected: &crate::FileIdentity,
+    max_decoded_bytes: u64,
+) -> Result<image::RgbaImage> {
+    load_image_input_guarded(path, max_decoded_bytes, false, Some(expected))
+}
+
 /// Admit another image within a composition's remaining decoded-source budget.
 pub fn load_editor_image_with_limit(
     path: &std::path::Path,

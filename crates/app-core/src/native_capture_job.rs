@@ -47,6 +47,9 @@ pub enum NativeCaptureCall {
     MacScroll {
         request: crate::MacScrollRequest,
     },
+    MacVideo {
+        request: crate::MacVideoRequest,
+    },
     ClipboardImage {
         backend: crate::NativeClipboardBackend,
     },
@@ -86,6 +89,9 @@ pub enum NativeCaptureReply {
     MacScroll {
         image: CapturedImage,
         summary: crate::MacScrollSummary,
+    },
+    MacVideo {
+        summary: crate::MacVideoSummary,
     },
     Clipboard(crate::ClipboardSnapshot),
     Inventory(NativeSourceInventory),
@@ -254,6 +260,7 @@ impl NativeCaptureCall {
     pub fn validate(&self) -> Result<(), CaptureError> {
         match self {
             Self::MacScroll { request } => request.validate().map_err(|_| invalid())?,
+            Self::MacVideo { request } => request.validate().map_err(|_| invalid())?,
             Self::Inventory | Self::Displays | Self::Windows | Self::Portal { .. } => {}
             Self::ImageUrl { source } => source.validate()?,
             Self::ClipboardImage { backend } | Self::ClipboardInspect { backend, .. } => {
@@ -357,6 +364,11 @@ impl NativeCaptureCall {
             return Err(invalid());
         }
         self.validate()?;
+        if matches!(self, Self::MacVideo { .. }) {
+            return Err(CaptureError::Unsupported(
+                "Mac video requires the owned streaming controller and raw sink",
+            ));
+        }
         if let Self::MacScroll { request } = &self {
             #[cfg(target_os = "macos")]
             {
@@ -465,6 +477,7 @@ impl NativeCaptureCall {
             Self::MacScroll { .. } => {
                 unreachable!("Mac scrolling was handled before native metadata")
             }
+            Self::MacVideo { .. } => unreachable!("Mac video requires the streaming controller"),
         };
         self.validate_reply(&reply)?;
         Ok(reply)
@@ -472,6 +485,9 @@ impl NativeCaptureCall {
 
     pub fn validate_reply(&self, reply: &NativeCaptureReply) -> Result<(), CaptureError> {
         match (self, reply) {
+            (Self::MacVideo { request }, NativeCaptureReply::MacVideo { summary }) => {
+                summary.validate(*request).map_err(|_| invalid())
+            }
             (Self::MacScroll { request }, NativeCaptureReply::MacScroll { image, summary }) => {
                 summary
                     .validate(request, image.width, image.height)

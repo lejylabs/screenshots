@@ -420,6 +420,26 @@ pub struct MacVideoSummary {
     pub first_pts_ns: u64,
     pub last_pts_ns: u64,
 }
+impl MacVideoSummary {
+    pub fn validate(self, request: MacVideoRequest) -> Result<()> {
+        let expected = request.frames()?;
+        ensure!(
+            self.frames == expected
+                && self.last_pts_ns >= self.first_pts_ns
+                && self.last_pts_ns <= i64::MAX as u64,
+            "Invalid native video completion count/timestamps"
+        );
+        let actual = self.last_pts_ns - self.first_pts_ns;
+        let nominal = u64::from(expected - 1) * NS_PER_SECOND / u64::from(request.fps);
+        let tolerance =
+            (2 * NS_PER_SECOND).div_ceil(u64::from(request.fps)) + MAC_VIDEO_DRIFT_SLACK_NS;
+        ensure!(
+            actual.abs_diff(nominal) <= tolerance,
+            "Native video completion clock drift exceeds its limit"
+        );
+        Ok(())
+    }
+}
 pub struct MacFrameClock {
     fps: u32,
     expected: u32,
@@ -777,6 +797,16 @@ mod tests {
                 first_pts_ns: 0,
                 last_pts_ns: 966_666_666
             }
+        );
+        clock.finish().unwrap().validate(video()).unwrap();
+        assert!(
+            MacVideoSummary {
+                frames: 29,
+                first_pts_ns: 0,
+                last_pts_ns: 966_666_666
+            }
+            .validate(video())
+            .is_err()
         );
         assert!(clock.accept(timestamp(1_000_000_000)).is_err());
         assert!(clock.finish().is_err());

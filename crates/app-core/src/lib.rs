@@ -11,25 +11,32 @@ pub use layers::{DrawAnnotation, HighlightAnnotation};
 pub use pen::{MAX_DOCUMENT_PEN_POINTS, MAX_PEN_POINTS, PenAnnotation};
 mod capture;
 mod capture_catalog;
-mod capture_macos_model;
-#[cfg(any(target_os="macos",test))]
-mod capture_macos_pixels;
-#[cfg(target_os="macos")]
+#[cfg(target_os = "macos")]
 mod capture_macos_ax;
-#[cfg(target_os="macos")]
-mod capture_macos_sck;
-#[cfg(target_os="macos")]
+#[cfg(target_os = "macos")]
 mod capture_macos_image;
-#[cfg(target_os="macos")]
+#[cfg(target_os = "macos")]
+mod capture_macos_loop;
+mod capture_macos_model;
+#[cfg(any(target_os = "macos", test))]
+mod capture_macos_pixels;
+#[cfg(target_os = "macos")]
+mod capture_macos_sck;
+#[cfg(target_os = "macos")]
+mod capture_macos_video;
+#[cfg(target_os = "macos")]
+#[doc(hidden)]
+pub use capture_macos_video::run_macos_video_source_in_worker;
+#[cfg(target_os = "macos")]
 mod capture_macos_scroll;
-#[cfg(target_os="macos")]
+#[cfg(target_os = "macos")]
 pub use capture_macos_scroll::capture_macos_scroll_with_cancel;
 mod capture_native;
 pub use capture_macos_model::{
     MAC_AX_ARRAY_LIMIT, MAC_AX_MESSAGE_MILLIS, MAC_AX_PARENT_LIMIT, MAC_VIDEO_DRIFT_SLACK_NS,
     MAC_VIDEO_GAP_SLACK_NS, MacDisplayProof, MacFrameClock, MacFrameLease, MacFrameSlot,
-    MacLogicalRect, MacMediaTimestamp, MacScrollRequest, MacVideoRequest, MacVideoSummary,
-    MacWindowProof,MacScrollSummary,MacScrollStop,
+    MacLogicalRect, MacMediaTimestamp, MacScrollRequest, MacScrollStop, MacScrollSummary,
+    MacVideoRequest, MacVideoSummary, MacWindowProof,
 };
 mod image_url;
 mod native_capture_job;
@@ -172,7 +179,8 @@ pub use upload::{
 
 pub use clipboard::{
     ImageClipboard, decode_editor_image_bytes, load_editor_image, load_editor_image_with_identity,
-    load_editor_image_with_limit, load_png_thumbnail, load_saved_png,
+    load_editor_image_with_identity_and_limit, load_editor_image_with_limit, load_png_thumbnail,
+    load_saved_png,
 };
 
 #[cfg(target_os = "windows")]

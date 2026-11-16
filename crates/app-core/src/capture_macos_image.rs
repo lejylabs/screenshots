@@ -36,6 +36,26 @@ unsafe extern "C" {
     ) -> *mut c_void;
     fn CGContextDrawImage(context: *mut c_void, rect: Rect, image: *const c_void);
     fn CGContextRelease(context: *mut c_void);
+    fn CGDataProviderCreateWithData(
+        info: *mut c_void,
+        data: *const c_void,
+        size: usize,
+        release: Option<extern "C" fn(*mut c_void, *const c_void, usize)>,
+    ) -> *const c_void;
+    fn CGDataProviderRelease(provider: *const c_void);
+    fn CGImageCreate(
+        width: usize,
+        height: usize,
+        bpc: usize,
+        bpp: usize,
+        stride: usize,
+        space: *const c_void,
+        info: u32,
+        provider: *const c_void,
+        decode: *const f64,
+        interpolate: bool,
+        intent: u32,
+    ) -> *const c_void;
     static CGRectNull: Rect;
     fn CGWindowListCreateImage(
         rect: Rect,
@@ -91,6 +111,112 @@ impl Drop for Context {
     fn drop(&mut self) {
         unsafe { CGContextRelease(self.0) }
     }
+}
+struct Provider(*const c_void);
+impl Drop for Provider {
+    fn drop(&mut self) {
+        unsafe { CGDataProviderRelease(self.0) }
+    }
+}
+extern "C" fn no_release(_: *mut c_void, _: *const c_void, _: usize) {}
+/// The source is a locked, opaque BGRA CV buffer; one destination copy performs
+/// public native SDR color management before the raw encoder receives it.
+pub(super) unsafe fn opaque_bgra_srgb(
+    width: u32,
+    height: u32,
+    stride: usize,
+    bytes: &[u8],
+    source_space: *const c_void,
+) -> Result<Vec<u8>> {
+    crate::validate_image_size(width, height)?;
+    let row = width as usize * 4;
+    ensure!(
+        stride >= row
+            && stride
+                .checked_mul(height as usize)
+                .is_some_and(|extent| extent <= bytes.len())
+            && bytes.len() <= 16 * 1024 * 1024,
+        "Invalid native video memory extent"
+    );
+    for source in bytes.chunks(stride).take(height as usize) {
+        ensure!(
+            source[..row].chunks_exact(4).all(|pixel| pixel[3] == 255),
+            "Display video source is not opaque BGRA8"
+        );
+    }
+    let fallback = if source_space.is_null() {
+        Some(Space(unsafe {
+            CGColorSpaceCreateWithName(kCGColorSpaceSRGB)
+        }))
+    } else {
+        None
+    };
+    let source_space = fallback.as_ref().map_or(source_space, |space| space.0);
+    ensure!(
+        !source_space.is_null(),
+        "Native source color space is unavailable"
+    );
+    let provider = Provider(unsafe {
+        CGDataProviderCreateWithData(
+            ptr::null_mut(),
+            bytes.as_ptr().cast(),
+            bytes.len(),
+            Some(no_release),
+        )
+    });
+    ensure!(!provider.0.is_null(), "Cannot wrap native video bytes");
+    let image = crate::capture_macos_sck::Image(unsafe {
+        CGImageCreate(
+            width as usize,
+            height as usize,
+            8,
+            32,
+            stride,
+            source_space,
+            0x2000 | 2,
+            provider.0,
+            ptr::null(),
+            false,
+            0,
+        )
+    });
+    ensure!(
+        !image.0.is_null(),
+        "Cannot construct native video color image"
+    );
+    let space = Space(unsafe { CGColorSpaceCreateWithName(kCGColorSpaceSRGB) });
+    ensure!(!space.0.is_null(), "Native sRGB space unavailable");
+    let mut output = vec![0u8; row * height as usize];
+    let context = Context(unsafe {
+        CGBitmapContextCreate(
+            output.as_mut_ptr().cast(),
+            width as usize,
+            height as usize,
+            8,
+            row,
+            space.0,
+            0x2000 | 2,
+        )
+    });
+    ensure!(
+        !context.0.is_null(),
+        "Cannot construct bounded native video color context"
+    );
+    unsafe {
+        CGContextDrawImage(
+            context.0,
+            Rect {
+                origin: Point { x: 0.0, y: 0.0 },
+                size: Size {
+                    width: f64::from(width),
+                    height: f64::from(height),
+                },
+            },
+            image.0,
+        )
+    };
+    drop(context);
+    Ok(output)
 }
 /// The caller retains the immutable native image for this complete synchronous read.
 pub(super) unsafe fn decode(image: *const c_void) -> Result<image::RgbaImage> {
