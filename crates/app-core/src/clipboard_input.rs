@@ -474,7 +474,12 @@ mod tests {
     }
     #[test]
     fn file_uri_list_never_opens_referenced_files_and_rejects_remote_content() {
-        assert!(uri_files(b"file:///definitely-nonexistent/input.png\r\n").is_ok());
+        // A file URL needs a drive letter to map to a Windows path.
+        #[cfg(windows)]
+        let missing: &[u8] = b"file:///C:/definitely-nonexistent/input.png\r\n";
+        #[cfg(not(windows))]
+        let missing: &[u8] = b"file:///definitely-nonexistent/input.png\r\n";
+        assert!(uri_files(missing).is_ok());
         assert!(uri_files(b"https://example.invalid/image.png\r\n").is_err());
         assert!(uri_files(&vec![b'x'; CLIPBOARD_FILES_BYTES + 1]).is_err());
     }

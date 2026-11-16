@@ -150,7 +150,7 @@ impl Native {
         let count = if self.alarm.is_some() { 3 } else { 2 };
         let result = unsafe { WaitForMultipleObjects(count, handles.as_ptr(), 0, INFINITE) };
         ensure!(
-            result >= WAIT_OBJECT_0 && result < WAIT_OBJECT_0 + count,
+            (WAIT_OBJECT_0..WAIT_OBJECT_0 + count).contains(&result),
             "Native schedule wait failed: {}",
             std::io::Error::last_os_error()
         );

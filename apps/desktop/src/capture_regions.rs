@@ -382,10 +382,18 @@ mod tests {
         assert!(selected_displays(&parsed, &[a.clone(), too_large]).is_err());
         let mut scaled = b.clone();
         scaled.scale_factor = 2.0;
-        assert!(selected_displays(&parsed, &[a.clone(), scaled]).is_err());
+        // Windows captures scaled and rotated displays in physical pixels; other adapters refuse them.
+        let refused = !cfg!(target_os = "windows");
+        assert_eq!(
+            selected_displays(&parsed, &[a.clone(), scaled]).is_err(),
+            refused
+        );
         let mut rotated = b.clone();
         rotated.rotation = 90.0;
-        assert!(selected_displays(&parsed, &[a.clone(), rotated]).is_err());
+        assert_eq!(
+            selected_displays(&parsed, &[a.clone(), rotated]).is_err(),
+            refused
+        );
         assert!(selected_displays(&parsed, &[a.clone(), a.clone(), b]).is_err());
         let bad = options(&dir.args(&["a", "4", "0", "1", "1"])).unwrap();
         assert!(selected_displays(&bad, &[display("a", 4, 4)]).is_err());

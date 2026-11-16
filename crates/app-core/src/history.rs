@@ -638,12 +638,9 @@ mod tests {
         image::RgbaImage::new(3, 2).save(&source)?;
         let verbatim = source.canonicalize()?;
         let ordinary = alternate_windows_spelling(&verbatim).unwrap();
-        for (index, paths) in [
-            [ordinary.clone(), verbatim.clone()],
-            [verbatim.clone(), ordinary.clone()],
-        ]
-        .into_iter()
-        .enumerate()
+        for (index, paths) in [[ordinary.clone(), verbatim.clone()], [verbatim, ordinary]]
+            .into_iter()
+            .enumerate()
         {
             let database = root.join(format!("history-{index}.sqlite"));
             let report = import_capture_files(&database, &paths)?;
