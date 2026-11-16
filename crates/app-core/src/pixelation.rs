@@ -183,6 +183,7 @@ mod tests {
     use super::*;
     fn source(pixels: image::RgbaImage) -> crate::CapturedImage {
         crate::CapturedImage {
+            desktop_layout: None,
             display_id: "fixture".into(),
             window_id: None,
             width: pixels.width(),

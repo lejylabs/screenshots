@@ -125,6 +125,7 @@ pub(crate) fn run(
         let pixels = assembler.finish()?;
         summary.validate(&request, pixels.width(), pixels.height())?;
         let image = CapturedImage {
+            desktop_layout: None,
             display_id: target.display.id.to_string(),
             window_id: Some(request.window.to_string()),
             width: pixels.width(),

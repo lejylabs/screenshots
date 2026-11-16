@@ -1,9 +1,10 @@
-# Stitched physical-pixel desktop
+# Stitched desktop output
 
 `screenshots capture desktop OUTPUT` captures one frozen image per currently
-enumerated display and exports one stitched image. This is a Windows-only CLI
-entry with operation-scoped physical mode/rectangle/DPI calibration, including
-mixed scales and already-oriented rotations. Other sessions remain unsupported. It does
+enumerated display and exports one stitched image. Windows uses operation-scoped
+physical mode/rectangle/DPI calibration, including mixed scales and already
+oriented rotations. macOS uses the explicitly derived Quartz layout grid below.
+Other sessions remain unsupported. It does
 not copy the clipboard, create history, initialize the UI or start a stream.
 
 The pure `stitch_desktop` core operation accepts 1–32 display descriptions and
@@ -41,3 +42,13 @@ cannot detect a nonoverlapping logical-coordinate layout. Display IDs must be
 nonempty and at most 64 bytes. Window frames, differing declared/pixel dimensions
 and non-RGBA format markers are rejected. Rotation metadata describes the already
 rotated captured pixel dimensions; the compositor never rotates pixels itself.
+
+macOS uses `quartz_max_native_scale`: one output grid at the highest admitted
+native pixels-per-Quartz-point density, with exact row copies at that density and
+explicit nearest-neighbor expansion of lower-density displays. It retains the
+Quartz arrangement without inventing an OS-global physical-pixel plane. The
+isolated child returns the actual density, point origin and bounded placements
+from the same snapshot. Complete 1–32-display inventory, UUID/geometry and topology
+checks precede publication; source/output limits remain 256 MiB each. See the
+[Mac coordinate contract](macos-coordinate-consumers.md) for integer-grid limits,
+memory admission, legacy restrictions and current SDK/hardware acceptance gates.

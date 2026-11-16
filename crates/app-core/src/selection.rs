@@ -549,6 +549,7 @@ pub fn render_ordered_snapshot_with_cancel(
     }
     work.check()?;
     Ok(CapturedImage {
+        desktop_layout: None,
         pixels: std::sync::Arc::new(pixels),
         display_geometry: None,
         width: area.width,
@@ -608,6 +609,7 @@ pub fn crop_snapshot(source: &CapturedImage, region: PixelRegion) -> Result<Capt
         .to_image(),
     );
     Ok(CapturedImage {
+        desktop_layout: None,
         png_path: path,
         display_geometry: None,
         pixels,
@@ -759,6 +761,7 @@ mod tests {
     fn frames_match_segments_clip_to_crop_and_stay_below_redaction() -> Result<()> {
         let original = image::RgbaImage::from_pixel(12, 10, image::Rgba([31, 42, 53, 255]));
         let source = CapturedImage {
+            desktop_layout: None,
             display_id: "fixture".into(),
             window_id: None,
             width: 12,
@@ -839,6 +842,7 @@ mod tests {
         let original =
             image::RgbaImage::from_fn(5, 4, |x, y| image::Rgba([x as u8, y as u8, 91, 13]));
         let source = CapturedImage {
+            desktop_layout: None,
             display_id: "fixture".into(),
             window_id: None,
             width: 5,
@@ -898,6 +902,7 @@ mod tests {
             std::env::temp_dir().join(format!("screenshots-redaction-{}", uuid::Uuid::new_v4()));
         let original = image::RgbaImage::from_pixel(4, 3, image::Rgba([91, 123, 200, 17]));
         let source = CapturedImage {
+            desktop_layout: None,
             display_id: "fixture".into(),
             window_id: None,
             width: 4,
@@ -987,6 +992,7 @@ mod tests {
             image::RgbaImage::from_fn(4, 3, |x, y| image::Rgba([x as u8, y as u8, 20, 255]));
         image.save(&path)?;
         let source = CapturedImage {
+            desktop_layout: None,
             window_id: None,
             display_id: "test".into(),
             width: 4,

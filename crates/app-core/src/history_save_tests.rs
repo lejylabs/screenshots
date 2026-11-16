@@ -16,6 +16,7 @@ impl Fixture {
             database: root.join("history.sqlite3"),
             target: root.join("capture.png"),
             image: crate::CapturedImage {
+                desktop_layout: None,
                 display_id: "fixture".into(),
                 window_id: None,
                 width: 3,

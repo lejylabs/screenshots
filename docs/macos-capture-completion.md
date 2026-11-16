@@ -531,3 +531,17 @@ is checked; its native/driver cost remains part of the measured resource gate.
 Apple documents [ICC profile copying](https://developer.apple.com/documentation/coregraphics/cgcolorspace/copyiccdata())
 and [native HDR identification](https://developer.apple.com/documentation/coregraphics/cgcolorspace/ishdr());
 both APIs predate the supported macOS12 baseline (10.12 and 10.15 respectively).
+
+## Shared coordinate consumer integration
+
+The [coordinate consumer contract](macos-coordinate-consumers.md) now covers the
+actual headless region/template/repeat/analysis/global-point and Desktop paths.
+Ordinary listing remains permission-free integer Quartz hints; explicit native
+geometry admission retains UUID, full point bounds, oriented raster and filter
+scale. Complete 1–32-display enumeration and independent native inventory checks
+prevent a stable 16-display subset from becoming partial Desktop success.
+Legacy ambiguous templates return static typed rebind error 17; permissions
+13–15 and colour policy 16 retain their meanings. Crops and transformed rasters
+discard the original desktop grid metadata. These source changes do not inherit
+earlier SDK results: the next frozen-source macOS SDK and hardware gates remain
+required, alongside the recorded actual Linux workspace/private checks.

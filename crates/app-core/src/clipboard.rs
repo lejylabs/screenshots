@@ -1341,6 +1341,7 @@ mod tests {
             std::env::temp_dir().join(format!("save-failure-{}", uuid::Uuid::new_v4()));
         std::fs::write(&blocked_parent, b"not a directory")?;
         let shot = crate::CapturedImage {
+            desktop_layout: None,
             display_id: "test".into(),
             window_id: None,
             width: image.width(),

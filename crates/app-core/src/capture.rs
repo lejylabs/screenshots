@@ -142,6 +142,8 @@ pub struct CaptureCapabilities {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+/// Platform source metadata. macOS basic listings contain unverified Quartz
+/// points; admitted captures carry a typed proof and display-local native sizes.
 pub struct DisplayInfo {
     pub id: String,
     pub name: String,
@@ -152,10 +154,14 @@ pub struct DisplayInfo {
     pub scale_factor: f32,
     pub rotation: f32,
     pub is_primary: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mac_coordinates: Option<crate::MacDisplayCoordinates>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+/// Verified snapshot geometry. macOS origins are Quartz points and local sizes
+/// are native pixels; all Mac arithmetic uses the complete typed coordinate proof.
 pub struct DisplayGeometry {
     pub x: i32,
     pub y: i32,
@@ -163,15 +169,34 @@ pub struct DisplayGeometry {
     pub height: u32,
     pub scale_factor: f32,
     pub rotation: f32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mac_coordinates: Option<crate::MacDisplayCoordinates>,
 }
 
 impl DisplayGeometry {
-    fn valid(self) -> bool {
+    pub(crate) fn valid(self) -> bool {
         self.width > 0
             && self.height > 0
             && self.scale_factor.is_finite()
             && self.scale_factor > 0.0
             && matches!(self.rotation, 0.0 | 90.0 | 180.0 | 270.0)
+            && match self.mac_coordinates {
+                Some(mac) => {
+                    cfg!(target_os = "macos")
+                        && mac
+                            .validate_fields(
+                                &mac.display_id.to_string(),
+                                self.x,
+                                self.y,
+                                self.width,
+                                self.height,
+                                self.scale_factor,
+                                self.rotation,
+                            )
+                            .is_ok()
+                }
+                None => !cfg!(target_os = "macos"),
+            }
     }
 }
 
@@ -180,18 +205,29 @@ impl DisplayGeometry {
 /// other adapters keep their unscaled, unrotated region-coordinate policy.
 pub fn validate_display_pixel_coordinates(display: &DisplayInfo) -> Result<(), CaptureError> {
     validate_image_size(display.width, display.height)?;
-    if !display.scale_factor.is_finite()
-        || display.scale_factor <= 0.0
-        || !matches!(display.rotation, 0.0 | 90.0 | 180.0 | 270.0)
-    {
+    let geometry = DisplayGeometry {
+        x: display.x,
+        y: display.y,
+        width: display.width,
+        height: display.height,
+        scale_factor: display.scale_factor,
+        rotation: display.rotation,
+        mac_coordinates: display.mac_coordinates,
+    };
+    if !geometry.valid() {
         return Err(CaptureError::StaleRegion);
     }
-    if !cfg!(any(target_os = "windows", target_os = "linux"))
-        && (display.scale_factor != 1.0 || display.rotation != 0.0)
-    {
-        return Err(CaptureError::Unsupported(
-            "This native adapter requires unrotated 100% physical-pixel region coordinates",
-        ));
+    if let Some(mac) = display.mac_coordinates {
+        mac.validate_fields(
+            &display.id,
+            display.x,
+            display.y,
+            display.width,
+            display.height,
+            display.scale_factor,
+            display.rotation,
+        )
+        .map_err(|_| CaptureError::StaleRegion)?;
     }
     Ok(())
 }
@@ -216,8 +252,9 @@ impl RememberedRegion {
         if display.id.is_empty() || display.id.len() > 64 {
             return Err(CaptureError::StaleRegion);
         }
-        validate_image_size(display.width, display.height)?;
+        validate_display_pixel_coordinates(display)?;
         let geometry = DisplayGeometry {
+            mac_coordinates: display.mac_coordinates,
             x: display.x,
             y: display.y,
             width: display.width,
@@ -248,6 +285,18 @@ impl RememberedRegion {
             return Err(CaptureError::StaleRegion);
         }
         validate_image_size(source.width, source.height)?;
+        if let Some(mac) = geometry.mac_coordinates {
+            mac.validate_fields(
+                &source.display_id,
+                geometry.x,
+                geometry.y,
+                source.width,
+                source.height,
+                geometry.scale_factor,
+                geometry.rotation,
+            )
+            .map_err(|_| CaptureError::StaleRegion)?;
+        }
         let remembered = Self {
             display_id: source.display_id.clone(),
             geometry,
@@ -319,6 +368,8 @@ pub struct CapturedImage {
     pub source_format: PixelFormat,
     /// Present only for an unmodified full-display snapshot with stable native geometry.
     pub display_geometry: Option<DisplayGeometry>,
+    /// Actual bounded derived-grid metadata returned by the same native desktop operation.
+    pub desktop_layout: Option<Arc<crate::MacDesktopLayout>>,
 }
 
 #[derive(Debug, Error)]
@@ -363,6 +414,8 @@ pub enum CaptureError {
     InvalidRegion,
     #[error("The display geometry changed or is unavailable. Select a new region.")]
     StaleRegion,
+    #[error("Template geometry changed or is unverified. Explicitly rebind the template.")]
+    TemplateRebindRequired,
     #[error("Export canceled")]
     Canceled,
     #[error("{0}")]
@@ -579,6 +632,7 @@ impl XcapBackend {
             let mut owned = self.frame(&frame.display_id, pixels, frame.elapsed_ms, &label)?;
             owned.window_id = frame.window_id;
             owned.display_geometry = frame.display_geometry;
+            owned.desktop_layout = frame.desktop_layout;
             owned.source_format = frame.source_format;
             result.push(owned);
         }
@@ -690,7 +744,11 @@ impl XcapBackend {
                 let (display_id, window_id, image, label) = match prepared {
                     PreparedCapture::Display(monitor, id) => {
                         let cursor_geometry = cursor_geometry(&monitor, &self.options)?;
-                        let before = if cfg!(any(target_os = "windows", target_os = "linux")) {
+                        let before = if cfg!(any(
+                            target_os = "windows",
+                            target_os = "linux",
+                            target_os = "macos"
+                        )) {
                             Some(monitor_geometry(&monitor)?)
                         } else {
                             None
@@ -851,7 +909,11 @@ impl XcapBackend {
                 {
                     return Err(CaptureError::InvalidRegion);
                 }
-                let expected = if cfg!(any(target_os = "windows", target_os = "linux")) {
+                let expected = if cfg!(any(
+                    target_os = "windows",
+                    target_os = "linux",
+                    target_os = "macos"
+                )) {
                     Some(monitor_geometry(&monitor)?)
                 } else {
                     None
@@ -954,6 +1016,64 @@ impl XcapBackend {
         self.check_native(check)?;
         Ok(displays)
     }
+    /// Explicit native pixel-geometry admission. On macOS this checks already
+    /// authorized Screen Recording access; ordinary display listing remains permission-free.
+    pub fn list_capture_displays_with_cancel(
+        &self,
+        check: &crate::NativeCaptureCheck<'_>,
+    ) -> Result<Vec<DisplayInfo>, CaptureError> {
+        #[cfg(not(target_os = "macos"))]
+        {
+            self.list_displays_with_cancel(check)
+        }
+        #[cfg(target_os = "macos")]
+        {
+            self.check_native(check)?;
+            if let Some(executor) = crate::native_capture_job::executor() {
+                let call = crate::NativeCaptureCall::PixelDisplays;
+                let reply = executor(call.clone(), &|| self.check_native(check))?;
+                call.validate_reply(&reply)?;
+                let crate::NativeCaptureReply::Displays(displays) = reply else {
+                    return Err(CaptureError::StaleRegion);
+                };
+                self.check_native(check)?;
+                return Ok(displays);
+            }
+            let native_before = crate::capture_macos_ax::displays().map_err(backend_error)?;
+            let monitors = Monitor::all().map_err(backend_error)?;
+            let backend_ids = monitors
+                .iter()
+                .map(|monitor| monitor.id().map_err(backend_error))
+                .collect::<Result<Vec<_>, _>>()?;
+            crate::capture_macos_coordinates::validate_mac_display_inventory(
+                &native_before,
+                &backend_ids,
+                &native_before,
+            )
+            .map_err(|_| CaptureError::StaleRegion)?;
+            if monitors.len() > 32 {
+                return Err(CaptureError::MemoryLimit);
+            }
+            let mut displays = Vec::with_capacity(monitors.len());
+            for monitor in &monitors {
+                self.check_native(check)?;
+                displays.push(display_info_from_geometry(
+                    monitor,
+                    monitor_geometry(monitor)?,
+                )?);
+            }
+            self.check_native(check)?;
+            let native_after = crate::capture_macos_ax::displays().map_err(backend_error)?;
+            crate::capture_macos_coordinates::validate_mac_display_inventory(
+                &native_before,
+                &backend_ids,
+                &native_after,
+            )
+            .map_err(|_| CaptureError::StaleRegion)?;
+            self.check_native(check)?;
+            Ok(displays)
+        }
+    }
     pub fn list_sources_with_cancel(
         &self,
         check: &crate::NativeCaptureCheck<'_>,
@@ -1025,6 +1145,7 @@ impl XcapBackend {
         ));
 
         Ok(CapturedImage {
+            desktop_layout: None,
             display_id: display_id.to_string(),
             window_id: None,
             width: image.width(),
@@ -1186,13 +1307,14 @@ fn cursor_geometry(
 }
 
 fn monitor_geometry(monitor: &Monitor) -> Result<DisplayGeometry, CaptureError> {
-    #[cfg(any(target_os = "windows", target_os = "linux"))]
+    #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
     {
         crate::capture_native::physical_monitor_geometry(monitor).map_err(backend_error)
     }
-    #[cfg(not(any(target_os = "windows", target_os = "linux")))]
+    #[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
     {
         Ok(DisplayGeometry {
+            mac_coordinates: None,
             x: monitor.x().map_err(backend_error)?,
             y: monitor.y().map_err(backend_error)?,
             width: monitor.width().map_err(backend_error)?,
@@ -1204,8 +1326,26 @@ fn monitor_geometry(monitor: &Monitor) -> Result<DisplayGeometry, CaptureError> 
 }
 
 fn display_info(monitor: &Monitor) -> Result<DisplayInfo, CaptureError> {
+    #[cfg(not(target_os = "macos"))]
     let geometry = monitor_geometry(monitor)?;
+    #[cfg(target_os = "macos")]
+    let geometry = DisplayGeometry {
+        x: monitor.x().map_err(backend_error)?,
+        y: monitor.y().map_err(backend_error)?,
+        width: monitor.width().map_err(backend_error)?,
+        height: monitor.height().map_err(backend_error)?,
+        scale_factor: monitor.scale_factor().map_err(backend_error)?,
+        rotation: monitor.rotation().map_err(backend_error)?,
+        mac_coordinates: None,
+    };
+    display_info_from_geometry(monitor, geometry)
+}
+fn display_info_from_geometry(
+    monitor: &Monitor,
+    geometry: DisplayGeometry,
+) -> Result<DisplayInfo, CaptureError> {
     Ok(DisplayInfo {
+        mac_coordinates: geometry.mac_coordinates,
         id: monitor_id(monitor)?,
         name: monitor
             .friendly_name()
@@ -1273,6 +1413,7 @@ mod tests {
         ));
         fs::create_dir_all(&root)?;
         let shot = CapturedImage {
+            desktop_layout: None,
             width: 4,
             height: 4,
             pixels: Arc::new(RgbaImage::from_pixel(4, 4, image::Rgba([12, 34, 56, 255]))),
@@ -1442,6 +1583,7 @@ mod tests {
             std::env::temp_dir().join(format!("screenshots-jpeg-quality-{}", uuid::Uuid::new_v4()));
         fs::create_dir_all(&root)?;
         let shot = CapturedImage {
+            desktop_layout: None,
             width: 64,
             height: 64,
             pixels: Arc::new(RgbaImage::from_fn(64, 64, |x, y| {
@@ -1508,6 +1650,7 @@ mod tests {
         ));
         fs::create_dir_all(&root)?;
         let mut shot = CapturedImage {
+            desktop_layout: None,
             display_id: "fixture".into(),
             window_id: None,
             width: 3,
@@ -1604,6 +1747,7 @@ mod tests {
             std::env::temp_dir().join(format!("screenshots-export-cost-{}", uuid::Uuid::new_v4()));
         fs::create_dir_all(&root)?;
         let shot = CapturedImage {
+            desktop_layout: None,
             width: 3840,
             height: 2160,
             pixels: Arc::new(RgbaImage::from_fn(3840, 2160, |x, y| {
@@ -1650,7 +1794,9 @@ mod tests {
 
     #[test]
     fn exact_region_metadata_checks_display_geometry_and_bounds_without_pixels() {
-        let display = DisplayInfo {
+        #[allow(unused_mut)]
+        let mut display = DisplayInfo {
+            mac_coordinates: None,
             id: "fixture".into(),
             name: "Fixture".into(),
             x: -1920,
@@ -1661,6 +1807,13 @@ mod tests {
             rotation: 0.,
             is_primary: false,
         };
+        #[cfg(target_os = "macos")]
+        {
+            display.id = "1".into();
+            display.mac_coordinates = Some(crate::capture_macos_coordinates::tests::display(
+                1, -1920.0, -100.0, 1280.0, 720.0, 1.5,
+            ));
+        }
         let area = crate::PixelRegion {
             x: 1919,
             y: 1079,
@@ -1727,7 +1880,9 @@ mod tests {
 
     #[test]
     fn remembered_region_is_metadata_only_and_rejects_geometry_changes() {
-        let geometry = DisplayGeometry {
+        #[allow(unused_mut)]
+        let mut geometry = DisplayGeometry {
+            mac_coordinates: None,
             x: -8,
             y: 12,
             width: 8,
@@ -1735,8 +1890,21 @@ mod tests {
             scale_factor: 1.25,
             rotation: 90.0,
         };
+        #[cfg(target_os = "macos")]
+        {
+            let mut coordinates =
+                crate::capture_macos_coordinates::tests::display(1, -8.0, 12.0, 6.4, 4.8, 1.25);
+            coordinates.rotation = 90.0;
+            geometry.mac_coordinates = Some(coordinates);
+        }
         let source = CapturedImage {
-            display_id: "fixture".into(),
+            desktop_layout: None,
+            display_id: if cfg!(target_os = "macos") {
+                "1"
+            } else {
+                "fixture"
+            }
+            .into(),
             window_id: None,
             width: 8,
             height: 6,
@@ -1897,6 +2065,7 @@ mod tests {
         };
         // The source is synthetic: no full-desktop pixels are captured to remember geometry.
         let source = CapturedImage {
+            desktop_layout: None,
             display_id: monitor_id(&monitor)?,
             window_id: None,
             width: geometry.width,
@@ -1928,6 +2097,7 @@ mod tests {
         assert_eq!(baseline[0].pixels, repeated[0].pixels);
         let exact_region = RememberedRegion::from_display(
             &DisplayInfo {
+                mac_coordinates: None,
                 id: repeated[0].display_id.clone(),
                 name: "Explicit fixture".into(),
                 x: geometry.x,
@@ -2002,6 +2172,7 @@ mod tests {
     fn png_publication_is_complete_and_never_overwrites() {
         let dir = std::env::temp_dir().join(format!("screenshots-save-{}", uuid::Uuid::new_v4()));
         let shot = CapturedImage {
+            desktop_layout: None,
             display_id: "test".into(),
             window_id: None,
             width: 2,

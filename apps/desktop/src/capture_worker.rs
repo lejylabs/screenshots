@@ -1251,6 +1251,7 @@ mod tests {
     }
     fn frame() -> app_core::CapturedImage {
         app_core::CapturedImage {
+            desktop_layout: None,
             display_id: "fixture".into(),
             window_id: None,
             width: 2,
@@ -1439,6 +1440,7 @@ mod tests {
                 &mut io,
                 NativeCaptureReply::Inventory(app_core::NativeSourceInventory {
                     displays: Ok(vec![app_core::DisplayInfo {
+                        mac_coordinates: None,
                         id: "fixture".into(),
                         name: "private fixture".into(),
                         x: 0,

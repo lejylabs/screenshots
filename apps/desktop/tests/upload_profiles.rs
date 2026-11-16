@@ -411,6 +411,7 @@ fn sharex_profiles_upload_exact_bytes_and_batch_ndjson_over_loopback_tls() {
     let image = f.image();
     let png = std::fs::read(&image).unwrap();
     let expected_batch = app_core::CapturedImage {
+        desktop_layout: None,
         display_id: String::new(),
         window_id: None,
         width: 3,

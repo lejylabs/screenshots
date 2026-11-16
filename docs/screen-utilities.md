@@ -23,8 +23,11 @@ arithmetic. It sends an ExactRegion request, retaining the admitted geometry for
 the native before/after checks; changed or out-of-display coordinates fail.
 Negative monitor origins are supported. This mode requires the adapter to prove
 physical metadata. X11 obtains raw RandR origin/size without applying Xft DPI;
-Windows uses its calibrated physical geometry. Uncalibrated macOS scaled/rotated
-metadata is refused rather than guessed. Display-local raster sampling does not
+Windows uses its calibrated physical geometry. macOS refuses this physical-global
+meaning because Quartz does not supply a shared mixed-density physical plane.
+Explicit `--global-points` instead accepts signed whole Quartz points on macOS,
+labels the result `quartz_global_points` and maps through the selected display's
+verified native proof. It never changes the meaning of `--global`. Display-local raster sampling does not
 require that logical-to-physical metadata conversion. Named Wayland display capture uses
 the existing explicit unsupported result; it does not silently capture XWayland.
 

@@ -97,8 +97,6 @@ unsafe extern "C" {
     fn CGRectMakeWithDictionaryRepresentation(dictionary: CFDictionaryRef, rect: *mut Rect) -> u8;
     fn CGGetActiveDisplayList(max: u32, displays: *mut u32, count: *mut u32) -> i32;
     fn CGDisplayBounds(display: u32) -> Rect;
-    fn CGDisplayPixelsWide(display: u32) -> usize;
-    fn CGDisplayPixelsHigh(display: u32) -> usize;
     fn CGDisplayCopyDisplayMode(display: u32) -> CFTypeRef;
     fn CGDisplayModeGetPixelWidth(mode: CFTypeRef) -> usize;
     fn CGDisplayModeGetPixelHeight(mode: CFTypeRef) -> usize;
@@ -350,22 +348,27 @@ pub(super) fn window(id: u32) -> Result<MacWindowProof> {
 }
 pub(super) fn displays() -> Result<Vec<MacDisplayProof>> {
     main_thread()?;
-    let mut ids = [0u32; 32];
-    let mut expected = 0u32;
-    ensure!(
-        unsafe { CGGetActiveDisplayList(0, ptr::null_mut(), &mut expected) } == 0
-            && expected > 0
-            && expected <= ids.len() as u32,
-        "Native display inventory is unavailable/oversized"
-    );
-    let mut count = 0u32;
-    ensure!(
-        unsafe { CGGetActiveDisplayList(ids.len() as u32, ids.as_mut_ptr(), &mut count) } == 0
-            && count == expected,
-        "Native display inventory is unavailable/oversized"
-    );
-    ids[..count as usize]
-        .iter()
+    let ids = crate::capture_macos_inventory::complete_active_display_ids(|output| {
+        let mut count = 0;
+        let error = unsafe {
+            CGGetActiveDisplayList(
+                output.len() as u32,
+                if output.is_empty() {
+                    ptr::null_mut()
+                } else {
+                    output.as_mut_ptr()
+                },
+                &mut count,
+            )
+        };
+        if error == 0 {
+            Ok(count as usize)
+        } else {
+            Err(())
+        }
+    })
+    .map_err(anyhow::Error::msg)?;
+    ids.iter()
         .map(|id| {
             let uuid = unsafe { CGDisplayCreateUUIDFromDisplayID(*id) };
             ensure!(!uuid.is_null(), "Native display UUID unavailable");

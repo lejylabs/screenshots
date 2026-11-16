@@ -9,8 +9,10 @@ The existing capture-task command already supports 0–3600000 millisecond
 delays. Finite display sequences, one-shot future starts, 1–16 regions from
 shared display snapshots, and pure desktop stitching also exist. Persisted
 monitor binding and explicit still-cursor/window policies are implemented in
-this slice. Durable repeating schedules remain an actual gap. The current native desktop compositor is Windows
-only at 100% scale. Selection magnifier/snapping/keyboard controls are UI work
+this slice. Durable repeating schedules remain an actual gap. Native desktop
+composition uses calibrated physical coordinates on Windows and an explicit
+derived Quartz grid on macOS; see [desktop output](desktop-composite.md).
+Selection magnifier/snapping/keyboard controls are UI work
 and remain outside this package. Eight-bit XCap output does not establish HDR
 or wide-gamut correctness.
 

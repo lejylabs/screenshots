@@ -14,15 +14,30 @@ mod capture;
 #[cfg(target_os = "linux")]
 pub use capture::{linux_wayland_markers, linux_wayland_session};
 mod capture_catalog;
+#[cfg(test)]
+extern crate self as app_core;
 #[cfg(target_os = "macos")]
 mod capture_macos_ax;
+mod capture_macos_coordinates;
+#[cfg(test)]
+mod capture_macos_coordinates_metadata_tests;
 #[cfg(target_os = "macos")]
 mod capture_macos_cursor;
 #[cfg(target_os = "macos")]
 mod capture_macos_image;
+#[cfg(any(target_os = "macos", test))]
+#[path = "../../../vendor/xcap/src/macos/display_inventory.rs"]
+mod capture_macos_inventory;
 #[cfg(target_os = "macos")]
 mod capture_macos_loop;
 mod capture_macos_model;
+#[cfg(test)]
+mod capture_template_protocol_tests;
+mod desktop_composite_macos;
+pub use capture_macos_coordinates::{MacDesktopLayout, MacDesktopPolicy, MacDisplayCoordinates};
+pub use desktop_composite_macos::stitch_macos_desktop_with_cancel;
+#[cfg(target_os = "macos")]
+mod capture_macos_display;
 #[cfg(any(target_os = "macos", test))]
 mod capture_macos_pixels;
 #[cfg(target_os = "macos")]

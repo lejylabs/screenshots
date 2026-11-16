@@ -1,5 +1,8 @@
 use std::sync::mpsc::Receiver;
 
+#[path = "display_inventory.rs"]
+mod display_inventory;
+
 use image::RgbaImage;
 use objc2::MainThreadMarker;
 use objc2_app_kit::NSScreen;
@@ -54,34 +57,27 @@ impl ImplMonitor {
         }
     }
     pub fn all() -> XCapResult<Vec<ImplMonitor>> {
-        let max_displays: u32 = 16;
-        let mut active_displays: Vec<CGDirectDisplayID> = vec![0; max_displays as usize];
-        let mut display_count: u32 = 0;
-
-        let cg_error = unsafe {
-            CGGetActiveDisplayList(
-                max_displays,
-                active_displays.as_mut_ptr(),
-                &mut display_count,
-            )
-        };
-
-        if cg_error != CGError::Success {
-            return Err(XCapError::new(format!(
-                "CGGetActiveDisplayList failed: {:?}",
-                cg_error
-            )));
-        }
-
-        active_displays.truncate(display_count as usize);
-
-        let mut impl_monitors = Vec::with_capacity(active_displays.len());
-
-        for display in active_displays {
-            impl_monitors.push(ImplMonitor::new(display));
-        }
-
-        Ok(impl_monitors)
+        let ids = display_inventory::complete_active_display_ids(|output| {
+            let mut count = 0;
+            let error = unsafe {
+                CGGetActiveDisplayList(
+                    output.len() as u32,
+                    if output.is_empty() {
+                        std::ptr::null_mut()
+                    } else {
+                        output.as_mut_ptr()
+                    },
+                    &mut count,
+                )
+            };
+            if error == CGError::Success {
+                Ok(count as usize)
+            } else {
+                Err(())
+            }
+        })
+        .map_err(XCapError::new)?;
+        Ok(ids.into_iter().map(ImplMonitor::new).collect())
     }
 
     pub fn from_point(x: i32, y: i32) -> XCapResult<ImplMonitor> {
