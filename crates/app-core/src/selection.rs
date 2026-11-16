@@ -181,9 +181,10 @@ impl PixelRegion {
             if a == b {
                 return None;
             }
-            let scale = image[axis] as f32 / viewport[axis];
-            lo[axis] = (a.min(b) * scale).floor() as u32;
-            hi[axis] = ((a.max(b) * scale).ceil() as u32).min(image[axis]);
+            // Every finite f32 viewport, including subnormals, has a finite f64 ratio.
+            let scale = f64::from(image[axis]) / f64::from(viewport[axis]);
+            lo[axis] = ((f64::from(a.min(b)) * scale).floor() as u32).min(image[axis]);
+            hi[axis] = ((f64::from(a.max(b)) * scale).ceil() as u32).min(image[axis]);
         }
         Some(Self {
             x: lo[0],

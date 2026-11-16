@@ -1,0 +1,6 @@
+{"url":"https://upload.example.invalid/upload","field":"file","json_pointer":"/result/url"}
+{"url":"https://upload.example.invalid/upload","field":"file","response":{"type":"text"}}
+{"url":"https://upload.example.invalid/upload","field":"file","response":{"type":"header","name":"Location"}}
+{"url":"https://upload.example.invalid/upload","field":"file","response":{"type":"regex","pattern":"href=\"([^\"]+)\"","group":"1"}}
+{"url":"https://upload.example.invalid/upload","field":"file","response":{"type":"xml","path":"/files/file[1]/url"}}
+{"url":"https://upload.example.invalid/image.png","method":"PUT","response":{"type":"request_url"}}

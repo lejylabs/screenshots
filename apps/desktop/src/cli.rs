@@ -253,6 +253,10 @@ fn number<T: std::str::FromStr>(value: &OsString) -> Result<T> {
         .map_err(|_| anyhow::anyhow!("Invalid numeric argument"))
 }
 
+#[cfg(test)]
+#[path = "cli_parser_fuzz_tests.rs"]
+mod structured_parser_fuzz_tests;
+
 pub(crate) fn frame(pixels: image::RgbaImage) -> CapturedImage {
     CapturedImage {
         desktop_layout: None,
