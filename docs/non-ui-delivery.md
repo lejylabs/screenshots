@@ -13,11 +13,11 @@ authenticated IPC and retained clipboard ownership. See their focused contracts.
 The active native graph passes the default advisory policy without ignores;
 dormant optional backends and native acceptance limits are recorded separately.
 
-Committed and pushed HEAD `cdae843` includes Library lifecycle/schema9 reservation
+Committed and pushed implementation HEAD `86dda66` includes Library lifecycle/schema10 reservation
 safety, monitor defaults/templates and isolated native work, modern SXCU, bounded
 raster work, schedules, portal/URL input and reviewed platform foundations. The
 layered editor and physical-X11 color/ruler corrections are committed. The
-current working tree adds bounded file logging, journaled capture saves/schema10
+current implementation includes bounded file logging, journaled capture saves/schema10
 and managed-color imports with the same-version moxcms predicate correction.
 Its complete optimized run passed 953 cases, zero failed, with 69 opt-ins
 excluded across 59 outer suites. Source reviews are clean in logger rounds
