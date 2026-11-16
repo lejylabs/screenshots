@@ -360,6 +360,7 @@ fn upload_at_with_cancellation(
     cancel.check()?;
     let deadline = Instant::now() + DEADLINE;
     let mut file = open_regular(path)?;
+    cancel.verify_source_file(&file)?;
     let metadata = file.metadata()?;
     ensure!(metadata.len() <= MAX_FILE_BYTES, "S3 input exceeds 64 MiB");
     let mut hash = Sha256::new();

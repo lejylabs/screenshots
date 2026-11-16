@@ -507,7 +507,7 @@ fn body_credentials(text: &str) -> Result<Vec<Zeroizing<String>>> {
 fn one() -> u32 {
     1
 }
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct Options {
     #[serde(default = "one")]
@@ -944,6 +944,25 @@ struct Prepared {
 #[derive(Clone)]
 pub struct ShareXPrepared(Arc<Prepared>);
 impl ShareXPrepared {
+    /// Digest the exact admitted configuration, excluding credential-store token values.
+    pub fn config_digest(&self) -> Result<[u8; 32]> {
+        use sha2_10::{Digest, Sha256};
+        let options = Zeroizing::new(serde_json::to_vec(&self.0.options)?);
+        let credential = Zeroizing::new(serde_json::to_vec(&self.0.credential)?);
+        let mut hash = Sha256::new();
+        hash.update(b"screenshots-sxcu-config-v1\0");
+        for bytes in [
+            self.0.raw.as_bytes(),
+            options.as_slice(),
+            credential.as_slice(),
+        ] {
+            hash.update((bytes.len() as u64).to_le_bytes());
+            hash.update(bytes);
+        }
+        hash.update(serde_json::to_vec(&self.0.kind)?);
+        hash.update(self.0.runtime.config_digest()?);
+        Ok(hash.finalize().into())
+    }
     pub fn read(profile: &Path, kind: ShareXInputKind, options: Option<&Path>) -> Result<Self> {
         Self::load(profile, Some(kind), options)
     }
@@ -1445,6 +1464,7 @@ impl ShareXPrepared {
             65536
         };
         let (file, length) = opened(path, limit, "SXCU input")?;
+        cancel.verify_source_file(&file)?;
         let name = self.0.options.filename.clone().unwrap_or_else(|| {
             if matches!(kind, ShareXInputKind::Url | ShareXInputKind::UrlSharing) {
                 return String::new();

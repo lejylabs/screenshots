@@ -2,13 +2,13 @@
 
 use anyhow::{Context, Result, ensure};
 use image::RgbaImage;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::{ffi::OsString, fs::OpenOptions, io::Read, path::Path, sync::Arc};
 
 const MAX_RECIPE_BYTES: u64 = 64 * 1024;
 const MAX_STEPS: usize = 16;
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Recipe {
     version: u32,
@@ -16,6 +16,10 @@ pub(crate) struct Recipe {
 }
 
 impl Recipe {
+    pub(crate) fn config_digest(&self) -> Result<[u8; 32]> {
+        use sha2::{Digest, Sha256};
+        Ok(Sha256::digest(serde_json::to_vec(self)?).into())
+    }
     pub(crate) fn read(path: &Path) -> Result<Self> {
         read_recipe(path)
     }
@@ -43,7 +47,7 @@ impl Recipe {
     }
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(tag = "op", rename_all = "snake_case", deny_unknown_fields)]
 enum Step {
     Crop {
@@ -91,7 +95,7 @@ enum Step {
     },
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 enum Axis {
     Horizontal,

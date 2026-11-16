@@ -512,3 +512,33 @@ UI fixtures are now explicit test fixtures; production capability gating stays
 truthful on Wayland. Evidence: `target/verification/current-integrated-checks.json`.
 Editor/macOS additions, real platform/signing/account gates and the remaining
 full backlog are not closed by this snapshot.
+
+
+## Durable Task scheduling and worker startup (2026-11-16)
+
+Fresh `windows_atomic_goldfish` found bare leading-dot program resolution and a
+provider sequencing documentation contradiction. Both are corrected; fresh
+`windows_atomic_round2` found no source Blocker/Major. Its stale evidence Nit is
+resolved through a new correction report, preserving earlier source hashes.
+Native process/job/handle limits and long-path behavior remain Windows CI gates;
+the original Wine resource-query failure was not weakened or counted as native
+success. Default-prefix probe state was precisely restored and audited.
+
+Fresh scheduler rounds one and two found actual-source reopening, orphaned owned
+macOS wake recovery and an expired Windows timer causing an idle spin. Actual
+opened-object checks now reach image/raw uploads; command guards cover native
+launch/resume boundaries with documented race limits. Offline mutations reconcile
+only their durable owned wake. Windows timers reset/consume cancellation signals,
+including simultaneous normal/alarm readiness. The checked Unix program handle
+is released after spawn. Fresh `scheduler_round3_goldfish` found no Blocker/Major.
+
+Author fixtures passed 14 scheduler, seven seal/source, one identity and 44
+HTTP/S3 cases (16 opt-ins excluded), provider/Task/workflow compatibility, seven
+real executable groups, private Xvfb captures and upload-before-SIGKILL recovery.
+A separately pinned 300-second Linux idle observation had no additional CPU
+jiffies, context switches or file I/O, with swap/physical memory reported rather
+than claiming zero footprint. Root's two same-production native timer fixtures
+and leading-dot oracle passed supplemental Wine; real native wake/permission/
+resource behavior stays separate. The integrated 786-test proof above includes
+the current source and corrected fixture gating; final exact-head native CI is
+still required.

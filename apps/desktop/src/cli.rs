@@ -79,6 +79,11 @@ Headless commands (no desktop UI; outputs and uploads require explicit actions):
   screenshots qr-region DISPLAY X Y WIDTH HEIGHT
   screenshots workflow RECIPE INPUT OUTPUT
   screenshots task run|validate PROFILE.json
+  screenshots schedule add DATABASE ID PROFILE --at RFC3339 [--every-ms N --count N|--forever]
+      [--until RFC3339] [--missed skip|once|pause] [--grace-ms N] [--wake]
+  screenshots schedule list|serve DATABASE
+  screenshots schedule pause|resume|remove DATABASE ID
+  screenshots schedule resolve DATABASE RUN_ID complete|skip
   screenshots capture-catalog monitors|validate|bind|add|defaults|capture|run-task|host-config ...
   screenshots capture-portal display|window OUTPUT [--cursor exclude|include] [--delay-ms MS] [--recipe FILE]
   screenshots task-host validate CONFIG.json
@@ -184,6 +189,7 @@ pub fn run(args: Vec<OsString>) -> Result<bool> {
         }
         "workflow" => crate::workflow::run(&args[1..])?,
         "task" => crate::task::run(&args[1..])?,
+        "schedule" => crate::capture_scheduling::run(&args[1..])?,
         "capture-catalog" => crate::capture_catalog::run(&args[1..])?,
         "capture-portal" => crate::capture_portal::run(&args[1..])?,
         "task-host" => crate::task_host::run(&args[1..])?,

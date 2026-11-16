@@ -48,6 +48,14 @@ pub fn load_editor_image(path: &std::path::Path) -> Result<image::RgbaImage> {
     load_editor_image_with_limit(path, crate::MAX_CAPTURE_BYTES)
 }
 
+/// Verify the actual opened object and decode that same retained handle.
+pub fn load_editor_image_with_identity(
+    path: &std::path::Path,
+    expected: &crate::FileIdentity,
+) -> Result<image::RgbaImage> {
+    load_image_input_guarded(path, crate::MAX_CAPTURE_BYTES, false, Some(expected))
+}
+
 /// Admit another image within a composition's remaining decoded-source budget.
 pub fn load_editor_image_with_limit(
     path: &std::path::Path,
@@ -65,6 +73,14 @@ fn load_image_input(
     max_decoded_bytes: u64,
     png_only: bool,
 ) -> Result<image::RgbaImage> {
+    load_image_input_guarded(path, max_decoded_bytes, png_only, None)
+}
+fn load_image_input_guarded(
+    path: &std::path::Path,
+    max_decoded_bytes: u64,
+    png_only: bool,
+    expected: Option<&crate::FileIdentity>,
+) -> Result<image::RgbaImage> {
     anyhow::ensure!(
         max_decoded_bytes > 0 && max_decoded_bytes <= crate::MAX_CAPTURE_BYTES,
         "Invalid decoded image budget"
@@ -81,6 +97,9 @@ fn load_image_input(
         options.custom_flags(libc::O_NONBLOCK);
     }
     let file = options.open(path)?;
+    if let Some(expected) = expected {
+        expected.verify_file(&file)?;
+    }
     let metadata = file.metadata()?;
     anyhow::ensure!(metadata.is_file(), "Image input must be a regular file");
     let length = metadata.len();

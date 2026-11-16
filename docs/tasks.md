@@ -102,3 +102,9 @@ Files: desktop `task.rs`, private formatter visibility, main/CLI routing and
 validation/execution, test actual executable file/save/upload/link/QR/command
 chains and partial failures with isolated loopback/fixtures, then integrate
 hotkey/task IPC through native event-driven routing. No task UI is added.
+
+Use the explicit [durable scheduler](capture-scheduling.md) for finite or
+repeating UTC sequences with these source/action profiles. It seals the actual
+prepared configuration, pauses changed profiles/references and never retries
+an uncertain Task or upload. Scheduled receipts omit action payloads and URLs;
+standalone `task run` receipts retain their documented behavior.

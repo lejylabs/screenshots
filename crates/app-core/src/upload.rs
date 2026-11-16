@@ -1928,6 +1928,7 @@ struct UploadCancellationState {
 pub struct UploadCancellation {
     state: Arc<UploadCancellationState>,
     signal: Option<Arc<std::sync::atomic::AtomicBool>>,
+    source_identity: Option<Arc<crate::FileIdentity>>,
 }
 impl UploadCancellation {
     /// Observe an operation's existing signal flag without installing handlers.
@@ -1938,6 +1939,18 @@ impl UploadCancellation {
         }
     }
 
+    /// Restrict this transfer's payload to the prepared opened-object identity.
+    pub fn with_source_identity(mut self, identity: crate::FileIdentity) -> Self {
+        self.source_identity = Some(Arc::new(identity));
+        self
+    }
+    pub fn verify_source_file(&self, file: &std::fs::File) -> Result<()> {
+        self.check()?;
+        if let Some(expected) = &self.source_identity {
+            expected.verify_file(file)?;
+        }
+        Ok(())
+    }
     pub fn cancel(&self) {
         self.state
             .canceled
@@ -2102,12 +2115,15 @@ async fn open_upload_source(
     minimum: u64,
     maximum: u64,
     message: &'static str,
+    cancel: UploadCancellation,
 ) -> Result<(tokio::fs::File, u64)> {
     ensure!(path.is_absolute(), "Upload source must be an absolute path");
     let (file, length) = tokio::task::spawn_blocking(move || {
         let metadata = path.metadata().context("Could not inspect upload source")?;
         validate_upload_source(&metadata, minimum, maximum, message)?;
-        open_upload_source_after_preflight(&path, minimum, maximum, message)
+        let (file, length) = open_upload_source_after_preflight(&path, minimum, maximum, message)?;
+        cancel.verify_source_file(&file)?;
+        Ok::<_, anyhow::Error>((file, length))
     })
     .await
     .context("Upload source worker failed")??;
@@ -2145,7 +2161,7 @@ fn run_upload(
         tokio::select! {
             biased;
             _ = cancel.wait() => anyhow::bail!("Upload canceled. The server may already have received the file."),
-            result = tokio::time::timeout(Duration::from_secs(60), transfer(destination, source, url, progress)) => {
+            result = tokio::time::timeout(Duration::from_secs(60), transfer(destination, source, url, progress,cancel.clone())) => {
                 result.context("Upload exceeded its 60 second deadline; the server may have received the file")?
             }
         }
@@ -2157,6 +2173,7 @@ async fn transfer(
     source: UploadPng,
     url: reqwest::Url,
     progress: Option<UploadProgressReporter>,
+    cancel: UploadCancellation,
 ) -> Result<UploadOutcome> {
     const PNG_SIGNATURE: [u8; 8] = [137, 80, 78, 71, 13, 10, 26, 10];
     let (length, png, mut file, content_type, filename) = match source {
@@ -2166,6 +2183,7 @@ async fn transfer(
                 8,
                 crate::MAX_CAPTURE_BYTES + 16 * 1024 * 1024,
                 "PNG file exceeds the upload size limit or is not a regular file",
+                cancel.clone(),
             )
             .await
             .context("Could not open the saved PNG")?;
@@ -2198,6 +2216,7 @@ async fn transfer(
                 0,
                 64 * 1024 * 1024,
                 "Upload file exceeds the 64 MiB limit or is not a regular file",
+                cancel.clone(),
             )
             .await
             .context("Could not inspect the upload file")?;

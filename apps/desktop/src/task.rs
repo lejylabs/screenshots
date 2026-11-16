@@ -1,7 +1,7 @@
 //! Explicit saved task profiles: one source and ordered, bounded output actions.
 use anyhow::{Context, Result, bail, ensure};
 use app_core::{CaptureBackend, CapturedImage, ImageExportFormat, UploadOutcome, XcapBackend};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::{
     ffi::OsString,
     io::{Read, Write},
@@ -10,7 +10,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct Profile {
     version: u32,
@@ -22,7 +22,7 @@ struct Profile {
     clipboard_hold_ms: u64,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 enum Source {
     None,
@@ -64,7 +64,7 @@ enum Source {
     },
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 enum Action {
     Save {
@@ -112,7 +112,14 @@ fn label() -> String {
     "Screenshot".into()
 }
 
+#[path = "task_seal.rs"]
+mod seal;
+pub(crate) use seal::{PreparedScheduledTask, TaskSeal};
+
 struct Task {
+    configuration: [u8; 32],
+    source_identity: Option<app_core::FileIdentity>,
+    identities: std::collections::HashMap<PathBuf, app_core::FileIdentity>,
     source: Source,
     template: Option<app_core::PreparedRegionTemplate>,
     recipe: Option<crate::workflow::Recipe>,
@@ -236,6 +243,11 @@ impl Task {
             profile.clipboard_hold_ms <= 300000,
             "Clipboard hold must be 0–300000 milliseconds"
         );
+        let configuration = {
+            use sha2::{Digest, Sha256};
+            let bytes = zeroize::Zeroizing::new(serde_json::to_vec(&profile)?);
+            Sha256::digest(bytes.as_slice()).into()
+        };
         let base = path.parent().context("Task profile has no parent")?;
         ensure!(
             selected.is_none() || matches!(profile.source, Source::Template { .. }),
@@ -472,6 +484,9 @@ impl Task {
             });
         }
         Ok(Self {
+            configuration,
+            source_identity: None,
+            identities: Default::default(),
             source: profile.source,
             template,
             recipe,
@@ -528,7 +543,13 @@ impl Task {
                 .as_ref()
                 .context("Task template was not prepared")?
                 .capture_with_cancel(PathBuf::new(), check)?,
-            Source::File { path } => crate::cli::frame(app_core::load_editor_image(path)?),
+            Source::File { path } => {
+                crate::cli::frame(if let Some(expected) = self.source_identity.as_ref() {
+                    app_core::load_editor_image_with_identity(path, expected)?
+                } else {
+                    app_core::load_editor_image(path)?
+                })
+            }
             Source::Display { id } => backend
                 .capture_batch_with_cancel(
                     vec![app_core::CaptureRequest::Display(id.clone())],
@@ -565,7 +586,15 @@ impl Task {
         }))
     }
 
-    fn execute(mut self, mut bridge: Option<crate::task_clipboard::Client>) -> Result<()> {
+    fn execute(self, bridge: Option<crate::task_clipboard::Client>) -> Result<()> {
+        self.execute_with(bridge, None, &mut result_line)
+    }
+    fn execute_with(
+        mut self,
+        mut bridge: Option<crate::task_clipboard::Client>,
+        external_cancel: Option<Arc<std::sync::atomic::AtomicBool>>,
+        receipt: &mut dyn FnMut(serde_json::Value) -> Result<()>,
+    ) -> Result<()> {
         ensure!(
             !cfg!(target_os = "linux")
                 || bridge.is_some()
@@ -577,15 +606,38 @@ impl Task {
             "Standalone Linux clipboard tasks require clipboard_hold_ms of 1000–300000"
         );
         #[cfg(unix)]
-        let cancel = crate::record::unix::Cancellation::new()?;
+        let cancel = if let Some(flag) = external_cancel {
+            crate::record::unix::Cancellation::with_flag(flag)?
+        } else {
+            crate::record::unix::Cancellation::new()?
+        };
         #[cfg(unix)]
         let upload_cancel = app_core::UploadCancellation::with_atomic_flag(cancel.flag());
         #[cfg(not(unix))]
-        let upload_cancel = app_core::UploadCancellation::default();
+        let task_flag =
+            external_cancel.unwrap_or_else(|| Arc::new(std::sync::atomic::AtomicBool::new(false)));
+        #[cfg(not(unix))]
+        let upload_cancel = app_core::UploadCancellation::with_atomic_flag(task_flag.clone());
+        let raw_upload_cancel = if matches!(&self.source, Source::RawFile { .. }) {
+            if let Some(identity) = self.source_identity.as_ref() {
+                upload_cancel.clone().with_source_identity(identity.clone())
+            } else {
+                upload_cancel.clone()
+            }
+        } else {
+            upload_cancel.clone()
+        };
         let task_deadline = Instant::now() + Duration::from_secs(5400);
+        let check = || -> Result<()> {
+            ensure!(!upload_cancel.is_canceled(), "Task canceled");
+            ensure!(
+                Instant::now() < task_deadline,
+                "Task exceeded its duration budget"
+            );
+            Ok(())
+        };
         let mut frame = self.capture(&|| {
-            #[cfg(unix)]
-            cancel.check(task_deadline)?;
+            check()?;
             ensure!(
                 Instant::now() < task_deadline,
                 "Task exceeded its duration budget"
@@ -607,8 +659,7 @@ impl Task {
                     Arc::try_unwrap(image.pixels)
                         .map_err(|_| anyhow::anyhow!("Task source pixels are still shared"))?,
                     &|| {
-                        #[cfg(unix)]
-                        cancel.check(task_deadline)?;
+                        check()?;
                         ensure!(
                             Instant::now() < task_deadline,
                             "Task exceeded its duration budget"
@@ -625,8 +676,7 @@ impl Task {
         let mut owns_clipboard = false;
         let total = self.actions.len();
         for (index, action) in self.actions.into_iter().enumerate() {
-            #[cfg(unix)]
-            cancel.check(task_deadline).with_context(||format!("Task stopped before action {} after {index} completed actions; previous outputs and uploads remain",index+1))?;
+            check().with_context(||format!("Task stopped before action {} after {index} completed actions; previous outputs and uploads remain",index+1))?;
             let outcome = (|| -> Result<serde_json::Value> {
                 Ok(match action {
                     Ready::Save(path, quality) => {
@@ -637,7 +687,7 @@ impl Task {
                         serde_json::json!({"action":"save","format":format.extension(),"width":frame.width,"height":frame.height})
                     }
                     Ready::Upload(destination) => {
-                        let result = if let Some(path) = &raw_source { crate::sharex::upload_file(&destination,path,upload_cancel.clone())? }
+                        let result = if let Some(path) = &raw_source { crate::sharex::upload_file(&destination,path,raw_upload_cancel.clone())? }
                             else if matches!(&destination,app_core::ClassifiedUploadProfile::ShareX(_)) && last_saved_image.is_some() {crate::sharex::upload_file(&destination,last_saved_image.as_deref().unwrap(),upload_cancel.clone())?}
                             else {crate::sharex::upload_png(&destination, frame.as_ref().context("Upload requires an image source")?.png_bytes_with_cancel(|| upload_cancel.is_canceled() || Instant::now() >= task_deadline)?, upload_cancel.clone())?};
                         task_confirm_upload(&result,index,total,|| {
@@ -654,7 +704,7 @@ impl Task {
                             prepared.upload_png_bytes(frame.as_ref().context("SXCU requires finalized image pixels")?.png_bytes_with_cancel(||upload_cancel.is_canceled() || Instant::now()>=task_deadline)?,upload_cancel.clone())?
                         } else {
                             let path = if kind==app_core::ShareXInputKind::Image {last_saved_image.as_deref().or(raw_source.as_deref())} else {raw_source.as_deref().or(last_output.as_deref())}.context("SXCU requires a local artifact")?;
-                            prepared.upload_file(path,upload_cancel.clone())?
+                            prepared.upload_file(path,if raw_source.is_some(){raw_upload_cancel.clone()}else{upload_cancel.clone()})?
                         };
                         let value = serde_json::to_value(result)?;
                         task_confirm_upload(&value,index,total,|| {
@@ -665,16 +715,16 @@ impl Task {
                         serde_json::json!({"action":"sharex_upload","upload":value})
                     }
                     Ready::ProviderUpload(prepared) => {
-                        let result = prepared.upload_file_with_cancel(last_output.as_deref().or(raw_source.as_deref()).context("Provider upload requires a local artifact")?, || {
-                            #[cfg(unix)]
-                            cancel.check(task_deadline)?;
+                        let source=last_output.as_deref().or(raw_source.as_deref()).context("Provider upload requires a local artifact")?;
+                        let result = prepared.upload_file_guarded(source, || {
+                            check()?;
                             Ok(())
-                        })?;
+                        },if raw_source.as_deref()==Some(source){self.source_identity.as_ref()}else{None})?;
                         upload = result.get("url").and_then(serde_json::Value::as_str).map(|url| UploadOutcome{url:url.into(),thumbnail:None,deletion:None}.validate_links()).transpose()?;
                         serde_json::json!({"action":"provider_upload","upload":result})
                     }
                     Ready::S3Upload(prepared) => {
-                        let result = crate::s3::upload_prepared_with_cancellation(&prepared,last_output.as_deref().or(raw_source.as_deref()).context("S3 upload requires a local artifact")?,upload_cancel.clone())?;
+                        let result = crate::s3::upload_prepared_with_cancellation(&prepared,last_output.as_deref().or(raw_source.as_deref()).context("S3 upload requires a local artifact")?,if last_output.is_none() && raw_source.is_some(){raw_upload_cancel.clone()}else{upload_cancel.clone()})?;
                         upload = result.get("url").and_then(serde_json::Value::as_str).map(|url| UploadOutcome{url:url.into(),thumbnail:None,deletion:None}.validate_links()).transpose()?;
                         serde_json::json!({"action":"s3_upload","upload":result})
                     }
@@ -697,6 +747,7 @@ impl Task {
                         serde_json::json!({"action":"copy_link"})
                     }
                     Ready::Command(program, args, timeout) => {
+                        let identity=self.identities.get(&program);
                         let mut command = std::process::Command::new(program);
                         command.env_remove(crate::task_clipboard::ENV);
                         for arg in args {
@@ -704,22 +755,21 @@ impl Task {
                         }
                         let deadline = (Instant::now() + timeout).min(task_deadline);
                         #[cfg(unix)] {
-                            crate::record::unix::cooperative_engine(command, &cancel, deadline)?;
+                            crate::record::unix::cooperative_engine_guarded(command, &cancel, deadline,identity)?;
                         }
-                        #[cfg(target_os = "windows")] { crate::record_windows::engine(command, None, deadline)?; }
+                        #[cfg(target_os = "windows")] { crate::record_windows::engine_with_identity(command, None, deadline, task_flag.clone(),identity)?; }
                         serde_json::json!({"action":"command"})
                     }
                 })
             })().with_context(|| format!("Task action {} failed after {index} completed actions; outputs from this or earlier actions may remain and uploads may exist; no retry", index + 1))?;
             #[cfg(unix)]
             cancel.output_phase(true);
-            result_line(serde_json::json!({"type":"action","index":index+1,"total":total,"result":outcome}))
+            receipt(serde_json::json!({"type":"action","index":index+1,"total":total,"result":outcome}))
                 .with_context(|| format!("Task action {} completed but its result could not be written; previous outputs and remote files remain", index + 1))?;
             #[cfg(unix)]
             cancel.output_phase(false);
         }
-        #[cfg(unix)]
-        cancel.check(task_deadline).with_context(|| {
+        check().with_context(|| {
             format!(
                 "Task stopped after {total} completed actions; previous outputs and uploads remain"
             )
@@ -727,15 +777,14 @@ impl Task {
         drop(frame);
         #[cfg(unix)]
         cancel.output_phase(true);
-        result_line(
+        receipt(
             serde_json::json!({"type":"complete","actions":total,"clipboard_hold_ms":if owns_clipboard { self.clipboard_hold_ms } else { 0 }}),
         ).with_context(||format!("Task completed {total} actions but its completion result could not be written; previous outputs and uploads remain"))?;
         // A Linux owner must stay alive to serve its explicitly requested clipboard data.
         if owns_clipboard && self.clipboard_hold_ms != 0 {
             let until = Instant::now() + Duration::from_millis(self.clipboard_hold_ms);
             while Instant::now() < until {
-                #[cfg(unix)]
-                cancel.check(task_deadline)?;
+                check()?;
                 std::thread::sleep(
                     Duration::from_millis(20).min(until.saturating_duration_since(Instant::now())),
                 );

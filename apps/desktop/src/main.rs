@@ -7,6 +7,7 @@ mod autostart_windows;
 mod capture_catalog;
 mod capture_portal;
 mod capture_regions;
+mod capture_scheduling;
 mod capture_sequence;
 mod capture_task;
 mod capture_worker;

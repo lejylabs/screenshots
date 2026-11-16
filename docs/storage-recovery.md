@@ -96,3 +96,9 @@ replacement and platform-specific filesystem behavior remain native acceptance
 cases. Paths should be chosen in user-controlled storage, not directories writable
 by another user. No claim is made that standard path-based APIs isolate a job
 from every privileged or same-user filesystem race.
+
+The [durable scheduler](capture-scheduling.md) uses its own private SQLite
+database and singleton run-intent recovery, separate from capture History.
+History `storage check`/backup schema admission does not treat a schedule
+database as a History database. Inspect and resolve uncertain run IDs explicitly;
+maintenance never replays scheduled Tasks or uploads.

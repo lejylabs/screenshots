@@ -272,6 +272,11 @@ pub struct PreparedRegionTemplate {
     options: CaptureOptions,
 }
 impl PreparedRegionTemplate {
+    /// Digest the retained template and capture options, without enumerating native targets.
+    pub fn config_digest(&self) -> Result<[u8; 32]> {
+        use sha2_10::{Digest, Sha256};
+        Ok(Sha256::digest(serde_json::to_vec(&(&self.template, &self.options))?).into())
+    }
     pub(crate) fn from_native_parts(
         template: CaptureRegionTemplate,
         options: CaptureOptions,
