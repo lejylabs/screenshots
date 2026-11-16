@@ -335,6 +335,10 @@ pub enum CaptureError {
     Clipboard,
     #[error("Remote image transfer or decoding failed")]
     ImageUrlFailed,
+    #[error(
+        "This image uses an unsupported color profile or HDR transfer; convert it to SDR sRGB before importing"
+    )]
+    ImageColorPolicy,
     #[error("Capture permission was denied or the selected portal source was closed")]
     PermissionDenied,
     #[error("Native capture canceled")]

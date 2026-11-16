@@ -162,5 +162,16 @@ pub(super) fn image(
     })?;
     check(deadline, callback)?;
     budget.decoding()?;
-    crate::clipboard_windows::decode_payload(&bytes, png)
+    if png {
+        crate::managed_color::decode_with_backing(
+            &bytes,
+            bytes.capacity(),
+            image::ImageFormat::Png,
+            crate::MAX_CAPTURE_BYTES,
+            None,
+            &|| check(deadline, callback).is_err(),
+        )
+    } else {
+        crate::clipboard_windows::decode_payload(&bytes, false)
+    }
 }

@@ -94,9 +94,10 @@ impl ImageUrlSource {
                 .http1_only()
                 .http1_max_headers(64)
                 .connect_timeout(std::time::Duration::from_secs(5))
-                .timeout(std::time::Duration::from_secs(15))
-                .build()
-                .map_err(|_| download_error())?;
+                .timeout(std::time::Duration::from_secs(15));
+            #[cfg(test)]
+            let client = client.no_proxy();
+            let client = client.build().map_err(|_| download_error())?;
             let mut response = client
                 .get(&self.url)
                 .header(
@@ -121,18 +122,17 @@ impl ImageUrlSource {
                 if chunk.len() > MAX_IMAGE_URL_BYTES.saturating_sub(bytes.len()) {
                     return Err(size_error());
                 }
-                bytes.extend_from_slice(&chunk);
+                for part in chunk.chunks(64 * 1024) {
+                    check()?;
+                    bytes.extend_from_slice(part);
+                }
             }
             check()?;
             Ok(bytes)
         })?;
         drop(runtime);
         check()?;
-        let pixels = crate::decode_editor_image_bytes(&bytes).map_err(|_| {
-            CaptureError::Backend(
-                "Downloaded data is not an admitted PNG, JPEG, WebP, BMP or TIFF image".into(),
-            )
-        })?;
+        let pixels = decode_downloaded_image(&bytes, bytes.capacity(), check)?;
         check()?;
         let frame = CapturedImage {
             display_id: "image-url".into(),
@@ -147,6 +147,31 @@ impl ImageUrlSource {
         };
         Ok(frame)
     }
+}
+fn decode_downloaded_image(
+    bytes: &[u8],
+    backing: usize,
+    check: &NativeCaptureCheck<'_>,
+) -> Result<image::RgbaImage, CaptureError> {
+    check()?;
+    let pixels = crate::decode_editor_image_bytes_with_backing_and_cancel(bytes, backing, &|| {
+        check().is_err()
+    });
+    // Preserve the operation's cancellation/deadline error rather than recasting it
+    // as a format error when the managed decoder stopped partway through.
+    check()?;
+    pixels.map_err(|error| {
+        if matches!(
+            error.downcast_ref::<CaptureError>(),
+            Some(CaptureError::ImageColorPolicy)
+        ) {
+            CaptureError::ImageColorPolicy
+        } else {
+            CaptureError::Backend(
+                "Downloaded data is not an admitted PNG, JPEG, WebP, BMP or TIFF image".into(),
+            )
+        }
+    })
 }
 fn invalid_url() -> CaptureError {
     CaptureError::Backend("Use an explicit HTTPS image URL (HTTP requires allow_http), without credentials or a fragment, at most 4096 bytes".into())
@@ -164,6 +189,78 @@ fn invalid_reply() -> CaptureError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn private_loopback_hdr_url_preserves_public_color_policy_error() {
+        use std::{
+            io::{Read, Write},
+            net::TcpListener,
+            time::{Duration, Instant},
+        };
+        let bytes = include_bytes!("../tests/fixtures/color/hdr-pq-cicp.png");
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let server = std::thread::spawn(move || {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            let mut stream = loop {
+                match listener.accept() {
+                    Ok((stream, _)) => break stream,
+                    Err(error)
+                        if error.kind() == std::io::ErrorKind::WouldBlock
+                            && Instant::now() < deadline =>
+                    {
+                        std::thread::sleep(Duration::from_millis(5));
+                    }
+                    result => panic!("Private image fixture accept failed: {result:?}"),
+                }
+            };
+            stream
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            let mut request = [0u8; 4096];
+            let mut used = 0;
+            while !request[..used].ends_with(b"\r\n\r\n") {
+                assert!(used < request.len());
+                let count = stream.read(&mut request[used..]).unwrap();
+                assert!(count > 0);
+                used += count;
+            }
+            write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: image/png\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", bytes.len()).unwrap();
+            stream.write_all(bytes).unwrap();
+        });
+        let source =
+            ImageUrlSource::new(format!("http://{address}/private-hdr.png"), true).unwrap();
+        let error = source.download_in_worker(&|| Ok(())).unwrap_err();
+        server.join().unwrap();
+        assert!(matches!(error, CaptureError::ImageColorPolicy));
+        assert!(error.to_string().contains("SDR sRGB"));
+        let canceled =
+            decode_downloaded_image(bytes, bytes.len(), &|| Err(CaptureError::NativeCanceled));
+        assert!(matches!(canceled, Err(CaptureError::NativeCanceled)));
+    }
+    #[test]
+    fn downloaded_decode_observes_signaled_cancellation_without_returning_pixels() {
+        use std::cell::Cell;
+        let bytes = include_bytes!("../tests/fixtures/color/lcms-p3-rgba16.png");
+        assert!(matches!(
+            decode_downloaded_image(bytes, bytes.len(), &|| Err(CaptureError::NativeCanceled)),
+            Err(CaptureError::NativeCanceled)
+        ));
+        let calls = Cell::new(0usize);
+        let check = || {
+            calls.set(calls.get() + 1);
+            if calls.get() >= 3 {
+                Err(CaptureError::NativeCanceled)
+            } else {
+                Ok(())
+            }
+        };
+        assert!(matches!(
+            decode_downloaded_image(bytes, bytes.len(), &check),
+            Err(CaptureError::NativeCanceled)
+        ));
+        assert!(calls.get() >= 3);
+    }
     #[test]
     fn image_url_admission_is_explicit_and_does_not_access_a_source() {
         assert!(

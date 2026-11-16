@@ -1,0 +1,272 @@
+{
+  "oracle": "LittleCMS",
+  "encoded_version": 2190,
+  "source_rgb16": [
+    [
+      32896,
+      32896,
+      32896
+    ],
+    [
+      0,
+      0,
+      0
+    ],
+    [
+      65535,
+      65535,
+      65535
+    ],
+    [
+      1,
+      128,
+      257
+    ],
+    [
+      27886,
+      60187,
+      18886
+    ],
+    [
+      40000,
+      15000,
+      52000
+    ],
+    [
+      12345,
+      34567,
+      23456
+    ],
+    [
+      30000,
+      30000,
+      40000
+    ],
+    [
+      65535,
+      0,
+      0
+    ],
+    [
+      0,
+      65535,
+      0
+    ],
+    [
+      0,
+      0,
+      65535
+    ],
+    [
+      20000,
+      40000,
+      30000
+    ]
+  ],
+  "source_alpha16": [
+    0,
+    1,
+    65535,
+    128,
+    12345,
+    32768,
+    65534,
+    50000,
+    257,
+    32767,
+    65535,
+    40000
+  ],
+  "cases": [
+    {
+      "name": "para-rg",
+      "gamma": [
+        1,
+        1,
+        2
+      ],
+      "trc_type": {
+        "rTRC": "para",
+        "gTRC": "para",
+        "bTRC": "para"
+      },
+      "mid_rgb8": [
+        188,
+        188,
+        137
+      ],
+      "icc_bytes": 600
+    },
+    {
+      "name": "para-gb",
+      "gamma": [
+        2,
+        1,
+        1
+      ],
+      "trc_type": {
+        "rTRC": "para",
+        "gTRC": "para",
+        "bTRC": "para"
+      },
+      "mid_rgb8": [
+        137,
+        188,
+        188
+      ],
+      "icc_bytes": 600
+    },
+    {
+      "name": "para-rb",
+      "gamma": [
+        1,
+        2,
+        1
+      ],
+      "trc_type": {
+        "rTRC": "para",
+        "gTRC": "para",
+        "bTRC": "para"
+      },
+      "mid_rgb8": [
+        188,
+        137,
+        188
+      ],
+      "icc_bytes": 600
+    },
+    {
+      "name": "para-equal1",
+      "gamma": [
+        1,
+        1,
+        1
+      ],
+      "trc_type": {
+        "rTRC": "para",
+        "gTRC": "para",
+        "bTRC": "para"
+      },
+      "mid_rgb8": [
+        188,
+        188,
+        188
+      ],
+      "icc_bytes": 600
+    },
+    {
+      "name": "para-equal2",
+      "gamma": [
+        2,
+        2,
+        2
+      ],
+      "trc_type": {
+        "rTRC": "para",
+        "gTRC": "para",
+        "bTRC": "para"
+      },
+      "mid_rgb8": [
+        137,
+        137,
+        137
+      ],
+      "icc_bytes": 600
+    },
+    {
+      "name": "curv-rg",
+      "gamma": [
+        1,
+        1,
+        2
+      ],
+      "trc_type": {
+        "rTRC": "curv",
+        "gTRC": "curv",
+        "bTRC": "curv"
+      },
+      "mid_rgb8": [
+        188,
+        188,
+        137
+      ],
+      "icc_bytes": 2136
+    },
+    {
+      "name": "curv-gb",
+      "gamma": [
+        2,
+        1,
+        1
+      ],
+      "trc_type": {
+        "rTRC": "curv",
+        "gTRC": "curv",
+        "bTRC": "curv"
+      },
+      "mid_rgb8": [
+        137,
+        188,
+        188
+      ],
+      "icc_bytes": 2136
+    },
+    {
+      "name": "curv-rb",
+      "gamma": [
+        1,
+        2,
+        1
+      ],
+      "trc_type": {
+        "rTRC": "curv",
+        "gTRC": "curv",
+        "bTRC": "curv"
+      },
+      "mid_rgb8": [
+        188,
+        137,
+        188
+      ],
+      "icc_bytes": 2136
+    },
+    {
+      "name": "curv-equal1",
+      "gamma": [
+        1,
+        1,
+        1
+      ],
+      "trc_type": {
+        "rTRC": "curv",
+        "gTRC": "curv",
+        "bTRC": "curv"
+      },
+      "mid_rgb8": [
+        188,
+        188,
+        188
+      ],
+      "icc_bytes": 2136
+    },
+    {
+      "name": "curv-equal2",
+      "gamma": [
+        2,
+        2,
+        2
+      ],
+      "trc_type": {
+        "rTRC": "curv",
+        "gTRC": "curv",
+        "bTRC": "curv"
+      },
+      "mid_rgb8": [
+        137,
+        137,
+        137
+      ],
+      "icc_bytes": 2136
+    }
+  ]
+}

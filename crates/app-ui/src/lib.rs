@@ -3051,9 +3051,17 @@ impl CaptureWorkspace {
                             file => {
                                 let pixels = match file {
                                     EditorImage::SavedPng(path) => app_core::load_saved_png(&path),
-                                    EditorImage::File(path) => app_core::load_editor_image(&path),
+                                    EditorImage::File(path) => {
+                                        app_core::load_editor_image_with_cancel(&path, &|| {
+                                            cancellation.check().is_err()
+                                        })
+                                    }
                                     EditorImage::Encoded(bytes) => {
-                                        app_core::decode_editor_image_bytes(&bytes)
+                                        app_core::decode_editor_image_bytes_with_backing_and_cancel(
+                                            &bytes,
+                                            bytes.capacity(),
+                                            &|| cancellation.check().is_err(),
+                                        )
                                     }
                                     EditorImage::Clipboard(_) | EditorImage::Url(_) => {
                                         unreachable!()

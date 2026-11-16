@@ -157,3 +157,11 @@ provenance are documented in `vendor/harfrust/LOCAL-PATCH.md` and
 `vendor/harfrust/KERN-BOUND.md`.
 Existing upstream shaping defaults remain unchanged; the editor refuses
 exhausted preprocessing or legacy caches without a bounded admission proof.
+
+The vendored moxcms 0.8.1 retains its published BSD-3-Clause OR Apache-2.0
+licenses in `vendor/moxcms/LICENSE.md` and `LICENSE-APACHE.md`. The local patch
+changes two equality predicates so profiles with different channel transfer
+curves use the existing per-channel converter. The original crate checksum,
+upstream revision and byte inventory are in `vendor/moxcms/LOCAL-PATCH.md` and
+`UPSTREAM-SHA256.txt`. No crate version, runtime or color-profile restriction is
+added by this correction.

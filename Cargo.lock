@@ -232,6 +232,7 @@ dependencies = [
  "dbus-secret-service",
  "directories",
  "dispatch2",
+ "flate2",
  "gif",
  "global-hotkey",
  "harfrust 0.15.0",
@@ -239,6 +240,7 @@ dependencies = [
  "image",
  "libc",
  "libwebp-sys",
+ "moxcms",
  "objc2 0.6.5",
  "objc2-app-kit 0.3.2",
  "objc2-av-foundation",
@@ -5193,8 +5195,6 @@ dependencies = [
 [[package]]
 name = "moxcms"
 version = "0.8.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bb85c154ba489f01b25c0d36ae69a87e4a1c73a72631fc6c0eb6dde34a73e44b"
 dependencies = [
  "num-traits",
  "pxfm",

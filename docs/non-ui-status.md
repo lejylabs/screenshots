@@ -4,30 +4,32 @@ Date: 2026-11-16
 Scope: the user's complete major-feature list, with final GPUI redesign and new
 UI controls excluded. The workstation stays on. The full backlog is **open**.
 
-Snapshot: branch `feat/non-ui-delivery`, local committed implementation HEAD `1e24131`.
+Verification base: branch `feat/non-ui-delivery`, pushed HEAD `cdae843`; the
+reviewed follow-ups below continue from that source checkpoint.
 Committed follow-ups include native defaults/templates and process isolation,
 Library lifecycle/reservations, bounded image cancellation, modern SXCU execution,
 shared encoded-input decoding and complete private-runtime/native packaging.
 Atomic Windows worker startup, durable schedules, real in-memory Wayland
 capture and explicit URL image input are also committed. Reviewed Windows physical capture, macOS still/scroll/recording and bounded
-clipboard/Paste/Wayland-drop foundations are committed. The editor document
-backend and scaled-X11 color/ruler follow-ups are under final local verification;
+clipboard/Paste/Wayland-drop foundations are committed. The layered editor
+document backend and physical-X11 color/ruler follow-ups are also committed;
 remaining native input/output and physical-coordinate consumers are still open.
 Delivered backend paths do not close excluded UI or real native acceptance gates.
 
-The preceding integrated source passed **868 optimized tests**, with 66 explicit
-opt-ins excluded across 59 outer suites and zero failures. This run predates the
-latest editor runtime-budget correction and scaled-X11 utility changes; their
-new full run is pending. Earlier 786-test/Clippy/Windows GNU/advisory totals remain
+The current integrated working tree passed **953 optimized tests**, with 69 explicit
+opt-ins excluded across 59 outer suites and zero failures. This includes the
+bounded logger, journaled capture saves and managed-color input with the exact
+same-version moxcms correction. All three source review gates converged:
+logger rounds 6/7, journal rounds 5/6 and managed-color rounds 5/6. Formatting, all-target
+optimized Clippy, default advisories and Windows GNU metadata checks pass.
+Earlier 868-test/786-test/Clippy/Windows GNU/advisory totals remain
 historical snapshots. Source reviews and private native fixtures are recorded
 separately in each contract. None establishes physical hardware, reference
 performance or a production release.
 
-The latest implementation commits are not pushed. GitHub returns HTTP403 and the
-authenticated account's repository permissions report pull access without push.
-Continue local implementation and verification; exact-source remote CI and the
-pending pushes require restored repository write access. No password request or
-permission change is part of this delivery.
+Repository write access is restored. Seven implementation commits were pushed
+through `cdae843`; exact-source native CI remains a separate verification gate.
+No password request or permission change was needed.
 
 CI `8fdbc78` found unformatted snapshot code and a nanosecond-clock temp-name
 collision on macOS. `3882c35` fixes both; exact-head native CI remains a separate
@@ -41,6 +43,13 @@ remains powered on; no shutdown will be performed.
 
 ## Immediate verification state
 
+- [x] Current integrated Linux checkpoint: 953 passed, zero failed, 69 opt-ins
+  excluded across 59 outer Cargo suites. The two new actual CLI save-recovery
+  fixtures, 16 private logger fixtures/four headless requests and 14 actual
+  managed-color CLI requests pass. Independent LittleCMS 2.19 expectations,
+  native callback timings and a short 4K worker report are recorded separately
+  from native/hardware acceptance. [Saves](capture-save-recovery.md),
+  [logging](file-logging.md), [color](color-managed-input.md).
 - [x] Final committed GIF tree: 486 regular optimized workspace tests,
   51 opt-in cases excluded, all doctests passed; Clippy, Windows GNU app/test
   compilation, release FFmpeg decoding and package smoke passed.
@@ -139,8 +148,10 @@ completion is listed separately.
 - [ ] **Import/output:** explicit URL CLI/Task input, bounded native clipboard
   and existing cross-platform Paste are committed. Remaining native raw image/URL
   drops, descriptor-only Wayland GUI startup, print and drag-out need integration.
-  Open With/file associations are implemented. Capture/Library format preference,
-  broader codec variants and color-managed import remain distinct work.
+  Open With/file associations are implemented. Managed RGB matrix/TRC and SDR
+  CICP imports are implemented with independent color oracles and truthful HDR
+  refusal. Capture/Library format preference and broader codec variants remain
+  distinct work; native HDR capture/presentation is not established by import.
 - [ ] **Sharing:** reconcile very old SXCU importer/version compatibility and
   remaining workflow inputs/link templates/shortening. Modern pinned-version
   methods/bodies/templates/parsers, HTTP/S3/SFTP/FTP, public-client OAuth,
@@ -149,9 +160,9 @@ completion is listed separately.
   multipart/STS behavior remain explicit provider limits. No blanket arbitrary-
   version SXCU parity is claimed. [Runtime](sharex-runtime.md),
   [providers](sharing-completion.md), [tasks](tasks.md).
-- [ ] **Library/storage:** add a durable save intent and targeted reconciliation
-  for crashes between file publication and history insertion. Move/trash journals
-  do not cover that interval. Finish exact native lifecycle/fault acceptance and
+- [ ] **Library/storage:** durable capture-save intents and explicit targeted
+  finish/cancel recovery now cover publication/history interruption, with failed
+  batch pixels retained for retry. Finish exact native lifecycle/fault acceptance and
   any richer metadata/OCR search. Cross-page core selection/actions,
   missing-reference removal, portable move/transfer, journaled trash/restore/
   purge and explicit retention are implemented. Thumbnail prefetch/cache/filter
@@ -172,8 +183,9 @@ completion is listed separately.
   requested target builds are in CI. Preserve exact source/artifact provenance,
   pending cleanup and unavailable/full-volume recovery; do not hide failures.
 - [ ] **Engineering requirements in PLAN:** bounded asynchronous app-data file
-  logging with rotation, field redaction and zero idle writes, plus structured
-  coordinate/uploader-extraction fuzz harnesses remain implementation work.
+  logging with fixed retention and metadata-only records is implemented with
+  native parked-writer and callback checks. Five-minute native idle/resource
+  acceptance and structured coordinate/uploader-extraction fuzz harnesses remain.
 - [x] **Dependency maintenance:** maintained font/SVG and D-Bus active families
   and focused regression coverage are implemented. Recheck the exact final graph;
   dormant upstream optional-backend lock entries and the default-branch GLib alert

@@ -258,11 +258,12 @@ fn render(
     check(cancelled)?;
     let (source_file, source_id) =
         app_core::FileIdentity::open(input).context("Could not open editor source")?;
-    let pixels = app_core::load_editor_image_with_identity_limit_and_dimensions(
+    let pixels = app_core::load_editor_image_with_identity_limit_and_dimensions_with_cancel(
         input,
         &source_id,
         app_core::MAX_CAPTURE_BYTES,
         state.source_size(),
+        cancelled,
     )?;
     ensure!(
         [pixels.width(), pixels.height()] == state.source_size(),
@@ -290,9 +291,11 @@ fn render(
                 image.clone()
             } else {
                 ensure!(remaining > 0, "Editor decoded asset budget exhausted");
-                let image = Arc::new(app_core::load_editor_image_with_identity_and_limit(
-                    &path, &identity, remaining,
-                )?);
+                let image = Arc::new(
+                    app_core::load_editor_image_with_identity_and_limit_with_cancel(
+                        &path, &identity, remaining, cancelled,
+                    )?,
+                );
                 identity.verify_file(&file)?;
                 let backing = image.as_raw().capacity() as u64;
                 ensure!(

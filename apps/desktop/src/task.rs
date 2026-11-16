@@ -545,9 +545,14 @@ impl Task {
                 .capture_with_cancel(PathBuf::new(), check)?,
             Source::File { path } => {
                 crate::cli::frame(if let Some(expected) = self.source_identity.as_ref() {
-                    app_core::load_editor_image_with_identity(path, expected)?
+                    app_core::load_editor_image_with_identity_and_limit_with_cancel(
+                        path,
+                        expected,
+                        app_core::MAX_CAPTURE_BYTES,
+                        &|| check().is_err(),
+                    )?
                 } else {
-                    app_core::load_editor_image(path)?
+                    app_core::load_editor_image_with_cancel(path, &|| check().is_err())?
                 })
             }
             Source::Display { id } => backend

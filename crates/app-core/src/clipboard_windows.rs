@@ -34,7 +34,13 @@ impl Drop for OpenClipboardGuard {
 /// Call only in response to an explicit user action, off the foreground executor.
 pub fn read_clipboard_image() -> Result<image::RgbaImage> {
     let (bytes, png) = read_payload()?;
-    decode_payload(&bytes, png)
+    if png {
+        crate::decode_editor_image_bytes_with_backing_and_cancel(&bytes, bytes.capacity(), &|| {
+            false
+        })
+    } else {
+        decode_payload(&bytes, false)
+    }
 }
 
 pub(crate) fn read_payload() -> Result<(Vec<u8>, bool)> {
@@ -80,12 +86,13 @@ pub(crate) fn read_payload_with_budget(
 pub(crate) fn decode_payload(bytes: &[u8], png: bool) -> Result<image::RgbaImage> {
     validate_payload_size(bytes.len(), png)?;
     if png {
-        let mut reader =
-            image::ImageReader::with_format(std::io::Cursor::new(bytes), image::ImageFormat::Png);
-        let mut limits = image::Limits::default();
-        limits.max_alloc = Some(crate::MAX_CAPTURE_BYTES);
-        reader.limits(limits);
-        crate::clipboard::decode_editor_pixels(reader.into_decoder()?)
+        crate::managed_color::decode(
+            bytes,
+            image::ImageFormat::Png,
+            crate::MAX_CAPTURE_BYTES,
+            None,
+            &|| false,
+        )
     } else {
         ensure!(bytes.len() >= 40, "Truncated clipboard bitmap header");
         let field = |offset| u32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap());
