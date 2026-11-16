@@ -482,7 +482,7 @@ fn native_non_utf8_filenames_and_broken_symlink_outputs_are_handled() {
         "horizontal".into(),
         output.clone().into(),
         input.clone().into(),
-        input.clone().into(),
+        input.into(),
     ]));
     assert_eq!(
         image::open(&output).unwrap().into_rgba8().dimensions(),

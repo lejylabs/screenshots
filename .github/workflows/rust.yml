@@ -126,6 +126,9 @@ jobs:
         run: cargo build --workspace --release --locked
       - name: Run optimized deterministic tests
         run: cargo test --workspace --profile release-fast --locked
+      - name: Verify native dependency discovery metadata
+        if: runner.os == 'Linux'
+        run: python scripts/test-native-curl-discovery.py
       - name: Verify explicit upload flows against loopback only
         shell: bash
         run: |

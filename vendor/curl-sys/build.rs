@@ -547,7 +547,7 @@ fn try_vcpkg() -> bool {
 fn try_vcpkg() -> bool {
     // Library-name overrides disable vcpkg-rs's installed dependency traversal.
     // Use its port metadata for modern OpenSSL/zlib names and static closure.
-    match vcpkg::Config::new().emit_includes(true).probe("curl") {
+    match vcpkg::Config::new().emit_includes(true).find_package("curl") {
         Ok(_) => {
             for library in [
                 "crypt32", "gdi32", "user32", "wldap32", "advapi32", "bcrypt", "ws2_32",

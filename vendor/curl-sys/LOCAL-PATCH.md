@@ -20,3 +20,8 @@ the old OpenSSL 1.x names also omit modern libssl/libcrypto and static zlib.
 The metadata probe supplies the full installed static closure. Windows system
 libraries used by curl/SSPI/OpenSSL remain explicit. Native CI validates linking
 and the linked engine's SFTP capability; Linux cross-compilation is not proof.
+
+Use `find_package`, not the legacy `probe` method: the latter defaults to
+`curl.lib` and does not traverse installed port metadata even without explicit
+library names. A synthetic installed-tree probe runs the actual build script;
+this checks discovery metadata, not Windows linker/runtime acceptance.
