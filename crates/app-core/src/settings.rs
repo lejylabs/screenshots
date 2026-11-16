@@ -7,6 +7,12 @@ use std::{
     path::{Path, PathBuf},
 };
 
+#[cfg(test)]
+thread_local! {
+    static AFTER_BACKUP_LENGTH: std::cell::Cell<Option<Box<dyn FnOnce()>>> = const { std::cell::Cell::new(None) };
+    static BACKUP_READ_BUFFER: std::cell::Cell<Option<(usize, usize)>> = const { std::cell::Cell::new(None) };
+}
+
 pub const DEFAULT_JPEG_QUALITY: u8 = 90;
 fn default_jpeg_quality() -> u8 {
     DEFAULT_JPEG_QUALITY
@@ -441,12 +447,33 @@ impl CaptureSettings {
 
     /// Write a settings backup without secrets, uploads or overwriting.
     pub fn export(&self, path: &Path) -> Result<()> {
-        self.export_at(path)
+        self.export_at_with_formats(path, Some(crate::CaptureFormatSettings::load()?))
+    }
+
+    /// Export a supplied catalog snapshot without resolving user configuration.
+    pub fn export_with_formats(
+        &self,
+        path: &Path,
+        formats: crate::CaptureFormatSettings,
+    ) -> Result<()> {
+        self.export_at_with_formats(path, Some(formats))
     }
 
     fn export_at(&self, path: &Path) -> Result<()> {
+        self.export_at_with_formats(path, None)
+    }
+
+    fn export_at_with_formats(
+        &self,
+        path: &Path,
+        formats: Option<crate::CaptureFormatSettings>,
+    ) -> Result<()> {
         self.validate_backup()?;
-        let bytes = serde_json::to_vec_pretty(self)?;
+        let mut value = serde_json::to_value(self)?;
+        if let Some(formats) = formats {
+            value["capture_formats"] = serde_json::to_value(formats)?;
+        }
+        let bytes = serde_json::to_vec_pretty(&value)?;
         ensure!(bytes.len() <= 65536, "Settings backup exceeds 64 KiB");
         let parent = path.parent().context("Invalid settings backup path")?;
         crate::history::ensure_storage_directory(parent)?;
@@ -479,6 +506,54 @@ impl CaptureSettings {
     /// Returns `(settings, folder_kept)`.
     pub fn import(path: &Path, fallback: PathBuf) -> Result<(Self, bool)> {
         Self::import_at(path, fallback)
+    }
+
+    /// Parse one bounded backup snapshot. Applying its two files is explicit, and
+    /// callers must report a format-catalog failure separately after settings save.
+    pub fn import_with_formats(
+        path: &Path,
+        fallback: PathBuf,
+    ) -> Result<(Self, bool, Option<crate::CaptureFormatSettings>)> {
+        #[derive(Deserialize)]
+        struct Formats {
+            #[serde(default)]
+            capture_formats: Option<crate::CaptureFormatSettings>,
+        }
+        ensure!(
+            path.metadata()?.is_file(),
+            "Settings backup must be a regular file"
+        );
+        let (mut file, identity) = crate::FileIdentity::open(path)?;
+        let admitted_len = file.metadata()?.len();
+        ensure!(admitted_len <= 65536, "Settings backup exceeds 64 KiB");
+        #[cfg(test)]
+        AFTER_BACKUP_LENGTH.with(|hook| {
+            if let Some(after_length) = hook.take() {
+                after_length();
+            }
+        });
+        let mut bytes = Vec::with_capacity(usize::try_from(admitted_len)?);
+        (&mut file).take(admitted_len).read_to_end(&mut bytes)?;
+        #[cfg(test)]
+        BACKUP_READ_BUFFER.with(|observed| observed.set(Some((bytes.len(), bytes.capacity()))));
+        ensure!(bytes.len() <= 65536, "Settings backup exceeds 64 KiB");
+        identity.verify_file(&file)?;
+        let mut settings: Self = serde_json::from_slice(&bytes)?;
+        settings.validate_backup()?;
+        settings.hotkeys = settings.hotkeys.validated()?;
+        settings.filename_template = settings.filename_template.trim().to_owned();
+        settings.upload_task_defaults =
+            validate_upload_task_defaults(&settings.upload_task_defaults)?;
+        let formats: Formats = serde_json::from_slice(&bytes)?;
+        let kept = !settings.output_directory.is_dir();
+        if kept {
+            ensure!(
+                fallback.is_absolute(),
+                "The save folder must be an absolute path"
+            );
+            settings.output_directory = fallback;
+        }
+        Ok((settings, kept, formats.capture_formats))
     }
 
     fn import_at(path: &Path, fallback: PathBuf) -> Result<(Self, bool)> {
@@ -517,7 +592,8 @@ impl CaptureSettings {
         self.save_at(&Self::config_path()?)
     }
 
-    fn save_at(&self, path: &Path) -> Result<()> {
+    /// Persist to an explicit worker-side configuration path.
+    pub fn save_at(&self, path: &Path) -> Result<()> {
         ensure!(
             (1..=60).contains(&self.capture_delay_seconds),
             "Capture delay must be between 1 and 60 seconds"
@@ -556,6 +632,9 @@ impl CaptureSettings {
     }
 }
 
+#[cfg(test)]
+#[path = "settings_format_backup_tests.rs"]
+mod format_backup_tests;
 #[cfg(test)]
 mod tests {
     use super::*;

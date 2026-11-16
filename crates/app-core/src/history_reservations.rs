@@ -123,9 +123,11 @@ pub(super) fn name_key(path: &str) -> Option<String> {
 
 fn trash_id(path: &str) -> Option<String> {
     let name = projected_name(path)?;
-    let id = name
-        .strip_prefix(".SCREENSHOTS-TRASH-")?
-        .strip_suffix(".PNG")?;
+    let (stem, extension) = name.rsplit_once('.')?;
+    if !matches!(extension, "PNG" | "JPG" | "JPEG" | "WEBP") {
+        return None;
+    }
+    let id = stem.strip_prefix(".SCREENSHOTS-TRASH-")?;
     let parsed = uuid::Uuid::parse_str(id).ok()?;
     (id.len() == 36).then(|| parsed.hyphenated().to_string())
 }

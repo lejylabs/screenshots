@@ -10,8 +10,17 @@ use std::sync::{
 };
 
 pub type NativeCaptureCheck<'a> = dyn Fn() -> Result<(), CaptureError> + 'a;
-pub type NativeCaptureExecutor =
-    fn(NativeCaptureCall, &NativeCaptureCheck<'_>) -> Result<NativeCaptureReply, CaptureError>;
+/// Restrictive session metadata owned by one native operation; never a serialized user option.
+#[doc(hidden)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct NativeCaptureContext {
+    pub wayland_session: bool,
+}
+pub type NativeCaptureExecutor = fn(
+    NativeCaptureCall,
+    &NativeCaptureCheck<'_>,
+    NativeCaptureContext,
+) -> Result<NativeCaptureReply, CaptureError>;
 static EXECUTOR: OnceLock<NativeCaptureExecutor> = OnceLock::new();
 
 /// Stores one function pointer only; it starts no process, runtime or native call.

@@ -9,13 +9,24 @@ const MAX_SAVED_PNG_FILE_BYTES: u64 = crate::MAX_CAPTURE_BYTES + 16 * 1024 * 102
 
 // JPEG reads its input in full before applying decoder limits. Freeze the readable
 // extent so a growing file cannot bypass the encoded-byte admission check.
-struct EditorFile {
-    file: std::fs::File,
+pub(crate) struct EditorFile<F = std::fs::File> {
+    file: F,
     length: u64,
     position: u64,
 }
 
-impl std::io::Read for EditorFile {
+impl<F: std::io::Seek> EditorFile<F> {
+    pub(crate) fn with_extent(mut file: F, length: u64) -> std::io::Result<Self> {
+        file.seek(std::io::SeekFrom::Start(0))?;
+        Ok(Self {
+            file,
+            length,
+            position: 0,
+        })
+    }
+}
+
+impl<F: std::io::Read> std::io::Read for EditorFile<F> {
     fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
         let available = self
             .length
@@ -27,7 +38,7 @@ impl std::io::Read for EditorFile {
     }
 }
 
-impl std::io::Seek for EditorFile {
+impl<F: std::io::Seek> std::io::Seek for EditorFile<F> {
     fn seek(&mut self, from: std::io::SeekFrom) -> std::io::Result<u64> {
         let from = match from {
             std::io::SeekFrom::End(offset) => {
@@ -661,7 +672,7 @@ fn open_saved_png_after_preflight(path: &std::path::Path) -> Result<EditorFile> 
     })
 }
 
-fn decode_saved_png(
+pub(crate) fn decode_saved_png(
     reader: impl std::io::BufRead + std::io::Seek,
     max_decoded_bytes: u64,
 ) -> Result<image::RgbaImage> {
@@ -747,6 +758,10 @@ impl ImageClipboard {
     }
 
     /// Explicit recopy only; the live capture/selection pipeline stays in memory.
+    pub fn copy_saved_image(&mut self, path: &std::path::Path) -> Result<(u32, u32)> {
+        self.copy_image(&crate::load_saved_image(path, || false)?)
+    }
+
     pub fn copy_saved_png(&mut self, path: &std::path::Path) -> Result<(u32, u32)> {
         self.copy_image(&load_saved_png(path)?)
     }

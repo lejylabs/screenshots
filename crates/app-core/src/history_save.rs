@@ -10,6 +10,9 @@ use std::{
     time::{Duration, Instant},
 };
 
+#[cfg(test)]
+#[path = "history_save_format_tests.rs"]
+mod format_tests;
 #[path = "history_save_native.rs"]
 pub(super) mod native;
 #[cfg(test)]
@@ -60,6 +63,8 @@ struct CancelStamp {
 #[serde(deny_unknown_fields)]
 struct Intent {
     version: u8,
+    #[serde(default, skip_serializing_if = "crate::capture_format::is_png")]
+    format: crate::ImageExportFormat,
     operation_id: String,
     target: PathBuf,
     stage: PathBuf,
@@ -128,7 +133,8 @@ fn names(intent: &Intent) -> Result<(&str, &str)> {
 }
 fn validate(intent: &Intent) -> Result<()> {
     ensure!(
-        intent.version == 1
+        matches!(intent.version, 1 | 2)
+            && (intent.version != 1 || intent.format == crate::ImageExportFormat::Png)
             && uuid::Uuid::parse_str(&intent.operation_id)
                 .is_ok_and(|id| id.hyphenated().to_string() == intent.operation_id),
         "Invalid save intent version or operation ID"
@@ -140,10 +146,7 @@ fn validate(intent: &Intent) -> Result<()> {
         stage == format!(".screenshots-save-{}.part", intent.operation_id)
             && intent.stage.parent() == intent.target.parent()
             && stage != target
-            && intent
-                .target
-                .extension()
-                .is_some_and(|x| x.eq_ignore_ascii_case("png")),
+            && crate::ImageExportFormat::from_path(&intent.target).ok() == Some(intent.format),
         "Invalid save intent paths"
     );
     ensure!(
@@ -157,7 +160,12 @@ fn validate(intent: &Intent) -> Result<()> {
     );
     if let Some(ready) = &intent.ready {
         ensure!(
-            (33..=MAX_ENCODED).contains(&ready.bytes)
+            ((if intent.format == crate::ImageExportFormat::Png {
+                33
+            } else {
+                12
+            })..=crate::capture_format::encoded_limit(intent.format))
+                .contains(&ready.bytes)
                 && ready.sha256.len() == 64
                 && ready
                     .sha256
@@ -381,14 +389,20 @@ fn cleanup_failed_save(
     cancel_owned(database, stored, directory, file)?;
     Ok(())
 }
+#[cfg(test)]
 fn prepare(database: &Path, destination: &Path) -> Result<(Intent, native::Directory, File)> {
+    prepare_format(database, destination, crate::ImageExportFormat::Png)
+}
+fn prepare_format(
+    database: &Path,
+    destination: &Path,
+    format: crate::ImageExportFormat,
+) -> Result<(Intent, native::Directory, File)> {
     let absolute = std::path::absolute(destination)?;
     text_path(&absolute)?;
     ensure!(
-        absolute
-            .extension()
-            .is_some_and(|x| x.eq_ignore_ascii_case("png")),
-        "Capture history saves require .png"
+        crate::ImageExportFormat::from_path(&absolute)? == format,
+        "Capture history destination extension does not match its encoding"
     );
     let parent = absolute.parent().context("Save needs a parent directory")?;
     super::ensure_storage_directory(parent)?;
@@ -411,7 +425,12 @@ fn prepare(database: &Path, destination: &Path) -> Result<(Intent, native::Direc
     let file = directory.open_file(stage_name, true)?.unwrap();
     file.try_lock().context("Capture save staging is busy")?;
     let intent = Intent {
-        version: 1,
+        version: if format == crate::ImageExportFormat::Png {
+            1
+        } else {
+            2
+        },
+        format,
         operation_id,
         target,
         stage,
@@ -458,7 +477,7 @@ fn prepare(database: &Path, destination: &Path) -> Result<(Intent, native::Direc
         let mut largest = intent.clone();
         largest.ready = Some(Ready {
             sha256: "f".repeat(64),
-            bytes: MAX_ENCODED,
+            bytes: crate::capture_format::encoded_limit(format),
             width: u32::MAX,
             height: u32::MAX,
         });
@@ -485,14 +504,17 @@ fn prepare(database: &Path, destination: &Path) -> Result<(Intent, native::Direc
     Ok((intent, directory, file))
 }
 struct HashWriter<'a> {
+    limit: u64,
     file: &'a mut File,
     hash: Sha256,
     bytes: u64,
 }
 impl Write for HashWriter<'_> {
     fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-        if bytes.len() as u64 > MAX_ENCODED.saturating_sub(self.bytes) {
-            return Err(std::io::Error::other("PNG exceeds 272 MiB encoded limit"));
+        if bytes.len() as u64 > self.limit.saturating_sub(self.bytes) {
+            return Err(std::io::Error::other(
+                "Capture exceeds its format encoded limit",
+            ));
         }
         let count = self.file.write(bytes)?;
         self.hash.update(&bytes[..count]);
@@ -517,11 +539,27 @@ fn save(
     cancelled: impl Fn() -> bool,
     encode: impl FnOnce(&mut dyn Write) -> Result<(u32, u32)>,
 ) -> Result<CaptureSaveOutcome> {
+    save_format(
+        database,
+        destination,
+        crate::ImageExportFormat::Png,
+        cancelled,
+        encode,
+    )
+}
+fn save_format(
+    database: &Path,
+    destination: &Path,
+    format: crate::ImageExportFormat,
+    cancelled: impl Fn() -> bool,
+    encode: impl FnOnce(&mut dyn Write) -> Result<(u32, u32)>,
+) -> Result<CaptureSaveOutcome> {
     let start = Instant::now();
     checked(&cancelled, start)?;
-    let (mut intent, directory, mut file) = prepare(database, destination)?;
+    let (mut intent, directory, mut file) = prepare_format(database, destination, format)?;
     let written: Result<crate::FileIdentity> = (|| {
         let mut writer = HashWriter {
+            limit: crate::capture_format::encoded_limit(format),
             file: &mut file,
             hash: Sha256::new(),
             bytes: 0,
@@ -536,8 +574,13 @@ fn save(
         checked(&cancelled, start)?;
         crate::validate_image_size(width, height)?;
         ensure!(
-            (33..=MAX_ENCODED).contains(&writer.bytes),
-            "PNG output has invalid length"
+            ((if format == crate::ImageExportFormat::Png {
+                33
+            } else {
+                12
+            })..=crate::capture_format::encoded_limit(format))
+                .contains(&writer.bytes),
+            "Capture output has invalid length"
         );
         let ready = Ready {
             sha256: format!("{:x}", writer.hash.finalize()),
@@ -586,7 +629,7 @@ fn save(
         Err(error) => {
             let mut report = outcome(&intent, "saved_unindexed", true);
             report.warning = Some(format!(
-                "PNG was published; history recovery is pending for operation {}: {error:#}",
+                "Image was published; history recovery is pending for operation {}: {error:#}",
                 intent.operation_id
             ));
             Ok(report)
@@ -614,6 +657,113 @@ pub fn save_capture_with_history(
         Ok(image.pixels.dimensions())
     })
 }
+/// Explicit normal-capture format. Validate before reserving files or storage.
+pub fn save_capture_with_history_policy(
+    database: &Path,
+    image: &crate::CapturedImage,
+    destination: &Path,
+    policy: crate::CaptureFormatPolicy,
+    cancelled: impl Fn() -> bool,
+) -> Result<CaptureSaveOutcome> {
+    let cancelled = crate::image_cancel::latch(cancelled);
+    policy.validate_destination(destination)?;
+    policy.validate_pixels(&image.pixels, &cancelled)?;
+    save_format(
+        database,
+        destination,
+        policy.format(),
+        &cancelled,
+        |writer| {
+            policy.encode_to(&image.pixels, writer, &cancelled)?;
+            Ok(image.pixels.dimensions())
+        },
+    )
+}
+
+/// Explicit conversion from a saved image into a history output.
+pub fn save_saved_image_with_history_policy(
+    database: &Path,
+    source: &Path,
+    destination: &Path,
+    policy: crate::CaptureFormatPolicy,
+    cancelled: impl Fn() -> bool,
+) -> Result<CaptureSaveOutcome> {
+    let cancelled = crate::image_cancel::latch(cancelled);
+    policy.validate_destination(destination)?;
+    ensure!(
+        source.metadata()?.is_file(),
+        "Saved image source must be regular"
+    );
+    let (file, admitted) = crate::FileIdentity::open(source)?;
+    crate::saved_image::inspect_saved_image_file(&file, &cancelled)?;
+    let pixels = crate::load_editor_image_with_identity_and_limit_with_cancel(
+        source,
+        &admitted,
+        crate::MAX_CAPTURE_BYTES,
+        &cancelled,
+    )?;
+    admitted.verify_file(&file)?;
+    policy.validate_pixels(&pixels, &cancelled)?;
+    save_format(
+        database,
+        destination,
+        policy.format(),
+        &cancelled,
+        |writer| {
+            policy.encode_to(&pixels, writer, &cancelled)?;
+            Ok(pixels.dimensions())
+        },
+    )
+}
+
+/// Copy an admitted PNG/JPEG/WebP exactly; no decode, metadata loss or new lossy generation.
+pub fn copy_saved_image_with_history(
+    database: &Path,
+    source: &Path,
+    destination: &Path,
+    cancelled: impl Fn() -> bool,
+) -> Result<CaptureSaveOutcome> {
+    let cancelled = crate::image_cancel::latch(cancelled);
+    ensure!(!cancelled(), crate::CaptureError::Canceled);
+    ensure!(
+        source.metadata()?.is_file(),
+        "Saved image source must be regular"
+    );
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
+    }
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        options.custom_flags(windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OPEN_REPARSE_POINT);
+    }
+    let mut source = options.open(source)?;
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::fs::MetadataExt;
+        ensure!(
+            source.metadata()?.file_attributes()
+                & windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT
+                == 0,
+            "Saved image source refuses reparse points"
+        );
+    }
+    let admitted = crate::FileIdentity::from_file(&source)?;
+    let info = crate::saved_image::inspect_saved_image_file(&source, &cancelled)?;
+    ensure!(
+        crate::ImageExportFormat::from_path(destination)? == info.format,
+        "Copy destination extension does not match source contents"
+    );
+    save_format(database, destination, info.format, &cancelled, |writer| {
+        crate::saved_image::copy_saved_image_to(&mut source, &admitted, info, writer, &cancelled)?;
+        Ok((info.width, info.height))
+    })
+}
+
 /// Original-size PNG Save As preserves encoded bytes; never decodes source pixels.
 pub fn copy_saved_png_with_history(
     database: &Path,
@@ -718,6 +868,17 @@ fn verify_ready(mut file: &File, intent: &Intent) -> Result<()> {
         format!("{:x}", hash.finalize()) == ready.sha256,
         "Journaled image content changed; preserved"
     );
+    let actual = crate::saved_image::inspect_saved_image_file(file, &|| {
+        start.elapsed() >= Duration::from_secs(30)
+    })?;
+    ensure!(
+        actual.format == intent.format
+            && actual.width == ready.width
+            && actual.height == ready.height
+            && actual.encoded_bytes == ready.bytes,
+        "Journaled image format or dimensions disagree; preserved"
+    );
+    version.verify_file(file)?;
     Ok(())
 }
 fn finish(
@@ -756,7 +917,12 @@ fn finish(
     let changed = super::insert_capture(
         &transaction,
         &intent.target,
-        (ready.width, ready.height, i64::try_from(ready.bytes)?),
+        (
+            ready.width,
+            ready.height,
+            i64::try_from(ready.bytes)?,
+            crate::capture_format::image_mime_type(intent.format),
+        ),
         "capture",
     )?;
     ensure!(
@@ -861,7 +1027,7 @@ pub fn recover_capture_save(
             if target_exists {
                 verify_ready(&file, &intent)?;
                 let mut report = outcome(&intent, "saved_unindexed", true);
-                report.warning=Some("The PNG is already published and was preserved. Finish this intent to index it; cancellation cannot undo a completed save.".into());
+                report.warning=Some("The image is already published and was preserved. Finish this intent to index it; cancellation cannot undo a completed save.".into());
                 return Ok(report);
             }
             if intent.canceling.is_some() {

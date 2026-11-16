@@ -518,6 +518,7 @@ fn encoded_output_limit_rejects_before_extending_file() -> Result<()> {
     let f = Fixture::new();
     let mut file = std::fs::File::create(f.root.join("bounded"))?;
     let mut writer = HashWriter {
+        limit: MAX_ENCODED,
         file: &mut file,
         hash: Sha256::new(),
         bytes: MAX_ENCODED,

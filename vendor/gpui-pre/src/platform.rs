@@ -227,6 +227,9 @@ pub fn guess_compositor() -> &'static str {
 pub struct GraphicalEnvironment {
     /// `WAYLAND_DISPLAY`: a socket name relative to `xdg_runtime_dir`, or an absolute path.
     pub wayland_display: Option<OsString>,
+    /// Original/effective Wayland authority, including an inherited socket already consumed.
+    /// This is metadata only; it never transfers or reopens a descriptor.
+    pub wayland_session: bool,
     /// `DISPLAY`: the X11 display name.
     pub x11_display: Option<OsString>,
     /// `XDG_RUNTIME_DIR`: the directory containing Wayland sockets.
@@ -306,8 +309,18 @@ impl GraphicalEnvironment {
     /// This only reads environment variables: whether they name a reachable display server is
     /// checked when a platform connects. Leaves `activation_token` unset: see its documentation.
     pub fn detect() -> Self {
+        let wayland_display = std::env::var_os("WAYLAND_DISPLAY");
+        let wayland_session = std::env::var_os("WAYLAND_SOCKET").is_some()
+            || wayland_display
+                .as_ref()
+                .is_some_and(|value| !value.is_empty())
+            || std::env::var_os("XDG_SESSION_TYPE")
+                .as_deref()
+                .and_then(std::ffi::OsStr::to_str)
+                .is_some_and(|value| value.eq_ignore_ascii_case("wayland"));
         Self {
-            wayland_display: std::env::var_os("WAYLAND_DISPLAY"),
+            wayland_display,
+            wayland_session,
             x11_display: std::env::var_os("DISPLAY"),
             xdg_runtime_dir: std::env::var_os("XDG_RUNTIME_DIR"),
             activation_token: None,

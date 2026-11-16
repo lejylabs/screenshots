@@ -317,6 +317,14 @@ fn refresh_pending() -> Result<(), CaptureError> {
     drop(value._admission);
     Ok(())
 }
+fn restrict_command_context(command: &mut Command, context: app_core::NativeCaptureContext) {
+    #[cfg(target_os = "linux")]
+    if context.wayland_session {
+        command.env("XDG_SESSION_TYPE", "wayland");
+    }
+    #[cfg(not(target_os = "linux"))]
+    let _ = (command, context);
+}
 fn command() -> Result<Command> {
     #[cfg(target_os = "linux")]
     let executable = std::path::PathBuf::from("/proc/self/exe");
@@ -689,6 +697,7 @@ pub(crate) fn install() -> Result<()> {
 fn execute(
     call: NativeCaptureCall,
     check: &NativeCaptureCheck<'_>,
+    context: app_core::NativeCaptureContext,
 ) -> Result<NativeCaptureReply, CaptureError> {
     if matches!(call, NativeCaptureCall::MacVideo { .. }) {
         return Err(CaptureError::Unsupported(
@@ -697,9 +706,12 @@ fn execute(
     }
     let timeout = operation_timeout(&call);
     execute_factory(
-        || {
-            command()
-                .map_err(|_| CaptureError::Backend("Native worker executable unavailable".into()))
+        move || {
+            let mut command = command().map_err(|_| {
+                CaptureError::Backend("Native worker executable unavailable".into())
+            })?;
+            restrict_command_context(&mut command, context);
+            Ok(command)
         },
         call,
         check,
@@ -902,6 +914,8 @@ fn serve() -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(target_os = "linux")]
+    include!("capture_worker_context_tests.rs");
     use super::*;
     use std::path::{Path, PathBuf};
     const MODE: &str = "SCREENSHOTS_CAPTURE_WORKER_FIXTURE";
@@ -1414,6 +1428,25 @@ mod tests {
             }
             "slow" => {
                 std::thread::sleep(Duration::from_millis(250));
+                protocol::reply(&mut io, NativeCaptureReply::Frames(vec![frame()]))?;
+            }
+            #[cfg(target_os = "linux")]
+            "wayland_session_context" => {
+                ensure!(
+                    std::env::var_os("WAYLAND_SOCKET").is_none(),
+                    "Raw Wayland descriptor escaped"
+                );
+                ensure!(
+                    std::env::var_os("XDG_SESSION_TYPE") == Some("wayland".into()),
+                    "Owned session context was lost"
+                );
+                ensure!(
+                    !app_core::CaptureBackend::capabilities(&app_core::XcapBackend::new(
+                        PathBuf::new()
+                    ))
+                    .capture_display,
+                    "Worker session context allowed an XWayland display capture"
+                );
                 protocol::reply(&mut io, NativeCaptureReply::Frames(vec![frame()]))?;
             }
             #[cfg(target_os = "linux")]

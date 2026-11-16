@@ -9,6 +9,9 @@ Desktop: screenshots [--show]
 Open image: screenshots --open FILE
 Headless commands (no desktop UI; outputs and uploads require explicit actions):
   screenshots --help | --version
+  screenshots formats show|set-capture POLICY_JSON|set-library POLICY_JSON [--config FILE]
+  screenshots formats validate FILE
+  screenshots formats export NEW.json|import FILE [--config FILE]
   screenshots clipboard inspect|text|files|image-info
   screenshots clipboard image NEW.png
   screenshots autostart status|enable|disable
@@ -46,12 +49,12 @@ Headless commands (no desktop UI; outputs and uploads require explicit actions):
   screenshots history DATABASE [--before ID] [--search WORDS]
   screenshots history-audit DATABASE [--cursor ID]
   screenshots history-manage import|remove|remove-missing|relink DATABASE ARGUMENTS...
-  screenshots history-manage export DATABASE DIRECTORY original|strip-metadata ID...
-  screenshots history-manage move DATABASE ID NEW.png
-  screenshots history-manage transfer DATABASE ID NEW.png
+  screenshots history-manage export DATABASE DIRECTORY original|strip-metadata|configured ID... [--config FILE]
+  screenshots history-manage move DATABASE ID NEW_IMAGE
+  screenshots history-manage transfer DATABASE ID NEW_IMAGE
   screenshots history-manage trash DATABASE DIRECTORY ID... (1–100 IDs)
   screenshots history-manage trash-list DATABASE [CURSOR]
-  screenshots history-manage restore DATABASE TRASH_UUID [NEW.png]
+  screenshots history-manage restore DATABASE TRASH_UUID [NEW_IMAGE]
   screenshots history-manage purge DATABASE TRASH_UUID... (1–100 IDs)
   screenshots history-manage retention DATABASE POLICY.json preview|apply
   screenshots history-manage index-identities DATABASE [CURSOR]
@@ -129,6 +132,7 @@ pub fn run(args: Vec<OsString>) -> Result<bool> {
         return Ok(false);
     };
     match command {
+        "formats" => crate::capture_format_command::run(&args[1..])?,
         "--open" => {
             ensure!(
                 args.len() == 2 && !args[1].is_empty() && args[1].as_encoded_bytes().len() <= 4096,
