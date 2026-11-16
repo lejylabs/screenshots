@@ -1,16 +1,17 @@
 # Functional gap analysis: screenshots and ShareX
 
-## Current reconciliation: feature branch, 2026-11-15
+## Historical reconciliation: feature branch, 2026-11-15
 
 The [current checklist](non-ui-status.md) reconciles all project Markdown and
 the complete requested feature list; this file retains the historical detail.
 
-The 2026-11-16 continuation adds native defaults/templates and isolation,
-portable Library lifecycle/retention, bounded raster cancellation, modern SXCU
-execution and complete private-runtime packaging. Durable schedules, atomic
-Windows workers, real in-memory portal capture and URL input are under final
-integration. Consult the linked current checklist and each dated contract for
-actual source/test scope; none of this closes excluded UI or hardware gates.
+The current continuation commits native defaults/templates and isolation,
+portable Library lifecycle/retention, bounded raster cancellation, modern SXCU,
+private-runtime packaging, durable schedules, atomic Windows workers, in-memory
+portal capture, URL input and reviewed native capture/clipboard foundations.
+The older capability bullets and detail tables below predate these additions,
+including provider/OAuth/audio and physical Windows calibration. Use the current
+checklist and focused contracts for source, test and remaining UI/native scope.
 
 The historical tables below are not the current delivery checklist. Relative to
 main 523bc3c, the feature branch adds the following **CLI/core subsets**:

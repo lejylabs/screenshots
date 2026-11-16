@@ -42,3 +42,18 @@ and a 256-MiB RGBA admission bound. Unused PNG/URI helpers and the ashpd
 logical coordinates; the application refuses named XWayland monitor/region
 captures instead of substituting a picker. Its explicit portal source lives in
 the application's bounded ScreenCast/PipeWire worker adapter.
+
+
+## Linux X11 physical region bounds
+
+A Linux-only `Monitor::physical_geometry` reports raw RandR raster origin/size;
+existing logical geometry getters remain unchanged. Native region validation
+and root-read origin now use one raw monitor snapshot, independent of Xft DPI,
+with checked bounds and X11 coordinate narrowing. This prevents low Xft DPI from
+admitting adjacent-monitor pixels and high Xft DPI from rejecting valid far-half
+pixels. `physical_region_bounds.rs` is the exact production helper exercised by
+app-core fixtures. Private authenticated Xvfb tests additionally cover DPI48/192
+and a selected left monitor beside another root raster region; their execution
+status is recorded by the parent repository, not inferred from this patch.
+The application uses physical metadata for display/region admission. X11
+endpoint checks do not establish detection of restored A/B/A topology changes.

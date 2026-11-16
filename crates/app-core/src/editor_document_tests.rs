@@ -1169,3 +1169,324 @@ fn final_metadata_plan_uses_shared_codec_axis_and_input_byte_limits() -> Result<
     assert!(state.planned_output_size().is_err());
     Ok(())
 }
+
+#[test]
+fn thin_and_fill_only_arrow_heads_are_not_clipped_by_tight_bounds() -> Result<()> {
+    for (width, fill, stroke) in [
+        (0.1, None, Some([255, 0, 0, 255])),
+        (0.0, Some([255, 0, 0, 255]), None),
+    ] {
+        let mut input = source(100, 100);
+        input.pixels = Arc::new(RgbaImage::from_pixel(100, 100, Rgba([0, 0, 0, 255])));
+        let render = |bounds| -> Result<_> {
+            let mut document = EditorDocument::from_image(input.clone())?;
+            document.insert(layer(
+                1,
+                bounds,
+                LayerKind::Draw {
+                    shape: Shape::Arrow {
+                        start: [10.0, 50.0],
+                        end: [50.0, 50.0],
+                    },
+                    style: Style {
+                        fill,
+                        stroke,
+                        width,
+                    },
+                },
+            ))?;
+            document.snapshot().render(|| false)
+        };
+        let tight = render(Rect::new(10.0, 49.5, 40.0, 1.0))?;
+        let roomy = render(Rect::new(0.0, 40.0, 60.0, 20.0))?;
+        assert_eq!(tight.pixels, roomy.pixels);
+        assert!(tight.pixels.get_pixel(44, 47).0[0] > 0);
+        assert!(tight.pixels.get_pixel(44, 52).0[0] > 0);
+    }
+    Ok(())
+}
+
+#[test]
+fn transformed_singleton_paths_include_their_minimum_dot_geometry() -> Result<()> {
+    let mut input = source(128, 128);
+    input.pixels = Arc::new(RgbaImage::from_pixel(128, 128, Rgba([0, 0, 0, 255])));
+    for width in [0.0, 0.05, 0.1] {
+        for transform in [
+            Affine::scale(10.0, 10.0),
+            Affine([10.0, 0.0, 3.0, 10.0, -30.0, 0.0]),
+        ] {
+            let render = |bounds| -> Result<_> {
+                let mut document = EditorDocument::from_image(input.clone())?;
+                let mut dot = layer(
+                    1,
+                    bounds,
+                    LayerKind::Draw {
+                        shape: Shape::Path {
+                            points: vec![[10.0, 10.0]],
+                            closed: false,
+                        },
+                        style: Style {
+                            fill: Some([0, 255, 0, 255]),
+                            stroke: None,
+                            width,
+                        },
+                    },
+                );
+                dot.transform = transform;
+                document.insert(dot)?;
+                document.snapshot().render(|| false)
+            };
+            let tight = render(Rect::new(10.0, 10.0, 1.0, 1.0))?;
+            let roomy = render(Rect::new(9.0, 9.0, 2.0, 2.0))?;
+            assert_eq!(tight.pixels, roomy.pixels);
+            assert_eq!(tight.pixels.get_pixel(96, 99).0, [0, 255, 0, 255]);
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn zero_width_stroke_does_not_override_singleton_or_arrow_fill() -> Result<()> {
+    let mut input = source(128, 128);
+    input.pixels = Arc::new(RgbaImage::from_pixel(128, 128, Rgba([0, 0, 0, 255])));
+    for (shape, bounds, transform, sample) in [
+        (
+            Shape::Path {
+                points: vec![[10.5, 10.5]],
+                closed: false,
+            },
+            Rect::new(10.0, 10.0, 1.0, 1.0),
+            Affine::scale(10.0, 10.0),
+            [104, 104],
+        ),
+        (
+            Shape::Arrow {
+                start: [10.0, 50.0],
+                end: [50.0, 50.0],
+            },
+            Rect::new(10.0, 49.5, 40.0, 1.0),
+            Affine::IDENTITY,
+            [45, 49],
+        ),
+    ] {
+        let render = |stroke| -> Result<_> {
+            let mut document = EditorDocument::from_image(input.clone())?;
+            let mut mark = layer(
+                1,
+                bounds,
+                LayerKind::Draw {
+                    shape: shape.clone(),
+                    style: Style {
+                        fill: Some([0, 255, 0, 255]),
+                        stroke,
+                        width: 0.0,
+                    },
+                },
+            );
+            mark.transform = transform;
+            document.insert(mark)?;
+            document.snapshot().render(|| false)
+        };
+        let expected = render(None)?;
+        assert_eq!(
+            expected.pixels.get_pixel(sample[0], sample[1]).0,
+            [0, 255, 0, 255]
+        );
+        for inactive_stroke in [[255, 0, 0, 0], [255, 0, 0, 255]] {
+            assert_eq!(render(Some(inactive_stroke))?.pixels, expected.pixels);
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn vector_geometry_normalization_preserves_high_origin_cancellation_and_bounds() -> Result<()> {
+    let mut input = source(2112, 8);
+    input.pixels = Arc::new(RgbaImage::from_pixel(2112, 8, Rgba([0, 0, 0, 255])));
+    let render = |points: Vec<[f64; 2]>, bounds, transform| -> Result<_> {
+        let mut document = EditorDocument::from_image(input.clone())?;
+        let mut mark = layer(
+            1,
+            bounds,
+            LayerKind::Draw {
+                shape: Shape::Path {
+                    points,
+                    closed: true,
+                },
+                style: Style {
+                    fill: Some([0, 255, 0, 255]),
+                    stroke: None,
+                    width: 0.0,
+                },
+            },
+        );
+        mark.transform = transform;
+        document.insert(mark)?;
+        document.snapshot().render(|| false)
+    };
+    let unit = vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]];
+    for base in [1_000_000.0, -1_000_000.0] {
+        for reflected in [false, true] {
+            let (a, c, tx) = if reflected {
+                (-1024.0, 1024.0, 1085.44)
+            } else {
+                (1024.0, -1024.0, 1024.0)
+            };
+            let points = unit
+                .iter()
+                .map(|p| [p[0] + base + 0.03, p[1] + base])
+                .collect::<Vec<_>>();
+            let transform = Affine([a, 0.0, c, 1.0, tx, 2.0 - base]);
+            let tight = render(
+                points.clone(),
+                Rect::new(base + 0.03, base, 1.0, 1.0),
+                transform,
+            )?;
+            let roomy = render(
+                points,
+                Rect::new(base - 1.0, base - 1.0, 4.0, 4.0),
+                transform,
+            )?;
+            // Independent closed-form affine on a unit square, with no large cancellation.
+            let expected = render(
+                unit.clone(),
+                Rect::new(0.0, 0.0, 1.0, 1.0),
+                Affine([a, 0.0, c, 1.0, 1054.72, 2.0]),
+            )?;
+            assert_eq!(tight.pixels, roomy.pixels);
+            assert_eq!(tight.pixels, expected.pixels);
+            assert!(tight.pixels.get_pixel(1000, 2).0[1] > 0);
+            for x in 0..29 {
+                assert_eq!(tight.pixels.get_pixel(x, 2).0, [0, 0, 0, 255]);
+            }
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn vector_rebasing_preserves_anisotropic_reflected_strokes() -> Result<()> {
+    let mut input = source(64, 32);
+    input.pixels = Arc::new(RgbaImage::from_pixel(64, 32, Rgba([0, 0, 0, 255])));
+    let render = |origin: [f64; 2], a: f64, tx: f64| -> Result<_> {
+        let mut document = EditorDocument::from_image(input.clone())?;
+        let points =
+            [[1.0, 2.0], [7.0, 2.0], [7.0, 5.0]].map(|p| [p[0] + origin[0], p[1] + origin[1]]);
+        let mut mark = layer(
+            1,
+            Rect::new(origin[0] + 1.0, origin[1] + 2.0, 6.0, 3.0),
+            LayerKind::Draw {
+                shape: Shape::Path {
+                    points: points.to_vec(),
+                    closed: false,
+                },
+                style: Style {
+                    fill: None,
+                    stroke: Some([255, 0, 0, 255]),
+                    width: 0.75,
+                },
+            },
+        );
+        mark.transform = Affine([
+            a,
+            0.0,
+            1.0,
+            2.0,
+            tx - a * origin[0] - origin[1],
+            7.0 - 2.0 * origin[1],
+        ]);
+        document.insert(mark)?;
+        document.snapshot().render(|| false)
+    };
+    for (a, tx) in [(3.0, 10.0), (-3.0, 40.0)] {
+        let expected = render([0.0, 0.0], a, tx)?;
+        for origin in [[100_000.03, 100_000.0], [-100_000.03, -100_000.0]] {
+            assert_eq!(render(origin, a, tx)?.pixels, expected.pixels);
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn numerically_unstable_vector_span_is_refused_instead_of_clipped() -> Result<()> {
+    let mut document = EditorDocument::from_image(source(2112, 8))?;
+    let mut mark = layer(
+        1,
+        Rect::new(0.0, 0.0, 257.0, 256.0),
+        LayerKind::Draw {
+            shape: Shape::Path {
+                points: vec![[0.0, 0.0], [256.0, 256.0], [257.0, 256.0], [1.0, 0.0]],
+                closed: true,
+            },
+            style: Style {
+                fill: Some([0, 255, 0, 255]),
+                stroke: None,
+                width: 0.0,
+            },
+        },
+    );
+    mark.transform = Affine([1024.0, 0.0, -1024.0, 1.0, 1024.0, 0.0]);
+    document.insert(mark)?;
+    assert!(
+        document
+            .snapshot()
+            .render(|| false)
+            .unwrap_err()
+            .to_string()
+            .contains("rasterizer precision")
+    );
+    Ok(())
+}
+
+#[test]
+fn vector_numeric_admission_rejects_native_singularity_and_stroke_underflow() -> Result<()> {
+    for (transform, width) in [
+        (Affine([1.0, 1.0, 1.0, 1.00000002, 0.0, 0.0]), 0.75),
+        (Affine::IDENTITY, 1e-100),
+    ] {
+        transform.validate()?;
+        let mut document = EditorDocument::from_image(source(16, 16))?;
+        let mut mark = layer(
+            1,
+            Rect::new(1.0, 1.0, 4.0, 4.0),
+            LayerKind::Draw {
+                shape: Shape::Path {
+                    points: vec![[1.0, 1.0], [5.0, 5.0]],
+                    closed: false,
+                },
+                style: Style {
+                    fill: None,
+                    stroke: Some([255, 0, 0, 255]),
+                    width,
+                },
+            },
+        );
+        mark.transform = transform;
+        document.insert(mark)?;
+        assert!(
+            document
+                .snapshot()
+                .render(|| false)
+                .unwrap_err()
+                .to_string()
+                .contains("rasterizer precision")
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn small_vector_at_large_canvas_position_uses_local_tile_precision() -> Result<()> {
+    let mut input = source(1_000_032, 1);
+    input.pixels = Arc::new(RgbaImage::from_pixel(1_000_032, 1, Rgba([0, 0, 0, 255])));
+    let mut document = EditorDocument::from_image(input)?;
+    document.insert(fill(
+        1,
+        Rect::new(1_000_000.0, 0.0, 10.0, 1.0),
+        [0, 255, 0, 255],
+    ))?;
+    let output = document.snapshot().render(|| false)?;
+    assert_eq!(output.pixels.get_pixel(1_000_004, 0).0, [0, 255, 0, 255]);
+    assert_eq!(output.pixels.get_pixel(999_999, 0).0, [0, 0, 0, 255]);
+    Ok(())
+}

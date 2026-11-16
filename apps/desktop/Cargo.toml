@@ -12,6 +12,7 @@ description = "Desktop capture and sharing application"
 workspace = true
 
 [dependencies]
+crossbeam-queue = "=0.3.14"
 curl-sys = { version = "=0.4.91", default-features = false, features = ["ssl", "protocol-ftp"] }
 anyhow.workspace = true
 app-core.workspace = true

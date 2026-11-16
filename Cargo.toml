@@ -7,6 +7,7 @@ members = [
     "crates/shared",
 ]
 exclude = [
+    "vendor/moxcms",
     "vendor/accesskit_unix",
     "vendor/accesskit_atspi_common",
     "vendor/atspi-common",
@@ -77,6 +78,7 @@ xcap = "=0.9.10"
 opt-level = 1
 
 [patch.crates-io]
+moxcms = { path = "vendor/moxcms" }
 harfrust = { path = "vendor/harfrust" }
 ashpd = { path = "vendor/ashpd" }
 xcap = { path = "vendor/xcap" }

@@ -181,3 +181,11 @@ status or the Developer ID distribution status demonstrated in the
 while retaining the exact requested leaf identity and native verifier exit check.
 Fixtures exercise all admitted statuses, refusal cases and actual Unicode XML
 file bytes; no real certificate or trust-store acceptance is inferred.
+
+Fresh EGM source reviews 5 and 6 found no Blocker, Major or Nit. Current local
+checks pass 23 signing/process, 12 portable-package and 4 native-layout fixtures.
+The earlier Windows native snapshot's two stdout-newline fixture failures were
+corrected with explicit binary fixture output; the production tool runner still
+returns the native bytes unchanged. The corrected current source has not run on
+Darwin/Windows CI: GitHub currently denies pushes for the authenticated account.
+This source-review convergence does not close real signing/notarization gates.

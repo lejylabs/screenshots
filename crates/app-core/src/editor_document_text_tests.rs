@@ -332,6 +332,65 @@ fn exhausted_real_gpos_preprocessing_is_observable_and_refused_before_glyph_outp
 mod legacy_fixtures;
 use legacy_fixtures::{apple_kern, font_with_legacy_kern, kern_words};
 
+#[test]
+fn legacy_runtime_loop_refuses_while_default_and_natural_advancement_remain_unchanged() -> Result<()>
+{
+    for (flags, exhausted) in [(0, false), (0x8000, false), (0xc000, true)] {
+        let mut body = kern_words([4, 8, 128, 136, 0, 116]);
+        body.extend(std::iter::repeat_n(1, 116));
+        body.extend_from_slice(&[0; 8]);
+        body.extend(kern_words([128, flags]));
+        let bytes = font_with_legacy_kern(&apple_kern(1, &body, 1));
+        assert!(admit_font(&bytes, 0).is_ok());
+        let font = harfrust::Font::new(bytes.clone(), 0).unwrap();
+        let shaper = harfrust::ShaperFont::new(&font);
+        let mut default_positions = None;
+        for strict in [false, true] {
+            let mut buffer = harfrust::Buffer::new();
+            buffer.set_fail_on_runtime_budget_exhaustion(strict);
+            buffer.push_str("AV");
+            buffer.guess_segment_properties();
+            harfrust::shape(&shaper, &mut buffer, harfrust::ShapeOptions::new()).unwrap();
+            assert_eq!(buffer.allocation_successful(), !(strict && exhausted));
+            let positions: Vec<_> = buffer
+                .glyph_positions()
+                .iter()
+                .map(|position| {
+                    (
+                        position.x_advance,
+                        position.y_advance,
+                        position.x_offset,
+                        position.y_offset,
+                    )
+                })
+                .collect();
+            if strict && !exhausted {
+                assert_eq!(default_positions.as_deref(), Some(positions.as_slice()));
+            } else if !strict {
+                default_positions = Some(positions);
+            }
+        }
+        let mut assets = EditorAssets::new();
+        assets.insert_font("legacy", bytes.into(), 0)?;
+        let mut text = label("AV");
+        text.spans[0].style.fonts = vec!["legacy".into()];
+        let cancel = || false;
+        let mut work = ImageWork::new(&cancel)?;
+        let result = prepare(&text, &assets, [128, 64], &mut work);
+        if exhausted {
+            assert!(
+                result
+                    .unwrap_err()
+                    .to_string()
+                    .contains("shaping exhausted")
+            );
+        } else {
+            assert!(result?.pixels().any(|p| p[3] != 0));
+        }
+    }
+    Ok(())
+}
+
 fn kern_advance(bytes: Vec<u8>) -> i32 {
     let face = harfrust::Font::new(bytes, 0).unwrap();
     let shaper = harfrust::ShaperFont::new(&face);

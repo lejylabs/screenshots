@@ -63,6 +63,12 @@ impl Monitor {
     pub fn height(&self) -> XCapResult<u32> {
         self.impl_monitor.height()
     }
+    /// Raw X11 RandR raster origin and dimensions, without Xft/UI scaling.
+    /// This leaves the existing logical geometry getters unchanged.
+    #[cfg(all(target_os = "linux", not(target_env = "ohos")))]
+    pub fn physical_geometry(&self) -> XCapResult<(i32, i32, u32, u32)> {
+        self.impl_monitor.physical_geometry()
+    }
     /// Can be 0, 90, 180, 270, represents screen rotation in clock-wise degrees.
     pub fn rotation(&self) -> XCapResult<f32> {
         self.impl_monitor.rotation()

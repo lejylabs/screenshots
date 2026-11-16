@@ -355,6 +355,7 @@ impl<'a> Layout<'a> {
                     "Editor font preprocessing exhausted its work/allocation bound"
                 );
                 let mut buffer = harfrust::Buffer::new();
+                buffer.set_fail_on_runtime_budget_exhaustion(true);
                 buffer.push_str(text);
                 buffer.set_direction(if rtl {
                     harfrust::Direction::RightToLeft

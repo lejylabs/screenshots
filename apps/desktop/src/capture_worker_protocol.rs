@@ -329,6 +329,7 @@ fn error_code(error: &app_core::CaptureError) -> u8 {
         E::MacScreenPermissionDenied => 13,
         E::MacAccessibilityPermissionDenied => 14,
         E::MacMicrophonePermissionDenied => 15,
+        E::ImageColorPolicy => 16,
         _ => 0,
     }
 }
@@ -353,6 +354,7 @@ fn error_from_code(code: u8) -> Result<app_core::CaptureError> {
         13 => E::MacScreenPermissionDenied,
         14 => E::MacAccessibilityPermissionDenied,
         15 => E::MacMicrophonePermissionDenied,
+        16 => E::ImageColorPolicy,
         _ => anyhow::bail!("Unknown native error category"),
     })
 }
@@ -664,6 +666,7 @@ mod tests {
         for error in [
             app_core::CaptureError::MacScreenPermissionDenied,
             app_core::CaptureError::MacAccessibilityPermissionDenied,
+            app_core::CaptureError::ImageColorPolicy,
         ] {
             let mut bytes = Vec::new();
             failure(&mut bytes, &error).unwrap();

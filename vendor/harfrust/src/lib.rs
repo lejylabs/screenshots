@@ -221,3 +221,6 @@ bitflags::bitflags! {
         const DEFINED = 0b0011_1111;
     }
 }
+
+#[cfg(test)]
+mod runtime_budget_tests;

@@ -66,6 +66,9 @@ pub fn apply(
 
     let mut seen_cross_stream = false;
     for (_index, subtable_cache) in subtable_caches.iter().enumerate() {
+        if c.buffer.strict_runtime_budget && !c.buffer.successful {
+            break;
+        }
         let subtable = &subtable_cache.subtable;
         #[cfg(feature = "tracing")]
         let message_index = _index;
@@ -417,6 +420,9 @@ fn apply_state_machine_kerning(
                     break 'drive;
                 }
                 c.buffer.max_ops -= 1;
+                if c.buffer.max_ops < 0 && c.buffer.fail_runtime_budget() {
+                    return None;
+                }
                 c.buffer.next_glyph();
 
                 let new_class = if c.buffer.idx < c.buffer.len {
@@ -504,6 +510,11 @@ fn apply_state_machine_kerning(
         }
 
         c.buffer.max_ops -= 1;
+        if (c.buffer.max_ops < 0 || (c.buffer.max_ops == 0 && !entry.has_advance()))
+            && c.buffer.fail_runtime_budget()
+        {
+            return None;
+        }
         if entry.has_advance() || c.buffer.max_ops <= 0 {
             c.buffer.next_glyph();
         }

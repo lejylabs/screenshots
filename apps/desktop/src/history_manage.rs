@@ -324,6 +324,36 @@ pub fn run(args: &[OsString]) -> Result<()> {
                 "History file move committed",
             )
         }
+        "pending-save" => {
+            ensure!(
+                args.len() == 2,
+                "Usage: screenshots history-manage pending-save DATABASE"
+            );
+            let database = bounded_path(&args[1])?;
+            existing_database(database)?;
+            print_result(
+                json!({"pending": app_core::pending_capture_save(database)?}),
+                "Could not report pending capture save",
+            )
+        }
+        "recover-save" => {
+            ensure!(
+                args.len() == 4,
+                "Usage: screenshots history-manage recover-save DATABASE OPERATION finish|cancel"
+            );
+            let database = bounded_path(&args[1])?;
+            existing_database(database)?;
+            let operation = trash_id(&args[2])?;
+            let action = match args[3].to_str() {
+                Some("finish") => app_core::MoveRecovery::Finish,
+                Some("cancel") => app_core::MoveRecovery::Cancel,
+                _ => bail!("Choose finish or cancel for save recovery"),
+            };
+            print_result(
+                serde_json::to_value(app_core::recover_capture_save(database, operation, action)?)?,
+                "Capture save recovery completed; inspect pending-save if its result could not be written",
+            )
+        }
         "pending-move" => {
             ensure!(
                 args.len() == 2,

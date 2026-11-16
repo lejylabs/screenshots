@@ -149,8 +149,10 @@ Template never executes catalog profile metadata recursively.
 | Monitor identity | Connector + validated EDID SHA-256; connector-only requires explicit choice | Active DisplayConfig target device path | ColorSync display UUID |
 
 Linux cursor/template operations require an X11 session and one X screen, which
-may contain multiple RandR outputs. Native display/region cursor composition and
-template capture currently require unrotated 100% physical-pixel coordinates.
+may contain multiple RandR outputs. Native display/region cursor composition
+currently requires unrotated 100% physical-pixel coordinates. Template metadata
+and bounds use raw RandR physical geometry independently of Xft UI scale; the
+native before/after checks are endpoint checks, not a topology-generation witness.
 Mirrored/ambiguous Windows identity mappings fail. The guarded macOS route covers
 default and explicit policies, requests/produces SDR sRGB8 and validates native
 stride/alpha/component metadata. Tagged SDR profiles can use public native color

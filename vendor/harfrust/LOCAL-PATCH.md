@@ -51,3 +51,26 @@ upstream behavior for other callers. Exact private-layout/capacity/work formulas
 assumptions, the independent4MiB legacy limits and real synthetic proofs are
 documented in [KERN-BOUND.md](KERN-BOUND.md). Its returned peak is accounted
 separately from OT and glyph/outline scratch; refusal is explicit.
+
+The editor also opts into `Buffer::set_fail_on_runtime_budget_exhaustion(true)`.
+Published legacy-kern state machines can force advancement when their operation
+allowance runs out, and OpenType contextual lookup application can skip required
+recursion at zero without marking the buffer unsuccessful. In strict mode these
+paths instead retain an unsuccessful status before glyphs can be accepted.
+Natural advancing transitions that use the last operation successfully remain
+valid; a further operation, or zero-budget forced advancement, fails and the
+legacy loop does not enter later subtables. The fast advancing branch is checked
+too. `clear` clears the failure and retains the option; `reset` also disables it.
+Default callers retain the published control flow, glyphs and status. The patch
+adds one boolean to each existing Buffer and no allocations or idle work.
+
+Actual private-engine boundary tests are in `src/runtime_budget_tests.rs`.
+The application and executable fixtures build a valid format1 PUSH/DONT_ADVANCE
+self-loop from the existing OFL font and require explicit refusal with no final
+or staging output. Default shaping and naturally advancing controls remain
+unchanged. The editor rejects `morx`, `mort` and `kerx` at admission; this opt-in
+does not claim to harden those unrelated upstream state-machine paths.
+
+The root `.gitattributes` preserves this vendored tree's published line endings,
+including CRLF generated tables, and treats carriage returns as line endings for
+whitespace checks. Source/provenance hashes refer to those retained bytes.

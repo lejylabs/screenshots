@@ -502,6 +502,8 @@ pub struct Buffer {
 
     /// Allocations successful.
     pub(crate) successful: bool,
+    /// Opt-in refusal of runtime operation-limit fallbacks.
+    pub(crate) strict_runtime_budget: bool,
     /// Whether we have an output buffer going on.
     pub(crate) have_output: bool,
     pub(crate) have_separate_output: bool,
@@ -552,6 +554,7 @@ impl Buffer {
             script: None,
             language: None,
             successful: true,
+            strict_runtime_budget: false,
             have_output: false,
             have_positions: false,
             idx: 0,
@@ -610,6 +613,7 @@ impl Buffer {
         self.cluster_level = HB_BUFFER_CLUSTER_LEVEL_DEFAULT;
         self.invisible = None;
         self.not_found_variation_selector = None;
+        self.strict_runtime_budget = false;
     }
 
     /// Returns the type of content currently held by the buffer, or `None`
@@ -685,6 +689,23 @@ impl Buffer {
     #[inline]
     pub fn allocation_successful(&self) -> bool {
         self.successful
+    }
+
+    /// Refuse shaping when its runtime operation limit would skip required work
+    /// or force an otherwise nonadvancing legacy-kern transition.
+    ///
+    /// The default is `false`, preserving upstream fallback behavior. Failure
+    /// is reported by [`Self::allocation_successful`]. [`Self::clear`] clears
+    /// failure while retaining this option; [`Self::reset`] also disables it.
+    pub fn set_fail_on_runtime_budget_exhaustion(&mut self, enabled: bool) {
+        self.strict_runtime_budget = enabled;
+    }
+
+    pub(crate) fn fail_runtime_budget(&mut self) -> bool {
+        if self.strict_runtime_budget {
+            self.successful = false;
+        }
+        self.strict_runtime_budget
     }
 
     /// Appends a codepoint to the buffer with the given cluster value.

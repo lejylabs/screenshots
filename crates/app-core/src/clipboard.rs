@@ -48,6 +48,21 @@ pub fn load_editor_image(path: &std::path::Path) -> Result<image::RgbaImage> {
     load_editor_image_with_limit(path, crate::MAX_CAPTURE_BYTES)
 }
 
+/// Explicit editor import with cancellation through snapshot and color conversion.
+pub fn load_editor_image_with_cancel(
+    path: &std::path::Path,
+    cancelled: &impl Fn() -> bool,
+) -> Result<image::RgbaImage> {
+    load_image_input_guarded_dimensions_with_cancel(
+        path,
+        crate::MAX_CAPTURE_BYTES,
+        false,
+        None,
+        None,
+        cancelled,
+    )
+}
+
 /// Verify the actual opened object and decode that same retained handle.
 pub fn load_editor_image_with_identity(
     path: &std::path::Path,
@@ -65,6 +80,22 @@ pub fn load_editor_image_with_identity_and_limit(
     load_image_input_guarded(path, max_decoded_bytes, false, Some(expected))
 }
 
+pub fn load_editor_image_with_identity_and_limit_with_cancel(
+    path: &std::path::Path,
+    expected: &crate::FileIdentity,
+    max_decoded_bytes: u64,
+    cancelled: &impl Fn() -> bool,
+) -> Result<image::RgbaImage> {
+    load_image_input_guarded_dimensions_with_cancel(
+        path,
+        max_decoded_bytes,
+        false,
+        Some(expected),
+        None,
+        cancelled,
+    )
+}
+
 /// Check oriented header dimensions before allocating a decoded pixel raster.
 pub fn load_editor_image_with_identity_limit_and_dimensions(
     path: &std::path::Path,
@@ -79,6 +110,24 @@ pub fn load_editor_image_with_identity_limit_and_dimensions(
         false,
         Some(expected),
         Some(dimensions),
+    )
+}
+
+pub fn load_editor_image_with_identity_limit_and_dimensions_with_cancel(
+    path: &std::path::Path,
+    expected: &crate::FileIdentity,
+    max_decoded_bytes: u64,
+    dimensions: [u32; 2],
+    cancelled: &impl Fn() -> bool,
+) -> Result<image::RgbaImage> {
+    crate::validate_image_size(dimensions[0], dimensions[1])?;
+    load_image_input_guarded_dimensions_with_cancel(
+        path,
+        max_decoded_bytes,
+        false,
+        Some(expected),
+        Some(dimensions),
+        cancelled,
     )
 }
 
@@ -116,6 +165,24 @@ fn load_image_input_guarded_dimensions(
     expected: Option<&crate::FileIdentity>,
     expected_dimensions: Option<[u32; 2]>,
 ) -> Result<image::RgbaImage> {
+    load_image_input_guarded_dimensions_with_cancel(
+        path,
+        max_decoded_bytes,
+        png_only,
+        expected,
+        expected_dimensions,
+        &|| false,
+    )
+}
+fn load_image_input_guarded_dimensions_with_cancel(
+    path: &std::path::Path,
+    max_decoded_bytes: u64,
+    png_only: bool,
+    expected: Option<&crate::FileIdentity>,
+    expected_dimensions: Option<[u32; 2]>,
+    cancelled: &impl Fn() -> bool,
+) -> Result<image::RgbaImage> {
+    anyhow::ensure!(!cancelled(), crate::CaptureError::Canceled);
     anyhow::ensure!(
         max_decoded_bytes > 0 && max_decoded_bytes <= crate::MAX_CAPTURE_BYTES,
         "Invalid decoded image budget"
@@ -148,41 +215,86 @@ fn load_image_input_guarded_dimensions(
         position: 0,
     }))
     .with_guessed_format()?;
-    decode_image_reader_dimensions(
+    decode_image_reader_dimensions_with_cancel(
         reader,
         length,
         max_decoded_bytes,
         png_only,
         expected_dimensions,
+        cancelled,
     )
 }
 
 /// Explicit encoded clipboard, drop or URL input; decode on a blocking worker.
 /// Keeps the same format/admission/orientation policy as an opened editor file.
 pub fn decode_editor_image_bytes(bytes: &[u8]) -> Result<image::RgbaImage> {
+    decode_editor_image_bytes_with_cancel(bytes, &|| false)
+}
+
+/// The shared managed import checks cancellation between bounded metadata,
+/// reader and conversion batches. Codec calls retain their bounded native lifecycle.
+pub fn decode_editor_image_bytes_with_cancel(
+    bytes: &[u8],
+    cancelled: &impl Fn() -> bool,
+) -> Result<image::RgbaImage> {
+    decode_editor_image_bytes_with_backing_and_cancel(bytes, bytes.len(), cancelled)
+}
+
+/// An owner must report its actual retained Vec capacity, including unused bytes.
+/// A slice-only caller remains responsible for backing outside the borrowed extent.
+pub fn decode_editor_image_bytes_with_backing_and_cancel(
+    bytes: &[u8],
+    backing: usize,
+    cancelled: &impl Fn() -> bool,
+) -> Result<image::RgbaImage> {
+    anyhow::ensure!(!cancelled(), crate::CaptureError::Canceled);
     anyhow::ensure!(
         !bytes.is_empty() && bytes.len() as u64 <= MAX_EDITOR_FILE_BYTES,
         "Encoded image exceeds the 32 MiB input limit or is empty"
     );
-    let reader = image::ImageReader::new(std::io::Cursor::new(bytes)).with_guessed_format()?;
-    decode_image_reader(reader, bytes.len() as u64, crate::MAX_CAPTURE_BYTES, false)
+    let format = image::guess_format(bytes)?;
+    crate::managed_color::decode_with_backing(
+        bytes,
+        backing,
+        format,
+        crate::MAX_CAPTURE_BYTES,
+        None,
+        cancelled,
+    )
 }
 
-fn decode_image_reader<R: std::io::BufRead + std::io::Seek>(
-    reader: image::ImageReader<R>,
-    length: u64,
-    max_decoded_bytes: u64,
-    png_only: bool,
-) -> Result<image::RgbaImage> {
-    decode_image_reader_dimensions(reader, length, max_decoded_bytes, png_only, None)
-}
-fn decode_image_reader_dimensions<R: std::io::BufRead + std::io::Seek>(
+fn decode_image_reader_dimensions_with_cancel<R: std::io::BufRead + std::io::Seek>(
     mut reader: image::ImageReader<R>,
     length: u64,
     max_decoded_bytes: u64,
     png_only: bool,
     expected_dimensions: Option<[u32; 2]>,
+    cancelled: &impl Fn() -> bool,
 ) -> Result<image::RgbaImage> {
+    anyhow::ensure!(!cancelled(), crate::CaptureError::Canceled);
+    if !png_only {
+        let format = reader.format().context("Unknown editor image format")?;
+        let mut input = reader.into_inner();
+        input.seek(std::io::SeekFrom::Start(0))?;
+        let mut bytes = Vec::with_capacity(usize::try_from(length)?);
+        let mut remaining = usize::try_from(length)?;
+        let mut chunk = [0u8; 64 * 1024];
+        while remaining > 0 {
+            anyhow::ensure!(!cancelled(), crate::CaptureError::Canceled);
+            let count = remaining.min(chunk.len());
+            input.read_exact(&mut chunk[..count])?;
+            bytes.extend_from_slice(&chunk[..count]);
+            remaining -= count;
+        }
+        return crate::managed_color::decode_with_backing(
+            &bytes,
+            bytes.capacity(),
+            format,
+            max_decoded_bytes,
+            expected_dimensions,
+            cancelled,
+        );
+    }
     anyhow::ensure!(
         !png_only || reader.format() == Some(image::ImageFormat::Png),
         "History metadata export requires PNG input"
@@ -313,7 +425,7 @@ fn webp_chunk<'a>(
     Ok((kind, &bytes[start..end]))
 }
 
-fn webp_bitstream(kind: [u8; 4], payload: &[u8], budget: u64) -> Result<(u32, u32)> {
+pub(super) fn webp_bitstream(kind: [u8; 4], payload: &[u8], budget: u64) -> Result<(u32, u32)> {
     match &kind {
         b"VP8 " => {
             anyhow::ensure!(payload.len() >= 10, "Truncated VP8 frame header");
@@ -341,7 +453,7 @@ fn webp_bitstream(kind: [u8; 4], payload: &[u8], budget: u64) -> Result<(u32, u3
 }
 
 /// Validate every frame, not just the advertised VP8X canvas, before the decoder runs.
-fn validate_webp(bytes: &[u8], budget: u64) -> Result<image::metadata::Orientation> {
+pub(super) fn validate_webp(bytes: &[u8], budget: u64) -> Result<image::metadata::Orientation> {
     anyhow::ensure!(
         bytes.len() >= 12 && &bytes[..4] == b"RIFF" && &bytes[8..12] == b"WEBP",
         "Invalid WebP RIFF header"
@@ -1303,6 +1415,66 @@ mod encoded_input_tests {
         assert!(
             error.to_string().to_ascii_lowercase().contains("limit"),
             "{error:#}"
+        );
+    }
+
+    #[test]
+    fn canceled_file_import_does_not_open_a_source_or_finish_a_snapshot() {
+        use std::{
+            cell::Cell,
+            io::{Cursor, Read, Seek},
+        };
+        let absent = std::env::temp_dir().join(format!("canceled-input-{}", uuid::Uuid::new_v4()));
+        assert!(
+            load_editor_image_with_cancel(&absent, &|| true)
+                .unwrap_err()
+                .to_string()
+                .contains("cancel")
+        );
+
+        struct SignalRead<'a> {
+            bytes: Cursor<Vec<u8>>,
+            canceled: &'a Cell<bool>,
+            consumed: &'a Cell<usize>,
+        }
+        impl Read for SignalRead<'_> {
+            fn read(&mut self, output: &mut [u8]) -> std::io::Result<usize> {
+                let count = self.bytes.read(output)?;
+                self.consumed.set(self.consumed.get() + count);
+                self.canceled.set(true);
+                Ok(count)
+            }
+        }
+        impl Seek for SignalRead<'_> {
+            fn seek(&mut self, position: std::io::SeekFrom) -> std::io::Result<u64> {
+                self.bytes.seek(position)
+            }
+        }
+        let canceled = Cell::new(false);
+        let consumed = Cell::new(0);
+        let source = SignalRead {
+            bytes: Cursor::new(vec![0; 128 * 1024]),
+            canceled: &canceled,
+            consumed: &consumed,
+        };
+        let reader = image::ImageReader::with_format(
+            std::io::BufReader::with_capacity(64 * 1024, source),
+            image::ImageFormat::Png,
+        );
+        let error = decode_image_reader_dimensions_with_cancel(
+            reader,
+            128 * 1024,
+            crate::MAX_CAPTURE_BYTES,
+            false,
+            None,
+            &|| canceled.get(),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("cancel"));
+        assert_eq!(
+            consumed.get(),
+            64 * 1024,
+            "snapshot stops at the next bounded read"
         );
     }
 }

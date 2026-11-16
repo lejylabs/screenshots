@@ -109,6 +109,40 @@ def write(path, value):
     return path
 
 
+def check_vector_precision(runner, directory):
+    source = directory / "vector-precision-source.png"
+    png(source, 2112, 8, lambda x, y: [0, 0, 0, 255])
+    unit = [[0, 0], [1, 0], [1, 1], [0, 1]]
+    counter = 0
+    def render(points, bounds, transform):
+        nonlocal counter
+        counter += 1
+        content = dict(tool="draw", shape=dict(shape="path", points=points, closed=True), style=dict(fill=[0, 255, 0, 255], stroke=None, width=0))
+        profile = write(directory / f"precision-{counter}.json", scene(2112, 8, [layer(1, *bounds, content, transform=transform)]))
+        output = directory / f"precision-{counter}.png"
+        runner.render(source, profile, output)
+        return decode(output)
+    for reflected in (False, True):
+        a, c, tx = (-1024, 1024, 1085.44) if reflected else (1024, -1024, 1024)
+        # Closed-form unit-square reference avoids large cancelling coordinates.
+        expected = render(unit, [0, 0, 1, 1], [a, 0, c, 1, 1054.72, 2])
+        for base in (1000000, -1000000):
+            points = [[x + base + 0.03, y + base] for x, y in unit]
+            transform = [a, 0, c, 1, tx, 2 - base]
+            tight = render(points, [base + 0.03, base, 1, 1], transform)
+            roomy = render(points, [base - 1, base - 1, 4, 4], transform)
+            assert tight == roomy == expected, "declared bounds or large local origin changed vector pixels"
+            assert pixel(tight, 1000, 2)[1] > 0
+            assert all(pixel(tight, x, 2) == [0, 0, 0, 255] for x in range(29))
+    content = dict(tool="draw", shape=dict(shape="path", points=[[0, 0], [256, 256], [257, 256], [1, 0]], closed=True), style=dict(fill=[0, 255, 0, 255], stroke=None, width=0))
+    profile = write(directory / "precision-refusal.json", scene(2112, 8, [layer(1, 0, 0, 257, 256, content, transform=[1024, 0, -1024, 1, 1024, 0])]))
+    output = directory / "precision-refusal.png"
+    error = runner.call("render", source, profile, output, ok=False)
+    assert "rasterizer precision" in error and not output.exists()
+    assert not list(directory.glob(".screenshots-*.part"))
+    return dict(vector_large_origin_bounds_independent=True, vector_negative_origin_reflection=True, vector_unstable_precision_refused=True)
+
+
 def rotated_privacy(runner, directory):
     source = directory / "rotated-secret.png"
     sanitized = directory / "rotated-independent-reference.png"
@@ -185,7 +219,7 @@ def font_budget_fixture(path, subtables):
     path.write_bytes(font)
 
 
-def legacy_kern_fixture(path, count, apple=True, adjustment=-120):
+def legacy_kern_fixture(path, count, apple=True, adjustment=-120, state_flags=None):
     def words(values):
         return b"".join(struct.pack(">H", value & 0xffff) for value in values)
     def checksum(data):
@@ -193,8 +227,11 @@ def legacy_kern_fixture(path, count, apple=True, adjustment=-120):
         return sum(struct.unpack(">" + "I" * (len(data) // 4), data)) & 0xffffffff
     # Existing Fira Mono fixture: A=4,V=115, independently asserted by Rust cmap.
     body = words([1, 6, 0, 0, 4, 115, adjustment])
+    if state_flags is not None:
+        assert apple and count == 1
+        body = words([4, 8, 128, 136, 0, 116]) + bytes([1] * 116) + bytes(8) + words([128, state_flags])
     if apple:
-        kern = struct.pack(">II", 0x10000, count) + (struct.pack(">IHH", 22, 0, 0) + body) * count
+        kern = struct.pack(">II", 0x10000, count) + (struct.pack(">IHH", 8 + len(body), 1 if state_flags is not None else 0, 0) + body) * count
     else:
         assert count == 1
         kern = words([0, 1, 0, 20, 1]) + body
@@ -494,8 +531,21 @@ def run(runner, directory):
     error = runner.call("render", source, profile, output, ok=False)
     assert "legacy kern preprocessing" in error and not output.exists()
     assert not list(directory.glob(".screenshots-*.part"))
+    for flags, exhausted in [(0, False), (0x8000, False), (0xc000, True)]:
+        font = directory / f"legacy-state-{flags}.ttf"
+        legacy_kern_fixture(font, 1, state_flags=flags)
+        profile = write(directory / f"legacy-state-{flags}.json", scene(1280, 720, [layer(1, 0, 0, 128, 64, dict(tool="text", text=dict(spans=[dict(text="AV", style=text_style(["legacy"]))])))], fonts=[dict(id="legacy", path=font.name)]))
+        output = directory / f"legacy-state-{flags}.png"
+        if exhausted:
+            error = runner.call("render", source, profile, output, ok=False)
+            assert "shaping exhausted" in error and not output.exists()
+            assert not list(directory.glob(".screenshots-*.part"))
+        else:
+            runner.render(source, profile, output)
+            assert any(pixel(decode(output), x, y) != [0, 0, 200, 255] for y in range(0, 32) for x in range(16, 48))
     codec_limits = check_codec_limits(runner, directory)
-    return dict(legacy_kern_80000_attack_refused=True, real_ot_apple_kerning_pixels=True, final_output_preflight_before_asset_io=True, real_font_preprocessing_exhaustion_refused=True, all_tool_pixels=True, exact_edit_preset_pixels=True, effect_input_modes=True, source_aliases_refused=True, no_overwrite=True, format_mismatch_before_source=True, inspection_has_no_asset_io_or_text=True, sequential_preflight_before_decode=True, rotated_sheared_bilinear_clone_lens_privacy=rotated, formats=4, source_preserved=True, renders=runner.renders, **codec_limits, **check_cancellation(runner, directory))
+    vector_precision = check_vector_precision(runner, directory)
+    return dict(legacy_kern_runtime_exhaustion_refused=True, legacy_kern_natural_state_controls=True, legacy_kern_80000_attack_refused=True, real_ot_apple_kerning_pixels=True, final_output_preflight_before_asset_io=True, real_font_preprocessing_exhaustion_refused=True, all_tool_pixels=True, exact_edit_preset_pixels=True, effect_input_modes=True, source_aliases_refused=True, no_overwrite=True, format_mismatch_before_source=True, inspection_has_no_asset_io_or_text=True, sequential_preflight_before_decode=True, rotated_sheared_bilinear_clone_lens_privacy=rotated, formats=4, source_preserved=True, renders=runner.renders, **codec_limits, **vector_precision, **check_cancellation(runner, directory))
 
 
 def main():

@@ -28,6 +28,10 @@ Headless commands (no desktop UI; outputs and uploads require explicit actions):
   screenshots image info INPUT
   screenshots image-url URL OUTPUT [--allow-http] [--recipe FILE]
   screenshots image pixel INPUT X Y
+  screenshots editor-document inspect SCENE.json
+  screenshots editor-document render INPUT SCENE.json OUTPUT
+  screenshots screen-color DISPLAY X Y [--global]
+  screenshots ruler X1 Y1 X2 Y2 [--dpi X_DPI Y_DPI]
   screenshots image metadata INPUT
   screenshots list displays|windows
   screenshots capture display|window ID OUTPUT
@@ -52,6 +56,8 @@ Headless commands (no desktop UI; outputs and uploads require explicit actions):
   screenshots history-manage retention DATABASE POLICY.json preview|apply
   screenshots history-manage index-identities DATABASE [CURSOR]
   screenshots history-manage pending-move DATABASE
+  screenshots history-manage pending-save DATABASE
+  screenshots history-manage recover-save DATABASE OPERATION finish|cancel
   screenshots history-manage recover-move DATABASE OPERATION finish|cancel
   screenshots history-manage recover-file DATABASE OPERATION finish|cancel
   screenshots history-query captures|uploads DATABASE [--order newest|oldest]
@@ -178,6 +184,8 @@ pub fn run(args: Vec<OsString>) -> Result<bool> {
         "history-manage" => crate::history_manage::run(&args[1..])?,
         "hash-file" => crate::hash_file::run(&args[1..])?,
         "clipboard" => crate::clipboard_command::run(&args[1..])?,
+        "screen-color" => crate::screen_tools::run(&args[1..], true)?,
+        "ruler" => crate::screen_tools::run(&args[1..], false)?,
         "image-url" => crate::image_url::run(&args[1..])?,
         "editor-document" => crate::editor_document::run(&args[1..])?,
         "history-query" => history_query(&args[1..])?,

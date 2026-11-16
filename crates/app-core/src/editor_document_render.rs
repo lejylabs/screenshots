@@ -368,6 +368,35 @@ fn protect(
     Ok(())
 }
 
+fn singleton_path_bounds(point: [f64; 2], width: f64) -> Rect {
+    let radius = width.max(1.0) / 2.0;
+    Rect::new(
+        point[0] - radius,
+        point[1] - radius,
+        radius * 2.0,
+        radius * 2.0,
+    )
+}
+
+fn arrow_head_points(start: [f64; 2], end: [f64; 2], width: f64) -> [[f64; 2]; 3] {
+    let delta = [end[0] - start[0], end[1] - start[1]];
+    let length = delta[0].hypot(delta[1]);
+    let head = (width * 4.0).max(6.0).min(length * 0.45);
+    let back = [
+        end[0] - delta[0] / length * head,
+        end[1] - delta[1] / length * head,
+    ];
+    let wing = [
+        -delta[1] / length * head * 0.5,
+        delta[0] / length * head * 0.5,
+    ];
+    [
+        end,
+        [back[0] + wing[0], back[1] + wing[1]],
+        [back[0] - wing[0], back[1] - wing[1]],
+    ]
+}
+
 fn local_extent(layer: &Layer) -> Rect {
     let mut bounds = layer.bounds;
     let mut margin = 0.0;
@@ -408,6 +437,25 @@ fn local_extent(layer: &Layer) -> Rect {
             }
             _ => {}
         }
+    }
+    if let LayerKind::Draw {
+        shape: Shape::Arrow { start, end },
+        style,
+    } = &layer.content
+    {
+        for point in arrow_head_points(*start, *end, style.width) {
+            include(point);
+        }
+    }
+    if let LayerKind::Draw {
+        shape: Shape::Path { points, .. },
+        style,
+    } = &layer.content
+        && points.len() == 1
+    {
+        let dot = singleton_path_bounds(points[0], style.width);
+        include([dot.x, dot.y]);
+        include([dot.x + dot.width, dot.y + dot.height]);
     }
     Rect::new(
         bounds.x - margin,
@@ -573,31 +621,74 @@ fn bubble(bounds: Rect, tail: [f64; 2], corner: f64) -> Result<tiny_skia::Path> 
     path.close();
     path.finish().context("Invalid editor bubble")
 }
-fn shape_path(shape: &Shape, bounds: Rect) -> Result<tiny_skia::Path> {
-    match shape {
-        Shape::Rectangle => Ok(tiny_skia::PathBuilder::from_rect(native_rect(bounds)?)),
-        Shape::Ellipse => tiny_skia::PathBuilder::from_oval(native_rect(bounds)?)
-            .context("Invalid editor ellipse"),
-        Shape::SpeechBubble { tail, corner } => bubble(bounds, *tail, *corner),
+fn relative_point(point: [f64; 2], origin: [f64; 2]) -> [f64; 2] {
+    [point[0] - origin[0], point[1] - origin[1]]
+}
+fn relative_bounds(bounds: Rect, origin: [f64; 2]) -> Rect {
+    Rect::new(
+        bounds.x - origin[0],
+        bounds.y - origin[1],
+        bounds.width,
+        bounds.height,
+    )
+}
+fn origin_transform(transform: Affine, origin: [f64; 2]) -> Affine {
+    let [a, b, c, d, _, _] = transform.0;
+    let [x, y] = transform.point(origin);
+    Affine([a, b, c, d, x, y])
+}
+struct VectorGeometry {
+    path: tiny_skia::Path,
+    transform: Affine,
+}
+fn polygon_geometry(
+    points: &[[f64; 2]],
+    closed: bool,
+    transform: Affine,
+    work: &mut ImageWork<'_, impl Fn() -> bool>,
+) -> Result<VectorGeometry> {
+    let origin = *points.first().context("Empty editor path")?;
+    let mut path = tiny_skia::PathBuilder::new();
+    path.move_to(0.0, 0.0);
+    for point in &points[1..] {
+        work.charge(std::mem::size_of_val(point))?;
+        let point = relative_point(*point, origin);
+        path.line_to(point[0] as f32, point[1] as f32);
+    }
+    if closed {
+        path.close();
+    }
+    Ok(VectorGeometry {
+        path: path.finish().context("Invalid editor path")?,
+        transform: origin_transform(transform, origin),
+    })
+}
+fn shape_geometry(
+    shape: &Shape,
+    bounds: Rect,
+    transform: Affine,
+    work: &mut ImageWork<'_, impl Fn() -> bool>,
+) -> Result<VectorGeometry> {
+    let origin = [bounds.x, bounds.y];
+    let local_bounds = relative_bounds(bounds, origin);
+    let path = match shape {
+        Shape::Rectangle => tiny_skia::PathBuilder::from_rect(native_rect(local_bounds)?),
+        Shape::Ellipse => tiny_skia::PathBuilder::from_oval(native_rect(local_bounds)?)
+            .context("Invalid editor ellipse")?,
         Shape::Arrow { start, end } => {
-            let mut path = tiny_skia::PathBuilder::new();
-            path.move_to(start[0] as f32, start[1] as f32);
-            path.line_to(end[0] as f32, end[1] as f32);
-            path.finish().context("Invalid editor arrow")
+            return polygon_geometry(&[*start, *end], false, transform, work);
         }
         Shape::Path { points, closed } => {
-            let mut path = tiny_skia::PathBuilder::new();
-            let first = points.first().context("Empty editor path")?;
-            path.move_to(first[0] as f32, first[1] as f32);
-            for point in &points[1..] {
-                path.line_to(point[0] as f32, point[1] as f32);
-            }
-            if *closed {
-                path.close();
-            }
-            path.finish().context("Invalid editor path")
+            return polygon_geometry(points, *closed, transform, work);
         }
-    }
+        Shape::SpeechBubble { tail, corner } => {
+            bubble(local_bounds, relative_point(*tail, origin), *corner)?
+        }
+    };
+    Ok(VectorGeometry {
+        path,
+        transform: origin_transform(transform, origin),
+    })
 }
 #[derive(Clone, Copy)]
 pub(super) struct VectorInk<'a> {
@@ -649,14 +740,18 @@ fn coverage(
         fill,
         ..
     } = ink;
+    vector_precision(path, transform, stroke, area, work)?;
     let mut paint = tiny_skia::Paint::default();
     paint.set_color_rgba8(255, 255, 255, 255);
     paint.anti_alias = true;
     let [a, b, c, d, tx, ty] = transform.0;
-    for top in (area.y..area.y + area.height).step_by(TILE_HEIGHT as usize) {
-        for left in (area.x..area.x + area.width).step_by(TILE_WIDTH as usize) {
-            let width = (area.x + area.width - left).min(TILE_WIDTH);
-            let height = (area.y + area.height - top).min(TILE_HEIGHT);
+    // The rasterizer's origin and clipping must not depend on declared layer bounds.
+    let grid_top = area.y / TILE_HEIGHT * TILE_HEIGHT;
+    let grid_left = area.x / TILE_WIDTH * TILE_WIDTH;
+    for top in (grid_top..area.y + area.height).step_by(TILE_HEIGHT as usize) {
+        for left in (grid_left..area.x + area.width).step_by(TILE_WIDTH as usize) {
+            let width = (size[0] - left).min(TILE_WIDTH);
+            let height = (size[1] - top).min(TILE_HEIGHT);
             let origin = [left.saturating_sub(1), top.saturating_sub(1)];
             let right = (left + width + 1).min(size[0]);
             let bottom = (top + height + 1).min(size[1]);
@@ -690,8 +785,8 @@ fn coverage(
                 );
             }
             work.check()?;
-            for y in top..top + height {
-                for x in left..left + width {
+            for y in top.max(area.y)..(top + height).min(area.y + area.height) {
+                for x in left.max(area.x)..(left + width).min(area.x + area.width) {
                     work.pixel()?;
                     let index = (((y - origin[1]) * tile.width() + x - origin[0]) * 4) as usize;
                     write(x, y, tile.data()[index + 3]);
@@ -699,6 +794,63 @@ fn coverage(
             }
         }
     }
+    Ok(())
+}
+
+fn vector_precision(
+    path: &tiny_skia::Path,
+    transform: Affine,
+    stroke: Option<f64>,
+    area: PixelRegion,
+    work: &mut ImageWork<'_, impl Fn() -> bool>,
+) -> Result<()> {
+    let [a, b, c, d, tx, ty] = transform.0;
+    let native = [a, b, c, d].map(|value| value as f32);
+    let determinant =
+        f64::from(native[0]) * f64::from(native[3]) - f64::from(native[1]) * f64::from(native[2]);
+    ensure!(
+        determinant.is_finite() && determinant != 0.0,
+        "Editor vector transform exceeds rasterizer precision"
+    );
+    if let Some(width) = stroke {
+        ensure!(
+            (width as f32).is_finite() && width as f32 > 0.0,
+            "Editor vector stroke exceeds rasterizer precision"
+        );
+    }
+    let mut maximum = [0.0f64; 2];
+    for point in path.points() {
+        work.charge(std::mem::size_of_val(point))?;
+        maximum[0] = maximum[0].max(f64::from(point.x).abs());
+        maximum[1] = maximum[1].max(f64::from(point.y).abs());
+    }
+    let width = stroke.unwrap_or(0.0);
+    maximum[0] += width;
+    maximum[1] += width;
+    // Includes path construction, coefficient/product/sum rounding and tile translation.
+    // Thirty-two epsilon allowances conservatively cover these f32 arithmetic stages.
+    let tile_translation = |translation: f64, start: u32, length: u32, tile: u32| {
+        let first = (start / tile * tile).saturating_sub(1);
+        let last = ((start + length - 1) / tile * tile).saturating_sub(1);
+        (translation - f64::from(first))
+            .abs()
+            .max((translation - f64::from(last)).abs())
+    };
+    let errors = [
+        a.abs() * maximum[0]
+            + c.abs() * maximum[1]
+            + tile_translation(tx, area.x, area.width, TILE_WIDTH),
+        b.abs() * maximum[0]
+            + d.abs() * maximum[1]
+            + tile_translation(ty, area.y, area.height, TILE_HEIGHT),
+    ]
+    .map(|magnitude| magnitude * 32.0 * f64::from(f32::EPSILON));
+    ensure!(
+        errors
+            .into_iter()
+            .all(|error| error.is_finite() && error <= 0.25),
+        "Editor vector geometry exceeds rasterizer precision; reduce its span or transform"
+    );
     Ok(())
 }
 
@@ -931,6 +1083,10 @@ fn ellipse_contains(bounds: Rect, point: [f64; 2]) -> bool {
     x * x + y * y <= 1.0
 }
 
+fn marker_color(style: &Style) -> Option<[u8; 4]> {
+    style.stroke.filter(|_| style.width > 0.0).or(style.fill)
+}
+
 fn draw_shape(
     output: &mut RgbaImage,
     layer: &Layer,
@@ -942,20 +1098,14 @@ fn draw_shape(
     if let Shape::Path { points, .. } = shape
         && points.len() == 1
     {
-        let radius = style.width.max(1.0) / 2.0;
-        let bounds = Rect::new(
-            points[0][0] - radius,
-            points[0][1] - radius,
-            radius * 2.0,
-            radius * 2.0,
-        );
-        let path = shape_path(&Shape::Ellipse, bounds)?;
+        let bounds = singleton_path_bounds(points[0], style.width);
+        let geometry = shape_geometry(&Shape::Ellipse, bounds, layer.transform, work)?;
         return vector(
             output,
             VectorInk {
-                path: &path,
-                transform: layer.transform,
-                color: style.stroke.or(style.fill).unwrap_or([0; 4]),
+                path: &geometry.path,
+                transform: geometry.transform,
+                color: marker_color(style).unwrap_or([0; 4]),
                 stroke: None,
                 fill: true,
                 opacity: layer.opacity,
@@ -964,13 +1114,13 @@ fn draw_shape(
             work,
         );
     }
-    let path = shape_path(shape, layer.bounds)?;
+    let geometry = shape_geometry(shape, layer.bounds, layer.transform, work)?;
     if let Some(color) = style.fill {
         vector(
             output,
             VectorInk {
-                path: &path,
-                transform: layer.transform,
+                path: &geometry.path,
+                transform: geometry.transform,
                 color,
                 stroke: None,
                 fill: true,
@@ -986,8 +1136,8 @@ fn draw_shape(
         vector(
             output,
             VectorInk {
-                path: &path,
-                transform: layer.transform,
+                path: &geometry.path,
+                transform: geometry.transform,
                 color,
                 stroke: Some(style.width),
                 fill: false,
@@ -998,29 +1148,15 @@ fn draw_shape(
         )?;
     }
     if let Shape::Arrow { start, end } = shape
-        && let Some(color) = style.stroke.or(style.fill)
+        && let Some(color) = marker_color(style)
     {
-        let delta = [end[0] - start[0], end[1] - start[1]];
-        let length = delta[0].hypot(delta[1]);
-        let head = (style.width * 4.0).max(6.0).min(length * 0.45);
-        let back = [
-            end[0] - delta[0] / length * head,
-            end[1] - delta[1] / length * head,
-        ];
-        let wing = [
-            -delta[1] / length * head * 0.5,
-            delta[0] / length * head * 0.5,
-        ];
-        let mut head = tiny_skia::PathBuilder::new();
-        head.move_to(end[0] as f32, end[1] as f32);
-        head.line_to((back[0] + wing[0]) as f32, (back[1] + wing[1]) as f32);
-        head.line_to((back[0] - wing[0]) as f32, (back[1] - wing[1]) as f32);
-        head.close();
+        let points = arrow_head_points(*start, *end, style.width);
+        let geometry = polygon_geometry(&points, true, layer.transform, work)?;
         vector(
             output,
             VectorInk {
-                path: &head.finish().context("Invalid editor arrowhead")?,
-                transform: layer.transform,
+                path: &geometry.path,
+                transform: geometry.transform,
                 color,
                 stroke: None,
                 fill: true,
@@ -1594,12 +1730,13 @@ pub(super) fn render(
                 if let LayerKind::Magnifier { style, .. } = &layer.content
                     && let Some(color) = style.fill
                 {
-                    let path = shape_path(&Shape::Ellipse, layer.bounds)?;
+                    let geometry =
+                        shape_geometry(&Shape::Ellipse, layer.bounds, layer.transform, &mut work)?;
                     vector(
                         &mut output,
                         VectorInk {
-                            path: &path,
-                            transform: layer.transform,
+                            path: &geometry.path,
+                            transform: geometry.transform,
                             color,
                             stroke: None,
                             fill: true,
@@ -1627,15 +1764,16 @@ pub(super) fn render(
                 }
                 if let LayerKind::Magnifier { style, .. } = &layer.content {
                     let shape = Shape::Ellipse;
-                    let path = shape_path(&shape, layer.bounds)?;
+                    let geometry =
+                        shape_geometry(&shape, layer.bounds, layer.transform, &mut work)?;
                     if let Some(color) = style.stroke
                         && style.width > 0.0
                     {
                         vector(
                             &mut output,
                             VectorInk {
-                                path: &path,
-                                transform: layer.transform,
+                                path: &geometry.path,
+                                transform: geometry.transform,
                                 color,
                                 stroke: Some(style.width),
                                 fill: false,
@@ -1648,11 +1786,11 @@ pub(super) fn render(
                 }
             }
             LayerKind::Erase { mode, shape, width } => {
-                let (path, stroke, fill) = if let Shape::Path { points, .. } = shape {
+                let (geometry, stroke, fill) = if let Shape::Path { points, .. } = shape {
                     if points.len() == 1 {
                         let radius = *width / 2.0;
                         (
-                            shape_path(
+                            shape_geometry(
                                 &Shape::Ellipse,
                                 Rect::new(
                                     points[0][0] - radius,
@@ -1660,21 +1798,31 @@ pub(super) fn render(
                                     *width,
                                     *width,
                                 ),
+                                layer.transform,
+                                &mut work,
                             )?,
                             None,
                             true,
                         )
                     } else {
-                        (shape_path(shape, layer.bounds)?, Some(*width), false)
+                        (
+                            shape_geometry(shape, layer.bounds, layer.transform, &mut work)?,
+                            Some(*width),
+                            false,
+                        )
                     }
                 } else {
-                    (shape_path(shape, layer.bounds)?, None, true)
+                    (
+                        shape_geometry(shape, layer.bounds, layer.transform, &mut work)?,
+                        None,
+                        true,
+                    )
                 };
                 coverage(
                     spec.canvas,
                     VectorInk {
-                        path: &path,
-                        transform: layer.transform,
+                        path: &geometry.path,
+                        transform: geometry.transform,
                         color: [255; 4],
                         stroke,
                         fill,

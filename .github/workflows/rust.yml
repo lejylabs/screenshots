@@ -55,6 +55,13 @@ jobs:
       - name: Run native portability signing fixtures only
         run: python3 scripts/test-native-signing.py
 
+      - name: Run owned persistence and native logger fixtures
+        run: |
+          cargo test --locked --profile release-fast -p app-core -j 2 history::save::tests -- --test-threads=1
+          cargo test --locked --profile release-fast -p app-core -j 2 managed_color::tests -- --test-threads=1
+          cargo test --locked --profile release-fast -p screenshots --bin screenshots -j 2 file_logging::tests:: -- --test-threads=1
+          cargo test --locked --profile release-fast -p screenshots --test history_move -j 2 executable_save_recovery -- --test-threads=1
+
   windows-native-witness:
     runs-on: windows-latest
     timeout-minutes: 50
@@ -126,3 +133,10 @@ jobs:
         run: cargo test --locked --profile release-fast -p screenshots --bin screenshots -j 2 capture_worker::tests::windows_sent_message_flood_is_contained_by_parent_deadline -- --exact --test-threads=1
       - name: Verify native MSIX manifest bytes without SDK invocation
         run: python scripts/test-package-app.py
+
+      - name: Run owned persistence and native logger fixtures
+        run: |
+          cargo test --locked --profile release-fast -p app-core -j 2 history::save::tests -- --test-threads=1
+          cargo test --locked --profile release-fast -p app-core -j 2 managed_color::tests -- --test-threads=1
+          cargo test --locked --profile release-fast -p screenshots --bin screenshots -j 2 file_logging::tests:: -- --test-threads=1
+          cargo test --locked --profile release-fast -p screenshots --test history_move -j 2 executable_save_recovery -- --test-threads=1

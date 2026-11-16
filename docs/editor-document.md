@@ -50,6 +50,29 @@ explicit pivot. Canvas resize changes extent/anchor; document scale/rotation
 transforms the base, marks, privacy masks, crop and sampling source mappings
 together. Moving a clone object alone leaves its chosen source mapping fixed.
 
+Vector geometry is constructed relative to a geometry-derived local origin,
+then that origin is folded into the affine translation in f64 before f32
+rasterization. Explicit path/arrow origins come from their points, independently
+of declared layer bounds; rectangle/ellipse/bubble origins come from their actual
+shape rectangle. The affine linear part is retained, including reflected and
+nonuniform stroke transforms. Text outlines remain in their prepared local
+frame and share the same raster admission check. Vector tiles use a fixed canvas
+grid and fixed dimensions; only the copy intersection depends on the layer
+extent. Changing an explicit path's declared bounds cannot change tile phase.
+
+The native f32 affine must remain nonsingular, and positive strokes must not
+underflow to a zero-width native hairline. Before raster work, an operation-scoped
+point scan bounds path/coefficient/product/sum and tile-translation rounding
+using 32 f32 epsilon allowances on the sum of absolute coordinate terms,
+including stroke width. This is conservative for the fixed construction and
+affine arithmetic stages; admissible coordinate error is at most a quarter
+pixel, inside the existing one-pixel traversal gutter. Tile translation uses the
+actual first/last canvas tile origins, so a small mark at a large canvas position
+is not rejected merely for its absolute position. Unstable spans/transforms
+return an explicit rasterizer-precision error rather than successful clipped
+output. This does not promise exact real-number antialiasing.
+
+
 The old drawing APIs and existing GPUI controls retain their renderer. A
 programmatic legacy import produces the equivalent document: original effects
 first, existing drawing order next, active redactions final. Identity legacy
@@ -64,6 +87,8 @@ The layer payload inventory is concrete:
 
 - Rectangle, ellipse, arrow, pen/path, highlight and spotlight with arbitrary
   validated RGBA fill/stroke, stroke width and per-object affine placement.
+  Arrowheads and singleton path markers use active stroke ink; an absent or
+  zero-width stroke falls back to the fill.
 - Rich text retains literal text/style/font identity. Each render prepares real
   glyph outlines into temporary RGBA and per-span coverage rasters; those rasters
   are dropped after composition and are not retained assets or undo snapshots.
@@ -221,6 +246,18 @@ shape before accepting glyphs. `vendor/harfrust/LOCAL-PATCH.md` records the exac
 published revision, unchanged default behavior, MIT notice and source-derived
 adversarial regression. The observer adds one atomic boolean and one optional
 shared-budget reference to the existing font cache; no new runtime or idle work.
+
+The editor additionally enables the buffer's opt-in runtime exhaustion refusal.
+Legacy kern cannot force a nonadvancing state transition past an exhausted
+operation allowance, and a zero-budget OpenType required recursion cannot be
+silently skipped. Failure survives the engine's leave/reset of the counter and
+is checked by the existing `allocation_successful()` admission before glyphs.
+Natural advancing completion exactly at zero remains valid; exceeding it fails,
+including the legacy fast path, and no later legacy subtable runs after failure.
+The option adds one Buffer boolean and no allocations, and remains disabled for
+other callers. Buffer clear retains the option while clearing failure; reset
+also disables it. Unrelated `morx`/`mort`/`kerx` paths remain rejected at editor
+font admission rather than silently substituting a different shaping mode.
 
 Legacy `kern` uses a separate upstream AAT cache and therefore requires a
 separate admission proof. The opt-in, allocation-free native-parser preflight
@@ -653,3 +690,140 @@ Evidence: `target/editor-round5-core-tests.log`,
 assumption hashes in `target/verification/editor-document-round5-checkpoint.json`.
 No full-workspace, native UI, resource/return-to-baseline or reference-hardware
 acceptance is inferred. This frozen fix awaits fifth-round fresh source review.
+
+
+## Fifth review runtime finding and sixth review preparation
+
+The fifth fresh source review reproduced one blocker against the frozen optimized
+binary: a valid legacy format1 PUSH/DONT_ADVANCE self-loop consumed the engine's
+runtime operation allowance but its forced-progress fallback still published an
+apparently successful text image. The earlier cache admission remained valid;
+it did not make this runtime fallback observable.
+
+The editor now opts into strict runtime-budget refusal on its existing shaping
+Buffer. Both legacy spending branches refuse negative allowance; the main branch
+also refuses exactly zero when the only progress would be forced advancement.
+Naturally advancing exact-zero completion remains valid. An unsuccessful strict
+run does not enter later kern subtables. Required OpenType recursion skipped at
+zero marks the same unsuccessful status. The existing post-shape check refuses
+before any glyphs or final pixels are accepted. Published default behavior for
+other clients remains unchanged; clear/reset semantics are explicit above.
+
+Four optimized tests invoke the actual private kern and OpenType engines at
+their exact counter boundaries and exercise failure through leave/clear/reset.
+They passed in an ignored, source-identical harness using 848,389 bytes of actual
+omitted fixtures from the pinned upstream revision. All 19 enabled package
+identities/checksums match the root lock. The separate harness manifest excludes
+unused Criterion/macOS test dependencies and defines a workspace; dormant optional
+ICU lock entries differ but are neither enabled nor compiled. No placeholder font
+corpus or extra production API was introduced. The remaining 331 upstream tests
+were filtered, not counted as passed.
+
+Evidence: `target/editor-round6-vendor-runtime-tests.log` and the exact source,
+fixture URLs/hashes and active dependency identities in
+`target/verification/harfrust-runtime-proof/provenance.json`.
+Actual application, executable refusal, current Clippy and Windows metadata
+verification are pending the coordinated rebuild; this is not a clean-review
+or native/resource acceptance claim.
+
+
+### Seventh-review source preparation
+
+Fresh source review six found one additional renderer Major: minimum-size thin
+arrowheads extended beyond an extent computed only from stroke width. The extent
+and painter now share the exact three head vertices. Tight bounds, thin strokes
+and fill-only arrows have a complete-raster comparison against roomy bounds and
+explicit head-wing coverage checks. This adds no cache, worker or pixel snapshot.
+
+The new glyph-position control initially failed to compile because the upstream
+position type has no PartialEq; the fixture now compares its four public numeric
+components. The corrected library suite passes. The optimized executable passed
+27 render cases and real legacy runtime-budget refusal with no output/staging,
+using binary `d65064c2c4c30d32ed0dbcc3bb1c1c21e645ddbcb96f1713f61c89c3c05f30df`.
+That executable predates the arrow-extent correction. Its new regression/current
+binary and full workspace, Clippy and Windows metadata checks are pending; no
+new clean source round, publication-phase cancellation or native/hardware/resource
+acceptance is inferred.
+
+
+### Eighth-review source preparation
+
+Fresh review seven found the same extent class in singleton paths: painting
+uses a minimum half-pixel dot radius, which the stroke-only extent omitted
+before affine scaling. Singleton extent and painting now share that exact dot
+rectangle. The new regression compares every pixel for tight/roomy bounds with
+zero and thin widths under scaling/shear, including an independent interior
+pixel. It adds no retained buffer or geometry cache. The arrow regression has
+passed; the new dot regression/current executable and complete post-fix checks
+remain pending. Review seven was not a clean round.
+
+
+### Ninth-review source preparation
+
+Fresh source review eight found that an inactive zero-width stroke could still
+choose the marker ink for singleton dots and arrowheads. Both now share the
+active-stroke/fill fallback rule. Opaque and transparent zero-width stroke
+controls compare all pixels with the no-stroke result and assert independent
+green interior pixels. The singleton scale/shear regression has passed. Current
+marker controls/full executable/Clippy/Windows metadata remain pending; review
+eight was not clean and no convergence is claimed here.
+
+
+### Tenth-review source preparation: shared vector numeric geometry
+
+Fresh review nine found f64 extent versus f32 path/affine rounding disagreement
+under valid large-origin cancellation shear. The old optimized executable
+`d65064c2c4c30d32ed0dbcc3bb1c1c21e645ddbcb96f1713f61c89c3c05f30df`
+reproduced 14 tight/roomy pixel differences; some occurred at area-dependent
+vector tile boundaries. This old binary predates the latest geometry/marker
+corrections. The private synthetic observation is recorded in
+`target/verification/editor-vector-precision-before.json`.
+
+Shape/arrow/dot/magnifier/eraser construction now uses the shared normalized
+geometry, while coverage uses the shared precision admission and canonical
+canvas tile grid. The existing tile maximum is unchanged: up to258×34 RGBA
+pixels including its gutter. No new image, cache or persistent worker is added;
+one path-point scan is charged to the operation's work/cancellation budget.
+A small mark can rasterize a full existing256×32 tile rather than a narrow
+partial tile. Optimized small-mark/mixed workload comparison is pending; this
+extra work is not claimed free or a performance improvement.
+
+New source fixtures compare full tight/roomy images with independent unit-square
+references at positive/negative million-pixel origins, cancellation shear and
+reflection; anisotropic reflected strokes are compared with ordinary-origin
+controls. A separate explicit refusal covers an unstable span, a native-singular
+rounded affine and stroke underflow. Executable fixtures independently decode
+normalized outputs and require no final/staging file on precision refusal.
+Current compilation, those new tests, executable rendering and performance are
+pending the root's coordinated build. Review nine was not clean; no additional
+source convergence or native/resource acceptance is implied.
+
+### Reviewed source and optimized execution
+
+Fresh EGM reviews 10 and 11 found no Blocker, Major or Nit; source review
+converged. Both verified the frozen repository/vendor/proof hashes and actual
+runtime-harness fixture/dependency identities. The corrected source passed all
+38 editor core cases in the integrated run; that run stopped at an unrelated
+legacy test still expecting history schema 9 instead of the new 10. The stale
+expectation is corrected; the next full workspace run remains separate.
+
+The optimized executable passed 37 successful render cases plus refusal,
+no-overwrite, input-provenance and cancellation checks, including normalized
+large/negative-origin geometry, bounds-independent pixels, reflection and
+unstable-precision refusal. Binary SHA256:
+`442d41f29aa29ee45e8b165257d46a8e554a6657a39f7c64b5c38e240bfd4ebd`.
+The result is in `target/verification/editor-document-round10-e2e.json`.
+Publication-phase cancellation and native/UI/hardware acceptance remain open.
+
+A combined-change comparison against the retained pre-geometry executable first
+observed one mixed-workload p95 outlier of +52.6%; the other mixed repetition was
+-1.0%. That observation is retained in `editor-vector-precision-performance.json`.
+Three additional alternating 100-sample-per-side repetitions on one allowed CPU,
+with no competing build and recorded child CPU/fault data, gave tiny-mark p95
+changes of +1.1%, -0.6%, +1.0%, and mixed-render changes of +2.1%, -0.2%, -1.5%.
+Independent decoded pixels were equal for both comparison workloads. The larger
+outlier was not reproduced in this controlled series; it is not attributed to a
+specific scheduler or code cause without evidence. The baseline predates several
+geometry/marker fixes, so this does not isolate one change. The raw controlled
+record is `editor-vector-precision-performance-affinity.json`. These synthetic
+measurements do not pass reference-hardware idle, memory or presentation budgets.

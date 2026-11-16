@@ -593,6 +593,7 @@ pub(crate) fn apply_lookup(
         }
 
         if ctx.buffer.max_ops <= 0 {
+            ctx.buffer.fail_runtime_budget();
             break;
         }
 
