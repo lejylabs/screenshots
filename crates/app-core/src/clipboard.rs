@@ -88,12 +88,32 @@ fn load_image_input(
         length <= MAX_EDITOR_FILE_BYTES,
         "Image file exceeds the 32 MiB input limit"
     );
-    let mut reader = image::ImageReader::new(std::io::BufReader::new(EditorFile {
+    let reader = image::ImageReader::new(std::io::BufReader::new(EditorFile {
         file,
         length,
         position: 0,
     }))
     .with_guessed_format()?;
+    decode_image_reader(reader, length, max_decoded_bytes, png_only)
+}
+
+/// Explicit encoded clipboard, drop or URL input; decode on a blocking worker.
+/// Keeps the same format/admission/orientation policy as an opened editor file.
+pub fn decode_editor_image_bytes(bytes: &[u8]) -> Result<image::RgbaImage> {
+    anyhow::ensure!(
+        !bytes.is_empty() && bytes.len() as u64 <= MAX_EDITOR_FILE_BYTES,
+        "Encoded image exceeds the 32 MiB input limit or is empty"
+    );
+    let reader = image::ImageReader::new(std::io::Cursor::new(bytes)).with_guessed_format()?;
+    decode_image_reader(reader, bytes.len() as u64, crate::MAX_CAPTURE_BYTES, false)
+}
+
+fn decode_image_reader<R: std::io::BufRead + std::io::Seek>(
+    mut reader: image::ImageReader<R>,
+    length: u64,
+    max_decoded_bytes: u64,
+    png_only: bool,
+) -> Result<image::RgbaImage> {
     anyhow::ensure!(
         !png_only || reader.format() == Some(image::ImageFormat::Png),
         "History metadata export requires PNG input"
@@ -112,7 +132,6 @@ fn load_image_input(
         "Choose a PNG, JPEG, WebP, supported truecolor BMP or uncompressed TIFF image"
     );
     if reader.format() == Some(image::ImageFormat::WebP) {
-        use std::io::{Read as _, Seek as _};
         // The WebP decoder trusts metadata/frame lengths before applying image limits.
         // Validate and decode the same bounded bytes, including under in-place file edits.
         let mut input = reader.into_inner();
@@ -132,7 +151,6 @@ fn load_image_input(
         );
     }
     if reader.format() == Some(image::ImageFormat::Bmp) {
-        use std::io::{Read as _, Seek as _};
         let mut input = reader.into_inner();
         input.seek(std::io::SeekFrom::Start(0))?;
         let mut bytes = vec![0; usize::try_from(length)?];
@@ -150,7 +168,6 @@ fn load_image_input(
         );
     }
     if reader.format() == Some(image::ImageFormat::Tiff) {
-        use std::io::{Read as _, Seek as _};
         // TIFF parses IFDs before limits apply; validate the exact snapshot it decodes.
         let mut input = reader.into_inner();
         input.seek(std::io::SeekFrom::Start(0))?;
@@ -1100,5 +1117,52 @@ mod tests {
         std::fs::remove_file(path)?;
         assert_eq!(result?, (3, 2));
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod encoded_input_tests {
+    use super::*;
+    use image::{ImageEncoder as _, Rgba, RgbaImage};
+
+    #[test]
+    fn encoded_import_keeps_alpha_hidden_rgb_and_does_not_require_a_path() {
+        let source = RgbaImage::from_raw(2, 1, vec![11, 22, 33, 0, 44, 55, 66, 128]).unwrap();
+        let mut png = Vec::new();
+        image::codecs::png::PngEncoder::new(&mut png)
+            .write_image(source.as_raw(), 2, 1, image::ExtendedColorType::Rgba8)
+            .unwrap();
+        assert_eq!(decode_editor_image_bytes(&png).unwrap(), source);
+        let mut webp = Vec::new();
+        image::codecs::webp::WebPEncoder::new_lossless(&mut webp)
+            .write_image(source.as_raw(), 2, 1, image::ExtendedColorType::Rgba8)
+            .unwrap();
+        assert_eq!(decode_editor_image_bytes(&webp).unwrap(), source);
+        assert!(decode_editor_image_bytes(&[]).is_err());
+        assert!(decode_editor_image_bytes(b"<svg>untrusted</svg>").is_err());
+        assert!(decode_editor_image_bytes(&vec![0; 32 * 1024 * 1024 + 1]).is_err());
+    }
+
+    #[test]
+    fn encoded_png_dimensions_are_admitted_before_pixel_allocation() {
+        use std::io::Cursor;
+        let source = RgbaImage::from_pixel(1, 1, Rgba([1, 2, 3, 4]));
+        let mut png = Cursor::new(Vec::new());
+        source.write_to(&mut png, image::ImageFormat::Png).unwrap();
+        let mut bytes = png.into_inner();
+        bytes[16..20].copy_from_slice(&100_000_000_u32.to_be_bytes());
+        let mut crc = !0_u32;
+        for byte in &bytes[12..29] {
+            crc ^= u32::from(*byte);
+            for _ in 0..8 {
+                crc = (crc >> 1) ^ (0xedb88320_u32 & 0_u32.wrapping_sub(crc & 1));
+            }
+        }
+        bytes[29..33].copy_from_slice(&(!crc).to_be_bytes());
+        let error = decode_editor_image_bytes(&bytes).unwrap_err();
+        assert!(
+            error.to_string().to_ascii_lowercase().contains("limit"),
+            "{error:#}"
+        );
     }
 }

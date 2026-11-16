@@ -137,8 +137,8 @@ pub use upload::{
 };
 
 pub use clipboard::{
-    ImageClipboard, load_editor_image, load_editor_image_with_limit, load_png_thumbnail,
-    load_saved_png,
+    ImageClipboard, decode_editor_image_bytes, load_editor_image, load_editor_image_with_limit,
+    load_png_thumbnail, load_saved_png,
 };
 
 #[cfg(target_os = "windows")]
