@@ -79,9 +79,28 @@ pub fn downscale_export(
     source: &image::RgbaImage,
     size: ExportSize,
 ) -> Result<image::RgbaImage, CaptureError> {
+    downscale_export_with_cancel(source, size, || false)
+}
+
+pub fn downscale_export_with_cancel(
+    source: &image::RgbaImage,
+    size: ExportSize,
+    cancelled: impl Fn() -> bool,
+) -> Result<image::RgbaImage, CaptureError> {
+    let mut work = crate::image_cancel::ImageWork::new(&cancelled)?;
     let (width, height) = size.dimensions(source.width(), source.height())?;
+    if source.as_raw().len() as u64 != u64::from(source.width()) * u64::from(source.height()) * 4 {
+        return Err(CaptureError::Backend(
+            "Image backing does not match its dimensions".into(),
+        ));
+    }
     if (width, height) == source.dimensions() {
-        return Ok(source.clone());
+        let mut data = Vec::with_capacity(source.as_raw().len());
+        work.extend(&mut data, source.as_raw())?;
+        work.check()?;
+        return image::RgbaImage::from_raw(width, height, data).ok_or_else(|| {
+            CaptureError::Backend("Image backing does not match its dimensions".into())
+        });
     }
     let factor = match size {
         ExportSize::Half => Some(2),
@@ -90,6 +109,7 @@ pub fn downscale_export(
     };
     let mut output = image::RgbaImage::new(width, height);
     for (x, y, pixel) in output.enumerate_pixels_mut() {
+        work.pixel()?;
         let (left, right, top, bottom) = if let Some(factor) = factor {
             (
                 x * factor,
@@ -112,6 +132,7 @@ pub fn downscale_export(
         let mut count = 0;
         for sy in top..bottom {
             for sx in left..right {
+                work.pixel()?;
                 let rgba = source.get_pixel(sx, sy).0;
                 let alpha = u64::from(rgba[3]);
                 for channel in 0..3 {
@@ -150,6 +171,7 @@ pub fn downscale_export(
             output_alpha as u8,
         ]);
     }
+    work.check()?;
     Ok(output)
 }
 

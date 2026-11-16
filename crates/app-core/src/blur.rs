@@ -5,7 +5,14 @@ const RADIUS: u32 = 8;
 const ROWS: usize = (RADIUS * 2 + 1) as usize;
 const TILE_WIDTH: u32 = 512;
 
-fn horizontal(source: &image::RgbaImage, y: u32, left: u32, output: &mut [[u64; 4]]) {
+fn horizontal(
+    source: &image::RgbaImage,
+    y: u32,
+    left: u32,
+    output: &mut [[u64; 4]],
+    work: &mut crate::image_cancel::ImageWork<'_, impl Fn() -> bool>,
+) -> Result<()> {
+    work.charge((output.len() * 3 + 2 * RADIUS as usize + 1) * 4)?;
     let mut sum = [0u64; 4];
     let sample = |x: u32| {
         let pixel = source.get_pixel(x, y).0;
@@ -38,6 +45,7 @@ fn horizontal(source: &image::RgbaImage, y: u32, left: u32, output: &mut [[u64; 
             }
         }
     }
+    Ok(())
 }
 
 /// Source-aligned, alpha-weighted 17x17 box blur with less than 300 KiB scratch.
@@ -45,17 +53,19 @@ fn visit_blurred(
     source: &image::RgbaImage,
     area: PixelRegion,
     mut write: impl FnMut(u32, u32, [u8; 4]),
-    cancelled: impl Fn() -> bool,
+    work: &mut crate::image_cancel::ImageWork<'_, impl Fn() -> bool>,
 ) -> Result<()> {
     let mut ring = vec![[0u64; 4]; ROWS * TILE_WIDTH as usize];
     let mut sums = vec![[0u64; 4]; TILE_WIDTH as usize];
     for left in (area.x..area.x + area.width).step_by(TILE_WIDTH as usize) {
-        ensure!(!cancelled(), "Blur preparation canceled");
+        work.charge(4)?;
         let width = (area.x + area.width - left).min(TILE_WIDTH) as usize;
+        work.charge(width * 4)?;
         sums[..width].fill([0; 4]);
         for row in area.y.saturating_sub(RADIUS)..=(area.y + RADIUS).min(source.height() - 1) {
             let buffer = &mut ring[(row as usize % ROWS) * TILE_WIDTH as usize..][..width];
-            horizontal(source, row, left, buffer);
+            horizontal(source, row, left, buffer, work)?;
+            work.charge(width * 4)?;
             for (sum, pixel) in sums[..width].iter_mut().zip(buffer.iter()) {
                 for channel in 0..4 {
                     sum[channel] += pixel[channel];
@@ -63,7 +73,7 @@ fn visit_blurred(
             }
         }
         for y in area.y..area.y + area.height {
-            ensure!(!cancelled(), "Blur preparation canceled");
+            work.charge((width + 1) * 4)?;
             let rows = (y + RADIUS).min(source.height() - 1) - y.saturating_sub(RADIUS) + 1;
             for (offset, sum) in sums[..width].iter().enumerate() {
                 let x = left + offset as u32;
@@ -95,6 +105,7 @@ fn visit_blurred(
                 break;
             }
             if y >= RADIUS {
+                work.charge(width * 4)?;
                 let buffer = &ring[((y - RADIUS) as usize % ROWS) * TILE_WIDTH as usize..][..width];
                 for (sum, pixel) in sums[..width].iter_mut().zip(buffer.iter()) {
                     for channel in 0..4 {
@@ -105,7 +116,8 @@ fn visit_blurred(
             if y + RADIUS + 1 < source.height() {
                 let row = y + RADIUS + 1;
                 let buffer = &mut ring[(row as usize % ROWS) * TILE_WIDTH as usize..][..width];
-                horizontal(source, row, left, buffer);
+                horizontal(source, row, left, buffer, work)?;
+                work.charge(width * 4)?;
                 for (sum, pixel) in sums[..width].iter_mut().zip(buffer.iter()) {
                     for channel in 0..4 {
                         sum[channel] += pixel[channel];
@@ -122,35 +134,51 @@ pub fn blur_preview_bgra(
     source: &image::RgbaImage,
     cancelled: impl Fn() -> bool,
 ) -> Result<image::RgbaImage> {
-    crate::validate_image_size(source.width(), source.height())?;
-    ensure!(!cancelled(), "Blur preparation canceled");
-    let scale = (1024.0 / source.width().max(source.height()) as f64).min(1.0);
-    let width = (source.width() as f64 * scale).round().max(1.0) as u32;
-    let height = (source.height() as f64 * scale).round().max(1.0) as u32;
-    let mut preview = image::RgbaImage::new(width, height);
-    visit_blurred(
-        source,
-        PixelRegion {
-            x: 0,
-            y: 0,
-            width: source.width(),
-            height: source.height(),
-        },
-        |x, y, mut color| {
-            let px = ((u64::from(x + 1) * u64::from(width) - 1) / u64::from(source.width())) as u32;
-            let py =
-                ((u64::from(y + 1) * u64::from(height) - 1) / u64::from(source.height())) as u32;
-            if u64::from(px) * u64::from(source.width()) / u64::from(width) != u64::from(x)
-                || u64::from(py) * u64::from(source.height()) / u64::from(height) != u64::from(y)
-            {
-                return;
-            }
-            color.swap(0, 2);
-            preview.put_pixel(px, py, image::Rgba(color));
-        },
-        cancelled,
-    )?;
-    Ok(preview)
+    let result = (|| -> Result<image::RgbaImage> {
+        crate::validate_image_size(source.width(), source.height())?;
+        ensure!(!cancelled(), "Blur preparation canceled");
+        let mut work = crate::image_cancel::ImageWork::new(&cancelled)?;
+        let scale = (1024.0 / source.width().max(source.height()) as f64).min(1.0);
+        let width = (source.width() as f64 * scale).round().max(1.0) as u32;
+        let height = (source.height() as f64 * scale).round().max(1.0) as u32;
+        let mut preview = image::RgbaImage::new(width, height);
+        visit_blurred(
+            source,
+            PixelRegion {
+                x: 0,
+                y: 0,
+                width: source.width(),
+                height: source.height(),
+            },
+            |x, y, mut color| {
+                let px =
+                    ((u64::from(x + 1) * u64::from(width) - 1) / u64::from(source.width())) as u32;
+                let py = ((u64::from(y + 1) * u64::from(height) - 1) / u64::from(source.height()))
+                    as u32;
+                if u64::from(px) * u64::from(source.width()) / u64::from(width) != u64::from(x)
+                    || u64::from(py) * u64::from(source.height()) / u64::from(height)
+                        != u64::from(y)
+                {
+                    return;
+                }
+                color.swap(0, 2);
+                preview.put_pixel(px, py, image::Rgba(color));
+            },
+            &mut work,
+        )?;
+        work.check()?;
+        Ok(preview)
+    })();
+    result.map_err(|error| {
+        if matches!(
+            error.downcast_ref::<crate::CaptureError>(),
+            Some(crate::CaptureError::Canceled)
+        ) {
+            anyhow::anyhow!("Blur preparation canceled")
+        } else {
+            error
+        }
+    })
 }
 
 pub(crate) fn paint_blur(
@@ -158,10 +186,12 @@ pub(crate) fn paint_blur(
     output: &mut image::RgbaImage,
     crop: PixelRegion,
     regions: &[PixelRegion],
+    work: &mut crate::image_cancel::ImageWork<'_, impl Fn() -> bool>,
 ) -> Result<()> {
     // Scan the union in horizontal bands so overlapping regions never multiply image work.
     let mut edges = vec![crop.y, crop.y + crop.height];
     for region in regions {
+        work.charge(4)?;
         edges.push(region.y.clamp(crop.y, crop.y + crop.height));
         edges.push((region.y + region.height).clamp(crop.y, crop.y + crop.height));
     }
@@ -169,8 +199,10 @@ pub(crate) fn paint_blur(
     edges.dedup();
     let mut spans = Vec::with_capacity(regions.len());
     for band in edges.windows(2) {
+        work.charge(4)?;
         spans.clear();
         for region in regions {
+            work.charge(4)?;
             if band[0] >= region.y && band[0] < region.y + region.height {
                 let start = region.x.max(crop.x);
                 let end = (region.x + region.width).min(crop.x + crop.width);
@@ -179,9 +211,11 @@ pub(crate) fn paint_blur(
                 }
             }
         }
+        work.charge(spans.len() * 4)?;
         spans.sort_unstable();
         let mut index = 0;
         while index < spans.len() {
+            work.charge(4)?;
             let (start, mut end) = spans[index];
             index += 1;
             while index < spans.len() && spans[index].0 <= end {
@@ -197,7 +231,7 @@ pub(crate) fn paint_blur(
                     height: band[1] - band[0],
                 },
                 |x, y, color| output.put_pixel(x - crop.x, y - crop.y, image::Rgba(color)),
-                || false,
+                work,
             )?;
         }
     }
@@ -394,6 +428,19 @@ mod tests {
             .is_err()
         );
         Ok(())
+    }
+    #[test]
+    fn preview_keeps_legacy_cancellation_error_inside_narrow_blur_work() {
+        let source = fixture(1, 65536);
+        let calls = std::cell::Cell::new(0);
+        let error = blur_preview_bgra(&source.pixels, || {
+            calls.set(calls.get() + 1);
+            calls.get() >= 4
+        })
+        .unwrap_err();
+        assert_eq!(error.to_string(), "Blur preparation canceled");
+        assert!(error.downcast_ref::<crate::CaptureError>().is_none());
+        assert_eq!(calls.get(), 4);
     }
     #[test]
     #[ignore = "short optimized 4K blur timing; no desktop, files or clipboard"]

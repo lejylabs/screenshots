@@ -24,11 +24,20 @@ impl Recipe {
         self.steps.len()
     }
 
-    pub(crate) fn apply(self, mut pixels: RgbaImage) -> Result<RgbaImage> {
+    pub(crate) fn apply(self, pixels: RgbaImage) -> Result<RgbaImage> {
+        self.apply_with_cancel(pixels, &|| Ok(()))
+    }
+
+    pub(crate) fn apply_with_cancel(
+        self,
+        mut pixels: RgbaImage,
+        check: &impl Fn() -> Result<()>,
+    ) -> Result<RgbaImage> {
         for (index, step) in self.steps.into_iter().enumerate() {
-            pixels = step
-                .apply(pixels)
-                .with_context(|| format!("Workflow step {} failed", index + 1))?;
+            check()?;
+            let result = step.apply(pixels, &|| check().is_err());
+            check()?;
+            pixels = result.with_context(|| format!("Workflow step {} failed", index + 1))?;
         }
         Ok(pixels)
     }
@@ -145,7 +154,7 @@ impl Step {
         Ok(())
     }
 
-    fn apply(self, mut pixels: RgbaImage) -> Result<RgbaImage> {
+    fn apply(self, pixels: RgbaImage, cancelled: &impl Fn() -> bool) -> Result<RgbaImage> {
         match self {
             Self::Crop {
                 x,
@@ -178,92 +187,82 @@ impl Step {
                     height,
                 };
                 let source = crate::cli::frame(pixels);
-                let output = match self {
-                    Self::Crop { .. } => app_core::crop_snapshot(&source, region)?,
-                    Self::Redact { .. } => app_core::redact_snapshot(&source, &[region])?,
-                    Self::Blur { .. } => app_core::render_filtered_snapshot(
-                        &source,
-                        &[],
-                        None,
-                        &[],
-                        &[],
-                        &[],
-                        &[],
-                        None,
-                        &[region],
-                    )?,
-                    Self::Pixelate { .. } => {
-                        // Check before preparing the full source-aligned grid.
-                        ensure!(
-                            x.checked_add(width).is_some_and(|end| end <= source.width)
-                                && y.checked_add(height)
-                                    .is_some_and(|end| end <= source.height),
-                            "Edit area is outside the image"
-                        );
-                        let grid = app_core::PixelationGrid::prepare(&source.pixels, || false)?;
-                        app_core::render_pixelated_snapshot(
-                            &source,
-                            &[],
-                            None,
-                            &[],
-                            &[],
-                            &[],
-                            &[region],
-                            Some(&grid),
-                        )?
-                    }
-                    _ => unreachable!("region step was matched"),
+                let grid = if matches!(self, Self::Pixelate { .. }) {
+                    ensure!(
+                        x.checked_add(width).is_some_and(|end| end <= source.width)
+                            && y.checked_add(height)
+                                .is_some_and(|end| end <= source.height),
+                        "Edit area is outside the image"
+                    );
+                    Some(app_core::PixelationGrid::prepare(
+                        &source.pixels,
+                        cancelled,
+                    )?)
+                } else {
+                    None
                 };
+                let output = app_core::render_ordered_snapshot_with_cancel(
+                    &source,
+                    if matches!(self, Self::Redact { .. }) {
+                        std::slice::from_ref(&region)
+                    } else {
+                        &[]
+                    },
+                    if matches!(self, Self::Crop { .. }) {
+                        Some(region)
+                    } else {
+                        None
+                    },
+                    &[],
+                    if matches!(self, Self::Pixelate { .. }) {
+                        std::slice::from_ref(&region)
+                    } else {
+                        &[]
+                    },
+                    grid.as_ref(),
+                    if matches!(self, Self::Blur { .. }) {
+                        std::slice::from_ref(&region)
+                    } else {
+                        &[]
+                    },
+                    cancelled,
+                )?;
                 Arc::try_unwrap(output.pixels)
                     .map_err(|_| anyhow::anyhow!("Workflow edit retained its output pixels"))
             }
-            Self::Rotate { degrees } => match degrees {
-                90 => Ok(image::imageops::rotate90(&pixels)),
-                180 => {
-                    image::imageops::rotate180_in_place(&mut pixels);
-                    Ok(pixels)
-                }
-                270 => Ok(image::imageops::rotate270(&pixels)),
-                _ => unreachable!("recipe rotation was validated"),
-            },
-            Self::Flip { axis } => {
-                match axis {
-                    Axis::Horizontal => image::imageops::flip_horizontal_in_place(&mut pixels),
-                    Axis::Vertical => image::imageops::flip_vertical_in_place(&mut pixels),
-                }
-                Ok(pixels)
-            }
+            Self::Rotate { degrees } => Ok(app_core::rotate_rgba_with_cancel(
+                pixels, degrees, cancelled,
+            )?),
+            Self::Flip { axis } => Ok(app_core::flip_rgba_with_cancel(
+                pixels,
+                matches!(axis, Axis::Horizontal),
+                cancelled,
+            )?),
             Self::RemoveStrip {
                 axis,
                 start,
                 length,
-            } => Ok(app_core::remove_image_strip(
+            } => Ok(app_core::remove_image_strip_with_cancel(
                 &pixels,
                 matches!(axis, Axis::Vertical),
                 start,
                 length,
+                cancelled,
             )?),
-            Self::Resize { width, height } => {
-                crate::image_tools::resize_pixels(&pixels, width, height)
-            }
+            Self::Resize { width, height } => Ok(app_core::resize_nearest_rgba_with_cancel(
+                &pixels, width, height, cancelled,
+            )?),
             Self::Canvas {
                 padding,
                 background,
             } => {
-                let border = padding.checked_mul(2).context("Padding is too large")?;
-                let width = pixels
-                    .width()
-                    .checked_add(border)
-                    .context("Canvas width overflow")?;
-                let height = pixels
-                    .height()
-                    .checked_add(border)
-                    .context("Canvas height overflow")?;
-                app_core::validate_image_size(width, height)?;
                 let background = crate::image_tools::color(&OsString::from(background))?;
-                let mut output = RgbaImage::from_pixel(width, height, background);
-                crate::image_tools::overlay(&mut output, &pixels, padding, padding);
-                Ok(output)
+                Ok(app_core::canvas_rgba_with_cancel(
+                    &pixels,
+                    padding,
+                    background.0,
+                    cancelled,
+                )?)
             }
         }
     }
@@ -321,22 +320,46 @@ pub fn run(args: &[OsString]) -> Result<()> {
     let destination = Path::new(&args[2]);
     app_core::ImageExportFormat::from_path(destination)?;
     ensure!(!destination.try_exists()?, "Output already exists");
+    #[cfg(unix)]
+    let cancellation = crate::record::unix::Cancellation::new()?;
+    #[cfg(unix)]
+    let flag = cancellation.flag();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(300);
+    let check = || -> Result<()> {
+        #[cfg(unix)]
+        ensure!(
+            !flag.load(std::sync::atomic::Ordering::Relaxed),
+            "Workflow canceled"
+        );
+        ensure!(
+            std::time::Instant::now() < deadline,
+            "Workflow exceeded its five-minute processing budget"
+        );
+        Ok(())
+    };
+    check()?;
     let recipe = Recipe::read(Path::new(&args[0]))?;
     let step_count = recipe.step_count();
-    let pixels = recipe.apply(app_core::load_editor_image(Path::new(&args[1]))?)?;
+    let pixels =
+        recipe.apply_with_cancel(app_core::load_editor_image(Path::new(&args[1]))?, &check)?;
     let (width, height) = pixels.dimensions();
-    let format = crate::cli::frame(pixels).save_image_as(
+    let format = crate::cli::frame(pixels).save_image_as_with_cancel(
         destination,
         app_core::DEFAULT_JPEG_QUALITY,
         app_core::ExportSize::Original,
+        || check().is_err(),
     )?;
-    println!(
+    #[cfg(unix)]
+    cancellation.output_phase(true);
+    use std::io::Write as _;
+    let mut output = std::io::stdout().lock();
+    writeln!(output,
         "{}",
         serde_json::json!({
             "version": 1, "steps": step_count,
             "format": format.extension(), "width": width, "height": height,
         })
-    );
+    ).and_then(|_|output.flush()).context("Workflow image was saved but its result could not be written; the completed output remains")?;
     Ok(())
 }
 

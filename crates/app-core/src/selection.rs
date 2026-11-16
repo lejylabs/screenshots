@@ -3,7 +3,8 @@ use std::time::Instant;
 use crate::CapturedImage;
 use anyhow::{Result, ensure};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PixelRegion {
     pub x: u32,
     pub y: u32,
@@ -80,6 +81,24 @@ impl FrameAnnotation {
 }
 
 impl PixelRegion {
+    pub(crate) fn intersection(self, other: Self) -> Option<Self> {
+        let x = self.x.max(other.x);
+        let y = self.y.max(other.y);
+        let right = self
+            .x
+            .saturating_add(self.width)
+            .min(other.x.saturating_add(other.width));
+        let bottom = self
+            .y
+            .saturating_add(self.height)
+            .min(other.y.saturating_add(other.height));
+        (x < right && y < bottom).then(|| Self {
+            x,
+            y,
+            width: right - x,
+            height: bottom - y,
+        })
+    }
     /// Constrain a drag to a source-pixel square, keeping its starting corner anchored.
     pub fn from_drag_constrained(
         start: [f32; 2],
@@ -313,6 +332,29 @@ pub fn render_ordered_snapshot(
     grid: Option<&crate::PixelationGrid>,
     blurs: &[PixelRegion],
 ) -> Result<CapturedImage> {
+    render_ordered_snapshot_with_cancel(
+        source,
+        regions,
+        crop,
+        annotations,
+        pixelations,
+        grid,
+        blurs,
+        || false,
+    )
+}
+
+pub fn render_ordered_snapshot_with_cancel(
+    source: &CapturedImage,
+    regions: &[PixelRegion],
+    crop: Option<PixelRegion>,
+    annotations: &[crate::DrawAnnotation],
+    pixelations: &[PixelRegion],
+    grid: Option<&crate::PixelationGrid>,
+    blurs: &[PixelRegion],
+    cancelled: impl Fn() -> bool,
+) -> Result<CapturedImage> {
+    let mut work = crate::image_cancel::ImageWork::new(&cancelled)?;
     ensure!(
         [
             annotations.len(),
@@ -401,6 +443,10 @@ pub fn render_ordered_snapshot(
     );
     let (width, height) = source.pixels.dimensions();
     crate::validate_image_size(width, height)?;
+    ensure!(
+        source.pixels.as_raw().len() as u64 == u64::from(width) * u64::from(height) * 4,
+        "Image backing does not match its dimensions"
+    );
     for pen in &pens {
         pen.validate()?;
     }
@@ -464,34 +510,44 @@ pub fn render_ordered_snapshot(
         width,
         height,
     });
-    let mut pixels = if crop.is_some() {
-        image::imageops::crop_imm(
-            source.pixels.as_ref(),
-            area.x,
-            area.y,
-            area.width,
-            area.height,
-        )
-        .to_image()
+    let source_row = width as usize * 4;
+    let output_row = area.width as usize * 4;
+    let mut data = Vec::with_capacity(output_row * area.height as usize);
+    if area.x == 0 && area.y == 0 && area.width == width && area.height == height {
+        work.extend(&mut data, source.pixels.as_raw())?;
     } else {
-        source.pixels.as_ref().clone()
-    };
+        for y in 0..area.height as usize {
+            let start = (y + area.y as usize) * source_row + area.x as usize * 4;
+            work.extend(
+                &mut data,
+                &source.pixels.as_raw()[start..start + output_row],
+            )?;
+        }
+    }
+    let mut pixels = image::RgbaImage::from_raw(area.width, area.height, data)
+        .ok_or_else(|| anyhow::anyhow!("Rendered image backing does not match its dimensions"))?;
     if !blurs.is_empty() {
-        crate::blur::paint_blur(&source.pixels, &mut pixels, area, blurs)?;
+        crate::blur::paint_blur(&source.pixels, &mut pixels, area, blurs, &mut work)?;
     }
     if !pixelations.is_empty() {
         grid.ok_or_else(|| anyhow::anyhow!("Pixelation preview is not ready"))?
-            .paint(&mut pixels, area, pixelations, [width, height])?;
+            .paint(&mut pixels, area, pixelations, [width, height], &mut work)?;
     }
-    crate::layers::paint_ordered(&mut pixels, area, annotations, [width, height])?;
+    crate::layers::paint_ordered(&mut pixels, area, annotations, [width, height], &mut work)?;
     // Redaction is always the final opaque layer, including where other annotations overlap it.
     for region in regions {
-        for y in region.y.max(area.y)..(region.y + region.height).min(area.y + area.height) {
-            for x in region.x.max(area.x)..(region.x + region.width).min(area.x + area.width) {
+        work.charge(4)?;
+        let Some(region) = region.intersection(area) else {
+            continue;
+        };
+        for y in region.y..region.y + region.height {
+            for x in region.x..region.x + region.width {
+                work.pixel()?;
                 pixels.put_pixel(x - area.x, y - area.y, image::Rgba([0, 0, 0, 255]));
             }
         }
     }
+    work.check()?;
     Ok(CapturedImage {
         pixels: std::sync::Arc::new(pixels),
         display_geometry: None,

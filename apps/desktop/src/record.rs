@@ -370,10 +370,20 @@ pub(crate) mod unix {
         group: i32,
         workers: Vec<JoinHandle<()>>,
         finished: bool,
+        cooperative: bool,
     }
 
     impl Engine {
         fn stop(&mut self) {
+            if self.cooperative && self.child.try_wait().ok().flatten().is_none() {
+                unsafe {
+                    libc::kill(-self.group, libc::SIGTERM);
+                }
+                let until = Instant::now() + Duration::from_millis(250);
+                while Instant::now() < until && self.child.try_wait().ok().flatten().is_none() {
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+            }
             unsafe {
                 libc::kill(-self.group, libc::SIGKILL);
             }
@@ -464,10 +474,28 @@ pub(crate) mod unix {
     }
 
     pub(crate) fn engine(
+        command: Command,
+        probe: bool,
+        cancellation: &Cancellation,
+        deadline: Instant,
+    ) -> Result<Vec<u8>> {
+        engine_owned(command, probe, cancellation, deadline, false)
+    }
+
+    pub(crate) fn cooperative_engine(
+        command: Command,
+        cancellation: &Cancellation,
+        deadline: Instant,
+    ) -> Result<Vec<u8>> {
+        engine_owned(command, true, cancellation, deadline, true)
+    }
+
+    fn engine_owned(
         mut command: Command,
         probe: bool,
         cancellation: &Cancellation,
         deadline: Instant,
+        cooperative: bool,
     ) -> Result<Vec<u8>> {
         cancellation.check(deadline)?;
         command
@@ -532,6 +560,7 @@ pub(crate) mod unix {
             group,
             workers: Vec::with_capacity(2),
             finished: false,
+            cooperative,
         };
         let stderr = job
             .child

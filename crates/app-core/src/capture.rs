@@ -5,7 +5,7 @@
 
 use std::{
     fs,
-    io::{BufWriter, Write},
+    io::Write,
     path::{Path, PathBuf},
     sync::Arc,
     time::Instant,
@@ -1750,15 +1750,44 @@ impl CapturedImage {
         jpeg_quality: u8,
         size: ExportSize,
     ) -> Result<ImageExportFormat, CaptureError> {
+        self.save_image_as_with_cancel(destination, jpeg_quality, size, || false)
+    }
+
+    pub fn save_image_as_with_cancel(
+        &self,
+        destination: &Path,
+        jpeg_quality: u8,
+        size: ExportSize,
+        cancelled: impl Fn() -> bool,
+    ) -> Result<ImageExportFormat, CaptureError> {
+        let cancelled = crate::image_cancel::latch(cancelled);
+        let mut work = crate::image_cancel::ImageWork::new(&cancelled)?;
         validate_image_size(self.pixels.width(), self.pixels.height())?;
         let format = ImageExportFormat::from_path(destination)?;
+        format.validate_quality(jpeg_quality)?;
         size.validate()?;
-        if size != ExportSize::Original {
-            write_scaled_export(&self.pixels, destination, format, jpeg_quality, size)?;
-        } else if format == ImageExportFormat::Png {
-            self.save_png_as(destination)?;
+        // Check original transparency before reducing, preserving JPEG admission.
+        if size != ExportSize::Original && format == ImageExportFormat::Jpeg {
+            for pixel in self.pixels.pixels() {
+                work.pixel()?;
+                if pixel[3] != 255 {
+                    return Err(CaptureError::Backend(
+                        "JPEG cannot preserve transparency. Choose PNG or WebP.".into(),
+                    ));
+                }
+            }
+        }
+        if size.dimensions(self.pixels.width(), self.pixels.height())? == self.pixels.dimensions() {
+            write_image_export_with_cancel(
+                &self.pixels,
+                destination,
+                format,
+                jpeg_quality,
+                &cancelled,
+            )?;
         } else {
-            write_image_export(&self.pixels, destination, format, jpeg_quality)?;
+            let scaled = crate::downscale_export_with_cancel(&self.pixels, size, &cancelled)?;
+            write_image_export_with_cancel(&scaled, destination, format, jpeg_quality, &cancelled)?;
         }
         Ok(format)
     }
@@ -1779,6 +1808,13 @@ impl CapturedImage {
     /// Encode the current pixels as PNG without writing a library file.
     pub fn png_bytes(&self) -> Result<Vec<u8>, CaptureError> {
         encode_png_bytes(&self.pixels)
+    }
+
+    pub fn png_bytes_with_cancel(
+        &self,
+        cancelled: impl Fn() -> bool,
+    ) -> Result<Vec<u8>, CaptureError> {
+        encode_png_bytes_with_cancel(&self.pixels, &cancelled)
     }
 }
 
@@ -1842,21 +1878,37 @@ impl ImageExportFormat {
 }
 
 pub(crate) fn encode_png_bytes(pixels: &RgbaImage) -> Result<Vec<u8>, CaptureError> {
+    encode_png_bytes_with_cancel(pixels, &|| false)
+}
+
+fn encode_png_bytes_with_cancel(
+    pixels: &RgbaImage,
+    cancelled: &impl Fn() -> bool,
+) -> Result<Vec<u8>, CaptureError> {
+    let cancelled = crate::image_cancel::latch(cancelled);
     use image::ImageEncoder as _;
+    let work = crate::image_cancel::ImageWork::new(&cancelled)?;
     validate_image_size(pixels.width(), pixels.height())?;
     let mut bytes = Vec::new();
     {
         use image::codecs::png::{CompressionType, FilterType, PngEncoder};
-        let mut cursor = std::io::Cursor::new(&mut bytes);
-        PngEncoder::new_with_quality(&mut cursor, CompressionType::Fast, FilterType::Adaptive)
-            .write_image(
-                pixels.as_raw(),
-                pixels.width(),
-                pixels.height(),
-                image::ExtendedColorType::Rgba8,
-            )
-            .map_err(|error| CaptureError::Backend(error.to_string()))?;
+        let mut writer = crate::image_cancel::CheckedImageWriter::new(&mut bytes, &cancelled)?;
+        let result =
+            PngEncoder::new_with_quality(&mut writer, CompressionType::Fast, FilterType::Adaptive)
+                .write_image(
+                    pixels.as_raw(),
+                    pixels.width(),
+                    pixels.height(),
+                    image::ExtendedColorType::Rgba8,
+                )
+                .map_err(|error| CaptureError::Backend(error.to_string()));
+        work.check()?;
+        result?;
+        let flushed = writer.flush();
+        work.check()?;
+        flushed?;
     }
+    work.check()?;
     if bytes.len() < 8
         || bytes.len() as u64 > MAX_CAPTURE_BYTES + 16 * 1024 * 1024
         || bytes[..8] != [137, 80, 78, 71, 13, 10, 26, 10]
@@ -1891,45 +1943,73 @@ fn write_image_export(
     format: ImageExportFormat,
     jpeg_quality: u8,
 ) -> Result<(), CaptureError> {
+    write_image_export_with_cancel(pixels, destination, format, jpeg_quality, &|| false)
+}
+
+fn write_image_export_with_cancel(
+    pixels: &RgbaImage,
+    destination: &Path,
+    format: ImageExportFormat,
+    jpeg_quality: u8,
+    cancelled: &impl Fn() -> bool,
+) -> Result<(), CaptureError> {
+    let mut work = crate::image_cancel::ImageWork::new(cancelled)?;
     use image::ImageEncoder as _;
     validate_image_size(pixels.width(), pixels.height())?;
     format.validate_quality(jpeg_quality)?;
-    if format == ImageExportFormat::Jpeg && pixels.pixels().any(|pixel| pixel.0[3] != 255) {
-        return Err(CaptureError::Backend(
-            "JPEG cannot preserve transparency. Choose PNG or WebP.".into(),
-        ));
-    }
-    write_output(destination, |file| {
-        let mut writer = BufWriter::with_capacity(64 * 1024, file);
-        match format {
-            ImageExportFormat::Jpeg => {
-                image::codecs::jpeg::JpegEncoder::new_with_quality(&mut writer, jpeg_quality)
-                    .encode_image(pixels)?
-            }
-            ImageExportFormat::WebP => image::codecs::webp::WebPEncoder::new_lossless(&mut writer)
-                .write_image(
-                    pixels.as_raw(),
-                    pixels.width(),
-                    pixels.height(),
-                    image::ExtendedColorType::Rgba8,
-                )?,
-            ImageExportFormat::Png => {
-                use image::codecs::png::{CompressionType, FilterType, PngEncoder};
-                PngEncoder::new_with_quality(
-                    &mut writer,
-                    CompressionType::Fast,
-                    FilterType::Adaptive,
-                )
-                .write_image(
-                    pixels.as_raw(),
-                    pixels.width(),
-                    pixels.height(),
-                    image::ExtendedColorType::Rgba8,
-                )?;
+    if format == ImageExportFormat::Jpeg {
+        for pixel in pixels.pixels() {
+            work.pixel()?;
+            if pixel[3] != 255 {
+                return Err(CaptureError::Backend(
+                    "JPEG cannot preserve transparency. Choose PNG or WebP.".into(),
+                ));
             }
         }
-        writer.flush()?;
-        Ok(())
+    }
+    let result = write_output_checked(
+        destination,
+        |file| {
+            let mut writer = crate::image_cancel::CheckedImageWriter::new(file, cancelled)?;
+            match format {
+                ImageExportFormat::Jpeg => {
+                    image::codecs::jpeg::JpegEncoder::new_with_quality(&mut writer, jpeg_quality)
+                        .encode_image(pixels)?
+                }
+                ImageExportFormat::WebP => {
+                    image::codecs::webp::WebPEncoder::new_lossless(&mut writer).write_image(
+                        pixels.as_raw(),
+                        pixels.width(),
+                        pixels.height(),
+                        image::ExtendedColorType::Rgba8,
+                    )?
+                }
+                ImageExportFormat::Png => {
+                    use image::codecs::png::{CompressionType, FilterType, PngEncoder};
+                    PngEncoder::new_with_quality(
+                        &mut writer,
+                        CompressionType::Fast,
+                        FilterType::Adaptive,
+                    )
+                    .write_image(
+                        pixels.as_raw(),
+                        pixels.width(),
+                        pixels.height(),
+                        image::ExtendedColorType::Rgba8,
+                    )?;
+                }
+            }
+            writer.flush()?;
+            Ok(())
+        },
+        || work.check(),
+    );
+    result.map_err(|error| {
+        if cancelled() {
+            CaptureError::Canceled
+        } else {
+            error
+        }
     })
 }
 

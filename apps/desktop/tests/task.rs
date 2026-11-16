@@ -186,6 +186,103 @@ use image::GenericImageView;
 
 #[cfg(unix)]
 #[test]
+fn task_cooperative_command_child() {
+    use std::os::unix::process::CommandExt;
+    let Some(marker) = std::env::var_os("SCREENSHOTS_TASK_COOPERATIVE_FIXTURE") else {
+        return;
+    };
+    let marker = PathBuf::from(marker);
+    let flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    signal_hook::flag::register(libc::SIGTERM, flag.clone()).unwrap();
+    let mut child = Command::new("/bin/sh")
+        .args(["-c", "exec sleep 30"])
+        .process_group(0)
+        .spawn()
+        .unwrap();
+    struct Group(i32);
+    impl Drop for Group {
+        fn drop(&mut self) {
+            unsafe {
+                libc::kill(-self.0, libc::SIGKILL);
+            }
+        }
+    }
+    let _group = Group(child.id() as i32);
+    std::fs::write(&marker, child.id().to_string()).unwrap();
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while !flag.load(std::sync::atomic::Ordering::Relaxed) && std::time::Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    unsafe {
+        libc::kill(-(child.id() as i32), libc::SIGKILL);
+    }
+    child.wait().unwrap();
+    std::fs::write(
+        marker.with_extension("cleaned"),
+        b"owned nested group stopped",
+    )
+    .unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn task_cancellation_allows_owned_commands_to_clean_separate_child_groups() {
+    let f = Fixture::new();
+    let marker = f.p("nested");
+    let profile = serde_json::json!({"version":1,"source":{"type":"none"},"actions":[{"type":"command","program":std::env::current_exe().unwrap(),"args":["--exact","task_cooperative_command_child","--nocapture"],"timeout_ms":10000}]});
+    std::fs::write(f.p("task.json"), serde_json::to_vec(&profile).unwrap()).unwrap();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_screenshots"))
+        .args(["task", "run"])
+        .arg(f.p("task.json"))
+        .env("SCREENSHOTS_TASK_COOPERATIVE_FIXTURE", &marker)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    let nested = loop {
+        if let Ok(value) = std::fs::read_to_string(&marker) {
+            if let Ok(pid) = value.parse::<i32>() {
+                break pid;
+            }
+        }
+        if std::time::Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!("Owned command did not start");
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    };
+    struct Group(i32);
+    impl Drop for Group {
+        fn drop(&mut self) {
+            unsafe {
+                libc::kill(-self.0, libc::SIGKILL);
+            }
+        }
+    }
+    let _nested = Group(nested);
+    unsafe {
+        libc::kill(child.id() as i32, libc::SIGTERM);
+    }
+    while child.try_wait().unwrap().is_none() {
+        if std::time::Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!("Task command did not stop");
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert!(!child.wait().unwrap().success());
+    assert!(
+        marker.with_extension("cleaned").is_file(),
+        "Command must receive cancellation before forceful fallback"
+    );
+}
+
+#[cfg(unix)]
+#[test]
 fn task_signal_interrupts_an_upload_while_waiting_for_the_server() {
     let f = Fixture::new();
     std::fs::write(f.p("raw.bin"), b"explicit task upload").unwrap();

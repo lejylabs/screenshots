@@ -6,10 +6,16 @@ mod pen;
 pub use layers::{DrawAnnotation, HighlightAnnotation};
 pub use pen::{MAX_DOCUMENT_PEN_POINTS, MAX_PEN_POINTS, PenAnnotation};
 mod capture;
+mod image_cancel;
+mod raster_ops;
+pub use raster_ops::{
+    canvas_rgba_with_cancel, composite_rgba_with_cancel, flip_rgba_with_cancel,
+    resize_nearest_rgba_with_cancel, rotate_rgba_with_cancel,
+};
 mod desktop_composite;
 pub use desktop_composite::{capture_stitched_desktop, stitch_desktop};
 mod resample;
-pub use resample::{ExportSize, downscale_export};
+pub use resample::{ExportSize, downscale_export, downscale_export_with_cancel};
 mod filenames;
 pub use arrows::ArrowAnnotation;
 pub use filenames::{capture_file_name, validate_capture_name_template};
@@ -38,7 +44,7 @@ mod strip;
 pub use bmp_export::save_bmp;
 pub use gif_assembly::assemble_gif;
 pub use scrolling::{ScrollAppend, ScrollAssembler, ScrollMatchOptions};
-pub use strip::remove_image_strip;
+pub use strip::{remove_image_strip, remove_image_strip_with_cancel};
 mod tiff_export;
 mod tiff_input;
 pub use tiff_export::save_tiff;
@@ -93,8 +99,8 @@ pub use s3_upload::{
 pub use selection::{
     FrameAnnotation, PixelRegion, crop_snapshot, edit_snapshot, redact_snapshot,
     render_annotated_snapshot, render_document_snapshot, render_edited_snapshot,
-    render_filtered_snapshot, render_ordered_snapshot, render_pixelated_snapshot,
-    render_text_snapshot,
+    render_filtered_snapshot, render_ordered_snapshot, render_ordered_snapshot_with_cancel,
+    render_pixelated_snapshot, render_text_snapshot,
 };
 pub use settings::{
     CaptureHotkeys, CaptureOutputProfile, CaptureSettings, DEFAULT_JPEG_QUALITY, RegionPreset,

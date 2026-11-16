@@ -48,32 +48,14 @@ fn save(pixels: RgbaImage, destination: &Path) -> Result<()> {
     Ok(())
 }
 
-pub(crate) fn overlay(output: &mut RgbaImage, source: &RgbaImage, x: u32, y: u32) {
-    let width = source.width().min(output.width().saturating_sub(x));
-    let height = source.height().min(output.height().saturating_sub(y));
-    for source_y in 0..height {
-        for source_x in 0..width {
-            let source = source.get_pixel(source_x, source_y);
-            let source_alpha = u32::from(source[3]);
-            if source_alpha == 0 {
-                continue;
-            }
-            let destination = output.get_pixel_mut(x + source_x, y + source_y);
-            if source_alpha == 255 {
-                *destination = *source;
-                continue;
-            }
-            let destination_weight = u32::from(destination[3]) * (255 - source_alpha);
-            let denominator = source_alpha * 255 + destination_weight;
-            for channel in 0..3 {
-                let numerator = u32::from(source[channel]) * source_alpha * 255
-                    + u32::from(destination[channel]) * destination_weight;
-                destination[channel] = ((numerator + denominator / 2) / denominator) as u8;
-            }
-            // Integer source-over keeps an opaque background exactly opaque.
-            destination[3] = ((denominator + 127) / 255) as u8;
-        }
-    }
+pub(crate) fn overlay(output: &mut RgbaImage, source: &RgbaImage, x: u32, y: u32) -> Result<()> {
+    Ok(app_core::composite_rgba_with_cancel(
+        output,
+        source,
+        x,
+        y,
+        || false,
+    )?)
 }
 
 pub fn run(args: &[OsString]) -> Result<()> {
@@ -167,9 +149,9 @@ fn compose(args: &[OsString]) -> Result<()> {
         _ => None,
     };
     let mut output = RgbaImage::from_pixel(width, height, background);
-    overlay(&mut output, &source, padding, padding);
+    overlay(&mut output, &source, padding, padding)?;
     if let Some((watermark, x, y)) = watermark {
-        overlay(&mut output, &watermark, x, y);
+        overlay(&mut output, &watermark, x, y)?;
     }
     save(output, destination)
 }
@@ -188,15 +170,10 @@ fn resize(args: &[OsString]) -> Result<()> {
 }
 
 pub(crate) fn resize_pixels(source: &RgbaImage, width: u32, height: u32) -> Result<RgbaImage> {
-    app_core::validate_image_size(source.width(), source.height())?;
-    app_core::validate_image_size(width, height)?;
-    // Center-sampled nearest neighbour keeps RGBA exact without a float intermediate.
-    let output = RgbaImage::from_fn(width, height, |x, y| {
-        let source_x =
-            ((u64::from(x) * 2 + 1) * u64::from(source.width()) / (u64::from(width) * 2)) as u32;
-        let source_y =
-            ((u64::from(y) * 2 + 1) * u64::from(source.height()) / (u64::from(height) * 2)) as u32;
-        *source.get_pixel(source_x, source_y)
-    });
-    Ok(output)
+    Ok(app_core::resize_nearest_rgba_with_cancel(
+        source,
+        width,
+        height,
+        || false,
+    )?)
 }

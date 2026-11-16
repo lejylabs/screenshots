@@ -1,5 +1,97 @@
 # Cooperative cancellation during history thumbnail reduction
 
+## Continuation: operation-owned raster work (implemented; final integration pending)
+
+Extend the existing callback contract to ordered rendering, export reduction,
+strip removal and Task recipes. Legacy entry points retain their behavior and
+explicit output draining; only a supplied operation token requests cancellation.
+One stack-owned counter shares a 64 KiB work budget across rows and spans, so
+very narrow images do not check a clock/atomic for every tiny row and very wide
+images do not defer a check until the end of a giant row. No worker, timer,
+cache, runtime or image snapshot is introduced by the token.
+
+The accounting includes bounded row/region traversal and blur kernel/sum chunks,
+not only modified pixels. Empty rectangle intersections are rejected before
+entering row loops. Pixelation builds clipped vertical bands and merges their
+spans once, so a sparse effect near the end of a tall image does not scan every
+untouched row. Overlapping bands still paint each pixel once. Blur shares the
+renderer's counter, charging bounded chunks across one-pixel rows rather than
+calling the raw token per row. Preparation/preview keep their established public
+error strings while sharing bounded counters within their own stage.
+
+The 64 KiB accounting quantum measures copied/encoded bytes and fixed units for
+sampled pixels and scalar traversal; it is not a CPU-instruction or wall-time
+promise. Valid kernel chunks are smaller than one quantum. Vector calls have
+an explicit post-call check before any subsequent flush. Ordered blur and all
+in-memory PNG callback boundaries, including first observation inside explicit
+flush, preserve typed `CaptureError::Canceled`. The I/O bridge remains
+non-Interrupted and failed buffered writers still discard rather than flush.
+
+
+Reuse the current blur, pixelation, annotation and alpha algorithms. Copy and
+pixel loops check within bounded work; vector rasterizer calls check before and
+after each annotation. Recipe cancellation spans transforms and each step.
+Native filesystem/codec calls and the internals of a vector rasterizer still
+need their separate native-call isolation/deadline acceptance; this does not
+claim they become interruptible through a boolean callback. Successful output
+publication must remain explicit and atomic, with source bytes unchanged.
+
+Required checks: existing independent pixel/alpha/render oracles, cancellation
+inside wide and narrow copies and a large single-pixel reduction, output-free
+Task interruption during a recipe, plus optimized representative measurements.
+Record passing evidence separately after implementation; the earlier measured
+thumbnail results below are unchanged and do not validate this continuation.
+
+Current evidence: seven focused raster/encoder fixtures passed, including
+upstream exact rotate/flip comparisons, known straight-alpha and hidden-RGB
+values, wide/narrow cancellation, checks inside a one-pixel reduction, and
+unpublished PNG/JPEG/WebP cleanup. Encoder cancellation returns a non-retryable
+I/O error; already-observed cancellation remains latched through cleanup.
+Error cleanup discards buffered bytes without another file write.
+
+The first 4K observation exposed redundant zero-initialization before copying.
+Appending initialized chunks into exactly reserved storage removed that extra
+pass without unsafe uninitialized pixels. A balanced six-order, thirty-sample
+optimized repeat measured 0.610 ms median for copy+one-pixel redaction reference,
+0.662 ms for default rendering and 0.688 ms for signal-aware rendering; the
+latter adds 3.83% median / 1.15% p95 over the default path. Every output was
+byte-identical. This is warm CPU development evidence, excluding presentation,
+codecs, total/private memory and reference-hardware acceptance. Raw samples:
+`target/verification/raster-cancellation-performance.json`.
+
+Current Goldfish-fix verification passed 301 regular optimized core cases,
+45 opt-ins excluded, plus 11 Task and 10 workflow executable cases. Regression
+fixtures include a real partial-width one-pixel crop across many rows, sparse
+region traversal cancellation, narrow blur callback bounds and alpha samples,
+empty horizontal intersections, post-vector cancellation before flush, every
+observed PNG encoder/flush callback boundary, and legacy preview error strings.
+Task cancellation before/after action boundaries and a failed completion receipt
+now retain the same completed-output/upload context as action failures.
+
+A targeted same-machine before/after comparison used 30 warm samples per case
+with an atomic+clock callback. Narrow-blur median fell from 1.869 to 1.031 ms;
+sparse pixelation from 0.216 to 0.015 ms. Wide blur and empty-clipped redaction
+medians were effectively unchanged; empty-clip p95 varied by +5.0%. Every case's
+output hash stayed identical. These are synthetic CPU development observations,
+not codecs, presentation, private footprint or hardware acceptance. Raw values:
+`target/verification/image-work-budget-comparison.json`. A separate balanced 4K
+copy/redaction repeat recorded 0.584 ms default and 0.594 ms token-aware medians
+with exact pixels; its noisy tails do not establish a hardware gate. Evidence:
+`target/verification/image-work-budget-4k-after.json`.
+The rebuilt executable also passed injected Linux ENOSPC/fsync and unavailable
+output-parent checks with unchanged inputs and no published files or leftover
+parts: `target/verification/image-output-failures-work-budget.json`. These
+fixtures do not fill a real disk or establish power-loss acceptance.
+
+
+The earlier full core run at its intermediate snapshot passed 258 cases, 43 opt-ins
+excluded; affected image/workflow/Task executable fixtures also passed. The
+subsequent encoder/latching and native-worker integration requires the final
+frozen-tree repeat. Standalone workflows use a cooperative five-minute processing
+budget; kernel/codec internals still have the limits above. Task commands receive
+up to 250 ms for cooperative owned-child cleanup before forced termination;
+a real independent-process-group fixture passed alongside the 11 Task cases.
+
 Author: NewtTheWolf
 Date: 2026-11-15
 Status: implemented; focused core/lifecycle checks and measurements passed.

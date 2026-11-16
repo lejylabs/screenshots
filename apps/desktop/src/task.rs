@@ -437,9 +437,18 @@ impl Task {
         if let Some(recipe) = self.recipe.take() {
             let image = frame.take().context("Recipe requires image pixels")?;
             frame = Some(crate::cli::frame(
-                recipe.apply(
+                recipe.apply_with_cancel(
                     Arc::try_unwrap(image.pixels)
                         .map_err(|_| anyhow::anyhow!("Task source pixels are still shared"))?,
+                    &|| {
+                        #[cfg(unix)]
+                        cancel.check(task_deadline)?;
+                        ensure!(
+                            Instant::now() < task_deadline,
+                            "Task exceeded its duration budget"
+                        );
+                        Ok(())
+                    },
                 )?,
             ));
         }
@@ -450,12 +459,12 @@ impl Task {
         let total = self.actions.len();
         for (index, action) in self.actions.into_iter().enumerate() {
             #[cfg(unix)]
-            cancel.check(task_deadline)?;
+            cancel.check(task_deadline).with_context(|| format!("Task stopped before action {} of {total}; previous completed outputs and uploads remain", index+1))?;
             let outcome = (|| -> Result<serde_json::Value> {
                 Ok(match action {
                     Ready::Save(path, quality) => {
                         let frame = frame.as_ref().context("Save requires an image source")?;
-                        let format = frame.save_image_as(&path, quality, app_core::ExportSize::Original)?;
+                        let format = frame.save_image_as_with_cancel(&path, quality, app_core::ExportSize::Original, || upload_cancel.is_canceled() || Instant::now() >= task_deadline)?;
                         last_output = Some(path);
                         serde_json::json!({"action":"save","format":format.extension(),"width":frame.width,"height":frame.height})
                     }
@@ -507,7 +516,7 @@ impl Task {
                         }
                         let deadline = (Instant::now() + timeout).min(task_deadline);
                         #[cfg(unix)] {
-                            crate::record::unix::engine(command, true, &cancel, deadline)?;
+                            crate::record::unix::cooperative_engine(command, &cancel, deadline)?;
                         }
                         #[cfg(target_os = "windows")] { crate::record_windows::engine(command, None, deadline)?; }
                         serde_json::json!({"action":"command"})
@@ -522,13 +531,17 @@ impl Task {
             cancel.output_phase(false);
         }
         #[cfg(unix)]
-        cancel.check(task_deadline)?;
+        cancel.check(task_deadline).with_context(|| {
+            format!(
+                "Task stopped after {total} completed actions; previous outputs and uploads remain"
+            )
+        })?;
         drop(frame);
         #[cfg(unix)]
         cancel.output_phase(true);
         result_line(
             serde_json::json!({"type":"complete","actions":total,"clipboard_hold_ms":if owns_clipboard { self.clipboard_hold_ms } else { 0 }}),
-        )?;
+        ).with_context(||format!("Task completed {total} actions but its completion result could not be written; previous outputs and uploads remain"))?;
         // A Linux owner must stay alive to serve its explicitly requested clipboard data.
         if owns_clipboard && self.clipboard_hold_ms != 0 {
             let until = Instant::now() + Duration::from_millis(self.clipboard_hold_ms);

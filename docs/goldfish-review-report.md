@@ -385,3 +385,26 @@ The historical nine-advisory failure above is superseded for the current active
 production graph: default `cargo deny check advisories` passes without ignores
 following the maintained native dependency migration. The default-branch glib
 alert and platform acceptance remain separate gates.
+
+
+## Cooperative image work continuation (2026-11-16)
+
+Fresh `image_cancellation_goldfish` found aggregate-budget gaps in sparse/skinny
+traversal and untyped blur/PNG-flush cancellation. The implementation now shares
+one counter through traversal and blur chunks, skips empty intersections, merges
+pixelation bands and normalizes latched cancellation before propagating flush
+errors. `image_cancellation_round2` independently found no Blocker or Major.
+Its two Nits are fixed: unchanged-size reduction checks after its copy, and an
+actual partial-width narrow crop now asserts cancellation on the third callback.
+This is one clean source-review round; it is not full-plan convergence.
+
+The author ran 301 optimized core tests, 11 Task and 10 workflow cases,
+Windows core compilation, Clippy and native Linux output-fault E2E. The final
+Nit-focused run passed 13 raster tests (two measurements explicitly excluded).
+Independent before/after pixel hashes matched; narrow blur/sparse pixelation
+improved and representative wide work did not cross the documented regression
+threshold. Raw evidence: `image-work-budget-comparison.json` and
+`image-output-failures-work-budget.json` under `target/verification`.
+Native filesystem/codec/vector internals and reference-hardware presentation
+remain separate gates. Native capture and SXCU Task integration have their own
+reviews; these checks do not establish their acceptance.

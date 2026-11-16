@@ -10,72 +10,104 @@ pub struct PixelationGrid {
 }
 impl PixelationGrid {
     pub fn prepare(source: &image::RgbaImage, cancelled: impl Fn() -> bool) -> Result<Self> {
-        let (width, height) = source.dimensions();
-        crate::validate_image_size(width, height)?;
-        let columns = width.div_ceil(16);
-        let mut colors =
-            Vec::with_capacity((u64::from(columns) * u64::from(height.div_ceil(16))) as usize);
-        for y in (0..height).step_by(16) {
-            ensure!(!cancelled(), "Pixelation preparation canceled");
-            for x in (0..width).step_by(16) {
-                ensure!(!cancelled(), "Pixelation preparation canceled");
-                let mut sums = [0u64; 4];
-                let mut count = 0u64;
-                for row in y..(y + 16).min(height) {
-                    for column in x..(x + 16).min(width) {
-                        let pixel = source.get_pixel(column, row).0;
-                        for channel in 0..3 {
-                            sums[channel] += u64::from(pixel[channel]) * u64::from(pixel[3]);
+        let result = (|| -> Result<Self> {
+            let (width, height) = source.dimensions();
+            crate::validate_image_size(width, height)?;
+            let mut work = crate::image_cancel::ImageWork::new(&cancelled)?;
+            let columns = width.div_ceil(16);
+            let mut colors =
+                Vec::with_capacity((u64::from(columns) * u64::from(height.div_ceil(16))) as usize);
+            for y in (0..height).step_by(16) {
+                work.charge(4)?;
+                for x in (0..width).step_by(16) {
+                    work.charge(
+                        4 + ((x + 16).min(width) - x) as usize
+                            * ((y + 16).min(height) - y) as usize
+                            * 4,
+                    )?;
+                    let mut sums = [0u64; 4];
+                    let mut count = 0u64;
+                    for row in y..(y + 16).min(height) {
+                        for column in x..(x + 16).min(width) {
+                            let pixel = source.get_pixel(column, row).0;
+                            for channel in 0..3 {
+                                sums[channel] += u64::from(pixel[channel]) * u64::from(pixel[3]);
+                            }
+                            sums[3] += u64::from(pixel[3]);
+                            count += 1;
                         }
-                        sums[3] += u64::from(pixel[3]);
-                        count += 1;
                     }
+                    colors.push([
+                        if sums[3] > 0 {
+                            (sums[0] / sums[3]) as u8
+                        } else {
+                            0
+                        },
+                        if sums[3] > 0 {
+                            (sums[1] / sums[3]) as u8
+                        } else {
+                            0
+                        },
+                        if sums[3] > 0 {
+                            (sums[2] / sums[3]) as u8
+                        } else {
+                            0
+                        },
+                        (sums[3] / count) as u8,
+                    ]);
                 }
-                colors.push([
-                    if sums[3] > 0 {
-                        (sums[0] / sums[3]) as u8
-                    } else {
-                        0
-                    },
-                    if sums[3] > 0 {
-                        (sums[1] / sums[3]) as u8
-                    } else {
-                        0
-                    },
-                    if sums[3] > 0 {
-                        (sums[2] / sums[3]) as u8
-                    } else {
-                        0
-                    },
-                    (sums[3] / count) as u8,
-                ]);
             }
-        }
-        Ok(Self {
-            width,
-            height,
-            columns,
-            colors,
+            work.check()?;
+            Ok(Self {
+                width,
+                height,
+                columns,
+                colors,
+            })
+        })();
+        result.map_err(|error| {
+            if matches!(
+                error.downcast_ref::<crate::CaptureError>(),
+                Some(crate::CaptureError::Canceled)
+            ) {
+                anyhow::anyhow!("Pixelation preparation canceled")
+            } else {
+                error
+            }
         })
     }
     /// At most 2048² BGRA pixels (16 MiB); no full-source-sized preview copy.
     pub fn preview_bgra(&self, cancelled: impl Fn() -> bool) -> Result<image::RgbaImage> {
-        let scale = (2048.0 / self.width.max(self.height) as f64).min(1.0);
-        let width = (self.width as f64 * scale).round().max(1.0) as u32;
-        let height = (self.height as f64 * scale).round().max(1.0) as u32;
-        let mut preview = image::RgbaImage::new(width, height);
-        for y in 0..height {
-            ensure!(!cancelled(), "Pixelation preview canceled");
-            for x in 0..width {
-                let mut color = self.color(
-                    (u64::from(x) * u64::from(self.width) / u64::from(width)) as u32,
-                    (u64::from(y) * u64::from(self.height) / u64::from(height)) as u32,
-                );
-                color.swap(0, 2);
-                preview.put_pixel(x, y, image::Rgba(color));
+        let result = (|| -> Result<image::RgbaImage> {
+            let mut work = crate::image_cancel::ImageWork::new(&cancelled)?;
+            let scale = (2048.0 / self.width.max(self.height) as f64).min(1.0);
+            let width = (self.width as f64 * scale).round().max(1.0) as u32;
+            let height = (self.height as f64 * scale).round().max(1.0) as u32;
+            let mut preview = image::RgbaImage::new(width, height);
+            for y in 0..height {
+                work.charge(width as usize * 4)?;
+                for x in 0..width {
+                    let mut color = self.color(
+                        (u64::from(x) * u64::from(self.width) / u64::from(width)) as u32,
+                        (u64::from(y) * u64::from(self.height) / u64::from(height)) as u32,
+                    );
+                    color.swap(0, 2);
+                    preview.put_pixel(x, y, image::Rgba(color));
+                }
             }
-        }
-        Ok(preview)
+            work.check()?;
+            Ok(preview)
+        })();
+        result.map_err(|error| {
+            if matches!(
+                error.downcast_ref::<crate::CaptureError>(),
+                Some(crate::CaptureError::Canceled)
+            ) {
+                anyhow::anyhow!("Pixelation preview canceled")
+            } else {
+                error
+            }
+        })
     }
     fn color(&self, x: u32, y: u32) -> [u8; 4] {
         self.colors[((y / 16) * self.columns + x / 16) as usize]
@@ -86,30 +118,60 @@ impl PixelationGrid {
         crop: PixelRegion,
         regions: &[PixelRegion],
         source_size: [u32; 2],
+        work: &mut crate::image_cancel::ImageWork<'_, impl Fn() -> bool>,
     ) -> Result<()> {
         ensure!(
             source_size == [self.width, self.height],
             "Pixelation source dimensions changed"
         );
-        let mut spans = Vec::with_capacity(regions.len());
-        for y in crop.y..crop.y + crop.height {
+        let mut edges = vec![crop.y, crop.y + crop.height];
+        let mut clipped = Vec::with_capacity(regions.len());
+        for region in regions {
+            work.charge(4)?;
+            if let Some(region) = region.intersection(crop) {
+                edges.push(region.y);
+                edges.push(region.y + region.height);
+                clipped.push(region);
+            }
+        }
+        edges.sort_unstable();
+        edges.dedup();
+        let mut spans = Vec::with_capacity(clipped.len());
+        for band in edges.windows(2) {
+            work.charge(4)?;
             spans.clear();
-            for region in regions {
-                if y >= region.y && y < region.y + region.height {
-                    let start = region.x.max(crop.x);
-                    let end = (region.x + region.width).min(crop.x + crop.width);
-                    if start < end {
-                        spans.push((start, end));
-                    }
+            for region in &clipped {
+                work.charge(4)?;
+                if band[0] >= region.y && band[0] < region.y + region.height {
+                    spans.push((region.x, region.x + region.width));
                 }
             }
+            work.charge(spans.len() * 4)?;
             spans.sort_unstable();
-            let mut painted_until = crop.x;
-            for &(start, end) in &spans {
-                for x in start.max(painted_until)..end {
-                    pixels.put_pixel(x - crop.x, y - crop.y, image::Rgba(self.color(x, y)));
+            let mut merged = 0;
+            for index in 0..spans.len() {
+                work.charge(4)?;
+                let (start, end) = spans[index];
+                if merged > 0 && start <= spans[merged - 1].1 {
+                    spans[merged - 1].1 = spans[merged - 1].1.max(end);
+                } else {
+                    spans[merged] = (start, end);
+                    merged += 1;
                 }
-                painted_until = painted_until.max(end);
+            }
+            spans.truncate(merged);
+            if spans.is_empty() {
+                continue;
+            }
+            for y in band[0]..band[1] {
+                work.charge(4)?;
+                for &(start, end) in &spans {
+                    work.charge(4)?;
+                    for x in start..end {
+                        work.pixel()?;
+                        pixels.put_pixel(x - crop.x, y - crop.y, image::Rgba(self.color(x, y)));
+                    }
+                }
             }
         }
         Ok(())
@@ -251,6 +313,31 @@ mod tests {
             .is_err()
         );
         Ok(())
+    }
+    #[test]
+    fn skinny_preparation_aggregates_checks_and_keeps_legacy_error_contract() {
+        let pixels = image::RgbaImage::from_pixel(1, 65536, image::Rgba([11, 22, 33, 127]));
+        let calls = std::cell::Cell::new(0);
+        let grid = PixelationGrid::prepare(&pixels, || {
+            calls.set(calls.get() + 1);
+            false
+        })
+        .unwrap();
+        assert!(
+            calls.get() < 16,
+            "narrow blocks made {} raw checks",
+            calls.get()
+        );
+        assert_eq!(grid.color(0, 65535), [11, 22, 33, 127]);
+        let checks = std::cell::Cell::new(0);
+        let error = PixelationGrid::prepare(&pixels, || {
+            checks.set(checks.get() + 1);
+            checks.get() >= 3
+        })
+        .err()
+        .unwrap();
+        assert_eq!(error.to_string(), "Pixelation preparation canceled");
+        assert!(error.downcast_ref::<crate::CaptureError>().is_none());
     }
     #[test]
     #[ignore = "short optimized 4K pixelation timing; no desktop, files or clipboard"]

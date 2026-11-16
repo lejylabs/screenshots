@@ -203,12 +203,19 @@ impl TextAnnotation {
         );
         Ok(())
     }
-    pub(crate) fn paint(&self, output: &mut image::RgbaImage, crop: PixelRegion) {
-        for y in self.area.y.max(crop.y)..(self.area.y + self.area.height).min(crop.y + crop.height)
-        {
-            for x in
-                self.area.x.max(crop.x)..(self.area.x + self.area.width).min(crop.x + crop.width)
-            {
+    pub(crate) fn paint(
+        &self,
+        output: &mut image::RgbaImage,
+        crop: PixelRegion,
+        work: &mut crate::image_cancel::ImageWork<'_, impl Fn() -> bool>,
+    ) -> Result<()> {
+        work.charge(4)?;
+        let Some(area) = self.area.intersection(crop) else {
+            return Ok(());
+        };
+        for y in area.y..area.y + area.height {
+            for x in area.x..area.x + area.width {
+                work.pixel()?;
                 let sx = (((x - self.area.x) as f64 + 0.5) * self.width as f64
                     / self.area.width as f64
                     - 0.5)
@@ -240,6 +247,7 @@ impl TextAnnotation {
                 );
             }
         }
+        Ok(())
     }
 }
 
