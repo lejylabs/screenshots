@@ -83,7 +83,7 @@ def execute(binary, root):
     for path in files:
         path.write_bytes(original)
     require(run(binary, root, "import", database, *files)[0]["added"] == 25, "Fixture import failed")
-    require(rows(database, "PRAGMA user_version")[0][0] == 9, "Lifecycle schema was not migrated")
+    require(rows(database, "PRAGMA user_version")[0][0] == 10, "Lifecycle schema was not migrated")
     indexed = run(binary, root, "index-identities", database)[0]
     require(indexed["complete"] and indexed["checked"] == 25 and indexed["remaining"] == 0
             and all(path.read_bytes() == original for path in files), "Purposeful identity refresh did not finish without changing images")

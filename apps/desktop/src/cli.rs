@@ -56,6 +56,8 @@ Headless commands (no desktop UI; outputs and uploads require explicit actions):
   screenshots history-manage retention DATABASE POLICY.json preview|apply
   screenshots history-manage index-identities DATABASE [CURSOR]
   screenshots history-manage pending-move DATABASE
+  screenshots history-manage pending-save DATABASE
+  screenshots history-manage recover-save DATABASE OPERATION finish|cancel
   screenshots history-manage recover-move DATABASE OPERATION finish|cancel
   screenshots history-manage recover-file DATABASE OPERATION finish|cancel
   screenshots history-query captures|uploads DATABASE [--order newest|oldest]

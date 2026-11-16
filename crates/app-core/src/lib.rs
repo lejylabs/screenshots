@@ -155,6 +155,10 @@ mod upload;
 mod upload_credentials;
 pub use history::transfer_history_file;
 pub use history::{
+    CaptureSaveOutcome, PendingCaptureSave, copy_saved_png_with_history, pending_capture_save,
+    recover_capture_save, save_capture_with_history,
+};
+pub use history::{
     HistoryEntry, HistoryFilter, ImportReport, MoveOutcome, MoveRecovery, PendingMove,
     UploadHistoryEntry, capture_history_page, capture_history_page_filtered, history_database_path,
     import_capture_files, lookup_history_entry, move_history_file, pending_history_move,

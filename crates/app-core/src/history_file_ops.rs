@@ -257,7 +257,7 @@ pub fn pending_history_move(database: &Path) -> Result<Option<PendingMove>> {
     let connection = crate::storage::open_read_only(database)?;
     let version: u32 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
     ensure!(
-        (1..=9).contains(&version),
+        (1..=10).contains(&version),
         "Unsupported history schema version"
     );
     if version < 5 {

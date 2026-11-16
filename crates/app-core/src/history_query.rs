@@ -116,7 +116,7 @@ fn open_query(
     connection.execute_batch("PRAGMA cache_size=-512; BEGIN DEFERRED;")?;
     let version: u32 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
     ensure!(
-        (1..=9).contains(&version),
+        (1..=10).contains(&version),
         "Unsupported history schema version"
     );
     let (table, columns) = match kind {

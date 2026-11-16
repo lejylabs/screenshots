@@ -1,5 +1,6 @@
 //! Phase 0 spike: GPUI overlay + XCap still capture on Windows.
 
+use anyhow::Context as _;
 use gpui_kit as gpui;
 use gpui_kit::platform as gpui_platform;
 mod assets;
@@ -241,6 +242,7 @@ pub struct CaptureWorkspace {
     list_status: String,
     capture_status: String,
     last_capture: Option<CapturedImage>,
+    failed_capture_saves: Vec<CapturedImage>,
     last_saved: Option<PathBuf>,
     last_render: Option<Arc<gpui::RenderImage>>,
     capturing: bool,
@@ -260,6 +262,12 @@ pub struct CaptureWorkspace {
     #[cfg(target_os = "windows")]
     tray: Option<app_core::SpikeTray>,
     tray_status: String,
+}
+
+struct CaptureSaveAttempt {
+    capture: CapturedImage,
+    result: Result<(), String>,
+    history_warning: Option<String>,
 }
 
 impl CaptureWorkspace {
@@ -716,6 +724,7 @@ impl CaptureWorkspace {
             list_status: String::new(),
             capture_status: "Ready".into(),
             last_capture: None,
+            failed_capture_saves: Vec::new(),
             last_saved: None,
             last_render: None,
             capturing: false,
@@ -1208,7 +1217,7 @@ impl CaptureWorkspace {
             let persisted = settings.clone();
             let result = cx
                 .background_spawn(async move {
-                    std::fs::create_dir_all(&persisted.output_directory)?;
+                    app_core::CaptureSettings::ensure_output_directory(&persisted.output_directory)?;
                     persisted.save()?;
                     Ok::<_, anyhow::Error>(())
                 })
@@ -1314,7 +1323,7 @@ impl CaptureWorkspace {
             let result = cx
                 .background_spawn(async move {
                     // The default capture folder may not exist before the first screenshot.
-                    std::fs::create_dir_all(&directory)?;
+                    app_core::CaptureSettings::ensure_output_directory(&directory)?;
                     app_core::CaptureSettings::for_directory(directory)?
                         .with_theme(selected)
                         .with_hotkeys(hotkeys)?
@@ -1382,7 +1391,7 @@ impl CaptureWorkspace {
         cx.spawn(async move |this, cx| {
             let result = cx
                 .background_spawn(async move {
-                    std::fs::create_dir_all(&directory)?;
+                    app_core::CaptureSettings::ensure_output_directory(&directory)?;
                     app_core::CaptureSettings::for_directory(directory)?
                         .with_theme(appearance)
                         .with_hotkeys(hotkeys)?
@@ -1472,7 +1481,7 @@ impl CaptureWorkspace {
                         .with_upload_task_defaults(upload_task_defaults)?
                         .with_output_task_profiles(output_task_profiles)
                         .with_strip_metadata_on_upload(strip_metadata_on_upload);
-                    std::fs::create_dir_all(&settings.output_directory)?;
+                    app_core::CaptureSettings::ensure_output_directory(&settings.output_directory)?;
                     settings.save()
                 })
                 .await;
@@ -1537,7 +1546,7 @@ impl CaptureWorkspace {
                         .with_upload_task_defaults(upload_task_defaults)?
                         .with_output_task_profiles(output_task_profiles)
                         .with_strip_metadata_on_upload(strip_metadata_on_upload);
-                    std::fs::create_dir_all(&settings.output_directory)?;
+                    app_core::CaptureSettings::ensure_output_directory(&settings.output_directory)?;
                     settings.save()
                 })
                 .await;
@@ -1610,7 +1619,7 @@ impl CaptureWorkspace {
                         .with_upload_task_defaults(upload_task_defaults)?
                         .with_output_task_profiles(output_task_profiles)
                         .with_strip_metadata_on_upload(strip_metadata_on_upload);
-                    std::fs::create_dir_all(&settings.output_directory)?;
+                    app_core::CaptureSettings::ensure_output_directory(&settings.output_directory)?;
                     settings.save()?;
                     Ok::<_, anyhow::Error>(settings.filename_template)
                 })
@@ -1717,7 +1726,7 @@ impl CaptureWorkspace {
         let output_task_profiles = self.output_task_profiles;
         cx.spawn(async move |this, cx| {
             let result = cx.background_spawn(async move {
-                std::fs::create_dir_all(&directory)?;
+                app_core::CaptureSettings::ensure_output_directory(&directory)?;
                 app_core::CaptureSettings::for_directory(directory)?
                     .with_theme(appearance).with_hotkeys(saved_bindings)?.with_output_profile(profile).with_region_presets(presets)?.with_jpeg_quality(jpeg_quality)?.with_export_format(export_format).with_filename_template(filename_template)?.with_capture_delay(capture_delay_seconds)?.with_upload_task_defaults(upload_task_defaults)?.with_output_task_profiles(output_task_profiles).with_strip_metadata_on_upload(strip_metadata_on_upload).save()
             }).await;
@@ -2188,7 +2197,7 @@ impl CaptureWorkspace {
                         .with_upload_task_defaults(upload_task_defaults)?
                         .with_output_task_profiles(output_task_profiles)
                         .with_strip_metadata_on_upload(strip_metadata_on_upload);
-                    std::fs::create_dir_all(&settings.output_directory)?;
+                    app_core::CaptureSettings::ensure_output_directory(&settings.output_directory)?;
                     settings.save()
                 })
                 .await;
@@ -2737,7 +2746,7 @@ impl CaptureWorkspace {
                         .with_upload_task_defaults(upload_task_defaults)?
                         .with_output_task_profiles(output_task_profiles)
                         .with_strip_metadata_on_upload(strip_metadata_on_upload);
-                    std::fs::create_dir_all(&settings.output_directory)?;
+                    app_core::CaptureSettings::ensure_output_directory(&settings.output_directory)?;
                     settings.save()?;
                     Ok::<_, anyhow::Error>(settings.region_presets)
                 })
@@ -3381,14 +3390,29 @@ impl CaptureWorkspace {
     }
 
     fn begin_capturing(&mut self, cx: &mut Context<Self>) {
+        self.begin_capture_work(cx);
+        self.discard_failed_capture_saves();
+    }
+
+    fn begin_capture_work(&mut self, cx: &mut Context<Self>) {
         cx.cancel_pending_native_drop();
         self.capture_generation = self.capture_generation.wrapping_add(1);
         self.cancel_history_thumb_job();
+        if let Some(cancellation) = &self.native_capture_cancel {
+            cancellation.cancel();
+        }
         if let Some(cancellation) = &self.native_sources_cancel {
             cancellation.cancel();
         }
         self.native_capture_cancel = Some(app_core::NativeCaptureCancellation::default());
         self.capturing = true;
+    }
+
+    fn discard_failed_capture_saves(&mut self) {
+        if !self.failed_capture_saves.is_empty() {
+            self.last_capture = None;
+            self.failed_capture_saves = Vec::new();
+        }
     }
 
     fn finish_capturing(&mut self, cx: &mut Context<Self>) {
@@ -3553,7 +3577,7 @@ impl CaptureWorkspace {
         let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
         self.history_preview_cancel = Some(cancel.clone());
         self.history_preview_status = "Loading preview…".into();
-        self.begin_capturing(cx);
+        self.begin_capture_work(cx);
         cx.spawn(async move |this, cx| {
             let flag = cancel.clone();
             let result = cx
@@ -4396,7 +4420,7 @@ impl CaptureWorkspace {
                         .with_upload_task_defaults(defaults)?
                         .with_output_task_profiles(output_task_profiles)
                         .with_strip_metadata_on_upload(strip_metadata_on_upload);
-                    std::fs::create_dir_all(&settings.output_directory)?;
+                    app_core::CaptureSettings::ensure_output_directory(&settings.output_directory)?;
                     settings.save()?;
                     Ok::<_, anyhow::Error>(settings.upload_task_defaults)
                 })
@@ -4499,7 +4523,7 @@ impl CaptureWorkspace {
                         .with_upload_task_defaults(upload_task_defaults)?
                         .with_output_task_profiles(profiles)
                         .with_strip_metadata_on_upload(strip_metadata_on_upload);
-                    std::fs::create_dir_all(&settings.output_directory)?;
+                    app_core::CaptureSettings::ensure_output_directory(&settings.output_directory)?;
                     settings.save()?;
                     Ok::<_, anyhow::Error>(settings.output_task_profiles)
                 })
@@ -4565,7 +4589,7 @@ impl CaptureWorkspace {
                         .with_upload_task_defaults(upload_task_defaults)?
                         .with_output_task_profiles(output_task_profiles)
                         .with_strip_metadata_on_upload(strip);
-                    std::fs::create_dir_all(&settings.output_directory)?;
+                    app_core::CaptureSettings::ensure_output_directory(&settings.output_directory)?;
                     settings.save()?;
                     Ok::<_, anyhow::Error>(())
                 })
@@ -5784,7 +5808,21 @@ impl CaptureWorkspace {
                 .unwrap_or(std::path::Path::new("."))
                 .to_path_buf()
         });
-        let suggested_name = format!("Screenshot.{}", export_format.extension());
+        let failed_saves = self.failed_capture_saves.clone();
+        let generation = self.capture_generation;
+        let suggested_name = if failed_saves.is_empty() {
+            format!("Screenshot.{}", export_format.extension())
+        } else {
+            self.save_status = format!(
+                "{} unsaved screenshot(s): PNG at Original size retries all in the chosen folder; other formats export the latest only.",
+                failed_saves.len()
+            );
+            format!(
+                "Unsaved-{}-screenshots.{}",
+                failed_saves.len(),
+                export_format.extension()
+            )
+        };
         let dialog = cx.prompt_for_new_path(&directory, Some(&suggested_name));
         let history_database = self.history_database.clone();
         self.saving = true;
@@ -5806,18 +5844,49 @@ impl CaptureWorkspace {
                 return;
             };
             if path.extension().is_none_or(|extension| extension.is_empty()) { path.set_extension(export_format.extension()); }
+            if !failed_saves.is_empty() && size == app_core::ExportSize::Original
+                && app_core::ImageExportFormat::from_path(&path).ok() == Some(app_core::ImageExportFormat::Png) {
+                this.update(cx, |this, cx| {
+                    this.saving = false;
+                    if this.capture_generation != generation || this.quitting {
+                        this.finish_quit_if_idle(cx);
+                        return;
+                    }
+                    let mut failed_saves = failed_saves;
+                    let last = failed_saves.len() - 1;
+                    let directory = path.parent().unwrap_or(std::path::Path::new("."));
+                    for (index, capture) in failed_saves.iter_mut().enumerate() {
+                        capture.png_path = if index == last { path.clone() } else {
+                            capture.png_path.file_name().map(|name| directory.join(name))
+                                .unwrap_or_else(|| directory.join(format!("Unsaved-{}.png", index + 1)))
+                        };
+                    }
+                    this.output_captures_with_names(failed_saves, false, Some(String::new()), cx);
+                }).ok();
+                return;
+            }
             let result = cx.background_spawn(async move {
-                let result = if let Some(shot) = shot { shot.save_image_as(&path, jpeg_quality, size) } else { app_core::export_saved_png_as(&source, &path, jpeg_quality, size) };
-                result.map(|format| {
-                    let history_error = if format == app_core::ImageExportFormat::Png && size == app_core::ExportSize::Original {
-                        history_database.as_ref().and_then(|database| app_core::record_saved_capture(database, &path).err())
-                            .map(|error| format!("{error:#}"))
-                    } else { None };
-                    (path, format, history_error)
-                }).map_err(|error| match error {
-                    app_core::CaptureError::Io(error) if error.kind() == std::io::ErrorKind::AlreadyExists =>
+                let result = (|| -> anyhow::Result<_> {
+                    let format = app_core::ImageExportFormat::from_path(&path)?;
+                    if format == app_core::ImageExportFormat::Png && size == app_core::ExportSize::Original {
+                        let database = history_database.as_ref().context("History storage is unavailable; PNG was not saved")?;
+                        let report = if let Some(shot) = shot.as_ref() {
+                            app_core::save_capture_with_history(database, shot, &path, || false)?
+                        } else {
+                            app_core::copy_saved_png_with_history(database, &source, &path, || false)?
+                        };
+                        Ok((report.path, format, report.warning))
+                    } else {
+                        let format = if let Some(shot) = shot { shot.save_image_as(&path, jpeg_quality, size)? } else { app_core::export_saved_png_as(&source, &path, jpeg_quality, size)? };
+                        Ok((path, format, None))
+                    }
+                })();
+                result.map_err(|error| match error.downcast_ref::<app_core::CaptureError>() {
+                    Some(app_core::CaptureError::Io(error)) if error.kind() == std::io::ErrorKind::AlreadyExists =>
                         "The file already exists. Choose a new name; existing files are never overwritten.".to_owned(),
-                    error => error.to_string(),
+                    _ if error.downcast_ref::<std::io::Error>().is_some_and(|error|error.kind()==std::io::ErrorKind::AlreadyExists) =>
+                        "The file already exists. Choose a new name; existing files are never overwritten.".to_owned(),
+                    _ => format!("{error:#}"),
                 })
             }).await;
             this.update(cx, |this, cx| {
@@ -5880,6 +5949,7 @@ impl CaptureWorkspace {
             cx.notify();
             return;
         }
+        self.discard_failed_capture_saves();
         self.replace_last_render(render, cx);
         self.last_saved = None;
         self.last_capture = Some(shot);
@@ -5897,10 +5967,37 @@ impl CaptureWorkspace {
     }
 
     fn output_captures(&mut self, saves: Vec<CapturedImage>, copy: bool, cx: &mut Context<Self>) {
+        self.output_captures_with_names(saves, copy, None, cx);
+    }
+
+    fn output_captures_with_names(
+        &mut self,
+        saves: Vec<CapturedImage>,
+        copy: bool,
+        names: Option<String>,
+        cx: &mut Context<Self>,
+    ) {
+        let saves = Vec::from(saves.into_boxed_slice());
+        let admitted = saves.len() <= 32
+            && saves.capacity() <= 32
+            && saves
+                .iter()
+                .try_fold(0u64, |total, capture| {
+                    total
+                        .checked_add(capture.pixels.as_raw().capacity() as u64)
+                        .filter(|bytes| *bytes <= app_core::MAX_CAPTURE_BYTES)
+                })
+                .is_some();
+        if !admitted {
+            self.save_status =
+                "Save rejected: capture group exceeds the 32-image or 256 MiB source limit.".into();
+            cx.notify();
+            return;
+        }
         let filename_template = if saves.is_empty() {
             String::new()
         } else {
-            self.filename_template.clone()
+            names.unwrap_or_else(|| self.filename_template.clone())
         };
         if self.capture_delay.is_some() || self.copying || self.saving || self.quitting {
             return;
@@ -5918,6 +6015,10 @@ impl CaptureWorkspace {
             tracing::info!(path = %path.display(), "copying capture to clipboard");
         }
         let clipboard = self.clipboard.clone();
+        let generation = self.capture_generation;
+        if !saves.is_empty() {
+            self.failed_capture_saves = Vec::new();
+        }
         self.copying = copy;
         self.saving = !saves.is_empty();
         if self.saving {
@@ -5969,9 +6070,9 @@ impl CaptureWorkspace {
                     .update(cx, |this, _| this.history_database.clone())
                     .ok()
                     .flatten();
-                let results = cx
+                let (results, failed_render) = cx
                     .background_spawn(async move {
-                        saves
+                        let results: Vec<CaptureSaveAttempt> = saves
                             .into_iter()
                             .map(|mut shot| {
                                 let saved = app_core::capture_file_name(&filename_template)
@@ -5979,63 +6080,42 @@ impl CaptureWorkspace {
                                         if let Some(name) = name {
                                             shot.png_path.set_file_name(name);
                                         }
-                                        shot.save_png().map_err(anyhow::Error::from)
-                                    })
-                                    .map_err(|error| error.to_string());
-                                let history_error = if saved.is_ok() {
-                                    history_database
-                                        .as_ref()
-                                        .and_then(|database| {
-                                            app_core::record_saved_capture(database, &shot.png_path)
-                                                .err()
-                                        })
-                                        .map(|error| format!("{error:#}"))
-                                } else {
-                                    None
-                                };
-                                (shot.png_path, saved, history_error)
+                                        let database = history_database.as_ref().context(
+                                            "History storage is unavailable; PNG was not saved",
+                                        )?;
+                                        let report = app_core::save_capture_with_history(
+                                            database,
+                                            &shot,
+                                            &shot.png_path,
+                                            || false,
+                                        )?;
+                                        shot.png_path = report.path;
+                                        Ok(report.warning)
+                                    });
+                                let history_error = saved.as_ref().ok().cloned().flatten();
+                                let saved = saved.map(|_| ()).map_err(|error| format!("{error:#}"));
+                                CaptureSaveAttempt {
+                                    capture: shot,
+                                    result: saved,
+                                    history_warning: history_error,
+                                }
                             })
-                            .collect::<Vec<_>>()
+                            .collect();
+                        let failed_render = results
+                            .iter()
+                            .rfind(|attempt| attempt.result.is_err())
+                            .map(|attempt| render_thumbnail(&attempt.capture));
+                        (results, failed_render)
                     })
                     .await;
                 this.update(cx, |this, cx| {
                     this.saving = false;
-                    let errors: Vec<_> = results
-                        .iter()
-                        .filter_map(|(path, result, _)| {
-                            result
-                                .as_ref()
-                                .err()
-                                .map(|error| format!("{}: {error}", path.display()))
-                        })
-                        .collect();
-                    this.save_status = if errors.is_empty() {
-                        this.last_saved = results.last().map(|(path, _, _)| path.clone());
-                        this.last_capture = None;
-                        tracing::info!(count = results.len(), "capture outputs saved");
-                        format!("Save: {} PNG(s) saved", results.len())
-                    } else {
-                        this.quitting = false;
-                        this.restore_control(cx);
-                        if this.resident && this.control.is_none() {
-                            this.show_control(cx);
-                        }
-                        tracing::error!(errors = %errors.join("; "), "capture output save failed");
-                        format!("Save failed: {}", errors.join("; "))
-                    };
-                    let history_errors: Vec<_> = results
-                        .iter()
-                        .filter_map(|(_, _, error)| error.as_deref())
-                        .collect();
-                    if !history_errors.is_empty() {
-                        this.save_status.push_str(" · History update failed");
-                        this.history_status = format!(
-                            "PNG saved, but history was not updated: {}",
-                            history_errors.join("; ")
-                        );
-                    } else if this.history_visible {
-                        this.refresh_history(None, cx);
+                    if this.capture_generation != generation {
+                        this.finish_quit_if_idle(cx);
+                        cx.notify();
+                        return;
                     }
+                    this.finish_capture_save_batch(results, failed_render, cx);
                     this.finish_quit_if_idle(cx);
                     cx.notify();
                 })
@@ -6043,6 +6123,74 @@ impl CaptureWorkspace {
             }
         })
         .detach();
+    }
+
+    fn finish_capture_save_batch(
+        &mut self,
+        results: Vec<CaptureSaveAttempt>,
+        failed_render: Option<Arc<gpui::RenderImage>>,
+        cx: &mut Context<Self>,
+    ) {
+        let total = results.len();
+        let errors: Vec<_> = results
+            .iter()
+            .filter_map(|attempt| {
+                attempt
+                    .result
+                    .as_ref()
+                    .err()
+                    .map(|error| format!("{}: {error}", attempt.capture.png_path.display()))
+            })
+            .collect();
+        let history_errors: Vec<_> = results
+            .iter()
+            .filter_map(|attempt| attempt.history_warning.clone())
+            .collect();
+        self.save_status = if errors.is_empty() {
+            self.last_saved = results
+                .last()
+                .map(|attempt| attempt.capture.png_path.clone());
+            self.last_capture = None;
+            self.failed_capture_saves = Vec::new();
+            tracing::info!(count = total, "capture outputs saved");
+            format!("Save: {total} PNG(s) saved")
+        } else {
+            self.failed_capture_saves = Vec::from(
+                results
+                    .into_iter()
+                    .filter(|attempt| attempt.result.is_err())
+                    .map(|attempt| attempt.capture)
+                    .collect::<Vec<_>>()
+                    .into_boxed_slice(),
+            );
+            self.last_capture = self.failed_capture_saves.last().cloned();
+            self.last_saved = None;
+            if let Some(render) = failed_render {
+                self.replace_last_render(render, cx);
+            }
+            self.quitting = false;
+            self.restore_control(cx);
+            if self.resident && self.control.is_none() {
+                self.show_control(cx);
+            }
+            tracing::error!(errors = %errors.join("; "), "capture output save failed");
+            format!(
+                "Save failed: {} · {}/{} PNG(s) saved; {} unsaved screenshot(s) kept in memory. Save as PNG at Original size retries all.",
+                errors.join("; "),
+                total - self.failed_capture_saves.len(),
+                total,
+                self.failed_capture_saves.len()
+            )
+        };
+        if !history_errors.is_empty() {
+            self.save_status.push_str(" · History update failed");
+            self.history_status = format!(
+                "PNG saved, but history was not updated: {}",
+                history_errors.join("; ")
+            );
+        } else if self.history_visible {
+            self.refresh_history(None, cx);
+        }
     }
 
     fn save_selection(
@@ -6715,6 +6863,7 @@ fn close_application(cx: &mut App) {
         let entity = cx.global::<ResidentController>().0.clone();
         let busy = entity.update(cx, |this, cx| {
             this.cancel_capture_delay(cx);
+            this.discard_failed_capture_saves();
             if let Some(cancellation) = &this.native_capture_cancel {
                 cancellation.cancel();
             }
@@ -6754,6 +6903,7 @@ fn close_application(cx: &mut App) {
             let waiting = control
                 .update(cx, |this, _, cx| {
                     this.cancel_capture_delay(cx);
+                    this.discard_failed_capture_saves();
                     if let Some(cancellation) = &this.native_capture_cancel {
                         cancellation.cancel();
                     }
@@ -8067,6 +8217,7 @@ mod tests {
                 cx.set_global(ResidentController(controller.clone()));
                 controller.update(cx, |this, cx| {
                     this.output_directory = Some(output.clone());
+                    this.history_database = Some(output.join("history.sqlite3"));
                     this.last_capture = Some(CapturedImage {
                         display_id: "fixture".into(),
                         window_id: None,
@@ -9151,13 +9302,15 @@ try {
     #[test]
     #[ignore = "opens GPUI, saves a test image and replaces clipboard contents"]
     fn saved_pixels_are_released_and_explicit_recopy_works() {
-        let path = std::env::temp_dir().join(format!(
-            "screenshots-release-{}.png",
+        let directory = std::env::temp_dir().join(format!(
+            "screenshots-release-{}",
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
                 .as_nanos()
         ));
+        std::fs::create_dir(&directory).unwrap();
+        let path = directory.join("capture.png");
         let output = path.clone();
         let result = Arc::new(Mutex::new(None));
         let report = result.clone();
@@ -9177,6 +9330,7 @@ try {
                 let weak_pixels = Arc::downgrade(&pixels);
                 let shell = control
                     .update(cx, |this, _, cx| {
+                        this.history_database = Some(output.with_extension("sqlite3"));
                         let shot = CapturedImage {
                             display_id: "test".into(),
                             window_id: None,
@@ -9241,7 +9395,7 @@ try {
             .take()
             .expect("test did not complete")
             .unwrap();
-        std::fs::remove_file(path).unwrap();
+        std::fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]
@@ -9272,13 +9426,15 @@ try {
     #[test]
     #[ignore = "opens GPUI and replaces clipboard contents with a small test image"]
     fn quit_waits_for_copy_and_png_save() {
-        let path = std::env::temp_dir().join(format!(
-            "screenshots-quit-{}.png",
+        let directory = std::env::temp_dir().join(format!(
+            "screenshots-quit-{}",
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
                 .as_nanos()
         ));
+        std::fs::create_dir(&directory).unwrap();
+        let path = directory.join("capture.png");
         let output = path.clone();
         let waited = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let observed = waited.clone();
@@ -9292,6 +9448,7 @@ try {
                     .unwrap();
                 control
                     .update(cx, |this, _, cx| {
+                        this.history_database = Some(output.with_extension("sqlite3"));
                         let shot = CapturedImage {
                             display_id: "test".into(),
                             window_id: None,
@@ -9334,7 +9491,7 @@ try {
             .expect("PNG must be complete before quit")
             .into_rgba8();
         assert_eq!(decoded.get_pixel(0, 0).0, [12, 34, 56, 255]);
-        std::fs::remove_file(path).unwrap();
+        std::fs::remove_dir_all(directory).unwrap();
     }
 
     #[cfg(target_os = "windows")]
@@ -9604,7 +9761,7 @@ mod private_wayland_clipboard_fixture {
                         },
                     )
                     .expect("Private native control window");
-                let controller = handle.update(cx, |_, _, cx| cx.entity().clone()).unwrap();
+                let controller = handle.update(cx, |_, _, cx| cx.entity()).unwrap();
                 cx.set_global(ResidentController(controller.clone()));
                 let owner = controller.downgrade();
                 let directory = output.clone();

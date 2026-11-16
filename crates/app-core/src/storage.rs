@@ -69,7 +69,7 @@ fn check_connection(connection: &Connection) -> Result<HistoryHealth> {
     let schema_version: u32 =
         connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
     ensure!(
-        (1..=9).contains(&schema_version),
+        (1..=10).contains(&schema_version),
         "Unsupported history schema version"
     );
     let require_object = |name: &str, kind: &str| -> Result<()> {
@@ -136,6 +136,18 @@ fn check_connection(connection: &Connection) -> Result<HistoryHealth> {
     }
     if schema_version >= 9 {
         require_object("captures_unresolved_id", "index")?;
+    }
+    if schema_version >= 10 {
+        require_object("pending_capture_save", "table")?;
+        connection.prepare("SELECT singleton,operation_id,target_path,stage_path,payload FROM pending_capture_save LIMIT 0")?;
+        for name in [
+            "save_reserves_physical_operation",
+            "physical_operation_reserves_save",
+            "captures_save_reserve_insert",
+            "captures_save_reserve_update",
+        ] {
+            require_object(name, "trigger")?;
+        }
     }
     // Preparing these queries checks columns without reading image paths or uploaded links.
     connection.prepare("SELECT id,file_path,thumbnail_path,mime_type,width,height,file_size,created_at,source FROM captures LIMIT 0")?;
@@ -398,7 +410,7 @@ mod tests {
         assert_eq!(fs::read(&corrupt)?, b"not a SQLite database");
         let source = fixture.database()?;
         let connection = Connection::open(&source)?;
-        connection.pragma_update(None, "user_version", 10)?;
+        connection.pragma_update(None, "user_version", 11)?;
         drop(connection);
         assert!(check_history_database(&source).is_err());
         Ok(())
@@ -415,7 +427,7 @@ mod tests {
         let wal_before = fs::read(sidecar(&source, "-wal"))?;
         let destination = fixture.0.join("backup.sqlite3");
         backup_history_database(&source, &destination, || false)?;
-        assert_eq!(check_history_database(&destination)?.schema_version, 9);
+        assert_eq!(check_history_database(&destination)?.schema_version, 10);
         assert_eq!(fs::read(&source)?, source_before);
         assert_eq!(fs::read(sidecar(&source, "-wal"))?, wal_before);
         let copied = Connection::open_with_flags(&destination, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
@@ -524,7 +536,7 @@ mod tests {
         let destination = alias.join("backup.sqlite3");
         let source_before = fs::read(&source)?;
         let wal_before = fs::read(sidecar(&source, "-wal"))?;
-        assert_eq!(check_history_database(&linked_source)?.schema_version, 9);
+        assert_eq!(check_history_database(&linked_source)?.schema_version, 10);
         backup_history_database(&linked_source, &destination, || false)?;
         let copied = Connection::open_with_flags(&destination, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
         assert_eq!(

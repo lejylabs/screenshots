@@ -7650,6 +7650,7 @@ dependencies = [
  "atspi-common",
  "chrono",
  "crc32fast",
+ "crossbeam-queue",
  "curl-sys",
  "dbus",
  "futures-lite",
