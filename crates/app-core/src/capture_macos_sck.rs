@@ -242,6 +242,82 @@ pub(super) struct Window {
     pub width: u32,
     pub height: u32,
 }
+pub(super) struct Display {
+    filter: Retained<AnyObject>,
+    pub proof: crate::MacDisplayProof,
+    pub width: u32,
+    pub height: u32,
+}
+impl Display {
+    pub fn new(id: u32, until: Instant) -> Result<Option<Self>> {
+        native::screen_permission()?;
+        if !load()? {
+            return Ok(None);
+        }
+        let proof = native::displays()?
+            .into_iter()
+            .find(|display| display.id == id)
+            .context("Selected native display is absent")?;
+        let content = shareable(until)?;
+        let displays: Retained<NSArray<AnyObject>> = unsafe { msg_send![&content, displays] };
+        ensure!(
+            displays.count() <= 32,
+            "Native shareable display inventory exceeds its bound"
+        );
+        let mut selected = None;
+        for index in 0..displays.count() {
+            let display = displays.objectAtIndex(index);
+            let candidate: u32 = unsafe { msg_send![&display, displayID] };
+            if candidate == id {
+                ensure!(selected.is_none(), "Native display identity is ambiguous");
+                selected = Some(display);
+            }
+        }
+        let selected = selected.context("Selected display is not shareable")?;
+        let width: usize = unsafe { msg_send![&selected, width] };
+        let height: usize = unsafe { msg_send![&selected, height] };
+        let width = u32::try_from(width)?;
+        let height = u32::try_from(height)?;
+        crate::validate_image_size(width, height)?;
+        ensure!(
+            (width, height) == (proof.pixel_width, proof.pixel_height),
+            "Native display pixel geometry changed or needs rotation calibration"
+        );
+        let empty = NSArray::<AnyObject>::new();
+        let allocated: Allocated<AnyObject> =
+            unsafe { msg_send![class(c"SCContentFilter")?, alloc] };
+        let filter: Retained<AnyObject> =
+            unsafe { msg_send![allocated,initWithDisplay:&*selected,excludingWindows:&*empty] };
+        Ok(Some(Self {
+            filter,
+            proof,
+            width,
+            height,
+        }))
+    }
+    pub fn capture(&self, options: &CaptureOptions, until: Instant) -> Result<Image> {
+        native::screen_permission()?;
+        self.check()?;
+        // A display image includes its real composited window shadows; per-window
+        // shadow options do not remove elements from an explicitly selected display.
+        let mut capture = *options;
+        capture.window_shadow = CaptureWindowShadow::Exclude;
+        let image = capture_legacy_sck(&self.filter, self.width, self.height, &capture, until)?;
+        self.check()?;
+        Ok(image)
+    }
+    fn check(&self) -> Result<()> {
+        let current = native::displays()?
+            .into_iter()
+            .find(|display| display.id == self.proof.id)
+            .context("Selected display disappeared")?;
+        ensure!(
+            current == self.proof,
+            "Native display UUID/geometry changed"
+        );
+        Ok(())
+    }
+}
 impl Window {
     pub fn new(proof: MacWindowProof, until: Instant) -> Result<Option<Self>> {
         native::screen_permission()?;
@@ -314,70 +390,75 @@ impl Window {
             "Client-only macOS window bounds are unavailable"
         );
         let image = if AnyClass::get(c"SCScreenshotConfiguration").is_some() {
-            self.capture_modern(options, until)?
+            capture_modern(&self.filter, options, until)?
         } else {
-            self.capture_legacy_sck(options, until)?
+            capture_legacy_sck(&self.filter, self.width, self.height, options, until)?
         };
         self.proof
             .verify_unchanged(native::window(self.proof.id)?)?;
         Ok(image)
     }
-    fn capture_legacy_sck(&self, options: &CaptureOptions, until: Instant) -> Result<Image> {
-        // The older fixed-canvas API supplies no public full-shadow extent.
-        ensure!(
-            options.window_shadow != CaptureWindowShadow::Include,
-            "Unclipped native shadow capture requires macOS26's screenshot configuration"
-        );
-        let config: Retained<AnyObject> =
-            unsafe { msg_send![class(c"SCStreamConfiguration")?, new] };
-        let srgb = unsafe { &*(kCGColorSpaceSRGB.cast::<ObjCfString>()) };
-        unsafe {
-            let _: () = msg_send![&config,setWidth:self.width as usize];
-            let _: () = msg_send![&config,setHeight:self.height as usize];
-            let _: () = msg_send![&config,setPixelFormat:0x42475241u32];
-            let _: () = msg_send![&config,setColorSpaceName:srgb];
-            let _: () =
-                msg_send![&config,setShowsCursor:Bool::new(options.cursor==CaptureCursor::Include)];
-            let _: () = msg_send![&config,setShouldBeOpaque:Bool::NO];
-            let _: () = msg_send![&config,setIgnoreShadowsSingleWindow:Bool::YES];
-            let _: () = msg_send![&config,setQueueDepth:1usize];
-        }
-        let pending = Completion::new(ValueKind::Image)?;
-        let state = pending.0.clone();
-        let block = RcBlock::new(move |image: *mut CGImage, error: *mut AnyObject| {
-            state.publish_image(image, error)
-        });
-        unsafe {
-            let _: () = msg_send![class(c"SCScreenshotManager")?,captureImageWithFilter:&*self.filter, configuration:&*config, completionHandler:&*block];
-        }
-        Ok(Image(pending.0.wait(until)? as *const c_void))
+}
+fn capture_legacy_sck(
+    filter: &AnyObject,
+    width: u32,
+    height: u32,
+    options: &CaptureOptions,
+    until: Instant,
+) -> Result<Image> {
+    // The older fixed-canvas API supplies no public full-shadow extent.
+    ensure!(
+        options.window_shadow != CaptureWindowShadow::Include,
+        "Unclipped native shadow capture requires macOS26's screenshot configuration"
+    );
+    let config: Retained<AnyObject> = unsafe { msg_send![class(c"SCStreamConfiguration")?, new] };
+    let srgb = unsafe { &*(kCGColorSpaceSRGB.cast::<ObjCfString>()) };
+    unsafe {
+        let _: () = msg_send![&config,setWidth:width as usize];
+        let _: () = msg_send![&config,setHeight:height as usize];
+        let _: () = msg_send![&config,setPixelFormat:0x42475241u32];
+        let _: () = msg_send![&config,setColorSpaceName:srgb];
+        let _: () =
+            msg_send![&config,setShowsCursor:Bool::new(options.cursor==CaptureCursor::Include)];
+        let _: () = msg_send![&config,setShouldBeOpaque:Bool::NO];
+        let _: () = msg_send![&config,setIgnoreShadowsSingleWindow:Bool::YES];
+        let _: () = msg_send![&config,setQueueDepth:1usize];
     }
-    fn capture_modern(&self, options: &CaptureOptions, until: Instant) -> Result<Image> {
-        // macOS26 defaults to captured-content dimensions, including requested native effects.
-        let config: Retained<AnyObject> =
-            unsafe { msg_send![class(c"SCScreenshotConfiguration")?, new] };
-        unsafe {
-            let _: () = msg_send![&config,setFileURL:ptr::null::<AnyObject>()];
-            let _: () = msg_send![&config,setDynamicRange:0isize];
-            let _: () =
-                msg_send![&config,setShowsCursor:Bool::new(options.cursor==CaptureCursor::Include)];
-            let _: () = msg_send![&config,setIgnoreShadows:Bool::new(options.window_shadow!=CaptureWindowShadow::Include)];
-            let _: () = msg_send![&config,setIncludeChildWindows:Bool::NO];
-        }
-        let pending = Completion::new(ValueKind::Object)?;
-        let state = pending.0.clone();
-        let block = RcBlock::new(move |output: *mut AnyObject, error: *mut AnyObject| {
-            state.publish_object(output, error)
-        });
-        unsafe {
-            let _: () = msg_send![class(c"SCScreenshotManager")?,captureScreenshotWithFilter:&*self.filter, configuration:&*config, completionHandler:&*block];
-        }
-        let raw = pending.0.wait(until)?;
-        let output = unsafe { Retained::<AnyObject>::from_raw(raw as *mut AnyObject) }
-            .context("Native screenshot output disappeared")?;
-        let image: *mut CGImage = unsafe { msg_send![&output, sdrImage] };
-        ensure!(!image.is_null(), "Native screenshot supplied no SDR image");
-        unsafe { CFRetain(image.cast()) };
-        Ok(Image(image.cast()))
+    let pending = Completion::new(ValueKind::Image)?;
+    let state = pending.0.clone();
+    let block = RcBlock::new(move |image: *mut CGImage, error: *mut AnyObject| {
+        state.publish_image(image, error)
+    });
+    unsafe {
+        let _: () = msg_send![class(c"SCScreenshotManager")?,captureImageWithFilter:filter, configuration:&*config, completionHandler:&*block];
     }
+    Ok(Image(pending.0.wait(until)? as *const c_void))
+}
+fn capture_modern(filter: &AnyObject, options: &CaptureOptions, until: Instant) -> Result<Image> {
+    // macOS26 defaults to captured-content dimensions, including requested native effects.
+    let config: Retained<AnyObject> =
+        unsafe { msg_send![class(c"SCScreenshotConfiguration")?, new] };
+    unsafe {
+        let _: () = msg_send![&config,setFileURL:ptr::null::<AnyObject>()];
+        let _: () = msg_send![&config,setDynamicRange:0isize];
+        let _: () =
+            msg_send![&config,setShowsCursor:Bool::new(options.cursor==CaptureCursor::Include)];
+        let _: () = msg_send![&config,setIgnoreShadows:Bool::new(options.window_shadow!=CaptureWindowShadow::Include)];
+        let _: () = msg_send![&config,setIncludeChildWindows:Bool::NO];
+    }
+    let pending = Completion::new(ValueKind::Object)?;
+    let state = pending.0.clone();
+    let block = RcBlock::new(move |output: *mut AnyObject, error: *mut AnyObject| {
+        state.publish_object(output, error)
+    });
+    unsafe {
+        let _: () = msg_send![class(c"SCScreenshotManager")?,captureScreenshotWithFilter:filter, configuration:&*config, completionHandler:&*block];
+    }
+    let raw = pending.0.wait(until)?;
+    let output = unsafe { Retained::<AnyObject>::from_raw(raw as *mut AnyObject) }
+        .context("Native screenshot output disappeared")?;
+    let image: *mut CGImage = unsafe { msg_send![&output, sdrImage] };
+    ensure!(!image.is_null(), "Native screenshot supplied no SDR image");
+    unsafe { CFRetain(image.cast()) };
+    Ok(Image(image.cast()))
 }
