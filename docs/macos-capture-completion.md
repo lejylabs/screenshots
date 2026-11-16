@@ -5,23 +5,23 @@ Date: 2026-11-16
 Status: approved contract; native implementation and focused verification in progress.
 Actual ARM/Intel SDK typechecking is separate from native TCC/physical acceptance.
 
-## Inventory and exact scope
+## Pre-implementation inventory and exact scope
 
 Read the PLAN performance contract (including active-image/concurrency/deadline
 rules), current `capture_native_macos.rs`, native call/worker/protocol lifecycle,
 `scroll_capture.rs` and its X11/Windows adapters, `record.rs`, `audio_record.rs`,
 and the capture defaults, native isolation, scrolling, recording and audio docs.
 
-The existing macOS still adapter provides persistent display UUIDs and a checked
+At the initial inventory, the macOS still adapter provided persistent display UUIDs and a checked
 nondefault window CGImage decoder with sRGB/alpha/stride checks. Cursor inclusion
-and client-only framing are explicitly unsupported. The default window/display
-path still uses XCap's `CGWindowListCreateImage`; it does not receive those same
+and client-only framing were explicitly unsupported. The default window/display
+path used XCap's `CGWindowListCreateImage`; it did not receive those same
 checks. XCap reports display/window bounds in logical screen points while its
 image can contain physical Retina pixels. Its window focus predicate checks the
 frontmost **process**, not a particular window of that process. Those facts make
 simply enabling the existing generic scroll implementation unsafe.
 
-Live scrolling currently has X11 and Windows adapters only. The assembler,
+Live scrolling then had X11 and Windows adapters only. The assembler,
 viewport/output byte limits, fuzzy overlap matching, fixed-header trims,
 cancellation, repeated-end detection and truthful `complete` result already
 exist and must be reused. No new matching implementation or application UI is
@@ -30,7 +30,7 @@ needed.
 The optional Unix recorder accepts local X11/test video; macOS AVFoundation audio
 already has an explicit `none:AUDIO_DEVICE` selector, fixed PCM sample count,
 bounded diagnostics, exact probe verification and no-replace publication.
-There is no native macOS screen-video source. The Unix recorder's process group
+There was no native macOS screen-video source. The Unix recorder's process group
 at the initial inventory had no macOS parent-loss lifeline; adding a source must not inherit
 that missing parent-loss guarantee or blindly signal a group after its leader
 has been reaped.

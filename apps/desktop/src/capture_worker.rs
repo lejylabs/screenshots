@@ -1365,6 +1365,8 @@ mod tests {
             return video::fixture(request, &mut io, &nonce, parent, &mode);
         }
         match mode.as_str() {
+            #[cfg(target_os = "windows")]
+            "sent_flood" => windows_sent_flood_fixture()?,
             "hang" => loop {
                 std::thread::park();
             },
@@ -1484,6 +1486,96 @@ mod tests {
             _ => anyhow::bail!("Unknown owned fixture mode"),
         }
         Ok(())
+    }
+    #[cfg(target_os = "windows")]
+    fn windows_sent_flood_fixture() -> Result<()> {
+        use windows_sys::Win32::{
+            Foundation::*, System::LibraryLoader::GetModuleHandleW, UI::WindowsAndMessaging::*,
+        };
+        static HANDLED: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        const MESSAGE: u32 = WM_APP + 74;
+        unsafe extern "system" fn procedure(
+            window: HWND,
+            message: u32,
+            w: WPARAM,
+            l: LPARAM,
+        ) -> LRESULT {
+            if message == MESSAGE {
+                HANDLED.fetch_add(1, Ordering::Relaxed);
+                return 0;
+            }
+            unsafe { DefWindowProcW(window, message, w, l) }
+        }
+        let class = "ScreenshotsOwnedSentFlood"
+            .encode_utf16()
+            .chain(Some(0))
+            .collect::<Vec<_>>();
+        let instance = unsafe { GetModuleHandleW(std::ptr::null()) };
+        let definition = WNDCLASSW {
+            hInstance: instance,
+            lpszClassName: class.as_ptr(),
+            lpfnWndProc: Some(procedure),
+            ..Default::default()
+        };
+        ensure!(
+            unsafe { RegisterClassW(&definition) } != 0,
+            "Cannot register owned flood fixture"
+        );
+        let window = unsafe {
+            CreateWindowExW(
+                WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
+                class.as_ptr(),
+                std::ptr::null(),
+                WS_POPUP,
+                0,
+                0,
+                1,
+                1,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                instance,
+                std::ptr::null(),
+            )
+        };
+        ensure!(!window.is_null(), "Cannot create owned flood fixture");
+        for index in 0..8 {
+            let window = window as usize;
+            let marker =
+                std::env::var_os(MARKER).map(|p| PathBuf::from(p).with_extension("messages"));
+            std::thread::Builder::new()
+                .stack_size(128 * 1024)
+                .spawn(move || {
+                    let mut reported = false;
+                    loop {
+                        // Synchronous sends bound outstanding native messages to8,
+                        // while continuously replenishing nonqueued dispatch work.
+                        unsafe {
+                            SendMessageTimeoutW(
+                                window as HWND,
+                                MESSAGE,
+                                0,
+                                0,
+                                SMTO_ABORTIFHUNG | SMTO_BLOCK,
+                                50,
+                                std::ptr::null_mut(),
+                            );
+                        }
+                        let count = HANDLED.load(Ordering::Relaxed);
+                        if index == 0 && !reported && count >= 128 {
+                            if let Some(path) = &marker {
+                                let _ = std::fs::write(path, count.to_string());
+                            }
+                            reported = true;
+                        }
+                    }
+                })?;
+        }
+        let mut message = MSG::default();
+        loop {
+            unsafe {
+                PeekMessageW(&mut message, window, 0, 0, PM_REMOVE);
+            }
+        }
     }
     fn settle() {
         let until = Instant::now() + Duration::from_secs(5);
@@ -1745,6 +1837,35 @@ mod tests {
             Err(CaptureError::NativeCanceled | CaptureError::NativeCleanupPending)
         ));
         assert!(started.elapsed() < Duration::from_secs(3));
+        settle();
+    }
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_sent_message_flood_is_contained_by_parent_deadline() {
+        let _serial = lock(&SERIAL);
+        settle();
+        let folder = Folder::new();
+        let marker = folder.0.join("pid");
+        let started = Instant::now();
+        let result = execute_command(
+            fake_command("sent_flood", Some(&marker)),
+            call(),
+            &|| Ok(()),
+            Duration::from_secs(2),
+        );
+        assert!(matches!(
+            result,
+            Err(CaptureError::NativeTimeout | CaptureError::NativeCleanupPending)
+        ));
+        assert!(started.elapsed() < Duration::from_secs(4));
+        let handled = std::fs::read_to_string(marker.with_extension("messages"))
+            .unwrap()
+            .parse::<usize>()
+            .unwrap();
+        assert!(
+            handled >= 128,
+            "Fixture must dispatch real nonqueued messages before timeout"
+        );
         settle();
     }
     #[test]

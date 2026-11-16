@@ -95,6 +95,30 @@ hold format/quality preference, canvas padding, RGBA background, bounded alpha
 drop shadow and an explicit raster watermark mapping. They reuse the same final
 render/export path and do not encode paths, macros, credentials or implicit I/O.
 
+## Format-specific output admission
+
+The final metadata planner validates the dimensions after crop and export padding
+against the same application policy used immediately before actual encoding.
+The scene is refused before source/font/raster I/O when a known limit fails:
+
+| Output | Known geometric/input limit |
+| --- | --- |
+| PNG | Positive axes and the existing 256 MiB RGBA ceiling |
+| JPEG | Axes at most 65,535 and the existing 256 MiB RGBA ceiling |
+| Lossless WebP | Axes at most 16,384 and the existing 256 MiB RGBA ceiling |
+| Explicit lossy WebP | Axes at most 16,383 and the existing 64 MiB RGBA input ceiling |
+
+JPEG axes derive from the encoder's u16 representation. The locked image-webp
+0.2.4 encoder writes 14-bit dimensions minus one and exposes no public maximum;
+the single application policy uses that limit and real thin-axis encoding
+fixtures guard compatibility. Lossy admission reuses libwebp's exposed dimension
+constant and the existing application input cap. The final planner delegates to
+these shared validators instead of duplicating their constants. Existing native
+encoder checks, output-byte limits, quality/transparency checks, cancellation and
+create-new publication remain in place. Pixel/content-dependent encoding refusal
+can still occur after metadata planning; inspection does not promise a successful
+filesystem write or a particular compressed size.
+
 ## Privacy and sampling
 
 Rendering starts with a protected source sampler. Every active canvas mask is
@@ -197,6 +221,19 @@ shape before accepting glyphs. `vendor/harfrust/LOCAL-PATCH.md` records the exac
 published revision, unchanged default behavior, MIT notice and source-derived
 adversarial regression. The observer adds one atomic boolean and one optional
 shared-budget reference to the existing font cache; no new runtime or idle work.
+
+Legacy `kern` uses a separate upstream AAT cache and therefore requires a
+separate admission proof. The opt-in, allocation-free native-parser preflight
+accepts formats 0/1/2/3 only when their conservative peak cache heap fits 4 MiB
+and record/state/range-cell work fits 4 Mi visits. It includes actual
+cache entry/ClassCache sizes, spare Vec/page capacity, state/class temporaries
+and old/new reallocation overlap. The returned bytes are added to the OT scratch
+charge, before any ShaperFont/cache construction. A missing bound refuses the
+font; ordinary OT/Apple kerning within the limits remains real shaping.
+`vendor/harfrust/KERN-BOUND.md` records the source-derived formulas and locked
+private-layout/toolchain assumptions. The consumer checks cancellation before
+and after the bounded preflight; no background runtime or implicit font read is
+introduced.
 
 Skrifa reports required outline scratch before drawing; the renderer supplies a checked buffer
 of at most 1 MiB. A bounded outline sink caps path commands and finite geometry
@@ -535,3 +572,84 @@ Source hashes and the reading list reside in
 
 All three second-review findings have focused fixes and evidence; this frozen
 source awaits a third fresh review. It is not a clean-review claim.
+
+
+## Third review fix and fourth review checkpoint
+
+The third fresh source review found one blocker: valid legacy kern data could
+build unaccounted caches outside the OpenType preprocessing allowance. The
+new preflight uses the same engine parser, bounds all admitted legacy formats,
+refuses malformed/progress/count errors and charges a proved conservative peak
+plus finite work before constructing any cache. The font/source budgets were
+not increased and default upstream shaping for other consumers is unchanged.
+
+Core tests preserve OT/Apple AV kerning positions, exercise formats1/2/3 and
+reject the real checksum-valid 80,000-subtable Apple font before retention or
+cache creation. A tiny, separate high-column state-table example proves the
+work ceiling independently of encoded/cache byte size. All 27 optimized editor
+tests passed. The isolated allocator fixture passed and measured zero allocation/
+reallocation calls on all four admitted formats, no-kern data, the large attack
+and malformed input. Seven CLI tests, configured Clippy (no editor/vendor source
+warnings) and Windows GNU all-target dev-profile metadata passed. Native Windows
+execution remains separate CI acceptance.
+
+Actual executable E2E passed 19 renders and the real 80,000-subtable refusal.
+Both OT and Apple controls change AV pixels when their -120-unit kerning is
+removed, and produce identical adjusted pixels across those two header formats.
+All earlier geometry/privacy/format/state/refusal checks remain green. The
+pinned optimized binary SHA256 was
+`17334b3ebf56385cdb7f4c07414e4758298c207074b4838b6ef9424577f1274b`.
+The heavy-work SIGTERM observation was 1.161 ms with no output or actual staging
+file afterward; publication-phase interruption is still not claimed exercised.
+
+Evidence: `target/editor-round4-core-tests.log`,
+`target/editor-round4-allocation-test.log`, `target/editor-round4-cli-tests.log`,
+`target/editor-round4-clippy.log`, `target/editor-round4-windows-check.log`,
+`target/editor-round4-e2e.log` and
+`target/verification/editor-document-round4-e2e.json`. Exact repository/vendor
+and private-assumption source hashes are recorded in
+`target/verification/editor-document-round4-checkpoint.json`.
+The new path is operation-scoped font admission; the renderer and upstream
+runtime shaping are unchanged. Earlier uncontrolled renderer timing differences,
+process memory retention and native/UI/reference-hardware gates remain open.
+This frozen checkpoint awaits a fourth fresh source review; it is not a clean
+review or product/UI completion claim.
+
+
+## Fourth review fix and fifth review checkpoint
+
+The fourth fresh review found one Major: metadata planning applied the generic
+raster bound but deferred known JPEG/WebP limits until after rendering. The final
+planner now delegates to the shared format-specific admission above. The same
+policy runs before native encoding and before export downscaling; native library
+checks remain intact. Crop and padding are evaluated on the final prepared state,
+so a larger working canvas may become valid after cropping.
+
+Focused evidence includes both axes, the exact lossy byte ceiling, matching
+inspection/render errors before missing source/fonts, final-preset padding and
+PNG controls beyond JPEG/WebP axes. The optimized editor suite passed 28 tests;
+eight existing shared encoder regressions passed, with their separate performance
+observation excluded. Those regressions retain alpha, quality, cancellation,
+callback-error and no-overwrite/source-preservation behavior. Eight executable
+CLI integration tests passed.
+
+Actual executable E2E passed 25 renders. Six additional files were really encoded
+at horizontal/vertical axis boundaries: lossy WebP 16,383, lossless WebP 16,384 and
+JPEG 65,535. FFmpeg independently verified their decoded dimensions. Exact 64 MiB
+lossy input planning was accepted without allocating that large image during
+inspection, and oversized cases refused before missing source/fonts were opened.
+The pinned optimized binary SHA256 was
+`dea0f8ac92f51e2bfdd4703d67348d585b7098ca5e01d639d1afe80b4a30b582`.
+The heavy-work cancellation observation was 2.110 ms; publication-phase interruption
+remains explicitly unexercised. Configured Clippy passed with no warnings in the
+new editor/output-policy blocks; unrelated existing warnings remain. Windows GNU
+all-target dev-profile metadata passed; native runtime execution remains separate.
+
+Evidence: `target/editor-round5-core-tests.log`,
+`target/editor-round5-encoder-tests.log`, `target/editor-round5-cli-tests.log`,
+`target/editor-round5-clippy.log`, `target/editor-round5-windows-check.log`,
+`target/editor-round5-e2e.log`,
+`target/verification/editor-document-round5-e2e.json`, and the source/encoder
+assumption hashes in `target/verification/editor-document-round5-checkpoint.json`.
+No full-workspace, native UI, resource/return-to-baseline or reference-hardware
+acceptance is inferred. This frozen fix awaits fifth-round fresh source review.

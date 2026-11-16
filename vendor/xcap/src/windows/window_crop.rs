@@ -1,6 +1,15 @@
 //! Physical GDI window coordinates. No DPI inference, interpolation or clamped crop.
 use image::RgbaImage;
 
+pub(super) fn bi_rgb32_to_rgba(mut bytes: Vec<u8>) -> Vec<u8> {
+    // BI_RGB32's high byte is reserved, not transparency, on every OS version.
+    for pixel in bytes.chunks_exact_mut(4) {
+        pixel.swap(0, 2);
+        pixel[3] = 255;
+    }
+    bytes
+}
+
 pub(super) fn bitmap_bytes(width: i32, height: i32) -> Result<usize, &'static str> {
     let width = u32::try_from(width).map_err(|_| "Invalid GDI bitmap width")?;
     let height = u32::try_from(height).map_err(|_| "Invalid GDI bitmap height")?;
@@ -72,6 +81,13 @@ pub(super) fn crop_gdi_window(
 mod tests {
     use super::*;
     use image::Rgba;
+    #[test]
+    fn bi_rgb32_reserved_bytes_never_become_capture_transparency() {
+        assert_eq!(
+            bi_rgb32_to_rgba(vec![3, 5, 7, 0, 11, 13, 17, 19, 23, 29, 31, 255]),
+            vec![7, 5, 3, 255, 17, 13, 11, 255, 31, 29, 23, 255]
+        );
+    }
     #[test]
     fn native_bitmap_admission_rejects_changed_oversize_before_allocation() {
         assert_eq!(bitmap_bytes(8192, 8192).unwrap(), 256 * 1024 * 1024);

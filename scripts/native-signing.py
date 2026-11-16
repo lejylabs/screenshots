@@ -120,6 +120,20 @@ def child_exited_unreaped(pid):
     return native_exit_marker(pid,0x04|0x01|0x20) # XNU WEXITED|WNOHANG|WNOWAIT
 
 
+def darwin_only_held_zombie(pid):
+    # XNU killpg excludes zombies and reports EPERM for a zombie-only group.
+    # Accept only an exact snapshot containing our still-unreaped leader alone;
+    # any extra member, truncation, native error or lost reservation fails closed.
+    if sys.platform!='darwin' or not child_exited_unreaped(pid):return False
+    import ctypes
+    library=ctypes.CDLL('/usr/lib/libproc.dylib',use_errno=True)
+    function=library.proc_listpgrppids
+    function.argtypes=[ctypes.c_int,ctypes.c_void_p,ctypes.c_int];function.restype=ctypes.c_int
+    members=(ctypes.c_int*2)();ctypes.set_errno(0)
+    count=function(pid,ctypes.byref(members),ctypes.sizeof(members))
+    return ctypes.get_errno()==0 and count==1 and members[0]==pid and child_exited_unreaped(pid)
+
+
 class Tools:
     def run(self,args,timeout=120,capture=False):
         # Explicit release operation, with no signer diagnostics copied into application logs.
@@ -139,12 +153,16 @@ class Tools:
             start_new_session=os.name!='nt',cwd=working.name,
             env=native_environment() if is_native else None)
         output=bytearray();excess=threading.Event();reader=None
-        reaped=False
+        reaped=False;wait_started=False
         def stop():
             if os.name!='nt':
-                if reaped:return
+                if reaped or wait_started or process.returncode is not None:return
+                # wait() can reap then raise KeyboardInterrupt; never signal a
+                # numeric group once any reaping wait has started.
                 try:os.killpg(process.pid,signal.SIGKILL)
                 except ProcessLookupError:pass
+                except PermissionError:
+                    if not darwin_only_held_zombie(process.pid):raise
             elif process.poll() is None:process.kill()
         def read():
             try:
@@ -161,11 +179,13 @@ class Tools:
                     if child_exited_unreaped(process.pid):break
                     if excess.is_set() or time.monotonic()>=deadline:
                         stop()
+                        wait_started=True
                         process.wait(timeout=5);reaped=True
                         raise ValueError('Native signing tool exceeded its output or time budget')
                     time.sleep(.01)
                 # The unreaped leader reserves its group until all owned descendants are signaled.
                 stop()
+                wait_started=True
                 code=process.wait(timeout=5);reaped=True
             else:
                 try:code=process.wait(timeout=timeout)
@@ -179,15 +199,20 @@ class Tools:
             INSTALL.require(code==0,'Native signing/verification failed; no signed artifact was published')
             return bytes(output)
         finally:
-            if not reaped:
-                stop()
-                process.wait(timeout=5)
-                reaped=True
-            if reader is not None and reader.ident is not None:
-                reader.join(timeout=2)
-            elif capture:
-                process.stdout.close()
-            working.cleanup()
+            try:
+                if not reaped:
+                    try:stop()
+                    finally:
+                        wait_started=True
+                        process.wait(timeout=5)
+                        reaped=True
+            finally:
+                try:
+                    if reader is not None and reader.ident is not None:
+                        reader.join(timeout=2)
+                    elif capture:
+                        process.stdout.close()
+                finally:working.cleanup()
 
 
 
@@ -195,9 +220,11 @@ def digest(path):
     with path.open('rb') as source:return hashlib.file_digest(source,'sha256').hexdigest()
 
 
-def runtime_copy(source,destination,target):
+def runtime_copy(source,destination,target,expected_anchor):
     # Reuse the complete bounded manifest verifier rather than trusting an archive's sidecar alone.
-    PACKAGE.runtime_bundle(source,destination,target)
+    _,runtime=PACKAGE.runtime_bundle(source,destination,target)
+    INSTALL.require(runtime['manifest_sha256']==expected_anchor,
+                    'Incoming private runtime does not match its admitted build-info anchor')
 
 
 def refresh_runtime(runtime):
@@ -208,7 +235,7 @@ def refresh_runtime(runtime):
                         'Signed runtime member changed type or exceeded its size limit')
         entry['bytes']=metadata.st_size;entry['sha256']=digest(path)
     INSTALL.require(sum(entry['bytes'] for entry in manifest['files'])<=256*1024*1024,'Signed runtime exceeds aggregate limit')
-    (runtime/'RUNTIME-MANIFEST.json').write_text(json.dumps(manifest,separators=(',',':'))+'\n',encoding='utf-8')
+    (runtime/'RUNTIME-MANIFEST.json').write_text(json.dumps(manifest,separators=(',',':'))+'\n',encoding='utf-8',newline='\n')
     return digest(runtime/'RUNTIME-MANIFEST.json')
 
 
@@ -225,7 +252,7 @@ def verify_mac(tools,path,signing):
 def mac_app(app,info,signing,tools=None):
     tools=tools or Tools();app=app.resolve();resources=app/'Contents/Resources';runtime=resources/'lib/screenshots-sxcu'
     with tempfile.TemporaryDirectory(prefix='.verified-runtime-',dir=app.parent) as temporary:
-        verified=Path(temporary)/'runtime';runtime_copy(runtime,verified,info['target'])
+        verified=Path(temporary)/'runtime';runtime_copy(runtime,verified,info['target'],info.get('sharex_runtime',{}).get('manifest_sha256'))
         shutil.rmtree(runtime);shutil.copytree(verified,runtime)
     entitlements=app.parent/'sxcu-jit-entitlements.plist'
     with entitlements.open('xb') as output:plistlib.dump({'com.apple.security.cs.allow-jit':True},output)
@@ -243,7 +270,7 @@ def mac_app(app,info,signing,tools=None):
         updated['sharex_runtime']=dict(info['sharex_runtime'],manifest_sha256=refresh_runtime(runtime))
         updated['binary_sha256_scope']='admitted executable before enclosing bundle signature'
         updated['signing']='Developer ID team '+signing['team_id']+'; native signature verified before publication'
-        (resources/'BUILD-INFO.json').write_text(json.dumps(updated,indent=2)+'\n',encoding='utf-8')
+        (resources/'BUILD-INFO.json').write_text(json.dumps(updated,indent=2)+'\n',encoding='utf-8',newline='\n')
         tools.run(['codesign','--force','--sign',signing['application_identity'],'--identifier','me.lejy.screenshots',
                    '--options','runtime','--timestamp',app])
         verify_mac(tools,app,signing)
@@ -255,7 +282,7 @@ def mac_app(app,info,signing,tools=None):
 def windows_payload(portable,info,signing,tools=None):
     tools=tools or Tools();portable=portable.resolve();runtime=portable/'lib/screenshots-sxcu'
     with tempfile.TemporaryDirectory(prefix='.verified-runtime-',dir=portable.parent) as temporary:
-        verified=Path(temporary)/'runtime';runtime_copy(runtime,verified,info['target'])
+        verified=Path(temporary)/'runtime';runtime_copy(runtime,verified,info['target'],info.get('sharex_runtime',{}).get('manifest_sha256'))
         shutil.rmtree(runtime);shutil.copytree(verified,runtime)
     manifest=INSTALL.read_json(runtime/'RUNTIME-MANIFEST.json',128*1024)
     executables=[portable/'screenshots.exe',runtime/manifest['entrypoint']]
@@ -265,7 +292,7 @@ def windows_payload(portable,info,signing,tools=None):
         tools.run(['signtool.exe','verify','/pa','/all',path])
     updated=dict(info,binary_sha256=digest(portable/'screenshots.exe'),signing='Authenticode verified before packaging')
     updated['sharex_runtime']=dict(info['sharex_runtime'],manifest_sha256=refresh_runtime(runtime))
-    (portable/'BUILD-INFO.json').write_text(json.dumps(updated,indent=2)+'\n',encoding='utf-8')
+    (portable/'BUILD-INFO.json').write_text(json.dumps(updated,indent=2)+'\n',encoding='utf-8',newline='\n')
     return updated
 
 
@@ -282,7 +309,7 @@ def mac_package(unsigned,signed,signing,notary_profile=None,tools=None):
     certificate=tools.run(['pkgutil','--check-signature',signed],capture=True).decode('utf-8')
     leaf=re.search(r'^\s*1\.\s+(.+?)\s*$',certificate,re.MULTILINE)
     INSTALL.require(leaf and leaf.group(1)==signing['installer_identity']
-                    and re.search(r'^\s*Status:\s+signed by a certificate trusted by (?:macOS|Mac OS X)\s*$',certificate,re.MULTILINE),
+                    and re.search(r'^\s*Status:\s+signed by (?:a certificate trusted by (?:macOS|Mac OS X)|a developer certificate issued by Apple for distribution)\s*$',certificate,re.MULTILINE),
                     'Signed installer certificate/team does not match the requested trusted identity')
     if notary_profile is not None:
         text(notary_profile,256)

@@ -18,6 +18,8 @@ Create `crates/app-core/src/capture_native_windows_geometry.rs` and
 - `apps/desktop/src/capture_catalog.rs`, `region_analysis.rs`, `cli.rs` and
   `capture_worker_protocol.rs`, `capture_worker_windows.rs` for existing
   consumers, the typed Desktop call and native private-commit containment.
+- `apps/desktop/src/capture_worker.rs` for the owned native sent-message flood
+  child and `windows_sent_message_flood_is_contained_by_parent_deadline` fixture.
 - `vendor/xcap/src/windows/gdi.rs` and `window_crop.rs` for checked native
   bitmap byte admission and deselection before extraction/destruction.
 - `.github/workflows/rust.yml` and the existing Windows capture fixtures for
@@ -73,8 +75,8 @@ changes; sequential display acquisition is not an atomic cross-monitor frame.
 
 The temporary geometry calibration and topology windows retain metadata only;
 no image, texture or frame copy is added. The pure compositor retains at most
-256 MiB source rasters plus one output of at most 256 MiB. It must check
-cancellation per bounded row of copy work. Existing capture admission and
+256 MiB source rasters plus one output of at most 256 MiB. It checks cancellation
+through the shared 64 KiB copy-work budget, including across short rows. Existing capture admission and
 native process deadline contain blocking drivers. No application idle work is
 introduced. Optimized measurements must distinguish native acceptance from
 pure-model/copy timings and disclose any repeatable regression over 10%.
@@ -117,8 +119,20 @@ Use an owned test child plus the existing parent timeout/cancel/process-family
 fixtures for nonqueued-message flood containment. Queue bounds alone never
 count as a hard native deadline. Record which checks actually ran separately.
 
+The named Windows flood fixture creates only its own invisible window. Eight
+synchronous sender threads bound outstanding messages while replenishing real
+nonqueued dispatch; an owned marker proves at least 128 callbacks occurred.
+The production parent deadline must terminate/reap that worker and release
+admission. GNU metadata checks compile it; native Windows execution is a
+separate explicit CI result, not inferred from the parked-child timeout tests.
+
 Primary API contracts: [physical mode coordinates](https://learn.microsoft.com/en-us/windows/desktop/api/winuser/nf-winuser-enumdisplaysettingsw),
 [window DPI](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-getdpiforwindow),
 [scale events](https://learn.microsoft.com/en-us/windows/win32/api/shellscalingapi/nf-shellscalingapi-registerscalechangeevent),
 [monitor topology generation](https://learn.microsoft.com/en-us/windows/win32/winmsg/winuser/nf-winuser-getcurrentmonitortopologyid).
 These establish API behavior, not successful native app acceptance.
+
+Fresh EGM source reviews 5 and 6 established no Blocker or Major; round 6's
+compositor documentation Nit was corrected to state that callers supply physical
+coordinates. This is source-review convergence, separate from exact-source
+native fixture execution and physical mixed-DPI/topology acceptance.

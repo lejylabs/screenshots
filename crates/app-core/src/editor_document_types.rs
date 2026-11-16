@@ -508,6 +508,17 @@ pub enum ExportFormat {
     Webp,
     WebpLossy,
 }
+impl ExportFormat {
+    pub(super) fn validate_output_size(self, width: u32, height: u32) -> Result<()> {
+        match self {
+            Self::Png => crate::ImageExportFormat::Png.validate_output_size(width, height),
+            Self::Jpeg => crate::ImageExportFormat::Jpeg.validate_output_size(width, height),
+            Self::Webp => crate::ImageExportFormat::WebP.validate_output_size(width, height),
+            Self::WebpLossy => crate::webp_lossy::validate_output_size(width, height),
+        }?;
+        Ok(())
+    }
+}
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Shadow {

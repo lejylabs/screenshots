@@ -221,3 +221,59 @@ fn final_output_extent_is_refused_before_missing_source_or_asset_io() {
         assert!(!destination.exists());
     }
 }
+
+#[test]
+fn codec_output_limits_precede_missing_input_and_accept_exact_metadata_boundaries() {
+    let fixture = Fixture::new();
+    let refused = [
+        ("webp_lossy", [4097, 4096], "webp", "64 MiB"),
+        ("webp_lossy", [4096, 4097], "webp", "64 MiB"),
+        ("webp_lossy", [16384, 1], "webp", "16383"),
+        ("webp_lossy", [1, 16384], "webp", "16383"),
+        ("webp", [20000, 1], "webp", "16384"),
+        ("webp", [1, 16385], "webp", "16384"),
+        ("jpeg", [65536, 1], "jpg", "65535"),
+        ("jpeg", [1, 65536], "jpg", "65535"),
+    ];
+    for (index, (format, canvas, extension, expected)) in refused.into_iter().enumerate() {
+        let mut value = basic();
+        value["source_size"] = json!([1, 1]);
+        value["document"]["canvas"] = json!(canvas);
+        value["document"]["export"] = json!({"format":format});
+        value["fonts"] = json!([{"id":"unused","path":"missing.ttf"}]);
+        let scene = fixture.scene(&format!("codec-refused-{index}.json"), value);
+        let inspection = invoke([std::ffi::OsStr::new("inspect"), scene.as_os_str()]);
+        assert!(!inspection.status.success());
+        let destination = fixture.path(&format!("codec-refused-{index}.{extension}"));
+        let result = render(&fixture.path("missing.png"), &scene, &destination);
+        assert!(!result.status.success());
+        assert_eq!(result.stderr, inspection.stderr);
+        let error = String::from_utf8_lossy(&result.stderr);
+        assert!(error.contains(expected), "{error}");
+        assert!(!error.contains("Could not open editor source"));
+        assert!(!error.contains("missing.ttf"));
+        assert!(!destination.exists());
+    }
+    for (index, (format, canvas)) in [
+        ("webp_lossy", [4096, 4096]),
+        ("webp_lossy", [16383, 1]),
+        ("webp_lossy", [1, 16383]),
+        ("webp", [16384, 1]),
+        ("webp", [1, 16384]),
+        ("jpeg", [65535, 1]),
+        ("jpeg", [1, 65535]),
+        ("png", [65536, 1]),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let mut value = basic();
+        value["source_size"] = json!([1, 1]);
+        value["document"]["canvas"] = json!(canvas);
+        value["document"]["export"] = json!({"format":format});
+        value["fonts"] = json!([{"id":"unused","path":"missing.ttf"}]);
+        let scene = fixture.scene(&format!("codec-accepted-{index}.json"), value);
+        let inspected = success(invoke([std::ffi::OsStr::new("inspect"), scene.as_os_str()]));
+        assert_eq!(inspected["canvas"], json!(canvas));
+    }
+}

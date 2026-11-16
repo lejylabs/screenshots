@@ -4,7 +4,7 @@ Date: 2026-11-16
 Scope: the user's complete major-feature list, with final GPUI redesign and new
 UI controls excluded. The workstation stays on. The full backlog is **open**.
 
-Snapshot: branch `feat/non-ui-delivery`, committed implementation HEAD `15e3084`.
+Snapshot: branch `feat/non-ui-delivery`, committed implementation HEAD `61986a1`.
 Committed follow-ups include native defaults/templates and process isolation,
 Library lifecycle/reservations, bounded image cancellation, modern SXCU execution,
 shared encoded-input decoding and complete private-runtime/native packaging.
@@ -14,7 +14,7 @@ backend, remaining macOS native paths and clipboard/import/output integration
 are in progress.
 Delivered backend paths do not close excluded UI or real native acceptance gates.
 
-The current integrated working tree passed **786 optimized tests**, with 62
+The earlier integrated snapshot passed **786 optimized tests**, with 62
 explicit opt-ins excluded across 57 outer suites. Clippy passed configured denied
 lints, Windows GNU dev app/tests metadata passed, and default advisories passed
 without ignores. Earlier whole-suite totals remain historical snapshots.
@@ -22,11 +22,17 @@ Focused proof includes 26 SXCU/process tests, 134 helper assertions, 94 actual
 HTTPS requests, private native capture/portal/scheduling fixtures, and actual
 ABI-bearing extracted archive/.deb checks; scopes and skipped gates are separate
 in each contract. The host-dependent UI fixtures are corrected without changing
-production capability gating. Further editor/macOS changes require affected reruns.
+production capability gating. Current editor/macOS/clipboard/DPI source has focused
+checks and independent review in its contracts; it has not yet passed a new
+complete integrated run or been committed as an accepted release.
 
 CI `8fdbc78` found unformatted snapshot code and a nanosecond-clock temp-name
 collision on macOS. `3882c35` fixes both; exact-head native CI remains a separate
 gate. Newer local source still needs its reviewed commit and native matrix.
+Later native CI corrected BSD loopback socket modes, scheduler lock teardown,
+Windows path-spelling deduplication and portable test disconnect handling.
+Current partial native SDK/private-process evidence remains distinct from screen,
+permission, input, hardware and release-signature acceptance.
 Default active-graph advisory checking passes without ignores. The workstation
 remains powered on; no shutdown will be performed.
 

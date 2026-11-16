@@ -37,7 +37,7 @@ pub(super) fn output_size(spec: &DocumentSpec) -> Result<[u32; 2]> {
         .checked_add(top)
         .and_then(|height| height.checked_add(bottom))
         .context("Editor output dimensions overflow")?;
-    crate::validate_image_size(width, height)?;
+    spec.export.format.validate_output_size(width, height)?;
     Ok([width, height])
 }
 fn extent(size: [u32; 2]) -> u64 {

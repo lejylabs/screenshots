@@ -12,6 +12,20 @@ use std::{
 };
 
 const MAX_INPUT_BYTES: u64 = 64 * 1024 * 1024;
+const INPUT_LIMIT_MESSAGE: &str =
+    "Lossy WebP needs dimensions 1–16383 and at most 64 MiB of RGBA pixels";
+
+pub(crate) fn validate_output_size(width: u32, height: u32) -> Result<(), CaptureError> {
+    // Axis admission precedes the multiplication, so untrusted u32 dimensions
+    // cannot overflow the byte calculation. This policy is also used pre-render.
+    if !(1..=webp::WEBP_MAX_DIMENSION).contains(&width)
+        || !(1..=webp::WEBP_MAX_DIMENSION).contains(&height)
+        || u64::from(width) * u64::from(height) * 4 > MAX_INPUT_BYTES
+    {
+        return Err(failure(INPUT_LIMIT_MESSAGE));
+    }
+    Ok(())
+}
 const MAX_OUTPUT_BYTES: u64 = 32 * 1024 * 1024;
 const DEADLINE: Duration = Duration::from_secs(30);
 
@@ -173,14 +187,9 @@ fn save_with_limit<F: Fn() -> bool>(
     limit: u64,
 ) -> Result<(), CaptureError> {
     let (width, height) = pixels.dimensions();
-    if !(1..=webp::WEBP_MAX_DIMENSION).contains(&width)
-        || !(1..=webp::WEBP_MAX_DIMENSION).contains(&height)
-        || u64::from(width) * u64::from(height) * 4 > MAX_INPUT_BYTES
-        || pixels.as_raw().len() as u64 > MAX_INPUT_BYTES
-    {
-        return Err(failure(
-            "Lossy WebP needs dimensions 1–16383 and at most 64 MiB of RGBA pixels",
-        ));
+    validate_output_size(width, height)?;
+    if pixels.as_raw().len() as u64 > MAX_INPUT_BYTES {
+        return Err(failure(INPUT_LIMIT_MESSAGE));
     }
     if !(1..=100).contains(&quality) {
         return Err(failure("Lossy WebP quality must be between 1 and 100"));

@@ -36,8 +36,8 @@ use crate::{Frame, XCapError, error::XCapResult};
 
 pub(super) fn get_build_number() -> u32 {
     unsafe {
-        let mut buf_len: u32 = 2048;
-        let mut buf: Vec<u16> = Vec::with_capacity(buf_len as usize);
+        let mut buf: Vec<u16> = vec![0; 1024];
+        let mut buf_len = (buf.len() * mem::size_of::<u16>()) as u32;
 
         let err = RegGetValueW(
             HKEY_LOCAL_MACHINE,
@@ -49,11 +49,11 @@ pub(super) fn get_build_number() -> u32 {
             Some(&mut buf_len),
         );
 
-        if err.is_err() {
+        if err.is_err() || !buf_len.is_multiple_of(2) || buf_len as usize > buf.len() * 2 {
             return 0;
         }
 
-        buf.set_len(buf_len as usize);
+        buf.truncate(buf_len as usize / 2);
 
         let build_version = U16CString::from_vec_truncate(buf)
             .to_string()

@@ -43,3 +43,11 @@ The original crate excludes the upstream font corpus from its published
 archive. Its entire unrelated unit-test suite is therefore not claimed run;
 we run the standalone budget tests and the application's real font, shaping
 and rendering regressions against this exact patched dependency.
+
+Legacy `kern` is outside the upstream OT preprocessing budget. The editor's
+additional opt-in, allocation-free `kern_preprocessing_size` admission observer
+now bounds all legacy formats0/1/2/3 before any cache construction. It preserves
+upstream behavior for other callers. Exact private-layout/capacity/work formulas,
+assumptions, the independent4MiB legacy limits and real synthetic proofs are
+documented in [KERN-BOUND.md](KERN-BOUND.md). Its returned peak is accounted
+separately from OT and glyph/outline scratch; refusal is explicit.

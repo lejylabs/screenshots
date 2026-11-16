@@ -601,17 +601,22 @@ fn maintained_object_server_distinguishes_fresh_and_existing_interfaces() {
             .unwrap()
             .unwrap();
         assert_eq!(returned.0, 37);
-        // Observe the service through an independent native client, as real
+        // Observe the service through an independent client, as real
         // accessibility clients do; don't couple this insertion check to self-RPC.
-        let client = connect(&address);
-        let (value,): (u32,) = client
-            .with_proxy(
-                connection.unique_name().unwrap().as_str(),
-                "/org/screenshots/test",
-                WAIT,
-            )
-            .method_call("org.screenshots.MaintainedInsertion", "Value", ())
+        let client = zbus::connection::Builder::address(address.as_str())
+            .method_timeout(WAIT)
+            .build()
+            .await
             .unwrap();
+        let proxy = zbus::Proxy::new(
+            &client,
+            connection.unique_name().unwrap().as_str(),
+            "/org/screenshots/test",
+            "org.screenshots.MaintainedInsertion",
+        )
+        .await
+        .unwrap();
+        let value: u32 = proxy.call("Value", &()).await.unwrap();
         assert_eq!(
             value, 19,
             "a duplicate insertion must preserve the existing service"

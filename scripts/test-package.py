@@ -22,6 +22,20 @@ smoke_spec.loader.exec_module(smoke_module)
 
 
 class PackagingTests(unittest.TestCase):
+    def test_checksum_failure_never_deletes_published_or_replaced_archive(self):
+        for replace in [False, True]:
+            with self.subTest(replace=replace), tempfile.TemporaryDirectory() as temporary:
+                root=Path(temporary);binary=root/'binary';binary.write_bytes(b'fixture');output=root/'out';link=os.link;created=[]
+                def fail_checksum(source,destination):
+                    if destination.name.endswith('.sha256'):
+                        if replace:
+                            created[0].unlink();created[0].write_bytes(b'foreign replacement')
+                        raise OSError('injected checksum publish failure')
+                    link(source,destination);created.append(destination)
+                with mock.patch.object(module.os,'link',side_effect=fail_checksum):
+                    with self.assertRaises(OSError):module.package(binary,output,'screenshots-test','x86_64-unknown-linux-gnu',1700000000,{},[])
+                self.assertEqual(len(created),1);self.assertTrue(created[0].is_file())
+                if replace:self.assertEqual(created[0].read_bytes(),b'foreign replacement')
     def test_linux_abi_uses_numeric_symbol_versions_and_requires_metadata(self):
         def readelf(arguments, **kwargs):
             kwargs["stdout"].write(b"Name: GLIBC_2.9 Name: GLIBC_2.39 Name: GLIBC_2.3.4")

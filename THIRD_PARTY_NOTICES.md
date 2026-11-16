@@ -152,6 +152,8 @@ SOFTWARE.
 
 The vendored HarfRust 0.15.0 retains its upstream MIT license and published
 version in `vendor/harfrust/LICENSE`. Its observational preprocessing-budget
-exhaustion status patch and exact upstream provenance are documented in
-`vendor/harfrust/LOCAL-PATCH.md`. Existing shaping defaults and limits remain
-unchanged; the editor refuses exhausted preprocessing results.
+exhaustion patch, opt-in legacy-kern admission bounds and exact upstream
+provenance are documented in `vendor/harfrust/LOCAL-PATCH.md` and
+`vendor/harfrust/KERN-BOUND.md`.
+Existing upstream shaping defaults remain unchanged; the editor refuses
+exhausted preprocessing or legacy caches without a bounded admission proof.

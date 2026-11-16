@@ -1106,3 +1106,66 @@ fn metadata_final_output_plan_shares_actual_crop_padding_limit() -> Result<()> {
     assert_eq!(state.planned_output_size()?, [8191, 8191]);
     Ok(())
 }
+
+#[test]
+fn final_metadata_plan_uses_shared_codec_axis_and_input_byte_limits() -> Result<()> {
+    let cases = [
+        (ExportFormat::WebpLossy, [4096, 4096], true),
+        (ExportFormat::WebpLossy, [4097, 4096], false),
+        (ExportFormat::WebpLossy, [4096, 4097], false),
+        (ExportFormat::WebpLossy, [16383, 1], true),
+        (ExportFormat::WebpLossy, [1, 16383], true),
+        (ExportFormat::WebpLossy, [16384, 1], false),
+        (ExportFormat::WebpLossy, [1, 16384], false),
+        (ExportFormat::Webp, [16384, 1], true),
+        (ExportFormat::Webp, [1, 16384], true),
+        (ExportFormat::Webp, [16385, 1], false),
+        (ExportFormat::Webp, [1, 16385], false),
+        (ExportFormat::Webp, [20000, 1], false),
+        (ExportFormat::Jpeg, [65535, 1], true),
+        (ExportFormat::Jpeg, [1, 65535], true),
+        (ExportFormat::Jpeg, [65536, 1], false),
+        (ExportFormat::Jpeg, [1, 65536], false),
+        (ExportFormat::Png, [65536, 1], true),
+        (ExportFormat::Png, [67108864, 1], true),
+    ];
+    for (format, canvas, admitted) in cases {
+        let mut spec = DocumentSpec::new(canvas[0], canvas[1]);
+        spec.export.format = format;
+        let state = EditorState::new(spec, [1, 1], AssetCatalog::default())?;
+        let result = state.planned_output_size();
+        assert_eq!(
+            result.is_ok(),
+            admitted,
+            "{format:?} {canvas:?}: {result:?}"
+        );
+        if admitted {
+            assert_eq!(result?, canvas);
+        }
+    }
+    assert!(
+        ExportFormat::WebpLossy
+            .validate_output_size(u32::MAX, u32::MAX)
+            .is_err()
+    );
+    // Only the final cropped/padded output is encoded; a wider working canvas
+    // can become valid, and otherwise-valid dimensions can be pushed over by padding.
+    let mut spec = DocumentSpec::new(20000, 1);
+    spec.export.format = ExportFormat::Webp;
+    let mut state = EditorState::new(spec, [1, 1], AssetCatalog::default())?;
+    state.set_crop(Some(crate::PixelRegion {
+        x: 0,
+        y: 0,
+        width: 16384,
+        height: 1,
+    }))?;
+    assert_eq!(state.planned_output_size()?, [16384, 1]);
+    let preset = ExportPreset {
+        format: ExportFormat::Webp,
+        padding: [1, 0, 0, 0],
+        ..ExportPreset::default()
+    };
+    state.set_export(preset)?;
+    assert!(state.planned_output_size().is_err());
+    Ok(())
+}

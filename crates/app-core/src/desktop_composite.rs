@@ -74,7 +74,7 @@ fn layout(displays: &[DisplayInfo]) -> Result<Layout, CaptureError> {
 }
 
 /// Compose one frozen image per display, preserving alpha and transparent gaps.
-/// Coordinates must be physical desktop pixels; logical/mirrored layouts are rejected.
+/// Callers must supply physical desktop pixels; overlapping/mirrored bounds are rejected.
 pub fn stitch_desktop(
     displays: &[DisplayInfo],
     frames: &[CapturedImage],

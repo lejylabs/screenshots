@@ -433,7 +433,7 @@ fn all_legacy_formats_and_malformed_progress_receive_bounded_preflight() -> Resu
     zero[8..12].fill(0);
     let mut truncated = normal.clone();
     truncated.truncate(14);
-    let mut unknown = normal.clone();
+    let mut unknown = normal;
     unknown[12..14].copy_from_slice(&255u16.to_be_bytes());
     for table in [excessive, zero, truncated, unknown] {
         let font = font_with_legacy_kern(&table);

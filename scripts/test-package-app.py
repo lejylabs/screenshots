@@ -8,6 +8,7 @@ import plistlib
 import tarfile
 import tempfile
 import unittest
+from unittest import mock
 import xml.etree.ElementTree as ET
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -17,6 +18,20 @@ SPEC.loader.exec_module(PACKAGE)
 
 
 class NativePackageTests(unittest.TestCase):
+    def test_msix_manifest_file_is_utf8_lf_with_a_non_utf8_host_default(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            publisher = 'CN=Müller & 東京 "Publisher"'
+            original = Path.write_text
+            def ansi_write(path, data, encoding=None, errors=None, newline=None):
+                return original(path, data, encoding=encoding or "cp1252", errors=errors, newline=newline)
+            with mock.patch.object(Path, "write_text", ansi_write):
+                PACKAGE.write_appx_manifest(root, "0.1.0", "x64", publisher)
+            content = (root / "AppxManifest.xml").read_bytes()
+            self.assertNotIn(b"\r", content)
+            self.assertIn('Müller'.encode("utf-8"), content)
+            self.assertEqual(list(ET.fromstring(content))[0].attrib["Publisher"], publisher)
+
     def test_mac_bundle_has_document_types_and_exact_binary(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

@@ -224,6 +224,62 @@ def legacy_kern_fixture(path, count, apple=True, adjustment=-120):
     path.write_bytes(font)
 
 
+def check_codec_limits(runner, directory):
+    refused = [
+        ("webp_lossy", (4097, 4096), "webp", "64 MiB"),
+        ("webp_lossy", (4096, 4097), "webp", "64 MiB"),
+        ("webp_lossy", (16384, 1), "webp", "16383"),
+        ("webp_lossy", (1, 16384), "webp", "16383"),
+        ("webp", (20000, 1), "webp", "16384"),
+        ("webp", (1, 16385), "webp", "16384"),
+        ("jpeg", (65536, 1), "jpg", "65535"),
+        ("jpeg", (1, 65536), "jpg", "65535"),
+    ]
+    for index, (format_name, dimensions, extension, message) in enumerate(refused):
+        value = scene(*dimensions, source_size=[1, 1], fonts=[dict(id="unused", path="missing.ttf")])
+        value["document"]["export"] = dict(format=format_name)
+        profile = write(directory / f"codec-refused-{index}.json", value)
+        inspected = runner.call("inspect", profile, ok=False)
+        output = directory / f"codec-refused-{index}.{extension}"
+        error = runner.call("render", directory / "missing.png", profile, output, ok=False)
+        assert error == inspected and message in error and "Could not open editor source" not in error and not output.exists()
+    accepted = [
+        ("webp_lossy", (4096, 4096)),
+        ("webp_lossy", (16383, 1)),
+        ("webp_lossy", (1, 16383)),
+        ("webp", (16384, 1)),
+        ("webp", (1, 16384)),
+        ("jpeg", (65535, 1)),
+        ("jpeg", (1, 65535)),
+        ("png", (65536, 1)),
+    ]
+    for index, (format_name, dimensions) in enumerate(accepted):
+        value = scene(*dimensions, source_size=[1, 1], fonts=[dict(id="unused", path="missing.ttf")])
+        value["document"]["export"] = dict(format=format_name)
+        profile = write(directory / f"codec-accepted-{index}.json", value)
+        assert runner.call("inspect", profile)["canvas"] == list(dimensions)
+    # Final padding from a selected preset also participates in codec admission.
+    value = scene(65535, 1, source_size=[1, 1], fonts=[dict(id="unused", path="missing.ttf")], presets=dict(version=1, exports=[dict(name="too-wide", preset=dict(format="jpeg", padding=[1, 0, 0, 0]))]), export_preset="too-wide")
+    profile = write(directory / "codec-padded.json", value)
+    error = runner.call("inspect", profile, ok=False)
+    assert "65535" in error and runner.call("render", directory / "missing.png", profile, directory / "codec-padded.jpg", ok=False) == error
+    source = directory / "codec-thin-source.png"
+    png(source, 1, 1, lambda x, y: [13, 37, 211, 255])
+    for format_name, maximum, extension in [("webp_lossy", 16383, "webp"), ("webp", 16384, "webp"), ("jpeg", 65535, "jpg")]:
+        for dimensions in [(maximum, 1), (1, maximum)]:
+            value = scene(*dimensions, source_size=[1, 1])
+            value["document"]["export"] = dict(format=format_name, background=[255] * 4)
+            profile = write(directory / f"codec-thin-{format_name}-{dimensions[0]}.json", value)
+            output = directory / f"codec-thin-{format_name}-{dimensions[0]}.{extension}"
+            result = runner.render(source, profile, output)
+            assert (result["width"], result["height"]) == dimensions
+            decoded = decode(output)
+            assert decoded[:2] == dimensions
+            assert pixel(decoded, dimensions[0] - 1, dimensions[1] - 1)[3] == 255
+    assert not list(directory.glob(".screenshots-*.part"))
+    return dict(codec_size_preflight_before_input=True, codec_metadata_exact_boundaries=len(accepted), codec_axis_boundary_encodes=6)
+
+
 def check_cancellation(runner, directory):
     if os.name != "posix":
         return {"native_signal_cases": "Unix-only; Windows native CI remains separate"}
@@ -438,7 +494,8 @@ def run(runner, directory):
     error = runner.call("render", source, profile, output, ok=False)
     assert "legacy kern preprocessing" in error and not output.exists()
     assert not list(directory.glob(".screenshots-*.part"))
-    return dict(legacy_kern_80000_attack_refused=True, real_ot_apple_kerning_pixels=True, final_output_preflight_before_asset_io=True, real_font_preprocessing_exhaustion_refused=True, all_tool_pixels=True, exact_edit_preset_pixels=True, effect_input_modes=True, source_aliases_refused=True, no_overwrite=True, format_mismatch_before_source=True, inspection_has_no_asset_io_or_text=True, sequential_preflight_before_decode=True, rotated_sheared_bilinear_clone_lens_privacy=rotated, formats=4, source_preserved=True, renders=runner.renders, **check_cancellation(runner, directory))
+    codec_limits = check_codec_limits(runner, directory)
+    return dict(legacy_kern_80000_attack_refused=True, real_ot_apple_kerning_pixels=True, final_output_preflight_before_asset_io=True, real_font_preprocessing_exhaustion_refused=True, all_tool_pixels=True, exact_edit_preset_pixels=True, effect_input_modes=True, source_aliases_refused=True, no_overwrite=True, format_mismatch_before_source=True, inspection_has_no_asset_io_or_text=True, sequential_preflight_before_decode=True, rotated_sheared_bilinear_clone_lens_privacy=rotated, formats=4, source_preserved=True, renders=runner.renders, **codec_limits, **check_cancellation(runner, directory))
 
 
 def main():

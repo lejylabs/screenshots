@@ -121,3 +121,8 @@ jobs:
         run: cargo test --locked --profile release-fast -p screenshots --bin screenshots -j 2 native_worker_job_has_an_explicit_commit_ceiling -- --test-threads=1
       - name: Run Windows native portability signing fixtures only
         run: python scripts/test-native-signing.py
+
+      - name: Contain owned nonqueued native message floods
+        run: cargo test --locked --profile release-fast -p screenshots --bin screenshots -j 2 capture_worker::tests::windows_sent_message_flood_is_contained_by_parent_deadline -- --exact --test-threads=1
+      - name: Verify native MSIX manifest bytes without SDK invocation
+        run: python scripts/test-package-app.py

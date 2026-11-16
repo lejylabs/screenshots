@@ -27,7 +27,7 @@ use crate::{
     platform::utils::get_window_bounds,
 };
 
-use super::utils::{bgra_to_rgba, get_os_major_version};
+use super::utils::get_os_major_version;
 
 fn to_rgba_image(
     hdc_mem: HDC,
@@ -68,8 +68,12 @@ fn to_rgba_image(
         }
     };
 
-    RgbaImage::from_raw(width as u32, height as u32, bgra_to_rgba(buffer))
-        .ok_or_else(|| XCapError::new("RgbaImage::from_raw failed"))
+    RgbaImage::from_raw(
+        width as u32,
+        height as u32,
+        super::window_crop::bi_rgb32_to_rgba(buffer),
+    )
+    .ok_or_else(|| XCapError::new("RgbaImage::from_raw failed"))
 }
 
 fn delete_bitmap_object(val: HBITMAP) {
