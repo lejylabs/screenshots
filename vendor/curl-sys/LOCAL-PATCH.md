@@ -13,3 +13,10 @@ failure to discover the pinned vcpkg library is an immediate build error rather
 than a silent bundled fallback without SFTP. vcpkg-rs 0.2.15 expects
 VCPKG_ROOT/installed; CI exposes its separate cached install tree there through
 an owned directory junction.
+
+The MSVC probe now uses vcpkg's installed port metadata without library-name
+overrides. Those overrides disable dependency traversal in vcpkg-rs 0.2.15;
+the old OpenSSL 1.x names also omit modern libssl/libcrypto and static zlib.
+The metadata probe supplies the full installed static closure. Windows system
+libraries used by curl/SSPI/OpenSSL remain explicit. Native CI validates linking
+and the linked engine's SFTP capability; Linux cross-compilation is not proof.

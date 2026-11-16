@@ -326,7 +326,8 @@ fn unsupported_error_message_fails_before_connecting_without_echoing_its_content
     f.assert_no_state();
 }
 
-#[cfg(unix)]
+// APFS rejects invalid UTF-8 names before the application can open them.
+#[cfg(all(unix, not(target_os = "macos")))]
 #[test]
 fn non_utf8_profile_name_keeps_native_extension_selection() {
     use std::os::unix::ffi::OsStringExt;

@@ -187,7 +187,8 @@ fn malformed_missing_and_oversized_sources_do_not_create_files() {
     fixture.no_user_state();
 }
 
-#[cfg(unix)]
+// APFS rejects invalid UTF-8 names before the application can open them.
+#[cfg(all(unix, not(target_os = "macos")))]
 #[test]
 fn non_utf8_native_input_path_is_supported() {
     use std::ffi::OsString;

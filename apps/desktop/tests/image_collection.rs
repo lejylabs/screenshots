@@ -462,10 +462,11 @@ fn chunk(output: &mut Vec<u8>, name: &[u8; 4], data: &[u8]) {
     output.extend((!crc).to_be_bytes());
 }
 
-#[cfg(unix)]
+// APFS rejects invalid UTF-8 names before the application can open them.
+#[cfg(all(unix, not(target_os = "macos")))]
 #[test]
 fn native_non_utf8_filenames_and_broken_symlink_outputs_are_handled() {
-    use std::os::unix::{ffi::OsStringExt as _, fs::symlink};
+    use std::os::unix::ffi::OsStringExt as _;
     let fixture = Fixture::new();
     let input = fixture
         .0
@@ -487,6 +488,18 @@ fn native_non_utf8_filenames_and_broken_symlink_outputs_are_handled() {
         image::open(&output).unwrap().into_rgba8().dimensions(),
         (2, 1)
     );
+    fixture.no_user_state();
+}
+
+#[cfg(unix)]
+#[test]
+fn broken_symlink_outputs_are_preserved() {
+    use std::os::unix::fs::symlink;
+    let fixture = Fixture::new();
+    let input = fixture.path("source.png");
+    RgbaImage::from_pixel(1, 1, Rgba([1, 2, 3, 255]))
+        .save(&input)
+        .unwrap();
     let broken = fixture.path("broken.png");
     symlink(fixture.path("missing.png"), &broken).unwrap();
     failure(fixture.run(&[

@@ -545,55 +545,23 @@ fn try_vcpkg() -> bool {
 
 #[cfg(target_env = "msvc")]
 fn try_vcpkg() -> bool {
-    // the import library for the dll is called libcurl_imp
-    let mut successful_probe_details = match vcpkg::Config::new()
-        .lib_names("libcurl_imp", "libcurl")
-        .emit_includes(true)
-        .probe("curl")
-    {
-        Ok(details) => Some(details),
-        Err(e) => {
-            println!("first run of vcpkg did not find libcurl: {}", e);
-            None
+    // Library-name overrides disable vcpkg-rs's installed dependency traversal.
+    // Use its port metadata for modern OpenSSL/zlib names and static closure.
+    match vcpkg::Config::new().emit_includes(true).probe("curl") {
+        Ok(_) => {
+            for library in [
+                "crypt32", "gdi32", "user32", "wldap32", "advapi32", "bcrypt", "ws2_32",
+                "secur32", "ncrypt",
+            ] {
+                println!("cargo:rustc-link-lib={library}");
+            }
+            true
         }
-    };
-
-    if successful_probe_details.is_none() {
-        match vcpkg::Config::new()
-            .lib_name("libcurl")
-            .emit_includes(true)
-            .probe("curl")
-        {
-            Ok(details) => successful_probe_details = Some(details),
-            Err(e) => println!("second run of vcpkg did not find libcurl: {}", e),
+        Err(error) => {
+            println!("vcpkg did not discover libcurl and its dependencies: {error}");
+            false
         }
     }
-
-    if successful_probe_details.is_some() {
-        // Found libcurl which depends on openssl, libssh2 and zlib
-        // in the a default vcpkg installation. Probe for them
-        // but do not fail if they are not present as we may be working
-        // with a customized vcpkg installation.
-        vcpkg::Config::new()
-            .lib_name("libeay32")
-            .lib_name("ssleay32")
-            .probe("openssl")
-            .ok();
-
-        vcpkg::probe_package("libssh2").ok();
-
-        vcpkg::Config::new()
-            .lib_names("zlib", "zlib1")
-            .probe("zlib")
-            .ok();
-
-        println!("cargo:rustc-link-lib=crypt32");
-        println!("cargo:rustc-link-lib=gdi32");
-        println!("cargo:rustc-link-lib=user32");
-        println!("cargo:rustc-link-lib=wldap32");
-        return true;
-    }
-    false
 }
 
 fn try_pkg_config() -> bool {
