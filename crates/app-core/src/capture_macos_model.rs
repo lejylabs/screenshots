@@ -356,6 +356,8 @@ pub struct MacVideoRequest {
     pub seconds: u32,
     pub fps: u32,
     pub cursor: bool,
+    #[serde(default)]
+    pub microphone: bool,
 }
 impl MacVideoRequest {
     pub fn validate(self) -> Result<()> {
@@ -592,6 +594,7 @@ mod tests {
             seconds: 1,
             fps: 30,
             cursor: false,
+            microphone: false,
         }
     }
     #[test]

@@ -24,6 +24,21 @@ jobs:
           restore-keys: |
             sdk-probe-${{ runner.os }}-${{ runner.arch }}-
             ${{ runner.os }}-cargo-
+      - name: Record actual native SDK screen-input contract
+        run: |
+          sw_vers
+          xcrun --show-sdk-version
+          python3 - <<'HEADER'
+          from pathlib import Path
+          import subprocess
+          sdk=Path(subprocess.check_output(['xcrun','--show-sdk-path'],text=True).strip())
+          header=sdk/'System/Library/Frameworks/AVFoundation.framework/Headers/AVCaptureInput.h'
+          source=header.read_text()
+          for name in ['cropRect','scaleFactor','removesDuplicateFrames']:
+              start=source.find('@property',source.find('@interface AVCaptureScreenInput'))
+              found=source.find(name,start)
+              print('SDK contract',name,source[max(start,found-2300):found+700])
+          HEADER
       - name: Check actual native core and test sources
         run: cargo check --locked -p app-core --all-targets -j 2
       - name: Portable admission models against native SDK build

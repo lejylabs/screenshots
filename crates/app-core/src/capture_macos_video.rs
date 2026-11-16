@@ -16,8 +16,8 @@ use objc2::{
     AllocAnyThread, DefinedClass, define_class, msg_send, rc::Retained, runtime::ProtocolObject,
 };
 use objc2_av_foundation::{
-    AVCaptureConnection, AVCaptureOutput, AVCaptureScreenInput, AVCaptureSession,
-    AVCaptureVideoDataOutput, AVCaptureVideoDataOutputSampleBufferDelegate,
+    AVCaptureConnection, AVCaptureDevice, AVCaptureOutput, AVCaptureScreenInput, AVCaptureSession,
+    AVCaptureVideoDataOutput, AVCaptureVideoDataOutputSampleBufferDelegate, AVMediaTypeAudio,
 };
 use objc2_core_foundation::{CGPoint, CGRect, CGSize};
 use objc2_core_media::{CMSampleBuffer, CMTime};
@@ -311,11 +311,14 @@ impl Delegate {
 /// reserved its process group/admission. Native APIs run only in this helper.
 pub fn run_macos_video_source_in_worker(
     request: MacVideoRequest,
+    expected: crate::MacDisplayProof,
     deadline: Instant,
     mut sink: impl FnMut(&[u8]) -> Result<()> + Send,
 ) -> Result<MacVideoSummary> {
-    request.validate()?;
-    native::screen_permission()?;
+    ensure!(
+        preflight_macos_video_source_in_worker(request)? == expected,
+        "Display identity changed after recording preflight"
+    );
     let event = EventLoop::new()?;
     let _topology = Topology::new(event.wake())?;
     let display = native::displays()?
@@ -323,6 +326,10 @@ pub fn run_macos_video_source_in_worker(
         .find(|display| display.id == request.display)
         .context("Selected display is not active")?;
     let crop = display.screen_input_crop(request.region)?;
+    ensure!(
+        display == expected,
+        "Display UUID/topology changed before recording source start"
+    );
     Topology::check()?;
     let state = Arc::new(State {
         request,
@@ -347,18 +354,19 @@ pub fn run_macos_video_source_in_worker(
         input.setCapturesCursor(request.cursor);
         input.setCapturesMouseClicks(false);
         input.setScaleFactor(1.0);
-        input.setCropRect(CGRect {
-            origin: CGPoint {
-                x: f64::from(crop.0),
-                y: f64::from(crop.1),
-            },
-            size: CGSize {
-                width: f64::from(crop.2),
-                height: f64::from(crop.3),
-            },
-        });
+        if display.unrotated_scale()? == 1.0 {
+            input.setCropRect(CGRect {
+                origin: CGPoint {
+                    x: f64::from(crop.0),
+                    y: f64::from(crop.1),
+                },
+                size: CGSize {
+                    width: f64::from(crop.2),
+                    height: f64::from(crop.3),
+                },
+            });
+        }
         input.setMinFrameDuration(CMTime::new(1, request.fps as i32));
-        input.setRemovesDuplicateFrames(false);
     }
     ensure!(
         unsafe { session.canAddInput(&input) },
@@ -493,4 +501,31 @@ pub fn run_macos_video_source_in_worker(
         Ok(summary)
     });
     result
+}
+pub fn preflight_macos_video_source_in_worker(
+    request: MacVideoRequest,
+) -> Result<crate::MacDisplayProof> {
+    request.validate()?;
+    native::screen_permission()?;
+    if request.microphone
+        && unsafe { AVCaptureDevice::authorizationStatusForMediaType(AVMediaTypeAudio) }.0 != 3
+    {
+        return Err(crate::CaptureError::MacMicrophonePermissionDenied.into());
+    }
+    let display = native::displays()?
+        .into_iter()
+        .find(|display| display.id == request.display)
+        .context("Selected display is unavailable")?;
+    let scale = display.unrotated_scale()?;
+    display.screen_input_crop(request.region)?;
+    if scale != 1.0 {
+        ensure!(
+            request.region.x == 0
+                && request.region.y == 0
+                && request.region.width == display.pixel_width
+                && request.region.height == display.pixel_height,
+            "Retina AVFoundation subregion units require native calibration; only an unscaled full display is currently admitted"
+        );
+    }
+    Ok(display)
 }

@@ -35,6 +35,14 @@ pub(crate) fn display_identities(displays: &[DisplayInfo]) -> Result<Vec<Capture
 pub(crate) fn dpi_scope() -> Result<platform::DpiScope> {
     platform::DpiScope::new()
 }
+#[cfg(target_os = "windows")]
+pub(crate) fn topology_guard() -> Result<platform::TopologyGuard> {
+    platform::TopologyGuard::new()
+}
+#[cfg(target_os = "windows")]
+pub(crate) fn physical_monitor_geometry(monitor: &xcap::Monitor) -> Result<crate::DisplayGeometry> {
+    platform::monitor_geometry(monitor)
+}
 pub(crate) fn validate_options(options: &CaptureOptions, window: bool) -> Result<()> {
     options.validate()?;
     platform::validate_options(options, window)

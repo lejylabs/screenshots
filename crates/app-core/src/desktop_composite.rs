@@ -82,6 +82,16 @@ pub fn stitch_desktop(
     displays: &[DisplayInfo],
     frames: &[CapturedImage],
 ) -> Result<CapturedImage, CaptureError> {
+    stitch_desktop_with_cancel(displays, frames, &|| false)
+}
+
+pub fn stitch_desktop_with_cancel(
+    displays: &[DisplayInfo],
+    frames: &[CapturedImage],
+    cancelled: &impl Fn() -> bool,
+) -> Result<CapturedImage, CaptureError> {
+    let cancelled = crate::image_cancel::latch(cancelled);
+    let mut work = crate::image_cancel::ImageWork::new(&cancelled)?;
     let layout = layout(displays)?;
     if frames.len() != displays.len() {
         return Err(CaptureError::Backend(
@@ -101,6 +111,8 @@ pub fn stitch_desktop(
         if frame.window_id.is_some()
             || (frame.width, frame.height) != (display.width, display.height)
             || frame.pixels.dimensions() != (display.width, display.height)
+            || frame.pixels.as_raw().len() as u64
+                != u64::from(display.width) * u64::from(display.height) * 4
             || frame.source_format != PixelFormat::Rgba8UnormSrgb
         {
             return Err(CaptureError::StaleRegion);
@@ -111,13 +123,17 @@ pub fn stitch_desktop(
     for (display, frame) in displays.iter().zip(ordered) {
         let x = (i64::from(display.x) - layout.left) as u32;
         let y = (i64::from(display.y) - layout.top) as u32;
-        image::imageops::replace(
-            &mut pixels,
-            frame.pixels.as_ref(),
-            i64::from(x),
-            i64::from(y),
-        );
+        let stride = display.width as usize * 4;
+        for row in 0..display.height as usize {
+            let target = ((y as usize + row) * layout.width as usize + x as usize) * 4;
+            let source = row * stride;
+            work.copy(
+                &mut pixels.as_mut()[target..target + stride],
+                &frame.pixels.as_raw()[source..source + stride],
+            )?;
+        }
     }
+    work.check()?;
     Ok(CapturedImage {
         display_id: String::new(),
         window_id: None,
@@ -135,30 +151,43 @@ pub fn stitch_desktop(
 
 /// Capture all physical-pixel displays once, then verify topology before composing.
 pub fn capture_stitched_desktop(backend: &XcapBackend) -> Result<CapturedImage, CaptureError> {
+    capture_stitched_desktop_with_cancel(backend, &|| Ok(()))
+}
+
+pub fn capture_stitched_desktop_with_cancel(
+    backend: &XcapBackend,
+    check: &crate::NativeCaptureCheck<'_>,
+) -> Result<CapturedImage, CaptureError> {
+    check()?;
     // XCap's non-Windows coordinates have not been calibrated against returned pixels.
     if !cfg!(target_os = "windows") {
         return Err(CaptureError::Unsupported(
             "stitched desktop capture requires validated Windows physical-pixel display coordinates",
         ));
     }
-    let before = backend.list_displays()?;
-    if before
-        .iter()
-        .any(|display| (display.scale_factor - 1.0).abs() > f32::EPSILON)
-    {
+    backend.capture_physical_desktop_with_cancel(check)
+}
+
+pub(crate) fn capture_stitched_desktop_in_worker(
+    backend: &XcapBackend,
+    check: &crate::NativeCaptureCheck<'_>,
+) -> Result<CapturedImage, CaptureError> {
+    if !cfg!(target_os = "windows") || crate::native_capture_job::executor().is_some() {
         return Err(CaptureError::Unsupported(
-            "stitched native capture currently requires 100% display scaling; mixed-DPI coordinates need native acceptance",
+            "Physical desktop assembly requires the native Windows worker",
         ));
     }
+    let before = backend.list_displays_with_cancel(check)?;
     layout(&before)?;
-    let frames = backend.capture_batch(
+    let frames = backend.capture_batch_with_cancel(
         before
             .iter()
             .map(|d| CaptureRequest::Display(d.id.clone()))
             .collect(),
+        check,
     )?;
     validate_native_frames(&before, &frames)?;
-    let after = backend.list_displays()?;
+    let after = backend.list_displays_with_cancel(check)?;
     if before.len() != after.len()
         || before.iter().any(|a| {
             !after.iter().any(|b| {
@@ -174,7 +203,24 @@ pub fn capture_stitched_desktop(backend: &XcapBackend) -> Result<CapturedImage, 
     {
         return Err(CaptureError::StaleRegion);
     }
-    stitch_desktop(&before, &frames)
+    let failure = std::cell::RefCell::new(None);
+    let result = stitch_desktop_with_cancel(&before, &frames, &|| {
+        if failure.borrow().is_some() {
+            return true;
+        }
+        if let Err(error) = check() {
+            *failure.borrow_mut() = Some(error);
+            true
+        } else {
+            false
+        }
+    });
+    if let Some(error) = failure.into_inner() {
+        return Err(error);
+    }
+    let mut output = result?;
+    output.display_id = "desktop".into();
+    Ok(output)
 }
 
 fn validate_native_frames(

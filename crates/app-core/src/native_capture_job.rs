@@ -67,6 +67,9 @@ pub enum NativeCaptureCall {
         requests: Vec<CaptureRequest>,
         options: CaptureOptions,
     },
+    Desktop {
+        options: CaptureOptions,
+    },
     FocusedWindow {
         options: CaptureOptions,
     },
@@ -118,6 +121,7 @@ impl NativeCaptureCall {
         match self {
             Self::Batch { requests, .. } => Some(requests.len()),
             Self::FocusedWindow { .. }
+            | Self::Desktop { .. }
             | Self::FocusedDisplay { .. }
             | Self::Template { .. }
             | Self::Portal { .. }
@@ -154,6 +158,11 @@ impl NativeCaptureCall {
             }
         }
         match self {
+            Self::Desktop { .. } => {
+                if index != 0 || display != "desktop" || window.is_some() || geometry.is_some() {
+                    return Err(invalid());
+                }
+            }
             Self::MacScroll { request } => {
                 if index != 0
                     || window != Some(request.window.to_string().as_str())
@@ -339,7 +348,9 @@ impl NativeCaptureCall {
                     }
                 }
             }
-            Self::FocusedWindow { options } | Self::FocusedDisplay { options } => {
+            Self::FocusedWindow { options }
+            | Self::FocusedDisplay { options }
+            | Self::Desktop { options } => {
                 options.validate().map_err(|_| invalid())?;
                 if options.delay_ms != 0 {
                     return Err(invalid());
@@ -435,6 +446,9 @@ impl NativeCaptureCall {
                 ));
             }
         }
+        #[cfg(target_os = "windows")]
+        let topology = crate::capture_native::topology_guard()
+            .map_err(|error| CaptureError::Backend(error.to_string()))?;
         let backend =
             XcapBackend::new(std::path::PathBuf::new()).with_originating_process(originating_pid);
         let reply = match &self {
@@ -452,6 +466,12 @@ impl NativeCaptureCall {
                     .with_options(*options)?
                     .capture_batch(requests.clone())?,
             ),
+            Self::Desktop { options } => NativeCaptureReply::Frames(vec![
+                crate::desktop_composite::capture_stitched_desktop_in_worker(
+                    &backend.with_options(*options)?,
+                    &|| Ok(()),
+                )?,
+            ]),
             Self::FocusedWindow { options } => NativeCaptureReply::Frames(vec![
                 backend.with_options(*options)?.capture_focused_window()?,
             ]),
@@ -479,6 +499,10 @@ impl NativeCaptureCall {
             }
             Self::MacVideo { .. } => unreachable!("Mac video requires the streaming controller"),
         };
+        #[cfg(target_os = "windows")]
+        topology
+            .check()
+            .map_err(|error| CaptureError::Backend(error.to_string()))?;
         self.validate_reply(&reply)?;
         Ok(reply)
     }

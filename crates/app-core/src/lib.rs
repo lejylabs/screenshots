@@ -24,9 +24,13 @@ mod capture_macos_pixels;
 mod capture_macos_sck;
 #[cfg(target_os = "macos")]
 mod capture_macos_video;
+#[cfg(any(target_os = "windows", test))]
+mod display_pixels;
 #[cfg(target_os = "macos")]
 #[doc(hidden)]
-pub use capture_macos_video::run_macos_video_source_in_worker;
+pub use capture_macos_video::{
+    preflight_macos_video_source_in_worker, run_macos_video_source_in_worker,
+};
 #[cfg(target_os = "macos")]
 mod capture_macos_scroll;
 #[cfg(target_os = "macos")]
@@ -64,7 +68,10 @@ pub use raster_ops::{
     resize_nearest_rgba_with_cancel, rotate_rgba_with_cancel,
 };
 mod desktop_composite;
-pub use desktop_composite::{capture_stitched_desktop, stitch_desktop};
+pub use desktop_composite::{
+    capture_stitched_desktop, capture_stitched_desktop_with_cancel, stitch_desktop,
+    stitch_desktop_with_cancel,
+};
 mod resample;
 pub use resample::{ExportSize, downscale_export, downscale_export_with_cancel};
 mod file_identity;
@@ -209,7 +216,8 @@ pub use capture::{
     CaptureBackend, CaptureCapabilities, CaptureError, CaptureRequest, CapturedImage,
     DisplayGeometry, DisplayInfo, ImageExportFormat, MAX_CAPTURE_BYTES, PixelFormat,
     RememberedRegion, WindowInfo, XcapBackend, capture_output_dir, export_saved_png,
-    export_saved_png_as, png_without_metadata, save_png_bytes, validate_image_size,
+    export_saved_png_as, png_without_metadata, save_png_bytes, validate_display_pixel_coordinates,
+    validate_image_size,
 };
 
 pub fn version() -> &'static str {

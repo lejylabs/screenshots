@@ -329,10 +329,7 @@ impl PreparedRegionTemplate {
             CaptureTemplateGeometry::from_display(display) == self.template.geometry,
             "Bound monitor geometry changed; explicit rebinding is required"
         );
-        ensure!(
-            display.scale_factor == 1.0 && display.rotation == 0.0,
-            "Template capture currently requires unrotated 100% physical-pixel coordinates"
-        );
+        crate::validate_display_pixel_coordinates(display)?;
         Ok((
             display.clone(),
             RememberedRegion::from_display(display, self.template.area())?,
