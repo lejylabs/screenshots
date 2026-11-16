@@ -2,7 +2,8 @@
 
 Author: NewtTheWolf
 Date: 2026-11-15
-Status: implementation and focused verification in progress. No UI redesign.
+Status: implemented with local Linux/private verification. Native Windows/macOS
+durability and physical acceptance remain separate. No UI redesign.
 
 The existing [paged queries](history-queries.md), [reference audit](history-audit.md)
 and [metadata/export commands](history-management.md) remain available. This
@@ -11,11 +12,11 @@ cross-volume transfer and native move adapters. None runs at startup or while
 idle. Read-only maintenance never starts deletion or repair.
 
 ```
-screenshots history-manage move DATABASE ID NEW.png
-screenshots history-manage transfer DATABASE ID NEW.png
+screenshots history-manage move DATABASE ID NEW_IMAGE
+screenshots history-manage transfer DATABASE ID NEW_IMAGE
 screenshots history-manage trash DATABASE DIRECTORY ID...     # 1–100 IDs
 screenshots history-manage trash-list DATABASE [CURSOR]
-screenshots history-manage restore DATABASE TRASH_UUID [NEW.png]
+screenshots history-manage restore DATABASE TRASH_UUID [NEW_IMAGE]
 screenshots history-manage purge DATABASE TRASH_UUID...        # 1–100 IDs
 screenshots history-manage pending-move DATABASE
 screenshots history-manage recover-file DATABASE OPERATION finish|cancel
@@ -25,7 +26,7 @@ screenshots history-manage index-identities DATABASE [CURSOR]
 ```
 
 Physical operations require an existing regular database, absolute UTF-8 paths,
-PNG header/dimension admission and a bounded fingerprint. Images are never
+PNG/JPEG/WebP magic/dimension admission and a bounded fingerprint. Images are never
 decoded. Missing/modified/unavailable files, destination collisions, final
 symlinks/reparse points and ambiguous state fail explicitly. A fingerprint
 proves bytes observed at admission, not that a file never changed beforehand.
@@ -51,7 +52,7 @@ drive; the command does not discover why it is absent. Audit remains read-only.
 
 Choose an existing trash directory on the source filesystem. This is an explicit
 application trash location, not the OS Recycle Bin. Each file receives a fresh
-`.screenshots-trash-UUID.png` name. No global trash directory, marker scan or
+`.screenshots-trash-UUID` name with the admitted format extension. No global trash directory, marker scan or
 automatic file search is installed. Same-volume rename retains native source
 permissions/ACLs; choosing a shared folder does not create a private vault.
 Cross-volume relocation uses the separate explicit `transfer` command.
@@ -138,8 +139,11 @@ first. Results contain `entries`, `has_more`, `next_cursor`, exact UTF-8 paths,
 trash UUID, original capture ID/path, byte count and trash time. Querying opens
 no images and never migrates storage.
 
-Restore requires an unchanged trash file and absent destination; omit the path
-to use the original filename. It reserves a currently unused capture ID and
+Restore requires an unchanged trash file and absent destination. Omitting the
+path uses the original path when its extension matches the admitted kind;
+otherwise it corrects the extension, for example `replacement.wrong` containing
+WebP restores as `replacement.webp`. This preserves compressed bytes and does
+not convert the image. It reserves a currently unused capture ID and
 restores creation time, source category and dimensions, clearing the thumbnail
 reference. Its ID can differ because later captures may reuse the old ID.
 Rename, trash removal and capture insertion share the journal protocol.
@@ -148,7 +152,7 @@ Rename, trash removal and capture insertion share the journal protocol.
 
 Purge accepts explicit trash UUIDs, never arbitrary filesystem paths. Identity,
 size, dimensions and SHA256 must match. Before removal, the file is renamed
-without replacement to `.screenshots-purge-UUID.png` in the same directory,
+without replacement to `.screenshots-purge-UUID` with the admitted format extension in the same directory,
 verified and synchronized. Removal checks that quarantined file again. Only
 then are trash metadata and pending intent removed together. Changed files
 are preserved.
@@ -236,7 +240,11 @@ device and alternate-stream paths, calls no-replace
 identities. Native handle deletion targets the opened file. Windows does not
 claim a POSIX directory-fsync equivalent; power-loss acceptance stays separate.
 
-Each encoded PNG is at most 272 MiB with existing 256 MiB dimension admission.
+Encoded admission is at most 272 MiB for PNG or 32 MiB for JPEG/WebP, with
+existing 256 MiB decoded-dimension admission. Native fingerprints carry the
+actual kind; legacy journals default to PNG. Destination and owned staging/trash
+extensions match that kind. Byte-preserving file operations never decode or
+convert images. See the [format contract](capture-library-formats.md).
 Hash/copy uses a 64 KiB buffer, no decoded image and a cooperative 30-second
 budget per pass. Repeated passes, SQLite busy waits and native calls can exceed
 that wall time; native calls cannot be interrupted mid-call. Retention checks

@@ -1,6 +1,45 @@
 # Non-UI delivery plan
 
-## Current continuation (2026-11-16)
+## Current combined format/Wayland checkpoint (2026-11-17)
+
+The integrated execution source passes the optimized workspace: **1,044 regular
+tests, zero failures, 71 explicit opt-ins excluded, 60 outer suites**. Child
+process harness summaries are excluded from that total. Fifty-four independent
+private CLI requests and all 19 owned native Wayland cases pass on executable
+SHA256 `a3c64d0d6e7fcb3ccb21ff1414881c9a8c0048ec6317a9bc25ce50c4d389b49b`.
+The vendor startup parent and its 16 private child scenarios pass separately.
+Formatting, all-target optimized Clippy, Windows GNU app/test metadata and
+default `cargo deny check advisories` pass without ignores.
+
+The code retains private policy contexts, PNG compatibility, exact Preserve
+bytes, explicit lossy conversion, truthful sanitized PNG/MIME, durable native
+lifecycle ownership and retained-source upload checks. No new UI controls or
+final design are introduced. Schema findings and documentation contradictions
+are corrected. Fresh consecutive source/document reviews 14/15 are clean on
+checkpoint `78a88feceee86db4d5886edf3915544821321b1e15531cdccdec3a0ccc97cf25`.
+Completed local checks do not close the complete non-UI backlog, exact-head
+native SDK/packaging, account, permission, physical input/capture or every PLAN
+performance gate. The workstation stays powered on.
+
+Native results remain source-specific. Older source `32398b6` in auxiliary
+snapshot `ab7b99c` passed Windows and Intel macOS; ARM SDK/portable checks passed
+but the private five-second `video_parent_loss` fixture failed and the runner
+later cleaned its orphan process. The FamilyCompletion correction is still
+HELD/unintegrated and not native-proven. No current Mac/ARM matrix is accepted.
+Exact archived results are `target/verification/native-ab7b99c-results.json`.
+
+The 4K fixture and named-Wayland startup/mapping observations are recorded in
+[format policy](capture-library-formats.md) and [Wayland startup](linux-wayland-startup.md).
+They are short synthetic measurements, not hardware acceptance. All 160 source
+Markdown bodies were fully read; later document corrections use explicit
+reviewed deltas/new hashes. Raw local proof is under
+`target/verification/formats-wayland-integration/`, with native records under
+`target/verification/wayland-startup-runtime/`. Reviewed execution code is
+committed as `fd98138633de4a15b028b62b54c0a2a9af301ec9`; `247f419` remains the
+earlier pushed baseline. Later verification-document facts are recorded as an
+explicit delta from the reviewed snapshot, with a new Markdown manifest.
+
+## Prior integrated checkpoint (2026-11-16)
 
 The workstation stays powered on. The unattended non-UI task continues; final
 product design/controls remain excluded. Old reproducible artifacts were reduced
@@ -39,8 +78,10 @@ three native layout and 21 installer fixtures passed. A real intermediate Linux
 package including the helper passed extracted self-tests/profile inspection.
 These observations do not claim the later frozen tree, final release, native
 Windows/macOS permissions/hardware or the full performance contract accepted.
-Actual Wayland in-memory capture, durable scheduling, broader native composites,
-HDR and the remaining non-UI backlog continue after the current reviewed slices.
+Wayland in-memory still capture and durable scheduling are implemented.
+Broader platform capture/recording, HDR, native lifecycle/input/output and the
+remaining non-UI backlog continue; current source checks do not imply their
+native or hardware acceptance.
 
 
 Author: NewtTheWolf

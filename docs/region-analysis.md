@@ -45,9 +45,12 @@ The inherited metadata preflight also requires the complete display's dimensions
 to fit the core 256 MiB RGBA limit, even though only the region is captured.
 Returned backing length must equal width × height × four, not just fit the cap.
 
-Linux requires an X11 session with nonempty UTF-8 DISPLAY, no nonempty
-WAYLAND_DISPLAY and XDG_SESSION_TYPE other than `wayland`. The pinned Wayland
-fallback writes/decodes a full screenshot and does not meet this contract.
+Linux requires an admitted X11 context with nonempty UTF-8 DISPLAY and no
+Wayland session/descriptor authority. The old disk-backed fallback was removed.
+The separate [in-memory portal still source](wayland-still-capture.md) returns
+one user-picked still; it does not supply this command's named physical display
+binding and exact-region geometry. Native Wayland region analysis therefore
+remains unsupported rather than falling back to another source.
 Check X11 absolute origins fit signed 16-bit and dimensions fit unsigned 16-bit
 before XCap narrows them. All platforms check native signed-origin addition.
 XCap and OS internal allocations are additional to the application pixel limit;

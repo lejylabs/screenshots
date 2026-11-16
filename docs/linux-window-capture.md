@@ -1,10 +1,16 @@
 # Linux X11 and XWayland window capture
 
-Linux window listing and capture use XCap 0.9.8's X11 path when `DISPLAY` is
+Linux window listing and capture use the pinned XCap 0.9.10 X11 path when `DISPLAY` is
 present, valid Unicode and not empty or whitespace-only. This includes X11
 clients running through XWayland inside a Wayland session. Native Wayland
 windows are not listed or captured by this path. A Wayland session with no
 `DISPLAY` reports window listing and capture as unsupported.
+
+X11/XWayland **window** capability remains distinct from display/region capture
+and Automatic clipboard admission. Retained Wayland authority restricts those
+other routes even after GPUI consumes `WAYLAND_SOCKET`; an available XWayland
+window does not authorize capturing the whole Wayland desktop. Native Wayland
+windows remain unsupported. See [startup authority](linux-wayland-startup.md).
 
 The capability flag checks the environment without opening a connection.
 An inaccessible X server, missing authentication or unsupported window-manager
@@ -17,7 +23,8 @@ XCap's Linux window implementation reads the X11 window manager's
 `_NET_CLIENT_LIST_STACKING` property, limited to its first 1,024 window IDs on
 the X screen currently containing the pointer. Its window capture uses `GetImage`
 against the selected X11 drawable. It does not select a whole display or invoke
-a Wayland screenshot portal for window capture. See the pinned
+a Wayland screenshot portal for window capture. The linked upstream 0.9.8 implementation below records the original review
+rationale; current workspace builds use the pinned local 0.9.10 patch. See
 [window enumeration implementation](https://docs.rs/crate/xcap/0.9.8/source/src/linux/impl_window.rs)
 and [window capture dispatch](https://docs.rs/crate/xcap/0.9.8/source/src/linux/capture.rs).
 Window managers must expose the expected EWMH properties. Unavailable or

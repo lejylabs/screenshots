@@ -204,7 +204,7 @@ into the user's desktop. Private native helpers must establish their private
 context before any native clipboard or print call. Bounds cover transfer and
 metadata before decoder admission; a decoder cap alone is insufficient evidence.
 
-## Current compiling slice checkpoint
+## Integrated clipboard/Paste checkpoint (updated 2026-11-16)
 
 Implemented so far: isolated native ClipboardImage/ClipboardInspect calls,
 bounded native X11/Windows/macOS readers and parsers, explicit clipboard CLI,
@@ -214,12 +214,13 @@ raw/URI drop transport. The remaining X11/Windows/macOS raw/URL payload adapters
 print and file drag-out integration are still implementation work; the overall
 family is not declared complete at this checkpoint.
 
-The next native-integration ledger also includes descriptor-only Wayland GPUI
-startup: the connection may consume `WAYLAND_SOCKET` before graphical-environment
-backend detection, which currently considers only `DISPLAY`/`WAYLAND_DISPLAY`
-and can then select X11. This is separate from the already refused Automatic
-clipboard CLI context. It must be corrected before the entire integration family
-is complete; it is not claimed fixed by the clipboard contract/test correction.
+The earlier ledger's descriptor-only Wayland startup defect is corrected in the
+separate [startup integration](linux-wayland-startup.md). It snapshots authority
+before descriptor consumption and retains it through GUI/native operations.
+All 19 owned native startup/headless cases pass on the integrated optimized
+executable. Automatic clipboard CLI refusal remains a separate early boundary;
+actual X11-focused Paste follows the connected client. Physical clipboard/input,
+remaining native payload adapters, printing and app drag-out remain open.
 
 Native acquisition is 96 MiB growth for encoded clipboard formats; Windows DIB
 size is checked first and may raise the copy phase to 256 MiB +64 KiB +16 MiB
@@ -351,7 +352,9 @@ The seventh and eighth fresh source reviews both completed with no Blocker,
 Major or Nit findings; all 20 frozen source hashes matched in each. This gives
 source-review convergence for the compiling clipboard/Paste/Wayland-drop slice.
 It does not close native platform/resource acceptance or implement the remaining
-native payload adapters, descriptor-only GUI startup, printing and drag-out.
+native payload adapters, printing and drag-out. Descriptor-only GUI startup
+was subsequently integrated and independently verified in the linked contract;
+those original clipboard reviews alone did not establish that result.
 The private native evidence and the explicit opaque-X11 queue boundary above
 retain their stated scope. These reviews ran read-only without user clipboard,
 printer, device, account or native application calls.

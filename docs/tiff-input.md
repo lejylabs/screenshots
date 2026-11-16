@@ -17,7 +17,9 @@ information and pixel sampling, image collections, recipes, GIF assembly,
 scroll-image assembly, file OCR/QR, image uploads and the existing Open image
 worker. Their own smaller pixel budgets and output rules remain in force. Add
 no picker filter, UI control, output default, history import format or resident
-work. PNG-only history and stored-PNG paths stay PNG-only. `image metadata`
+work. TIFF is not admitted as a Library original; current Library originals
+are PNG/JPEG/WebP and narrow stored-PNG compatibility APIs stay PNG-specific.
+`image metadata`
 continues to accept its existing PNG/JPEG/WebP subset; it is not the shared pixel
 loader.
 
@@ -210,7 +212,7 @@ Focused optimized tests must cover:
   ranges; unsupported compression/color/alpha/orientation/profile variants.
 - Conversion, info and pixel commands through the real executable; TIFF QR
   input with an inert payload; no user config/data/cache state, no overwrite,
-  no final output on invalid TIFF, and unchanged PNG-only history behavior.
+  no final output on invalid TIFF, and continued refusal of TIFF by history import and narrow PNG-only APIs.
 - Independent FFmpeg decode of synthetic source TIFFs and resulting PNGs to
   compare exact RGBA. Generate fixtures independently of the preflight/parser,
   and include the existing app's TIFF export as a separate interoperability

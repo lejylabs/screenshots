@@ -7,6 +7,43 @@ exclusion is not independently established. All reviews below were actual
 read-only subagent runs, not simulated roles. Reviewers did not compile or run
 tests; test evidence is recorded separately in non-ui-delivery.md.
 
+## Current format/Wayland continuation (2026-11-17)
+
+The original combined source reached clean rounds 7/8. Actual optimized tests
+then exposed fieldless-policy unknown-field admission; strict wire variants
+fixed it. Fresh round 9 found positional JSON arrays admitted at public policy
+and catalog boundaries. Shared map-only visitors now delegate to strict DTOs,
+preserving duplicate/unknown rejection, with actual core and CLI regressions.
+Rounds 10/11 found documentation Blockers, followed by five grouped current-doc
+Blockers in round 12; none reported a new execution defect. Current generic
+loader/resources, format/Library limits, startup authority and historical PNG
+consumer statements are reconciled. Rounds 5/6/9/10/11/12 are never relabeled
+clean. Round 13 then found a report Major: configured conversion was labeled
+`metadata_policy: "original"`. The CLI now reports Configured plus the resolved
+Preserve/Convert policy, while explicit Original/Strip response fields stay
+stable. Actual CLI regressions cover both configured modes and exact Preserve
+bytes. Its omitted-restore filename documentation is corrected and checked
+through the real CLI. Round 13 is not relabeled clean. Fresh independent rounds
+14/15 both completed clean, with no findings, on the same 83-path/3,100-guard
+checkpoint `78a88feceee86db4d5886edf3915544821321b1e15531cdccdec3a0ccc97cf25`.
+The source commit is `fd98138633de4a15b028b62b54c0a2a9af301ec9`. The subsequent
+document edits record only actual review/commit facts; their exact delta and new
+hashes are retained without relabeling the original snapshot.
+
+Execution evidence is separate: 1,044 regular optimized tests pass, zero fail,
+71 opt-ins are excluded across 60 outer suites; 54 independent private CLI
+requests and all 19 actual private Wayland checks pass. The vendor startup
+parent/16 child cases pass separately. Formatting, optimized all-target Clippy,
+Windows GNU metadata and default advisories pass. Original all-file guards
+correctly record intervening documentation deltas; execution-path hashes remain
+unchanged, with an explicit new documentation manifest. No physical/account/
+reference-hardware or full-backlog acceptance is inferred.
+
+The older native snapshot `ab7b99c`/source `32398b6` passed Windows/Intel macOS,
+while ARM private parent-loss execution failed after SDK/portable success. Its
+FamilyCompletion fix is HELD and not native-proven. These source-specific
+outcomes do not establish the current Mac/ARM matrix.
+
 ## Completed reviewers and resolutions
 
 | Reviewer | Result | Resolution |
@@ -38,10 +75,12 @@ failures and fixes. Source reviews do not establish native execution.
 
 Dependency inspection discovered RUSTSEC-2026-0459 in bundled SQLite; the
 rusqlite/libsqlite3-sys/migration family is updated together to the patched
-SQLite 3.54.1 family. The current default cargo-deny advisory policy still fails
-on nine unmaintained transitive packages: instant, paste, proc-macro-error,
+SQLite 3.54.1 family. At that initial historical checkpoint, the default cargo-deny advisory policy
+failed on nine unmaintained transitive packages: instant, paste, proc-macro-error,
 rustls-pemfile, rustybuzz, ttf-parser, zbus_names, zvariant and zvariant_derive.
-No ignore list or lowered advisory policy was added. The separate GitHub glib
+No ignore list or lowered advisory policy was added. The current active graph
+now passes the default advisory check; dormant optional names in the lockfile
+do not mean active production exposure. The separate GitHub glib
 alert requires upstream-family review; it is not represented as closed here.
 
 Windows/macOS runtime, signed identity/permission flows, real credential stores,
@@ -564,3 +603,7 @@ The Windows ABI path and actual trusted signatures/notarization remain native
 release gates. No keys, certificates, trust settings or keychains were created.
 Public example profiles are illustrative only. See `native-signing.md` and
 `target/native-signing-tests.log` for exact scope.
+
+The original signing review above is historical. Later focused source rounds
+5/6 are recorded in [native signing](native-signing.md); their clean scope does
+not establish real certificate/account or native release acceptance.
