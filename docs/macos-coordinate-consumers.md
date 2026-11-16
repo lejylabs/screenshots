@@ -52,6 +52,21 @@ capture deadline and topology witness. Template binding, region analysis and
 global point sampling use this explicit admission; ordinary listing never
 initializes ScreenCaptureKit or requests permission.
 
+The Mac backend enumerates the complete active inventory with a native total-count
+probe, a fixed 32-ID list and a confirming total-count probe. Zero, more than 32,
+truncated, duplicate or changing inventories fail before source capture. The typed
+capture enumeration independently compares every backend ID against complete
+CoreGraphics UUID/geometry proofs before and after admission, inside the same
+operation topology witness. A stable 17- or 32-display inventory is complete;
+the former XCap 16-entry subset cannot become a successful partial Desktop.
+
+Ambiguous legacy template geometry returns the static typed
+`TemplateRebindRequired` failure through helper execution and private protocol code
+17. The message explicitly requires rebinding and carries no display UUID, path or
+native diagnostic payload. Existing stale-session code 1, permissions 13–15 and
+colour-policy code 16 keep their meanings. Portable private-wire fixtures cover
+legacy Retina rejection and independently proven, UUID-bound exact 1:1 admission.
+
 ## Global tools
 
 The existing `screen-color --global` option continues to mean physical desktop
@@ -112,6 +127,16 @@ short rows. Cancellation discards the incomplete in-memory output. Existing help
 admission, raw frame count/aggregate bytes, authenticated transport, parent loss
 and process-family teardown remain required. Metadata is validated before raw
 pixel allocation and cannot weaken the 256 MiB protocol admission.
+
+Derived desktop layout metadata belongs to the original composed raster. Crops,
+annotations, document rendering, orientation changes and recipe-generated rasters
+clear it together with snapshot geometry; they do not carry the old grid onto a
+different image. Immutable source snapshots and the original-orientation fast
+path retain the same pixel/layout references. This adds no image copy. Portable
+regressions use a genuine 400×160 mixed-density composition, then crop to 1×1 and
+exercise same-size edits, resize, rotation, flip, canvas changes and reset. Private
+protocol fixtures carry required platform geometry/layout, while explicit missing
+metadata cases remain failures on macOS.
 
 Portable fixtures vary native mode dimensions, logical point bounds, filter
 extent/scale and actual pixel arrays independently. They cover Retina local/global

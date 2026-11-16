@@ -35,6 +35,78 @@ fn check(cancelled: &impl Fn() -> bool, start: Instant) -> Result<()> {
     Ok(())
 }
 
+/// The legacy extent adapter pins readable bytes even if the held object grows.
+/// This wrapper adds operation checks and bounded reads before the codec sees it.
+struct SavedPngReader<'a, C: Fn() -> bool> {
+    inner: crate::clipboard::EditorFile<&'a File>,
+    length: u64,
+    cancelled: &'a C,
+    start: Instant,
+}
+
+impl<'a, C: Fn() -> bool> SavedPngReader<'a, C> {
+    fn new(file: &'a File, length: u64, cancelled: &'a C, start: Instant) -> std::io::Result<Self> {
+        if length > crate::capture_format::MAX_SAVED_IMAGE_BYTES {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "Saved PNG admitted extent exceeds 272 MiB",
+            ));
+        }
+        check(cancelled, start).map_err(|error| std::io::Error::other(error.to_string()))?;
+        let result = Self {
+            inner: crate::clipboard::EditorFile::with_extent(file, length)?,
+            length,
+            cancelled,
+            start,
+        };
+        result.check()?;
+        Ok(result)
+    }
+    fn check(&self) -> std::io::Result<()> {
+        if (self.cancelled)() {
+            return Err(std::io::Error::other(crate::CaptureError::Canceled));
+        }
+        if self.start.elapsed() >= Duration::from_secs(60) {
+            return Err(std::io::Error::other(
+                "Saved image operation exceeded 60 seconds",
+            ));
+        }
+        Ok(())
+    }
+}
+
+impl<C: Fn() -> bool> Read for SavedPngReader<'_, C> {
+    fn read(&mut self, bytes: &mut [u8]) -> std::io::Result<usize> {
+        self.check()?;
+        let maximum = bytes.len().min(64 * 1024);
+        let count = self.inner.read(&mut bytes[..maximum])?;
+        self.check()?;
+        Ok(count)
+    }
+}
+
+impl<C: Fn() -> bool> Seek for SavedPngReader<'_, C> {
+    fn seek(&mut self, from: std::io::SeekFrom) -> std::io::Result<u64> {
+        self.check()?;
+        let position = match from {
+            std::io::SeekFrom::Start(value) => i128::from(value),
+            std::io::SeekFrom::End(offset) => i128::from(self.length) + i128::from(offset),
+            std::io::SeekFrom::Current(offset) => {
+                i128::from(self.inner.stream_position()?) + i128::from(offset)
+            }
+        };
+        if !(0..=i128::from(self.length)).contains(&position) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "Saved PNG seek exceeds its admitted extent",
+            ));
+        }
+        let position = self.inner.seek(std::io::SeekFrom::Start(position as u64))?;
+        self.check()?;
+        Ok(position)
+    }
+}
+
 fn oriented(width: u32, height: u32, orientation: Orientation) -> (u32, u32) {
     if matches!(
         orientation,
@@ -299,7 +371,10 @@ pub fn load_saved_image(path: &Path, cancelled: impl Fn() -> bool) -> Result<ima
     let info = inspect_saved_image_file(&mut file, &cancelled)?;
     let pixels = if info.format == ImageExportFormat::Png {
         crate::clipboard::decode_saved_png(
-            BufReader::with_capacity(64 * 1024, &mut file),
+            BufReader::with_capacity(
+                64 * 1024,
+                SavedPngReader::new(&file, info.encoded_bytes, &cancelled, start)?,
+            ),
             crate::MAX_CAPTURE_BYTES,
         )?
     } else {
@@ -331,9 +406,19 @@ pub fn saved_image_png_without_metadata(
     cancelled: impl Fn() -> bool,
 ) -> Result<Vec<u8>> {
     let cancelled = crate::image_cancel::latch(cancelled);
-    let pixels = load_saved_image(path, &cancelled)?;
+    let start = Instant::now();
+    let stop = || cancelled() || start.elapsed() >= Duration::from_secs(60);
+    let (file, admitted) = open(path)?;
+    inspect_saved_image_file(&file, &stop)?;
+    let pixels = crate::load_editor_image_with_identity_and_limit_with_cancel(
+        path,
+        &admitted,
+        crate::MAX_CAPTURE_BYTES,
+        &stop,
+    )?;
+    admitted.verify_file(&file)?;
     let mut output = BoundedPngBytes(Vec::new());
-    CaptureFormatPolicy::Png.encode_to(&pixels, &mut output, &cancelled)?;
+    CaptureFormatPolicy::Png.encode_to(&pixels, &mut output, &stop)?;
     Ok(output.0)
 }
 
@@ -407,7 +492,12 @@ pub fn export_saved_image_as(
             },
         )?;
     } else {
-        let pixels = load_saved_image(source, &stop)?;
+        let pixels = crate::load_editor_image_with_identity_and_limit_with_cancel(
+            source,
+            &admitted,
+            crate::MAX_CAPTURE_BYTES,
+            &stop,
+        )?;
         admitted.verify_file(&file)?;
         let dimensions = size.dimensions(pixels.width(), pixels.height())?;
         policy.validate_dimensions(dimensions.0, dimensions.1)?;
@@ -572,12 +662,12 @@ fn export_one(
     }
     if let Some(encoding) = encoding {
         admitted.verify_file(&file)?;
-        let pixels = if strip_metadata && info.format == ImageExportFormat::Png {
-            // Keep the established PNG metadata-export orientation policy.
-            crate::clipboard::load_export_png(source)?
-        } else {
-            load_saved_image(source, cancelled)?
-        };
+        let pixels = crate::load_editor_image_with_identity_and_limit_with_cancel(
+            source,
+            &admitted,
+            crate::MAX_CAPTURE_BYTES,
+            cancelled,
+        )?;
         admitted.verify_file(&file)?;
         encoding.validate_pixels(&pixels, cancelled)?;
         crate::capture::write_output_checked(

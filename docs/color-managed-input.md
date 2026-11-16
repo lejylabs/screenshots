@@ -1,8 +1,9 @@
 # Color-managed image input
 
 Status (2026-11-16): optimized compilation, independent numerical fixtures and
-private executable checks pass; fresh source review of the corrected checkpoint
-is still required before committing this slice.
+private executable checks pass. Fresh source reviews five and six of the
+corrected checkpoint are clean, including the exact vendor/oracle inventories.
+Native and reference-hardware acceptance remain separate below.
 This is the explicit image import backend. Native capture HDR/wide-gamut capability,
 Windows WGC/Wayland pipelines, display presentation and gamma-correct resampling
 remain separate work. An unknown XCap/native pixel color space is not established

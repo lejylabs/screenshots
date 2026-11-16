@@ -4,7 +4,8 @@ Date: 2026-11-16
 Scope: the user's complete major-feature list, with final GPUI redesign and new
 UI controls excluded. The workstation stays on. The full backlog is **open**.
 
-Snapshot: branch `feat/non-ui-delivery`, committed and pushed HEAD `cdae843`.
+Verification base: branch `feat/non-ui-delivery`, pushed implementation HEAD
+`86dda66`, including the reviewed persistence, logging and managed-color follow-ups.
 Committed follow-ups include native defaults/templates and process isolation,
 Library lifecycle/reservations, bounded image cancellation, modern SXCU execution,
 shared encoded-input decoding and complete private-runtime/native packaging.
@@ -15,19 +16,19 @@ document backend and physical-X11 color/ruler follow-ups are also committed;
 remaining native input/output and physical-coordinate consumers are still open.
 Delivered backend paths do not close excluded UI or real native acceptance gates.
 
-The current integrated working tree passed **953 optimized tests**, with 69 explicit
+The current integrated implementation passed **953 optimized tests**, with 69 explicit
 opt-ins excluded across 59 outer suites and zero failures. This includes the
 bounded logger, journaled capture saves and managed-color input with the exact
-same-version moxcms correction. Those three slices are not yet committed;
-final managed-color source reviews remain separate. Formatting, all-target
+same-version moxcms correction. All three source review gates converged:
+logger rounds 6/7, journal rounds 5/6 and managed-color rounds 5/6. Formatting, all-target
 optimized Clippy, default advisories and Windows GNU metadata checks pass.
 Earlier 868-test/786-test/Clippy/Windows GNU/advisory totals remain
 historical snapshots. Source reviews and private native fixtures are recorded
 separately in each contract. None establishes physical hardware, reference
 performance or a production release.
 
-Repository write access is restored. Seven implementation commits were pushed
-through `cdae843`; exact-source native CI remains a separate verification gate.
+Repository write access is restored. Completed implementation commits are pushed
+through `86dda66`; exact-source native CI remains a separate verification gate.
 No password request or permission change was needed.
 
 CI `8fdbc78` found unformatted snapshot code and a nanosecond-clock temp-name
@@ -139,11 +140,13 @@ completion is listed separately.
   policy, uncertain-run crash recovery and typed Task source sequences are
   committed. The service is explicit and event driven; real native timer and
   hardware-wake acceptance remains in the separate matrix.
-- [ ] **Editor data model and image operations:** transform existing annotations,
-  arbitrary effects/drawing order with opaque-redaction safety, richer fonts,
-  color/text styles and tool/export presets; bubbles, inserted image/logo/emoji
-  objects, magnifier, clone/eraser and rotation. Backend work is in progress;
-  flattened CLI canvas/upscale/watermark alone does not implement these objects.
+- [x] **Editor data model and image operations backend:** affine existing marks,
+  arbitrary ordered effects/drawing with opaque-redaction protection, explicit
+  fonts/RGBA/text styles and presets, bubbles, image/logo/emoji assets, magnifier,
+  clone/eraser and rotations are committed in the document backend and CLI.
+  Existing GPUI controls still use their established renderer; new controls and
+  final design remain excluded. Native presentation and performance acceptance
+  remain in the separate matrix. [Contract](editor-document.md).
 - [ ] **Import/output:** explicit URL CLI/Task input, bounded native clipboard
   and existing cross-platform Paste are committed. Remaining native raw image/URL
   drops, descriptor-only Wayland GUI startup, print and drag-out need integration.
@@ -168,9 +171,9 @@ completion is listed separately.
   controls are UI consumer work, with no speculative idle cache added.
 - [ ] **Major native capabilities/utilities:** finish macOS/Wayland scrolling and
   recording adapters beyond implemented X11/Windows live scrolling and optional
-  finite video/GIF/native audio/combined A/V; native screen color picker,
-  ruler/measurement are in final local verification; bounded clipboard inspection
-  is committed. Existing file pixel/hash and
+  finite video/GIF/native audio/combined A/V. Native screen-color sampling,
+  ruler/measurement and bounded clipboard inspection are committed tested subsets.
+  Existing file pixel/hash and
   combine/compare/split tools remain completed subsets. Pin windows and new
   recording/OCR/QR interaction controls are excluded UI work.
 - [ ] **Desktop/release:** atomic startup across optional Windows workers is
@@ -190,7 +193,7 @@ completion is listed separately.
   dormant upstream optional-backend lock entries and the default-branch GLib alert
   remain separate facts. [Current scope](dependency-maintenance.md).
 
-Sources for these families are the [current gap reconciliation](gap-analysis.md#current-reconciliation-feature-branch-2026-11-15),
+Sources for these families are the [current gap reconciliation](gap-analysis.md#historical-reconciliation-feature-branch-2026-11-15),
 its detailed [capture](gap-analysis.md#1-everyday-capture-and-task-configuration),
 [editor](gap-analysis.md#2-existing-images-editing-and-output),
 [sharing](gap-analysis.md#3-sharing-and-uploader-compatibility),

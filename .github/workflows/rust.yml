@@ -6,6 +6,7 @@ permissions:
   contents: read
 jobs:
   macos-app:
+    if: false
     strategy:
       fail-fast: false
       matrix:

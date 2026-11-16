@@ -197,8 +197,9 @@ fn png_v1_recovery_and_generic_byte_copy_remain_compatible() -> Result<()> {
         let source = f
             .root
             .join(format!("source-{index}.{}", policy.extension()));
-        f.image
-            .save_image_as(&source, 91, crate::ExportSize::Original)?;
+        let mut output = std::fs::File::create(&source)?;
+        policy.encode_to(&f.image.pixels, &mut output, &|| false)?;
+        drop(output);
         let original = std::fs::read(&source)?;
         let destination = f.root.join(format!("copy-{index}.{}", policy.extension()));
         let outcome = copy_saved_image_with_history(&f.database, &source, &destination, || false)?;
@@ -245,5 +246,49 @@ fn transparency_mismatched_suffix_and_cancel_do_not_reserve_or_publish() -> Resu
     assert!(!f.database.exists());
     assert_eq!(f.image.pixels.as_raw(), &original);
     assert_eq!(std::fs::read_dir(&f.root)?.count(), 0);
+    Ok(())
+}
+
+#[test]
+#[ignore = "short optimized synthetic 4K journal-format observation; no native capture"]
+fn capture_format_journal_cost() -> Result<()> {
+    let pixels = Arc::new(image::RgbaImage::from_fn(3840, 2160, |x, y| {
+        image::Rgba([
+            (x % 251) as u8,
+            (y % 251) as u8,
+            ((x / 31 + y / 17) % 251) as u8,
+            255,
+        ])
+    }));
+    for (label, policy) in [
+        ("legacy PNG", CaptureFormatPolicy::Png),
+        ("policy PNG", CaptureFormatPolicy::Png),
+        ("policy JPEG quality 91", policies()[0]),
+        ("policy lossless WebP", policies()[1]),
+        ("policy lossy WebP quality 67", policies()[2]),
+    ] {
+        let mut samples = Vec::new();
+        let mut encoded = 0;
+        for _ in 0..3 {
+            let mut f = Fixture::new();
+            f.image.width = 3840;
+            f.image.height = 2160;
+            f.image.pixels = pixels.clone();
+            let start = Instant::now();
+            let report = if label == "legacy PNG" {
+                save_capture_with_history(&f.database, &f.image, &f.target(policy), || false)?
+            } else {
+                f.save(policy)?
+            };
+            samples.push(start.elapsed());
+            encoded = std::fs::metadata(report.path)?.len();
+        }
+        samples.sort_unstable();
+        eprintln!(
+            "4K {label}: median {:?}; {encoded} encoded bytes; {} shared source capacity; three synthetic encode+durable journal publication samples; codec scratch/process RSS, presentation and native input unmeasured",
+            samples[1],
+            pixels.as_raw().capacity()
+        );
+    }
     Ok(())
 }

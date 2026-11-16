@@ -12,6 +12,10 @@ fn path(value: &OsString) -> Result<PathBuf> {
     );
     let path = std::path::absolute(PathBuf::from(value))?;
     ensure!(
+        path.to_str().is_some(),
+        "Format settings paths must be UTF-8 for the JSON report"
+    );
+    ensure!(
         !path.to_string_lossy().chars().any(char::is_control),
         "Format settings path contains controls"
     );

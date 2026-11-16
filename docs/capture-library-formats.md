@@ -58,19 +58,39 @@ and cancellation reported per source.
 
 Metadata stripping combined with Preserve creates a correctly named lossless
 PNG. Removing ICC or EXIF directly can change visible color or orientation;
-re-encoding JPEG would add a hidden lossy generation. JPEG/WebP sanitization
+re-encoding JPEG would add a hidden lossy generation. PNG/JPEG/WebP sanitization
 therefore uses the existing managed decoder, orientation and color conversion,
 then emits PNG with PNG MIME and an explicit output report. A configured
 conversion instead emits its explicitly chosen format from decoded pixels,
 without metadata. Source files remain unchanged. Filename collisions such as
 `a.jpg` and `a.png` are reported individually without replacement.
+Converted outputs are still images using the decoder's default still frame;
+lossless describes those encoded pixels. Preserve retains animation bytes.
 
 Saved PNG decoding retains its historical raw EXIF orientation and default APNG
 still image. PNG-to-PNG Preserve retains encoded bytes. The existing PNG
 sanitizer's EXIF-orientation policy and 32 MiB input limit remain available through
 its compatibility wrapper. Ordinary saved PNG load/preview and byte preservation
-retain 272 MiB admission. New JPEG/WebP decode uses the existing bounded managed
-input pipeline and applies orientation consistently with admitted dimensions.
+retain 272 MiB admission. Generic explicit conversion/sanitization uses the managed
+PNG/JPEG/WebP decoder with its 32 MiB input bound and applies ICC conversion and
+orientation before dropping metadata. Existing PNG-specific Save as and metadata
+wrappers keep their prior pixel/byte contracts. New JPEG/WebP saved decode uses
+the managed input pipeline and applies orientation consistently with admitted
+dimensions.
+
+```sh
+screenshots formats show
+screenshots formats set-capture '{"format":"jpeg","quality":90}'
+screenshots formats set-library '{"mode":"convert","encoding":{"format":"webp_lossless"}}'
+screenshots formats export NEW.json
+screenshots formats import BACKUP.json
+screenshots history-manage export DATABASE DIRECTORY configured ID...
+```
+
+`--config FILE` selects a private catalog for preference inspection/update or
+backup commands. `formats validate FILE` checks an explicit backup without
+writing. Headless history export still accepts explicit `original` and
+`strip-metadata`; those choices do not consult the stored conversion policy.
 
 ## Shared integration contract
 
@@ -105,6 +125,12 @@ their admitted contents, without relabeling compressed data.
 The separate policy belongs in the explicit settings/configuration backup and
 restore command family. Its own export refuses replacement, and import rejects a
 missing or malformed backup. No new UI controls are required by this slice.
+The existing settings export includes a `capture_formats` section. Both sections
+are validated from one bounded source snapshot before any apply. Legacy backups
+without that section preserve the current catalog. Applying the two files is
+explicit: a format-write error after the main-settings save reports the observed
+catalog state and successful main-settings apply, including an ambiguous
+durability warning when a rename succeeded before a directory barrier failed.
 
 ## Resources and verification
 
@@ -113,7 +139,10 @@ buffers. JPEG inspection adds at most one 65533-byte metadata buffer; WebP
 inspection temporarily snapshots at most 32 MiB. A decode or conversion retains
 one admitted source and one output representation under existing active-image
 budgets. Sequential inspection and decode release their encoded snapshots rather
-than retaining a second input. The existing codec scratch allocations still count
+than retaining a second input. Nested encoder/journal buffering can hold two
+64 KiB writer buffers. Explicit sanitized upload holds one PNG representation,
+whose Vec grows in bounded chunks with actual capacity capped at 272 MiB.
+The existing codec scratch allocations still count
 toward active memory and are not claimed as measured process/RSS bounds. No
 dependencies, threads, runtimes, services, timers, caches or worker queues are
 added. Operation deadlines and cancellation are cooperative across codec calls;
@@ -122,9 +151,13 @@ native/codec blocking internals retain their existing lifecycle limitations.
 Owned tests cover strict policy/quality/schema, absent-file defaults, persistence
 and no-overwrite backups; real format magic and independent decoding of encoded
 pixels/alpha; misleading suffixes; EXIF and APNG compatibility; default exact byte
-copies; explicit conversion; truthful sanitized PNG output; no-overwrite,
+copies; explicit conversion; truthful sanitized PNG output; genuine Display P3
+ICC plus EXIF conversion against independently calculated LittleCMS oracles;
+no-overwrite,
 partial completion, cancellation, encoded bounds, changed sources and FIFO
-refusal. They have not yet been compiled or run. Shared journal recovery,
-lifecycle, CLI, UI-consumer and optimized performance checks remain pending;
+refusal. Companion private tests cover journal-v2 recovery, native lifecycle,
+combined backups and CLI commands. Rustfmt parsing and patch applicability were
+checked; none of the new Rust tests have yet been compiled or run. Shared
+integration, UI-consumer checks and the ignored optimized 4K observation remain pending;
 native user clipboard/printing/capture, user credentials and provider services
 must not be touched by these private fixtures.

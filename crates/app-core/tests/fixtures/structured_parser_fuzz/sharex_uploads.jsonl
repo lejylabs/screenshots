@@ -1,0 +1,5 @@
+{"DestinationType":"ImageUploader, FileUploader","RequestURL":"https://upload.example.invalid/upload","URL":"{json:result.url}","ThumbnailURL":"{json:result.thumb}","DeletionURL":"{json:result.delete}"}
+{"DestinationType":"ImageUploader, FileUploader","RequestURL":"https://upload.example.invalid/upload","URL":"{regex:href=\"([^\"]+)\"|1}"}
+{"DestinationType":"ImageUploader, FileUploader","RequestURL":"https://upload.example.invalid/upload","URL":"{xml:/files/file[1]/@url}"}
+{"DestinationType":"ImageUploader, FileUploader","RequestURL":"https://upload.example.invalid/upload","URL":"{header:Location}"}
+{"DestinationType":"ImageUploader, FileUploader","RequestMethod":"PUT","Body":"Binary","RequestURL":"https://upload.example.invalid/image.png","URL":"{responseurl}"}

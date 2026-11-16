@@ -1,0 +1,9 @@
+{"template":"{json:result.url}","body":"{\"result\":{\"url\":\"https://cdn.example.invalid/one.png\"}}","expected":"https://cdn.example.invalid/one.png"}
+{"pointer":"/a~1b/~0key","body":"{\"a/b\":{\"~key\":\"https://cdn.example.invalid/escaped.png\"}}","expected":"https://cdn.example.invalid/escaped.png"}
+{"template":"{response}","body":" \r\nhttps://cdn.example.invalid/plain.png\n","expected":"https://cdn.example.invalid/plain.png"}
+{"template":"{regex:href=\"([^\"]+)\"|1}","body":"<a href=\"https://cdn.example.invalid/regex.png\">🦊</a>","expected":"https://cdn.example.invalid/regex.png"}
+{"template":"{regex:(?P<url>https://[^ ]+)|url}","body":"https://cdn.example.invalid/named.png trailing","expected":"https://cdn.example.invalid/named.png"}
+{"template":"{xml:/files/file[2]/url/text()}","body":"<files><file/><file><url>https://cdn.example.invalid/xml.png</url></file></files>","expected":"https://cdn.example.invalid/xml.png"}
+{"template":"{xml:/files/file/@url}","body":"<files><file url=\"https://cdn.example.invalid/attr.png?a=1&amp;b=2\"/></files>","expected":"https://cdn.example.invalid/attr.png?a=1&b=2"}
+{"template":"{header:Location}","body":"https://cdn.example.invalid/header.png","expected":"https://cdn.example.invalid/header.png"}
+{"template":"https://cdn.example.invalid/{json:result.id}.png","body":"{\"result\":{\"id\":123}}","expected":"https://cdn.example.invalid/123.png"}

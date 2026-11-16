@@ -3,6 +3,7 @@
 
 import importlib.util
 import io
+import os
 from pathlib import Path
 import plistlib
 import tarfile
@@ -32,6 +33,7 @@ class NativePackageTests(unittest.TestCase):
             self.assertIn('Müller'.encode("utf-8"), content)
             self.assertEqual(list(ET.fromstring(content))[0].attrib["Publisher"], publisher)
 
+    @unittest.skipIf(os.name == "nt", "POSIX bundle executable modes require a Unix host; MSIX byte/manifest fixtures run here")
     def test_mac_bundle_has_document_types_and_exact_binary(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -69,6 +71,7 @@ class NativePackageTests(unittest.TestCase):
         with self.assertRaises(ValueError): PACKAGE.appx_manifest("bad", "x64")
         with self.assertRaises(ValueError): PACKAGE.appx_manifest("0.1.0", "unsupported")
 
+    @unittest.skipIf(os.name == "nt", "Debian executable-mode and symlink layout requires a Unix host")
     def test_debian_ar_and_tar_members_have_real_package_layout(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

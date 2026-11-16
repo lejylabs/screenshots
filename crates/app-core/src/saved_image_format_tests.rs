@@ -126,6 +126,82 @@ fn bounded_magic_inspection_decode_and_thumbnails_ignore_misleading_extensions()
 }
 
 #[test]
+fn saved_png_reader_freezes_post_admission_growth_before_codec_reads_or_seeks() -> Result<()> {
+    let f = Fixture::new();
+    let path = f.path("growing.png");
+    let pixels = RgbaImage::from_pixel(3, 2, Rgba([17, 31, 47, 128]));
+    let bytes = encode(CaptureFormatPolicy::Png, &pixels);
+    std::fs::write(&path, &bytes)?;
+    let (mut file, admitted) = open(&path)?;
+    let info = inspect_saved_image_file(&mut file, &|| false)?;
+    std::fs::OpenOptions::new()
+        .append(true)
+        .open(&path)?
+        .write_all(&vec![0x6d; 128 * 1024])?;
+    let cancel = || false;
+    let mut reader = SavedPngReader::new(&file, info.encoded_bytes, &cancel, Instant::now())?;
+    let decoded = crate::clipboard::decode_saved_png(
+        BufReader::with_capacity(64 * 1024, &mut reader),
+        crate::MAX_CAPTURE_BYTES,
+    )?;
+    assert_eq!(decoded, pixels);
+    // An unrestricted 64 KiB BufReader consumes appended bytes on its first fill.
+    assert!(reader.inner.stream_position()? <= info.encoded_bytes);
+    assert_eq!(reader.seek(std::io::SeekFrom::End(0))?, info.encoded_bytes);
+    assert_eq!(reader.read(&mut [0; 1])?, 0);
+    assert!(
+        reader
+            .seek(std::io::SeekFrom::Start(info.encoded_bytes + 1))
+            .is_err()
+    );
+    assert!(reader.seek(std::io::SeekFrom::End(1)).is_err());
+    assert!(
+        reader
+            .seek(std::io::SeekFrom::End(-(info.encoded_bytes as i64) - 1))
+            .is_err()
+    );
+    reader.seek(std::io::SeekFrom::End(-1))?;
+    let mut last = [0];
+    reader.read_exact(&mut last)?;
+    assert_eq!(last[0], *bytes.last().unwrap());
+    reader.seek(std::io::SeekFrom::Start(0))?;
+    let mut admitted_bytes = Vec::new();
+    reader.read_to_end(&mut admitted_bytes)?;
+    assert_eq!(admitted_bytes, bytes);
+    assert!(admitted.verify_file(&file).is_err());
+    Ok(())
+}
+
+#[test]
+fn saved_png_reader_checks_cancel_and_deadline_between_bounded_io() -> Result<()> {
+    let f = Fixture::new();
+    let path = f.path("bounded-reader-input");
+    std::fs::write(&path, vec![0x3b; 128 * 1024])?;
+    let file = File::open(&path)?;
+    let canceled = std::cell::Cell::new(false);
+    let stop = || canceled.get();
+    let mut reader = SavedPngReader::new(&file, 128 * 1024, &stop, Instant::now())?;
+    let mut bytes = vec![0; 128 * 1024];
+    assert_eq!(reader.read(&mut bytes)?, 64 * 1024);
+    canceled.set(true);
+    assert!(reader.read(&mut bytes).is_err());
+    assert!(reader.seek(std::io::SeekFrom::Start(0)).is_err());
+    assert_eq!(reader.inner.stream_position()?, 64 * 1024);
+    drop(reader);
+    canceled.set(false);
+    assert!(
+        SavedPngReader::new(
+            &file,
+            128 * 1024,
+            &stop,
+            Instant::now() - Duration::from_secs(61)
+        )
+        .is_err()
+    );
+    Ok(())
+}
+
+#[test]
 fn preserved_copies_keep_bytes_and_conversion_reports_real_kind_without_overwrite() -> Result<()> {
     let f = Fixture::new();
     let directory = f.directory("preserved");
@@ -275,6 +351,110 @@ fn sanitizing_preserve_creates_lossless_oriented_png_and_keeps_original_payloads
     for (source, bytes) in sources {
         assert_eq!(std::fs::read(source)?, bytes);
     }
+    Ok(())
+}
+
+#[test]
+fn generic_sanitize_normalizes_genuine_icc_and_orientation_against_littlecms_oracles() -> Result<()>
+{
+    let f = Fixture::new();
+    let directory = f.directory("managed-clean");
+    let exif = b"II\x2a\x00\x08\x00\x00\x00\x01\x00\x12\x01\x03\x00\x01\x00\x00\x00\x06\x00\x00\x00\x00\x00\x00\x00";
+    let p3 = include_bytes!("../tests/fixtures/color/lcms-display-p3.icc");
+    let mut png = include_bytes!("../tests/fixtures/color/lcms-p3-rgba16.png")[..33].to_vec();
+    png.extend_from_slice(&(exif.len() as u32).to_be_bytes());
+    png.extend_from_slice(b"eXIf");
+    png.extend_from_slice(exif);
+    let mut crc = crc32fast::Hasher::new();
+    crc.update(b"eXIf");
+    crc.update(exif);
+    png.extend_from_slice(&crc.finalize().to_be_bytes());
+    png.extend_from_slice(&include_bytes!("../tests/fixtures/color/lcms-p3-rgba16.png")[33..]);
+    let png_path = f.path("genuine-profile-16.png");
+    std::fs::write(&png_path, &png)?;
+    let png_expected = image::imageops::rotate90(
+        &RgbaImage::from_raw(
+            3,
+            4,
+            include_bytes!("../tests/fixtures/color/lcms-p3-rgba16-to-srgb8.rgba").to_vec(),
+        )
+        .unwrap(),
+    );
+
+    fn riff_chunk(kind: &[u8; 4], payload: &[u8]) -> Vec<u8> {
+        let mut chunk = kind.to_vec();
+        chunk.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+        chunk.extend_from_slice(payload);
+        if !payload.len().is_multiple_of(2) {
+            chunk.push(0);
+        }
+        chunk
+    }
+    let rgba = RgbaImage::from_raw(
+        4,
+        1,
+        vec![
+            200, 60, 20, 0, 20, 180, 130, 37, 128, 128, 128, 128, 80, 140, 220, 255,
+        ],
+    )
+    .unwrap();
+    let encoded = encode(CaptureFormatPolicy::WebpLossless, &rgba);
+    let mut body = b"WEBP".to_vec();
+    body.extend(riff_chunk(b"VP8X", &[0x38, 0, 0, 0, 3, 0, 0, 0, 0, 0]));
+    body.extend(riff_chunk(b"ICCP", p3));
+    body.extend_from_slice(&encoded[12..]);
+    body.extend(riff_chunk(b"EXIF", exif));
+    let mut webp = b"RIFF".to_vec();
+    webp.extend_from_slice(&(body.len() as u32).to_le_bytes());
+    webp.extend(body);
+    let webp_path = f.path("genuine-profile-8.webp");
+    std::fs::write(&webp_path, &webp)?;
+    let webp_expected = image::imageops::rotate90(
+        &RgbaImage::from_raw(
+            4,
+            1,
+            include_bytes!("../tests/fixtures/capture_formats/p3-rgba8-to-srgb8.rgba").to_vec(),
+        )
+        .unwrap(),
+    );
+    let report = export_saved_images(
+        &[png_path.clone(), webp_path.clone()],
+        &directory,
+        LibraryExportPolicy::Preserve,
+        true,
+        || false,
+    )?;
+    assert_eq!(
+        (report.outputs.len(), report.failures.len()),
+        (2, 0),
+        "{:?}",
+        report.failures
+    );
+    for (output, expected) in report.outputs.iter().zip([png_expected, webp_expected]) {
+        let bytes = std::fs::read(&output.path)?;
+        assert!(!bytes.windows(4).any(|c| c == b"iCCP" || c == b"eXIf"));
+        let actual = image::load_from_memory(&bytes)?.into_rgba8();
+        assert_eq!(actual.dimensions(), expected.dimensions());
+        for (index, (&actual, &expected)) in
+            actual.as_raw().iter().zip(expected.as_raw()).enumerate()
+        {
+            if index % 4 == 3 {
+                assert_eq!(actual, expected);
+            } else {
+                assert!(
+                    actual.abs_diff(expected) <= 2,
+                    "independent LittleCMS oracle at channel {index}: {actual} vs {expected}"
+                );
+            }
+        }
+        let upload_png = saved_image_png_without_metadata(&output.source, || false)?;
+        assert_eq!(
+            image::load_from_memory(&upload_png)?.into_rgba8(),
+            image::load_from_memory(&bytes)?.into_rgba8()
+        );
+    }
+    assert_eq!(std::fs::read(png_path)?, png);
+    assert_eq!(std::fs::read(webp_path)?, webp);
     Ok(())
 }
 
