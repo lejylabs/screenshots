@@ -248,7 +248,8 @@ def package(binary, output, name, target, epoch, info, licenses, runtime=None, *
         write_text(folder / "BUILD-INFO.json", json.dumps(info, indent=2) + "\n")
         for source in ["LICENSE", "THIRD_PARTY_NOTICES.md", "README.md", "Cargo.lock"]:
             shutil.copyfile(ROOT / source, folder / source)
-        write_text(folder / "PACKAGING.md", (ROOT / "docs/packaging.md").read_text(encoding="utf-8").replace("](desktop-integration.md)", "](DESKTOP-INTEGRATION.md)"))
+        write_text(folder / "PACKAGING.md", (ROOT / "docs/packaging.md").read_text(encoding="utf-8").replace("](desktop-integration.md)", "](DESKTOP-INTEGRATION.md)").replace("](native-signing.md)", "](NATIVE-SIGNING.md)"))
+        shutil.copyfile(ROOT / "docs/native-signing.md", folder / "NATIVE-SIGNING.md")
         shutil.copyfile(ROOT / "scripts/install-user.py", folder / "install-user.py")
         shutil.copyfile(ROOT / "docs/desktop-integration.md", folder / "DESKTOP-INTEGRATION.md")
         if "linux" in target:

@@ -219,6 +219,8 @@ class PackagingTests(unittest.TestCase):
                 self.assertIn(prefix + "licenses/fixture-1/LICENSE-test", files)
                 self.assertIn(b"](DESKTOP-INTEGRATION.md)",files[prefix+"PACKAGING.md"])
                 self.assertIn(prefix+"DESKTOP-INTEGRATION.md",files)
+                self.assertIn(b"](NATIVE-SIGNING.md)",files[prefix+"PACKAGING.md"])
+                self.assertIn(prefix+"NATIVE-SIGNING.md",files)
                 self.assertNotIn(str(root).encode(), files[prefix + "licenses/dependencies.json"])
                 info = json.loads(files[prefix + "BUILD-INFO.json"])
                 self.assertEqual(info["binary_sha256"], hashlib.sha256(binary.read_bytes()).hexdigest())

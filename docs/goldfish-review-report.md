@@ -542,3 +542,25 @@ and leading-dot oracle passed supplemental Wine; real native wake/permission/
 resource behavior stays separate. The integrated 786-test proof above includes
 the current source and corrected fixture gating; final exact-head native CI is
 still required.
+
+
+## Explicit native signing tooling (2026-11-16)
+
+Three fresh source reviews audited the optional release path. The first found
+native tool lookup, installer-team comparison and rollback ownership defects;
+the second found nonregular foreign replacement and exited-leader descendant
+cleanup; the third found reader admission outside the POSIX cleanup guard.
+Corrections use protected native tool locations, cleaned environment/private cwd,
+exact trusted installer identity, retained per-link ownership, and owned native
+process families with all exceptional startup covered. Windows uses atomic
+Job/handle association; POSIX retains the unreaped leader through group cleanup.
+The final startup correction is verified author evidence, not relabeled a clean
+additional source-review round.
+
+Seventeen Linux synthetic signing-flow tests pass, plus three native-layout and
+eleven portable regressions. These include real owned Python child lifetime
+faults and fake signature/notary results, not real certificate/account use.
+The Windows ABI path and actual trusted signatures/notarization remain native
+release gates. No keys, certificates, trust settings or keychains were created.
+Public example profiles are illustrative only. See `native-signing.md` and
+`target/native-signing-tests.log` for exact scope.

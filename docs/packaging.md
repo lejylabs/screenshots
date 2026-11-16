@@ -140,3 +140,30 @@ no dpkg-deb. The report pins binary/archive hashes and unchanged isolated user
 state: `target/verification/complete-runtime-package-abi.json`. Concurrent feature
 work and this explicit prebuilt binary remain distinct from final frozen-source,
 native CI, signing and standard-user installation acceptance.
+
+
+## Explicit identity-backed native signing
+
+`scripts/package-app.py --package ARCHIVE --output DIRECTORY --sign-profile PROFILE`
+uses an existing native identity and verifies requested signatures before
+publishing. Profile JSON contains public selectors only, not private keys or
+passwords. macOS optionally accepts `--notary-profile EXISTING_KEYCHAIN_PROFILE`;
+it requires an Accepted notary result and validated staple. No credentials are
+created, imported or unlocked by this tooling. Unsigned development packaging
+remains available when no profile is supplied.
+
+Windows profiles specify version 1, platform `windows`, a 40-digit certificate
+thumbprint, exact publisher DN and HTTPS timestamp URL. The generated MSIX uses
+that publisher with proper XML escaping. macOS profiles specify version 1,
+platform `macos`, stable application/installer identity names and ten-character
+team ID. The .NET helper receives only its required allow-jit exception; nested
+native signatures are verified and their changed hashes update the runtime
+manifest/anchor. The enclosing macOS bundle records the input binary hash with
+an explicit pre-bundle-signature scope; final artifact SHA and native signatures
+cover the published output without a circular resource hash.
+
+See [native signing](native-signing.md) for the exact source/verification plan.
+Synthetic tests exercise tool arguments, signature-induced hash changes,
+rejection/no-publication, resource consistency and timeout/output bounds. No
+production identity or real notary submission was available during implementation;
+source/mocked tests do not establish trusted-signature or Gatekeeper acceptance.

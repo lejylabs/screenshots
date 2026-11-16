@@ -21,12 +21,16 @@ import sys
 import tarfile
 import tempfile
 import zlib
+from xml.sax.saxutils import quoteattr
 
 ROOT = Path(__file__).resolve().parents[1]
 SPEC = importlib.util.spec_from_file_location("install_user", ROOT / "scripts/install-user.py")
 INSTALL = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(INSTALL)
 ID = "me.lejy.screenshots"
+SIGN_SPEC = importlib.util.spec_from_file_location("native_signing", ROOT / "scripts/native-signing.py")
+SIGN = importlib.util.module_from_spec(SIGN_SPEC)
+SIGN_SPEC.loader.exec_module(SIGN)
 
 
 def info_plist(version):
@@ -76,16 +80,18 @@ def png(path, side):
                      + chunk(b"IDAT", zlib.compress(raw, 9)) + chunk(b"IEND", b""))
 
 
-def appx_manifest(version, architecture):
+def appx_manifest(version, architecture, publisher="CN=Screenshots"):
     INSTALL.version(version)
     INSTALL.require(architecture in ("x64", "arm64"), "Unsupported MSIX architecture")
+    SIGN.text(publisher,1024)
+    publisher = quoteattr(publisher)
     return f'''<?xml version="1.0" encoding="utf-8"?>
 <Package xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
  xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
  xmlns:uap3="http://schemas.microsoft.com/appx/manifest/uap/windows10/3"
  xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"
  IgnorableNamespaces="uap uap3 rescap">
- <Identity Name="me.lejy.screenshots" Publisher="CN=Screenshots" Version="{version}.0" ProcessorArchitecture="{architecture}"/>
+ <Identity Name="me.lejy.screenshots" Publisher={publisher} Version="{version}.0" ProcessorArchitecture="{architecture}"/>
  <Properties><DisplayName>Screenshots</DisplayName><PublisherDisplayName>Screenshots</PublisherDisplayName><Logo>Assets\\StoreLogo.png</Logo></Properties>
  <Resources><Resource Language="en-us"/></Resources>
  <Dependencies><TargetDeviceFamily Name="Windows.Desktop" MinVersion="10.0.19041.0" MaxVersionTested="10.0.26100.0"/></Dependencies>
@@ -187,23 +193,102 @@ def deb_package(portable, output, info):
                     archive.write(b"\n")
 
 
-def publish_file(source, destination):
-    checksum = destination.with_name(destination.name + ".sha256")
-    INSTALL.require(not destination.exists() and not destination.is_symlink() and not checksum.exists() and not checksum.is_symlink(), "Package destination exists")
-    os.link(source, destination)
+def file_id(path):
+    metadata=path.lstat()
+    INSTALL.require(not path.is_symlink() and path.is_file(),"Published member changed type")
+    return metadata.st_dev,metadata.st_ino
+
+
+def remove_owned(path,identity):
     try:
-        with checksum.open("x") as output:
-            output.write(INSTALL.sha(destination) + "  " + destination.name + "\n")
+        if file_id(path)==identity:path.unlink()
+    except (FileNotFoundError,ValueError):pass
+
+
+def publication_handle(path):
+    if os.name!='nt':return path.open('rb')
+    # Keep identity alive while permitting owned-link rollback and private staging cleanup.
+    import ctypes
+    import msvcrt
+    kernel=ctypes.WinDLL('kernel32',use_last_error=True)
+    create=kernel.CreateFileW;create.argtypes=[ctypes.c_wchar_p,ctypes.c_uint32,ctypes.c_uint32,ctypes.c_void_p,ctypes.c_uint32,ctypes.c_uint32,ctypes.c_void_p];create.restype=ctypes.c_void_p
+    handle=create(str(path.resolve()),0x80000000,7,None,3,0x80,None)
+    if handle==ctypes.c_void_p(-1).value:raise ctypes.WinError(ctypes.get_last_error())
+    try:descriptor=msvcrt.open_osfhandle(handle,os.O_RDONLY|os.O_BINARY)
     except BaseException:
-        destination.unlink()
+        kernel.CloseHandle.argtypes=[ctypes.c_void_p];kernel.CloseHandle(handle);raise
+    return os.fdopen(descriptor,'rb')
+
+
+class Publication:
+    def __init__(self,artifact,checksum):
+        self.artifact=artifact;self.checksum=checksum
+        self.artifact_id=os.fstat(artifact.fileno()).st_dev,os.fstat(artifact.fileno()).st_ino
+        self.checksum_id=os.fstat(checksum.fileno()).st_dev,os.fstat(checksum.fileno()).st_ino
+    def close(self):
+        self.artifact.close();self.checksum.close()
+    def __del__(self):self.close()
+
+
+def publish_file(source, destination):
+    checksum=destination.with_name(destination.name+".sha256")
+    admit_destinations([source],destination.parent)
+    # Retained handles prevent inode/file-ID reuse while the group can roll back.
+    artifact_handle=publication_handle(source);checksum_handle=None
+    source_id=os.fstat(artifact_handle.fileno()).st_dev,os.fstat(artifact_handle.fileno()).st_ino
+    try:
+        with tempfile.TemporaryDirectory(prefix='.publish-checksum-',dir=source.parent) as temporary:
+            staged=Path(temporary)/'checksum'
+            with staged.open('x') as output:
+                output.write(INSTALL.sha(source)+"  "+destination.name+"\n");output.flush();os.fsync(output.fileno())
+            checksum_handle=publication_handle(staged)
+            os.link(source,destination)
+            try:os.link(staged,checksum)
+            except BaseException:
+                remove_owned(destination,source_id)
+                raise
+        return Publication(artifact_handle,checksum_handle)
+    except BaseException:
+        artifact_handle.close()
+        if checksum_handle:checksum_handle.close()
         raise
+
+
+def admit_destinations(sources,output):
+    for source in sources:
+        destination=output/source.name
+        INSTALL.require(not destination.exists() and not destination.is_symlink()
+                        and not destination.with_name(destination.name+".sha256").exists()
+                        and not destination.with_name(destination.name+".sha256").is_symlink(),"Package destination exists")
+def publish_all(sources,output):
+    admit_destinations(sources,output)
+    published=[]
+    try:
+        for source in sources:
+            destination=output/source.name
+            receipt=publish_file(source,destination);published.append((destination,receipt))
+    except BaseException:
+        for destination,receipt in reversed(published):
+            remove_owned(destination.with_name(destination.name+".sha256"),receipt.checksum_id)
+            remove_owned(destination,receipt.artifact_id)
+        raise
+    finally:
+        for _,receipt in published:receipt.close()
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--package", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--sign-profile",type=Path,help="Explicit public identity selectors; no keys/passwords")
+    parser.add_argument("--notary-profile",help="Existing macOS notary keychain profile (requires signing)")
     args = parser.parse_args()
+    platform_name="macos" if sys.platform=="darwin" else "windows" if os.name=="nt" else "linux"
+    INSTALL.require(args.notary_profile is None or platform_name=="macos" and args.sign_profile is not None,
+                    "Notarization requires an explicit macOS signing profile")
+    signing=SIGN.profile(args.sign_profile,platform_name) if args.sign_profile else None
+    if args.notary_profile is not None:SIGN.text(args.notary_profile,256)
+
     args.output.mkdir(parents=True, exist_ok=True)
     INSTALL.require(args.package.is_file() and not args.package.is_symlink() and args.package.stat().st_size <= INSTALL.MAX_ARCHIVE,
                     "Portable package must be a bounded regular archive")
@@ -211,7 +296,7 @@ def main():
     sidecar = args.package.with_name(args.package.name + ".sha256")
     INSTALL.require(INSTALL.regular_bytes(sidecar, 1024).decode().strip() == digest + "  " + args.package.name, "Portable archive checksum mismatch")
     with tempfile.TemporaryDirectory(prefix=".native-package-", dir=args.output) as temporary:
-        temporary = Path(temporary)
+        temporary = Path(temporary).resolve()
         snapshot = temporary / ("input.zip" if args.package.suffix.lower() == ".zip" else "input.tar.gz")
         descriptor = os.open(args.package, os.O_RDONLY | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_NOFOLLOW", 0))
         with os.fdopen(descriptor, "rb") as source, snapshot.open("xb") as output:
@@ -228,9 +313,17 @@ def main():
         portable.mkdir()
         info, _, _ = INSTALL.extract(snapshot, portable)
         name = f"screenshots-{info['version']}-{info['target']}"
+        outputs=[]
+        if sys.platform=='darwin':
+            planned=[temporary/(name+'.app.tar.gz')]
+            if signing or shutil.which('pkgbuild'):planned.append(temporary/(name+('.signed.pkg' if signing else '.pkg')))
+        else:planned=[temporary/(name+('.msix' if os.name=='nt' else '.deb'))]
+        admit_destinations(planned,args.output)
         if sys.platform == "darwin":
+            if signing:SIGN.native_tool("pkgbuild")
             app = temporary / "Screenshots.app"
             app_bundle(portable, app, info)
+            if signing:info=SIGN.mac_app(app,info,signing)
             archive = temporary / (name + ".app.tar.gz")
             epoch = int(info.get("source_date_epoch", 0))
             with archive.open("wb") as raw, gzip.GzipFile(fileobj=raw, mode="wb", filename="", mtime=epoch) as zipped:
@@ -245,29 +338,38 @@ def main():
                         item.mode = 0o755 if file.stat().st_mode & 0o111 else 0o644
                         with file.open("rb") as content:
                             stream.addfile(item, content)
-            publish_file(archive, args.output / archive.name)
-            if shutil.which("pkgbuild"):
+            outputs.append(archive)
+            if signing or shutil.which("pkgbuild"):
                 package = temporary / (name + ".pkg")
-                subprocess.run(["pkgbuild", "--component", str(app), "--install-location", "/Applications", "--identifier", ID,
-                                "--version", info["version"], str(package)], check=True, timeout=120,
-                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                publish_file(package, args.output / package.name)
-            print(json.dumps({"status": "packaged", "kind": "macOS app/pkg", "signing": "unsigned; no notarization claimed"}))
+                build=["pkgbuild", "--component", str(app), "--install-location", "/Applications", "--identifier", ID,
+                       "--version", info["version"], str(package)]
+                if signing:SIGN.Tools().run(build)
+                else:subprocess.run(build,check=True,timeout=120,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+                if signing:
+                    signed=temporary/(name+".signed.pkg")
+                    state=SIGN.mac_package(package,signed,signing,args.notary_profile)
+                    package=signed
+                outputs.append(package)
+            publish_all(outputs,args.output)
+            print(json.dumps({"status":"packaged","kind":"macOS app/pkg","signing":"native verified" if signing else "unsigned", "notarization":"accepted and stapled" if args.notary_profile else "not requested"}))
         elif os.name == "nt":
+            if signing:info=SIGN.windows_payload(portable,info,signing)
             assets = portable / "Assets"
             assets.mkdir()
             for filename, side in [("StoreLogo.png", 50), ("Square150.png", 150), ("Square44.png", 44)]:
                 png(assets / filename, side)
-            (portable / "AppxManifest.xml").write_text(appx_manifest(info["version"], "arm64" if info["target"].startswith("aarch64") else "x64"))
+            (portable / "AppxManifest.xml").write_text(appx_manifest(info["version"], "arm64" if info["target"].startswith("aarch64") else "x64", signing["publisher"] if signing else "CN=Screenshots"))
             package = temporary / (name + ".msix")
-            subprocess.run([sdk_makeappx(), "pack", "/d", str(portable), "/p", str(package), "/o"], check=True, timeout=120,
-                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            publish_file(package, args.output / package.name)
-            print(json.dumps({"status": "packaged", "kind": "MSIX", "signing": "unsigned; production installation requires trusted signature"}))
+            build=["makeappx.exe" if signing else sdk_makeappx(), "pack", "/d", str(portable), "/p", str(package), "/o"]
+            if signing:SIGN.Tools().run(build)
+            else:subprocess.run(build,check=True,timeout=120,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+            if signing:SIGN.windows_package(package,signing)
+            publish_all([package],args.output)
+            print(json.dumps({"status":"packaged","kind":"MSIX","signing":"native verified" if signing else "unsigned; production installation requires trusted signature"}))
         elif sys.platform.startswith("linux"):
             package = temporary / (name + ".deb")
             deb_package(portable, package, info)
-            publish_file(package, args.output / package.name)
+            publish_all([package],args.output)
             print(json.dumps({"status": "packaged", "kind": "Debian", "signing": "unsigned development package"}))
         else:
             raise ValueError("Native application packaging is unavailable on this platform")

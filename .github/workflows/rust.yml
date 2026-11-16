@@ -168,6 +168,8 @@ jobs:
           cargo test -p app-core --profile release-fast --locked upload::tests::request_url_mode_ -- --ignored --test-threads=1
       - name: Verify packaging logic
         run: python scripts/test-package.py
+      - name: Verify explicit signing plans with synthetic tools only
+        run: python scripts/test-native-signing.py
       - name: Verify user installation and authenticated updates
         shell: bash
         run: |
