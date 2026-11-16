@@ -59,12 +59,74 @@ fn image_info(path: &Path) -> Result<(u32, u32, i64)> {
     Ok((width, height, size))
 }
 
+#[cfg(target_os = "windows")]
+fn alternate_windows_spelling(path: &Path) -> Option<PathBuf> {
+    use std::path::{Component, Prefix};
+    let Component::Prefix(prefix) = path.components().next()? else {
+        return None;
+    };
+    let text = path.to_str()?;
+    Some(match prefix.kind() {
+        Prefix::VerbatimDisk(_) => PathBuf::from(text.get(4..)?),
+        Prefix::VerbatimUNC(_, _) => PathBuf::from(format!(r"\\{}", text.get(8..)?)),
+        Prefix::Disk(_) => PathBuf::from(format!(r"\\?\{text}")),
+        Prefix::UNC(_, _) => PathBuf::from(format!(r"\\?\UNC\{}", text.get(2..)?)),
+        _ => return None,
+    })
+}
+
+#[cfg(target_os = "windows")]
+fn existing_windows_spelling(
+    transaction: &rusqlite::Transaction<'_>,
+    path: &Path,
+    except: Option<i64>,
+) -> Result<Option<PathBuf>> {
+    use rusqlite::OptionalExtension;
+    let Some(alternate) = alternate_windows_spelling(path) else {
+        return Ok(None);
+    };
+    let existing = transaction
+        .query_row(
+            "SELECT file_path FROM captures WHERE file_path=?1 AND (?2 IS NULL OR id<>?2)",
+            params![
+                alternate.to_str().context("Invalid alternate image path")?,
+                except
+            ],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?;
+    let Some(existing) = existing else {
+        return Ok(None);
+    };
+    // Ordinary Win32 names can trim dots/spaces or denote devices. Prefix removal
+    // alone is not proof of equivalence; compare retained native objects too.
+    let (source, identity) = crate::FileIdentity::open(path)?;
+    let candidate = match crate::FileIdentity::open(Path::new(&existing)) {
+        Ok(candidate) => candidate,
+        Err(error)
+            if error
+                .downcast_ref::<std::io::Error>()
+                .is_some_and(|e| e.kind() == std::io::ErrorKind::NotFound) =>
+        {
+            return Ok(None);
+        }
+        Err(error) => return Err(error),
+    };
+    let same = identity.same_object(&candidate.1);
+    drop((source, candidate));
+    Ok(same.then(|| PathBuf::from(existing)))
+}
+
 fn insert_capture(
     transaction: &rusqlite::Transaction<'_>,
     path: &Path,
     info: (u32, u32, i64),
     source: &str,
 ) -> Result<usize> {
+    #[cfg(target_os = "windows")]
+    let existing = existing_windows_spelling(transaction, path, None)?;
+    #[cfg(target_os = "windows")]
+    let path = existing.as_deref().unwrap_or(path);
     Ok(transaction.execute(
         "INSERT INTO captures (file_path,mime_type,width,height,file_size,created_at,source)
         VALUES (?1,'image/png',?2,?3,?4,?5,?6) ON CONFLICT(file_path) DO NOTHING",
@@ -474,6 +536,11 @@ pub fn relink_history_entry(database: &Path, entry: &HistoryEntry, path: &Path) 
     let info = image_info(path)?;
     let mut connection = open_existing(database)?;
     let transaction = connection.transaction()?;
+    #[cfg(target_os = "windows")]
+    ensure!(
+        existing_windows_spelling(&transaction, path, Some(entry.id))?.is_none(),
+        "The selected path already belongs to another history entry"
+    );
     let updated = transaction
         .execute(
             "UPDATE captures SET file_path=?1,width=?2,height=?3,file_size=?4,thumbnail_path=NULL
@@ -559,6 +626,38 @@ pub fn remove_missing_history_entries(database: &Path, ids: &[i64]) -> Result<us
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn ordinary_and_verbatim_paths_share_history_without_bypassing_insert_guards() -> Result<()> {
+        let root = std::env::temp_dir().join(format!(
+            "screenshots-history-prefix-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir(&root)?;
+        let source = root.join("Größe $(literal).png");
+        image::RgbaImage::new(3, 2).save(&source)?;
+        let verbatim = source.canonicalize()?;
+        let ordinary = alternate_windows_spelling(&verbatim).unwrap();
+        for (index, paths) in [
+            [ordinary.clone(), verbatim.clone()],
+            [verbatim.clone(), ordinary.clone()],
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let database = root.join(format!("history-{index}.sqlite"));
+            let report = import_capture_files(&database, &paths)?;
+            assert_eq!((report.added, report.existing), (1, 1));
+            assert_eq!(capture_history_page(&database, None)?.len(), 1);
+            let connection = open(&database)?;
+            connection.execute_batch("CREATE TRIGGER fixture_insert_guard BEFORE INSERT ON captures BEGIN SELECT RAISE(ABORT,'fixture reservation'); END;")?;
+            drop(connection);
+            assert!(import_capture_files(&database, &paths[1..]).is_err());
+            assert!(record_saved_capture(&database, &paths[1]).is_err());
+        }
+        std::fs::remove_dir_all(root)?;
+        Ok(())
+    }
     #[test]
     #[ignore = "short optimized 10k-row upload metadata paging probe; no files or networking"]
     fn upload_history_10k_page_cost() -> Result<()> {
