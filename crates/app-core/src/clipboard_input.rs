@@ -358,6 +358,7 @@ pub(crate) fn image_inline(
     let pixels = pixels.map_err(failure)?;
     crate::validate_image_size(pixels.width(), pixels.height())?;
     Ok(crate::CapturedImage {
+        desktop_layout: None,
         display_id: "clipboard:image".into(),
         window_id: None,
         width: pixels.width(),

@@ -144,6 +144,7 @@ fn bind(args: &[OsString], mut catalog: CaptureCatalog) -> Result<()> {
         name: name.clone(),
         monitor: placeholder,
         geometry: CaptureTemplateGeometry {
+            mac_coordinates: None,
             width: area.x.checked_add(area.width).unwrap(),
             height: area.y.checked_add(area.height).unwrap(),
             scale_factor: 1.0,
@@ -158,7 +159,7 @@ fn bind(args: &[OsString], mut catalog: CaptureCatalog) -> Result<()> {
     });
     catalog.validate()?;
     let backend = XcapBackend::new(PathBuf::new());
-    let displays = backend.list_displays()?;
+    let displays = backend.list_capture_displays_with_cancel(&|| Ok(()))?;
     let mut selected = displays.iter().filter(|display| display.id == display_id);
     let display = selected.next().context("Selected display is unavailable")?;
     ensure!(

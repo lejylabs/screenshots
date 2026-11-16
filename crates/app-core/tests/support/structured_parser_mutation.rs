@@ -62,7 +62,8 @@ fn mutate(source: &[u8], index: usize, random: &mut Random) -> Vec<u8> {
         }
         5 if !bytes.is_empty() => {
             let end = random.index(bytes.len());
-            bytes.swap(at.min(bytes.len() - 1), end);
+            let start = at.min(bytes.len() - 1);
+            bytes.swap(start, end);
         }
         6 => bytes.extend_from_slice(token),
         7 => {
@@ -154,11 +155,4 @@ pub fn run(family: &str, corpus: &[Vec<u8>], check: impl Fn(&[u8]) -> usize) {
         corpus.len() + CASES,
         started.elapsed().as_micros()
     );
-}
-
-pub fn lines(text: &str) -> Vec<Vec<u8>> {
-    text.lines()
-        .filter(|line| !line.is_empty())
-        .map(|line| line.as_bytes().to_vec())
-        .collect()
 }

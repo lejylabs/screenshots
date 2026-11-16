@@ -161,6 +161,7 @@ fn collision_never_moves_source_or_publishes_pending_intent() {
 
 fn capture_fixture(path: PathBuf) -> app_core::CapturedImage {
     app_core::CapturedImage {
+        desktop_layout: None,
         display_id: "private-save-fixture".into(),
         window_id: None,
         width: 3,

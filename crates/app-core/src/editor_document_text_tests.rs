@@ -146,6 +146,7 @@ fn variable_weight_changes_outlines_and_valid_fonts_respect_operation_budget() -
             > a.pixels().map(|pixel| u64::from(pixel[3])).sum::<u64>()
     );
     let source = crate::CapturedImage {
+        desktop_layout: None,
         display_id: "font-budget".into(),
         window_id: None,
         width: 16,

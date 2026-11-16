@@ -135,6 +135,7 @@ impl ImageUrlSource {
         let pixels = decode_downloaded_image(&bytes, bytes.capacity(), check)?;
         check()?;
         let frame = CapturedImage {
+            desktop_layout: None,
             display_id: "image-url".into(),
             window_id: None,
             width: pixels.width(),

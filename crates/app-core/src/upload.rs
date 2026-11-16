@@ -3102,6 +3102,10 @@ pub(crate) fn validate_link(value: &str) -> Result<String> {
 }
 
 #[cfg(test)]
+#[path = "structured_parser_fuzz_tests.rs"]
+mod structured_parser_fuzz_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 

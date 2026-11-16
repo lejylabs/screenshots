@@ -30,7 +30,7 @@ Headless commands (no desktop UI; outputs and uploads require explicit actions):
   screenshots image pixel INPUT X Y
   screenshots editor-document inspect SCENE.json
   screenshots editor-document render INPUT SCENE.json OUTPUT
-  screenshots screen-color DISPLAY X Y [--global]
+  screenshots screen-color DISPLAY X Y [--global|--global-points]
   screenshots ruler X1 Y1 X2 Y2 [--dpi X_DPI Y_DPI]
   screenshots image metadata INPUT
   screenshots list displays|windows
@@ -253,8 +253,13 @@ fn number<T: std::str::FromStr>(value: &OsString) -> Result<T> {
         .map_err(|_| anyhow::anyhow!("Invalid numeric argument"))
 }
 
+#[cfg(test)]
+#[path = "cli_parser_fuzz_tests.rs"]
+mod structured_parser_fuzz_tests;
+
 pub(crate) fn frame(pixels: image::RgbaImage) -> CapturedImage {
     CapturedImage {
+        desktop_layout: None,
         display_id: String::new(),
         window_id: None,
         width: pixels.width(),
@@ -406,7 +411,11 @@ fn list(args: &[OsString]) -> Result<()> {
                 json!({
                     "id": d.id, "name": d.name, "x": d.x, "y": d.y,
                     "width": d.width, "height": d.height, "scale": d.scale_factor,
-                    "primary": d.is_primary, "rotation": d.rotation
+                    "primary": d.is_primary, "rotation": d.rotation,
+                    "origin_coordinate_space": if cfg!(target_os = "macos") { "quartz_global_points" } else { "desktop_physical_pixels" },
+                    "size_coordinate_space": if cfg!(target_os = "macos") && d.mac_coordinates.is_none() { "quartz_points" } else { "display_local_native_pixels" },
+                    "native_geometry_verified": !cfg!(target_os = "macos") || d.mac_coordinates.is_some(),
+                    "geometry_status": if cfg!(target_os = "macos") && d.mac_coordinates.is_none() { "unverified_integer_point_hints" } else { "native_pixels_verified" }, "mac_coordinates": d.mac_coordinates
                 })
             })
             .collect::<Vec<_>>(),
@@ -438,7 +447,11 @@ fn capture(args: &[OsString]) -> Result<()> {
             app_core::DEFAULT_JPEG_QUALITY,
             ExportSize::Original,
         )?;
-        println!("{}", json!({"width": image.width, "height": image.height}));
+        let mut value = json!({"width": image.width, "height": image.height});
+        if let Some(layout) = &image.desktop_layout {
+            value["desktop_layout"] = serde_json::to_value(&**layout)?;
+        }
+        println!("{value}");
         return Ok(());
     }
     ensure!(

@@ -6,13 +6,12 @@ permissions:
   contents: read
 jobs:
   macos-app:
-    if: false
     strategy:
       fail-fast: false
       matrix:
         os: [macos-15, macos-15-intel]
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 60
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
       - run: rustup show active-toolchain
@@ -62,6 +61,12 @@ jobs:
           cargo test --locked --profile release-fast -p app-core -j 2 managed_color::tests -- --test-threads=1
           cargo test --locked --profile release-fast -p screenshots --bin screenshots -j 2 file_logging::tests:: -- --test-threads=1
           cargo test --locked --profile release-fast -p screenshots --test history_move -j 2 executable_save_recovery -- --test-threads=1
+
+      - name: Run coordinate grid and metadata-consumer fixtures
+        run: |
+          cargo test --locked --profile release-fast -p app-core -j 2 desktop_composite_macos -- --test-threads=1
+          cargo test --locked --profile release-fast -p screenshots --bin screenshots -j 2 capture_worker::protocol::tests:: -- --test-threads=1
+          cargo test --locked --profile release-fast -p screenshots --bin screenshots -j 2 task::seal::tests::all_native_task_sources_admit_without_pixels_and_revalidate_at_execution -- --exact --test-threads=1
 
   windows-native-witness:
     runs-on: windows-latest
@@ -141,3 +146,9 @@ jobs:
           cargo test --locked --profile release-fast -p app-core -j 2 managed_color::tests -- --test-threads=1
           cargo test --locked --profile release-fast -p screenshots --bin screenshots -j 2 file_logging::tests:: -- --test-threads=1
           cargo test --locked --profile release-fast -p screenshots --test history_move -j 2 executable_save_recovery -- --test-threads=1
+
+      - name: Run coordinate grid and metadata-consumer fixtures
+        run: |
+          cargo test --locked --profile release-fast -p app-core -j 2 desktop_composite_macos -- --test-threads=1
+          cargo test --locked --profile release-fast -p screenshots --bin screenshots -j 2 capture_worker::protocol::tests:: -- --test-threads=1
+          cargo test --locked --profile release-fast -p screenshots --bin screenshots -j 2 task::seal::tests::all_native_task_sources_admit_without_pixels_and_revalidate_at_execution -- --exact --test-threads=1

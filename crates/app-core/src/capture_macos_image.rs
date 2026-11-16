@@ -71,68 +71,13 @@ unsafe extern "C" {
         window: u32,
         image_options: u32,
     ) -> *const c_void;
-    fn CGDisplayCreateImage(display: u32) -> *const c_void;
 }
 pub(super) fn display(
     id: u32,
     region: Option<crate::PixelRegion>,
     options: &CaptureOptions,
 ) -> Result<image::RgbaImage> {
-    crate::capture_macos_ax::screen_permission()?;
-    let until = Instant::now() + Duration::from_secs(20);
-    let proof = crate::capture_macos_ax::displays()?
-        .into_iter()
-        .find(|display| display.id == id)
-        .context("Native display is unavailable")?;
-    if let Some(region) = region {
-        proof.screen_input_crop(region)?;
-    }
-    let selected_bytes = region.map_or_else(
-        || u64::from(proof.pixel_width) * u64::from(proof.pixel_height) * 4,
-        |region| u64::from(region.width) * u64::from(region.height) * 4,
-    );
-    crate::capture_macos_model::screenshot_buffer_admission(
-        proof.pixel_width,
-        proof.pixel_height,
-        selected_bytes,
-    )?;
-    let mut legacy = false;
-    let mut pixels = if let Some(source) = crate::capture_macos_sck::Display::new(id, until)? {
-        ensure!(
-            source.proof == proof,
-            "Display identity changed before capture"
-        );
-        let image = source.capture(options, until, selected_bytes)?;
-        unsafe { decode(image.0) }?
-    } else {
-        legacy = true;
-        let image = crate::capture_macos_sck::Image(unsafe { CGDisplayCreateImage(id) });
-        ensure!(!image.0.is_null(), "Native display image is unavailable");
-        unsafe { decode(image.0) }?
-    };
-    ensure!(
-        pixels.dimensions() == (proof.pixel_width, proof.pixel_height),
-        "Native display pixel extent changed"
-    );
-    if legacy && options.cursor == CaptureCursor::Include {
-        crate::capture_macos_cursor::compose(&mut pixels, proof.logical, proof.unrotated_scale()?)?;
-    }
-    let current = crate::capture_macos_ax::displays()?
-        .into_iter()
-        .find(|display| display.id == id)
-        .context("Native display disappeared")?;
-    ensure!(
-        current == proof,
-        "Native display UUID/geometry changed during capture"
-    );
-    if let Some(region) = region {
-        Ok(
-            image::imageops::crop_imm(&pixels, region.x, region.y, region.width, region.height)
-                .to_image(),
-        )
-    } else {
-        Ok(pixels)
-    }
+    crate::capture_macos_display::PreparedDisplay::new(id, options)?.capture(region)
 }
 pub(super) fn legacy_window(
     proof: MacWindowProof,

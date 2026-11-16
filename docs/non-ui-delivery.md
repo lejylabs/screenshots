@@ -13,16 +13,18 @@ authenticated IPC and retained clipboard ownership. See their focused contracts.
 The active native graph passes the default advisory policy without ignores;
 dormant optional backends and native acceptance limits are recorded separately.
 
-Committed and pushed implementation HEAD `86dda66` includes Library lifecycle/schema10 reservation
+The pushed verification base `6b668b1` includes Library lifecycle/schema10 reservation
 safety, monitor defaults/templates and isolated native work, modern SXCU, bounded
 raster work, schedules, portal/URL input and reviewed platform foundations. The
 layered editor and physical-X11 color/ruler corrections are committed. The
 current implementation includes bounded file logging, journaled capture saves/schema10
 and managed-color imports with the same-version moxcms predicate correction.
-Its complete optimized run passed 953 cases, zero failed, with 69 opt-ins
+The next integrated Mac-coordinate/parser checkpoint passed 996 cases, zero failed, with 69 opt-ins
 excluded across 59 outer suites. Source reviews are clean in logger rounds
 6/7, journal rounds 5/6 and managed-color rounds 5/6. The source implementation
-is ready; native and reference-hardware acceptance remain separate gates.
+is ready; Mac source rounds 3/4 and structured parser rounds 2/3 are clean too.
+The full checks include all-target Clippy and Windows GNU metadata compilation;
+native current-source Mac SDK and reference-hardware acceptance remain separate.
 
 GitHub write access is restored; seven commits were pushed through `cdae843`.
 Current source-native CI cannot be inferred from older snapshots. Continue work;

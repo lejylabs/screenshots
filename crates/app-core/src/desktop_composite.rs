@@ -27,6 +27,11 @@ fn layout(displays: &[DisplayInfo]) -> Result<Layout, CaptureError> {
     let mut bottom = i64::MIN;
     for (index, display) in displays.iter().enumerate() {
         crate::validate_image_size(display.width, display.height)?;
+        if display.mac_coordinates.is_some() {
+            return Err(CaptureError::Unsupported(
+                "Quartz display layouts require the explicit macOS derived grid",
+            ));
+        }
         if display.id.is_empty() || display.id.len() > 64 || !ids.insert(&display.id) {
             return Err(CaptureError::Backend(
                 "Display identities must be unique".into(),
@@ -132,6 +137,7 @@ pub fn stitch_desktop_with_cancel(
     }
     work.check()?;
     Ok(CapturedImage {
+        desktop_layout: None,
         display_id: String::new(),
         window_id: None,
         width: layout.width,
@@ -156,10 +162,10 @@ pub fn capture_stitched_desktop_with_cancel(
     check: &crate::NativeCaptureCheck<'_>,
 ) -> Result<CapturedImage, CaptureError> {
     check()?;
-    // XCap's non-Windows coordinates have not been calibrated against returned pixels.
-    if !cfg!(target_os = "windows") {
+    // Other adapters have no admitted desktop composition coordinate policy.
+    if !cfg!(any(target_os = "windows", target_os = "macos")) {
         return Err(CaptureError::Unsupported(
-            "stitched desktop capture requires validated Windows physical-pixel display coordinates",
+            "stitched desktop capture requires a calibrated Windows or macOS display adapter",
         ));
     }
     backend.capture_physical_desktop_with_cancel(check)
@@ -169,13 +175,24 @@ pub(crate) fn capture_stitched_desktop_in_worker(
     backend: &XcapBackend,
     check: &crate::NativeCaptureCheck<'_>,
 ) -> Result<CapturedImage, CaptureError> {
-    if !cfg!(target_os = "windows") || crate::native_capture_job::executor().is_some() {
+    if !cfg!(any(target_os = "windows", target_os = "macos"))
+        || crate::native_capture_job::executor().is_some()
+    {
         return Err(CaptureError::Unsupported(
-            "Physical desktop assembly requires the native Windows worker",
+            "Desktop assembly requires its native isolated worker",
         ));
     }
-    let before = backend.list_displays_with_cancel(check)?;
+    let before = backend.list_capture_displays_with_cancel(check)?;
+    #[cfg(not(target_os = "macos"))]
     layout(&before)?;
+    #[cfg(target_os = "macos")]
+    let mac_layout = crate::MacDesktopLayout::new(
+        &before
+            .iter()
+            .map(|display| display.mac_coordinates.ok_or(CaptureError::StaleRegion))
+            .collect::<Result<Vec<_>, _>>()?,
+    )
+    .map_err(|error| CaptureError::Backend(error.to_string()))?;
     let frames = backend.capture_batch_with_cancel(
         before
             .iter()
@@ -184,7 +201,7 @@ pub(crate) fn capture_stitched_desktop_in_worker(
         check,
     )?;
     validate_native_frames(&before, &frames)?;
-    let after = backend.list_displays_with_cancel(check)?;
+    let after = backend.list_capture_displays_with_cancel(check)?;
     if before.len() != after.len()
         || before.iter().any(|a| {
             !after.iter().any(|b| {
@@ -195,13 +212,14 @@ pub(crate) fn capture_stitched_desktop_in_worker(
                     && a.height == b.height
                     && a.scale_factor == b.scale_factor
                     && a.rotation == b.rotation
+                    && a.mac_coordinates == b.mac_coordinates
             })
         })
     {
         return Err(CaptureError::StaleRegion);
     }
     let failure = std::cell::RefCell::new(None);
-    let result = stitch_desktop_with_cancel(&before, &frames, &|| {
+    let cancelled = || {
         if failure.borrow().is_some() {
             return true;
         }
@@ -211,12 +229,20 @@ pub(crate) fn capture_stitched_desktop_in_worker(
         } else {
             false
         }
-    });
+    };
+    #[cfg(not(target_os = "macos"))]
+    let result = stitch_desktop_with_cancel(&before, &frames, &cancelled);
+    #[cfg(target_os = "macos")]
+    let result = crate::stitch_macos_desktop_with_cancel(&mac_layout, &frames, &cancelled);
     if let Some(error) = failure.into_inner() {
         return Err(error);
     }
     let mut output = result?;
     output.display_id = "desktop".into();
+    #[cfg(target_os = "macos")]
+    {
+        output.desktop_layout = Some(Arc::new(mac_layout));
+    }
     Ok(output)
 }
 
@@ -226,6 +252,7 @@ fn validate_native_frames(
 ) -> Result<(), CaptureError> {
     for display in displays {
         let expected = crate::DisplayGeometry {
+            mac_coordinates: display.mac_coordinates,
             x: display.x,
             y: display.y,
             width: display.width,
@@ -248,6 +275,7 @@ mod tests {
     use super::*;
     fn display(id: &str, x: i32, y: i32, width: u32, height: u32) -> DisplayInfo {
         DisplayInfo {
+            mac_coordinates: None,
             id: id.into(),
             name: id.into(),
             x,
@@ -261,6 +289,7 @@ mod tests {
     }
     fn frame(display: &DisplayInfo, rgba: [u8; 4]) -> CapturedImage {
         CapturedImage {
+            desktop_layout: None,
             display_id: display.id.clone(),
             window_id: None,
             width: display.width,
@@ -285,6 +314,7 @@ mod tests {
                 .is_err()
         );
         frame.display_geometry = Some(crate::DisplayGeometry {
+            mac_coordinates: display.mac_coordinates,
             x: display.x,
             y: display.y,
             width: display.width,

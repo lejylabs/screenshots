@@ -47,6 +47,7 @@ pub(super) fn monitor_geometry(monitor: &xcap::Monitor) -> Result<crate::Display
     );
     crate::validate_image_size(width, height)?;
     Ok(crate::DisplayGeometry {
+        mac_coordinates: None,
         x,
         y,
         width,

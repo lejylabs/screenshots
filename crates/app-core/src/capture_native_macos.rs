@@ -35,6 +35,21 @@ pub(super) fn display_identities(displays: &[DisplayInfo]) -> Result<Vec<Capture
             );
             let name = unsafe { CFString::wrap_under_create_rule(raw) }.to_string();
             ensure!(name.len() == 36, "Invalid CoreGraphics display UUID");
+            if let Some(mac) = display.mac_coordinates {
+                mac.validate_fields(
+                    &display.id,
+                    display.x,
+                    display.y,
+                    display.width,
+                    display.height,
+                    display.scale_factor,
+                    display.rotation,
+                )?;
+                ensure!(
+                    mac.to_proof().uuid.eq_ignore_ascii_case(&name),
+                    "Native display UUID changed during binding"
+                );
+            }
             Ok(CaptureMonitorIdentity {
                 display_id: display.id.clone(),
                 binding: CaptureMonitorBinding::Physical {
@@ -50,13 +65,26 @@ pub(super) fn validate_options(options: &CaptureOptions, window: bool) -> Result
     }
     Ok(())
 }
+pub(super) fn monitor_geometry(monitor: &xcap::Monitor) -> Result<crate::DisplayGeometry> {
+    let source = crate::capture_macos_display::PreparedDisplay::new(
+        monitor.id()?,
+        &CaptureOptions::default(),
+    )?;
+    let coordinates = source.coordinates();
+    let (x, y) = coordinates.integer_point_origin()?;
+    Ok(crate::DisplayGeometry {
+        x,
+        y,
+        width: coordinates.pixel_width,
+        height: coordinates.pixel_height,
+        scale_factor: coordinates.pixels_per_point as f32,
+        rotation: coordinates.rotation as f32,
+        mac_coordinates: Some(coordinates),
+    })
+}
 pub(super) fn display_dimensions(monitor: &xcap::Monitor) -> Result<(u32, u32)> {
-    let id = monitor.id()?;
-    let display = crate::capture_macos_ax::displays()?
-        .into_iter()
-        .find(|display| display.id == id)
-        .context("Native display dimensions unavailable")?;
-    Ok((display.pixel_width, display.pixel_height))
+    let geometry = monitor_geometry(monitor)?;
+    Ok((geometry.width, geometry.height))
 }
 pub(super) fn capture_display(
     monitor: &xcap::Monitor,

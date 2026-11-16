@@ -1,7 +1,6 @@
 //! Explicit capture catalog. UI preference saves never reconstruct this file.
 use crate::{
-    CaptureBackend, CaptureOptions, CapturedImage, DisplayInfo, PixelRegion, RememberedRegion,
-    XcapBackend,
+    CaptureOptions, CapturedImage, DisplayInfo, PixelRegion, RememberedRegion, XcapBackend,
 };
 use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
@@ -42,6 +41,8 @@ pub struct CaptureTemplateGeometry {
     pub height: u32,
     pub scale_factor: f32,
     pub rotation: f32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mac_coordinates: Option<crate::MacDisplayCoordinates>,
 }
 impl CaptureTemplateGeometry {
     pub fn from_display(display: &DisplayInfo) -> Self {
@@ -50,7 +51,58 @@ impl CaptureTemplateGeometry {
             height: display.height,
             scale_factor: display.scale_factor,
             rotation: display.rotation,
+            mac_coordinates: display.mac_coordinates,
         }
+    }
+
+    /// Pure admission of a retained template against independently observed native geometry.
+    pub(crate) fn admit_observed_display(
+        &self,
+        binding: &CaptureMonitorBinding,
+        display: &DisplayInfo,
+    ) -> Result<(), crate::CaptureError> {
+        if let Some(mac) = display.mac_coordinates {
+            mac.validate_fields(
+                &display.id,
+                display.x,
+                display.y,
+                display.width,
+                display.height,
+                display.scale_factor,
+                display.rotation,
+            )
+            .map_err(|_| crate::CaptureError::StaleRegion)?;
+        }
+        let current = Self::from_display(display);
+        let same_raster = self.width == current.width
+            && self.height == current.height
+            && self.scale_factor == current.scale_factor
+            && self.rotation == current.rotation;
+        let mac_geometry_matches = match (self.mac_coordinates, current.mac_coordinates) {
+            (Some(expected), Some(current)) => {
+                expected.same_monitor_raster(&current)
+                    && *binding
+                        == CaptureMonitorBinding::Physical {
+                            key: format!("macos:{}", current.to_proof().uuid),
+                        }
+            }
+            (None, Some(current)) => {
+                current.rotation == 0.0
+                    && current.pixels_per_point == 1.0
+                    && current.logical.width == f64::from(self.width)
+                    && current.logical.height == f64::from(self.height)
+                    && *binding
+                        == CaptureMonitorBinding::Physical {
+                            key: format!("macos:{}", current.to_proof().uuid),
+                        }
+            }
+            (None, None) => !cfg!(target_os = "macos"),
+            _ => false,
+        };
+        if !same_raster || !mac_geometry_matches {
+            return Err(crate::CaptureError::TemplateRebindRequired);
+        }
+        Ok(())
     }
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -93,6 +145,26 @@ impl CaptureRegionTemplate {
                 && self.geometry.rotation.is_finite(),
             "Invalid template display geometry"
         );
+        if let Some(mac) = self.geometry.mac_coordinates {
+            ensure!(
+                cfg!(target_os = "macos"),
+                "macOS template geometry cannot be used on this platform"
+            );
+            mac.validate()?;
+            ensure!(
+                (self.geometry.width, self.geometry.height) == (mac.pixel_width, mac.pixel_height)
+                    && self.geometry.scale_factor == mac.pixels_per_point as f32
+                    && self.geometry.rotation == mac.rotation as f32,
+                "Template native pixel geometry disagrees"
+            );
+            ensure!(
+                self.monitor
+                    == CaptureMonitorBinding::Physical {
+                        key: format!("macos:{}", mac.to_proof().uuid)
+                    },
+                "Template display UUID and binding disagree"
+            );
+        }
         crate::validate_image_size(self.width, self.height)?;
         ensure!(
             self.x
@@ -315,20 +387,24 @@ impl PreparedRegionTemplate {
             .filter(|identity| identity.binding == self.template.monitor);
         let identity = matches
             .next()
-            .context("Bound monitor is unavailable; explicit rebinding is required")?;
+            .ok_or(crate::CaptureError::TemplateRebindRequired)?;
         ensure!(
             matches.next().is_none(),
-            "Bound monitor identity is ambiguous"
+            crate::CaptureError::TemplateRebindRequired
         );
         let mut matches = displays
             .iter()
             .filter(|display| display.id == identity.display_id);
-        let display = matches.next().context("Bound display is unavailable")?;
-        ensure!(matches.next().is_none(), "Bound display ID is ambiguous");
+        let display = matches
+            .next()
+            .ok_or(crate::CaptureError::TemplateRebindRequired)?;
         ensure!(
-            CaptureTemplateGeometry::from_display(display) == self.template.geometry,
-            "Bound monitor geometry changed; explicit rebinding is required"
+            matches.next().is_none(),
+            crate::CaptureError::TemplateRebindRequired
         );
+        self.template
+            .geometry
+            .admit_observed_display(&self.template.monitor, display)?;
         crate::validate_display_pixel_coordinates(display)?;
         Ok((
             display.clone(),
@@ -383,7 +459,9 @@ impl PreparedRegionTemplate {
         let backend = XcapBackend::new(output_dir)
             .with_originating_process(originating_pid)
             .with_options(options)?;
-        let displays = backend.list_displays()?;
+        let displays = backend.list_capture_displays_with_cancel(&|| {
+            check().map_err(|_| crate::CaptureError::NativeCanceled)
+        })?;
         let identities = capture_monitor_identities(&displays)?;
         let (display, remembered) = self.resolve(&displays, &identities)?;
         check()?;
@@ -392,12 +470,14 @@ impl PreparedRegionTemplate {
             .pop()
             .context("Template capture returned no image")?;
         check()?;
-        let after = backend.list_displays()?;
+        let after = backend.list_capture_displays_with_cancel(&|| {
+            check().map_err(|_| crate::CaptureError::NativeCanceled)
+        })?;
         let after_ids = capture_monitor_identities(&after)?;
         let (current, _) = self.resolve(&after, &after_ids)?;
         ensure!(
             current.id == display.id && current.x == display.x && current.y == display.y,
-            "Bound monitor moved or changed during capture"
+            crate::CaptureError::StaleRegion
         );
         ensure!(
             frame.display_id == display.id
@@ -415,6 +495,20 @@ mod tests {
     use super::*;
     fn display(id: &str, x: i32) -> DisplayInfo {
         DisplayInfo {
+            mac_coordinates: if cfg!(target_os = "macos") {
+                let mut mac = crate::capture_macos_coordinates::tests::display(
+                    1,
+                    f64::from(x),
+                    0.0,
+                    100.0,
+                    80.0,
+                    1.0,
+                );
+                mac.display_id = id.parse().unwrap();
+                Some(mac)
+            } else {
+                None
+            },
             id: id.into(),
             name: "not an identity".into(),
             x,
@@ -430,9 +524,14 @@ mod tests {
         CaptureRegionTemplate {
             name: "crop".into(),
             monitor: CaptureMonitorBinding::Physical {
-                key: "fixture:hardware-id".into(),
+                key: if cfg!(target_os = "macos") {
+                    "macos:00000000-0000-0000-0000-000000000001"
+                } else {
+                    "fixture:hardware-id"
+                }
+                .into(),
             },
-            geometry: CaptureTemplateGeometry::from_display(&display("old", 0)),
+            geometry: CaptureTemplateGeometry::from_display(&display("1", 0)),
             x: 1,
             y: 2,
             width: 30,
@@ -447,9 +546,9 @@ mod tests {
             template: template(),
             options: CaptureOptions::default(),
         };
-        let mut displays = vec![display("new", -200)];
+        let mut displays = vec![display("2", -200)];
         let identities = vec![CaptureMonitorIdentity {
-            display_id: "new".into(),
+            display_id: "2".into(),
             binding: prepared.template.monitor.clone(),
         }];
         assert_eq!(prepared.resolve(&displays, &identities).unwrap().0.x, -200);
@@ -462,16 +561,12 @@ mod tests {
         displays[0].width = 101;
         assert!(prepared.resolve(&displays, &identities).is_err());
         let replacement = [CaptureMonitorIdentity {
-            display_id: "new".into(),
+            display_id: "2".into(),
             binding: CaptureMonitorBinding::Physical {
                 key: "other hardware".into(),
             },
         }];
-        assert!(
-            prepared
-                .resolve(&[display("new", 0)], &replacement)
-                .is_err()
-        );
+        assert!(prepared.resolve(&[display("2", 0)], &replacement).is_err());
     }
     #[test]
     fn catalog_checks_names_geometry_hotkeys_and_strict_schema_without_native_access() {

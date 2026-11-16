@@ -1,7 +1,7 @@
 //! One frozen capture per requested display, followed by sequential PNG crops.
 
 use anyhow::{Context, Result, ensure};
-use app_core::{CaptureBackend, CaptureRequest, CapturedImage, DisplayInfo, PixelRegion};
+use app_core::{CaptureRequest, CapturedImage, DisplayInfo, PixelRegion};
 use std::{
     ffi::OsString,
     io::Write,
@@ -101,6 +101,7 @@ fn same_geometry(first: &DisplayInfo, second: &DisplayInfo) -> bool {
         && first.height == second.height
         && first.scale_factor == second.scale_factor
         && first.rotation == second.rotation
+        && first.mac_coordinates == second.mac_coordinates
 }
 
 fn selected_displays(options: &Options, available: &[DisplayInfo]) -> Result<Vec<DisplayInfo>> {
@@ -154,6 +155,7 @@ fn validate_frames(displays: &[DisplayInfo], frames: &[CapturedImage]) -> Result
             "Display snapshot identity or dimensions changed"
         );
         let expected = app_core::DisplayGeometry {
+            mac_coordinates: display.mac_coordinates,
             x: display.x,
             y: display.y,
             width: display.width,
@@ -165,7 +167,8 @@ fn validate_frames(displays: &[DisplayInfo], frames: &[CapturedImage]) -> Result
             frame
                 .display_geometry
                 .is_none_or(|geometry| geometry == expected)
-                && (!cfg!(target_os = "windows") || frame.display_geometry.is_some()),
+                && (!cfg!(any(target_os = "windows", target_os = "macos"))
+                    || frame.display_geometry.is_some()),
             "Display snapshot geometry changed"
         );
         let expected_bytes = u64::from(display.width) * u64::from(display.height) * 4;
@@ -271,7 +274,7 @@ pub(crate) fn run(args: &[OsString]) -> Result<()> {
     let backend = app_core::XcapBackend::new(PathBuf::new());
     let result = execute(
         &options,
-        || Ok(backend.list_displays()?),
+        || Ok(backend.list_capture_displays_with_cancel(&|| Ok(()))?),
         |requests| Ok(backend.capture_batch(requests)?),
         |frame, path| Ok(frame.save_png_as(path)?),
     )?;
@@ -316,6 +319,31 @@ mod tests {
 
     fn display(id: &str, width: u32, height: u32) -> DisplayInfo {
         DisplayInfo {
+            mac_coordinates: if cfg!(target_os = "macos") {
+                let logical = app_core::MacLogicalRect {
+                    x: 0.0,
+                    y: 0.0,
+                    width: f64::from(width),
+                    height: f64::from(height),
+                };
+                let proof = app_core::MacDisplayProof {
+                    id: id.parse().unwrap(),
+                    uuid: format!(
+                        "00000000-0000-0000-0000-{:012x}",
+                        id.parse::<u32>().unwrap()
+                    ),
+                    logical,
+                    pixel_width: width,
+                    pixel_height: height,
+                    rotation: 0.0,
+                };
+                Some(
+                    app_core::MacDisplayCoordinates::from_filter(proof, logical, logical, 1.0)
+                        .unwrap(),
+                )
+            } else {
+                None
+            },
             id: id.into(),
             name: id.into(),
             x: 0,
@@ -335,6 +363,7 @@ mod tests {
         let mut frame = crate::cli::frame(pixels);
         frame.display_id = display.id.clone();
         frame.display_geometry = Some(app_core::DisplayGeometry {
+            mac_coordinates: display.mac_coordinates,
             x: display.x,
             y: display.y,
             width: display.width,
@@ -350,17 +379,17 @@ mod tests {
         let dir = Directory::new();
         for groups in [
             vec![],
-            vec!["a", "0", "0", "1"],
-            vec!["a", "-1", "0", "1", "1"],
-            vec!["a", "0", "0", "0", "1"],
-            vec!["a", "4294967295", "0", "1", "1"],
-            vec!["a", "0", "0", "8192", "4096", "a", "0", "0", "8192", "4097"],
+            vec!["1", "0", "0", "1"],
+            vec!["1", "-1", "0", "1", "1"],
+            vec!["1", "0", "0", "0", "1"],
+            vec!["1", "4294967295", "0", "1", "1"],
+            vec!["1", "0", "0", "8192", "4096", "1", "0", "0", "8192", "4097"],
         ] {
             assert!(options(&dir.args(&groups)).is_err());
         }
-        assert!(options(&dir.args(&["a", "0", "0", "1", "1"].repeat(17))).is_err());
+        assert!(options(&dir.args(&["1", "0", "0", "1", "1"].repeat(17))).is_err());
         let exact =
-            options(&dir.args(&["a", "0", "0", "8192", "4096", "a", "0", "0", "8192", "4096"]))
+            options(&dir.args(&["1", "0", "0", "8192", "4096", "1", "0", "0", "8192", "4096"]))
                 .unwrap();
         assert_eq!(exact.regions.len(), 2);
         dir.empty();
@@ -370,11 +399,11 @@ mod tests {
     fn full_display_admission_counts_distinct_sources_and_checks_all_regions() {
         let dir = Directory::new();
         let parsed = options(&dir.args(&[
-            "a", "0", "0", "1", "1", "a", "1", "1", "1", "1", "b", "0", "0", "1", "1",
+            "1", "0", "0", "1", "1", "1", "1", "1", "1", "1", "2", "0", "0", "1", "1",
         ]))
         .unwrap();
-        let a = display("a", 8192, 4096);
-        let b = display("b", 8192, 4096);
+        let a = display("1", 8192, 4096);
+        let b = display("2", 8192, 4096);
         let selected = selected_displays(&parsed, &[a.clone(), b.clone()]).unwrap();
         assert_eq!(selected.len(), 2);
         let mut too_large = b.clone();
@@ -382,13 +411,19 @@ mod tests {
         assert!(selected_displays(&parsed, &[a.clone(), too_large]).is_err());
         let mut scaled = b.clone();
         scaled.scale_factor = 2.0;
-        assert!(selected_displays(&parsed, &[a.clone(), scaled]).is_err());
+        assert_eq!(
+            selected_displays(&parsed, &[a.clone(), scaled]).is_err(),
+            !cfg!(target_os = "windows")
+        );
         let mut rotated = b.clone();
         rotated.rotation = 90.0;
-        assert!(selected_displays(&parsed, &[a.clone(), rotated]).is_err());
+        assert_eq!(
+            selected_displays(&parsed, &[a.clone(), rotated]).is_err(),
+            !cfg!(target_os = "windows")
+        );
         assert!(selected_displays(&parsed, &[a.clone(), a.clone(), b]).is_err());
-        let bad = options(&dir.args(&["a", "4", "0", "1", "1"])).unwrap();
-        assert!(selected_displays(&bad, &[display("a", 4, 4)]).is_err());
+        let bad = options(&dir.args(&["1", "4", "0", "1", "1"])).unwrap();
+        assert!(selected_displays(&bad, &[display("1", 4, 4)]).is_err());
         let captures = Cell::new(0);
         assert!(
             execute(
@@ -410,10 +445,10 @@ mod tests {
     fn captures_each_display_once_then_crops_the_same_frozen_pixels_in_order() {
         let dir = Directory::new();
         let parsed = options(&dir.args(&[
-            "a", "1", "1", "2", "2", "b", "0", "0", "2", "1", "a", "2", "1", "1", "2",
+            "1", "1", "1", "2", "2", "2", "0", "0", "2", "1", "1", "2", "1", "1", "2",
         ]))
         .unwrap();
-        let displays = vec![display("a", 4, 3), display("b", 3, 2)];
+        let displays = vec![display("1", 4, 3), display("2", 3, 2)];
         let lists = Cell::new(0);
         let captures = Cell::new(0);
         let weak = RefCell::new(Vec::new());
@@ -427,8 +462,8 @@ mod tests {
             |requests| {
                 captures.set(captures.get() + 1);
                 assert_eq!(requests.len(), 2);
-                assert!(matches!(&requests[0], CaptureRequest::Display(id) if id=="a"));
-                assert!(matches!(&requests[1], CaptureRequest::Display(id) if id=="b"));
+                assert!(matches!(&requests[0], CaptureRequest::Display(id) if id=="1"));
+                assert!(matches!(&requests[1], CaptureRequest::Display(id) if id=="2"));
                 let frames = displays.iter().map(frame).collect::<Vec<_>>();
                 *weak.borrow_mut() = frames.iter().map(|f| Arc::downgrade(&f.pixels)).collect();
                 Ok(frames)
@@ -481,8 +516,8 @@ mod tests {
     #[test]
     fn capture_frame_topology_and_directory_failures_publish_nothing() {
         let dir = Directory::new();
-        let parsed = options(&dir.args(&["a", "0", "0", "1", "1"])).unwrap();
-        let a = display("a", 2, 2);
+        let parsed = options(&dir.args(&["1", "0", "0", "1", "1"])).unwrap();
+        let a = display("1", 2, 2);
         let saves = Cell::new(0);
         assert!(
             execute(
@@ -555,10 +590,10 @@ mod tests {
     fn save_failure_preserves_prior_files_and_exact_completed_count() {
         let dir = Directory::new();
         let parsed = options(&dir.args(&[
-            "a", "0", "0", "1", "1", "a", "1", "0", "1", "1", "a", "0", "1", "1", "1",
+            "1", "0", "0", "1", "1", "1", "1", "0", "1", "1", "1", "0", "1", "1", "1",
         ]))
         .unwrap();
-        let a = display("a", 2, 2);
+        let a = display("1", 2, 2);
         let saves = Cell::new(0);
         let error = execute(
             &parsed,
@@ -591,8 +626,8 @@ mod tests {
     #[test]
     fn failure_after_publication_does_not_claim_the_current_file_is_absent() {
         let dir = Directory::new();
-        let parsed = options(&dir.args(&["a", "0", "0", "1", "1"])).unwrap();
-        let a = display("a", 2, 2);
+        let parsed = options(&dir.args(&["1", "0", "0", "1", "1"])).unwrap();
+        let a = display("1", 2, 2);
         let error = execute(
             &parsed,
             || Ok(vec![a.clone()]),
@@ -625,7 +660,7 @@ mod tests {
             path.push(suffix);
             let args = [
                 path,
-                "a".into(),
+                "1".into(),
                 "0".into(),
                 "0".into(),
                 "1".into(),

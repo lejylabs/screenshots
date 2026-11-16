@@ -28,6 +28,7 @@ pub(crate) fn calibrate(
         return Err(CaptureError::StaleRegion);
     }
     Ok(DisplayGeometry {
+        mac_coordinates: None,
         x: mode.x,
         y: mode.y,
         width: mode.width,

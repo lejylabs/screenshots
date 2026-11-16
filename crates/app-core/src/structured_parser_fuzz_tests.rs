@@ -12,8 +12,13 @@ const NATIVE: &str = include_str!("../tests/fixtures/structured_parser_fuzz/nati
 const SHAREX: &str = include_str!("../tests/fixtures/structured_parser_fuzz/sharex_uploads.jsonl");
 const RESPONSES: &str = include_str!("../tests/fixtures/structured_parser_fuzz/responses.jsonl");
 
+fn lines(text: &str) -> Vec<Vec<u8>> {
+    text.lines().map(|line| line.as_bytes().to_vec()).collect()
+}
+
 fn display() -> DisplayInfo {
     DisplayInfo {
+        mac_coordinates: None,
         id: "fixture".into(),
         name: "Synthetic only".into(),
         x: -4096,
@@ -88,10 +93,155 @@ fn geometry(bytes: &[u8]) -> usize {
 
 #[test]
 fn structured_parser_fuzz_coordinates_and_sizes() {
-    let mut corpus = mutation::lines(REGIONS);
+    // Fixed answers prevent reject-all and always-original implementations passing properties.
+    for (name, area) in [
+        (
+            " Fixture ",
+            PixelRegion {
+                x: 12,
+                y: 24,
+                width: 1920,
+                height: 1080,
+            },
+        ),
+        (
+            "Fixture",
+            PixelRegion {
+                x: u32::MAX - 1,
+                y: u32::MAX - 1,
+                width: 1,
+                height: 1,
+            },
+        ),
+        (
+            "Fixture",
+            PixelRegion {
+                x: 0,
+                y: 0,
+                width: 8192,
+                height: 8192,
+            },
+        ),
+    ] {
+        let preset = RegionPreset::new(name, area).expect("valid fixed preset rejected");
+        assert!(preset.name == "Fixture" && preset.area() == area);
+    }
+    let one = PixelRegion {
+        x: 0,
+        y: 0,
+        width: 1,
+        height: 1,
+    };
+    for name in ["", "\n", "Fixture\0", &"x".repeat(65)] {
+        assert!(
+            RegionPreset::new(name, one).is_err(),
+            "invalid preset name accepted"
+        );
+    }
+    for area in [
+        PixelRegion { width: 0, ..one },
+        PixelRegion { height: 0, ..one },
+        PixelRegion { x: u32::MAX, ..one },
+        PixelRegion { y: u32::MAX, ..one },
+        PixelRegion {
+            width: 8193,
+            height: 8192,
+            ..one
+        },
+        PixelRegion {
+            width: u32::MAX,
+            ..one
+        },
+    ] {
+        assert!(
+            RegionPreset::new("Fixture", area).is_err(),
+            "invalid preset geometry accepted"
+        );
+        assert!(
+            RememberedRegion::from_display(&display(), area).is_err(),
+            "invalid remembered geometry accepted"
+        );
+    }
+    for area in [
+        PixelRegion { x: 4096, ..one },
+        PixelRegion { y: 2160, ..one },
+    ] {
+        assert!(RememberedRegion::from_display(&display(), area).is_err());
+    }
+    for (width, height, accepted) in [
+        (1, 1, true),
+        (8192, 8192, true),
+        (0, 1, false),
+        (1, 0, false),
+        (8193, 8192, false),
+        (u32::MAX, 1, false),
+        (1, u32::MAX, false),
+    ] {
+        assert!(
+            crate::validate_image_size(width, height).is_ok() == accepted,
+            "fixed RGBA admission answer changed"
+        );
+    }
+    for (size, source, expected) in [
+        (ExportSize::Original, (7, 5), (7, 5)),
+        (ExportSize::Half, (7, 5), (4, 3)),
+        (ExportSize::Quarter, (7, 5), (2, 2)),
+        (ExportSize::Width(3), (7, 5), (3, 3)),
+        (ExportSize::Height(2), (7, 5), (3, 2)),
+        (ExportSize::Exact(3, 4), (7, 5), (3, 4)),
+        (ExportSize::Half, (1, 7), (1, 4)),
+        (ExportSize::Quarter, (7, 1), (2, 1)),
+    ] {
+        assert!(
+            size.dimensions(source.0, source.1).unwrap() == expected,
+            "fixed export dimensions changed"
+        );
+    }
+    for size in [
+        ExportSize::Width(0),
+        ExportSize::Height(0),
+        ExportSize::Exact(0, 1),
+        ExportSize::Exact(1, 0),
+        ExportSize::Width(8),
+        ExportSize::Height(6),
+        ExportSize::Exact(8, 1),
+        ExportSize::Exact(1, 6),
+        ExportSize::Width(u32::MAX),
+    ] {
+        assert!(
+            size.dimensions(7, 5).is_err(),
+            "invalid export size accepted"
+        );
+    }
+    for size in [
+        ExportSize::Original,
+        ExportSize::Half,
+        ExportSize::Quarter,
+        ExportSize::Width(1),
+        ExportSize::Height(1),
+        ExportSize::Exact(1, 1),
+    ] {
+        for (width, height) in [(0, 1), (1, 0), (u32::MAX, 1)] {
+            assert!(
+                size.dimensions(width, height).is_err(),
+                "invalid export source accepted"
+            );
+        }
+    }
+    let mut corpus = lines(REGIONS);
     for bytes in &corpus {
         let area: PixelRegion = serde_json::from_slice(bytes).unwrap();
-        assert!(RememberedRegion::from_display(&display(), area).is_ok());
+        assert!(RegionPreset::new("Fixture", area).unwrap().area() == area);
+        let remembered = RememberedRegion::from_display(&display(), area);
+        if cfg!(target_os = "macos") {
+            // A synthetic legacy display carries no independently observed native proof.
+            assert!(
+                remembered.is_err(),
+                "macOS must reject absent native coordinate proof"
+            );
+        } else {
+            assert!(remembered.unwrap().area() == area);
+        }
     }
     for value in [0, 1, 8192, 65535, u32::MAX - 1, u32::MAX] {
         for field in ["x", "y", "width", "height"] {
@@ -119,6 +269,8 @@ struct DragBits {
     end: [u32; 2],
     viewport: [u32; 2],
     image: [u32; 2],
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    expected: Option<PixelRegion>,
 }
 
 fn drag(bytes: &[u8]) -> usize {
@@ -147,7 +299,7 @@ fn drag(bytes: &[u8]) -> usize {
 
 #[test]
 fn structured_parser_fuzz_float_coordinate_bits() {
-    let mut corpus = mutation::lines(DRAGS);
+    let mut corpus = lines(DRAGS);
     let mut random = mutation::Random(mutation::SEED);
     let edges = [
         0,
@@ -176,14 +328,89 @@ fn structured_parser_fuzz_float_coordinate_bits() {
             end: [coordinate(), coordinate()],
             viewport: [coordinate(), coordinate()],
             image: [random.next() as u32, random.next() as u32],
+            expected: None,
         };
         corpus.push(serde_json::to_vec(&bits).unwrap());
     }
     mutation::run("float_coordinate_bits", &corpus, drag);
+    // Expected fields are trusted only in unmutated fixtures.
+    for bytes in lines(DRAGS) {
+        let bits: DragBits = serde_json::from_slice(&bytes).unwrap();
+        for square in [false, true] {
+            assert!(
+                PixelRegion::from_drag_constrained(
+                    bits.start.map(f32::from_bits),
+                    bits.end.map(f32::from_bits),
+                    bits.viewport.map(f32::from_bits),
+                    bits.image,
+                    square,
+                ) == bits.expected,
+                "fixed drag regression oracle failed"
+            );
+        }
+    }
 }
 
 #[test]
 fn structured_parser_fuzz_format_paths() {
+    for (path, expected) in [
+        ("fixture.png", ImageExportFormat::Png),
+        ("fixture.JPEG", ImageExportFormat::Jpeg),
+        ("🦊.WeBp", ImageExportFormat::WebP),
+        ("fixture.jpg", ImageExportFormat::Jpeg),
+        ("../fixture.png", ImageExportFormat::Png),
+    ] {
+        assert!(
+            ImageExportFormat::from_path(std::path::Path::new(path)).unwrap() == expected,
+            "fixed format answer changed"
+        );
+    }
+    for path in [
+        "fixture",
+        "fixture.png\0bad",
+        "fixture.bmp",
+        "fixture.tiff",
+        ".png",
+        "fixture.png.txt",
+    ] {
+        assert!(
+            ImageExportFormat::from_path(std::path::Path::new(path)).is_err(),
+            "unsupported suffix accepted"
+        );
+    }
+    for (width, height, expected) in [
+        (1, 1, [true, true, true]),
+        (0, 1, [false, false, false]),
+        (1, 0, [false, false, false]),
+        (8192, 8192, [true, true, true]),
+        (8193, 8192, [false, false, false]),
+        (16384, 1, [true, true, true]),
+        (1, 16384, [true, true, true]),
+        (16385, 1, [true, true, false]),
+        (1, 16385, [true, true, false]),
+        (65535, 1, [true, true, false]),
+        (1, 65535, [true, true, false]),
+        (65536, 1, [true, false, false]),
+        (1, 65536, [true, false, false]),
+        (67_108_864, 1, [true, false, false]),
+        (67_108_865, 1, [false, false, false]),
+        (u32::MAX, 1, [false, false, false]),
+        (1, u32::MAX, [false, false, false]),
+    ] {
+        for (format, accepted) in [
+            ImageExportFormat::Png,
+            ImageExportFormat::Jpeg,
+            ImageExportFormat::WebP,
+        ]
+        .into_iter()
+        .zip(expected)
+        {
+            assert!(
+                format.validate_output_size(width, height).is_ok() == accepted,
+                "fixed format axis admission answer changed"
+            );
+        }
+    }
     let corpus = [
         "fixture.png",
         "fixture.JPEG",
@@ -242,7 +469,7 @@ fn structured_parser_fuzz_upload_profile_and_template_parsing() {
         ("native_upload_profile", false, NATIVE),
         ("sharex_upload_profile", true, SHAREX),
     ] {
-        let mut corpus = mutation::lines(text);
+        let mut corpus = lines(text);
         for bytes in &corpus {
             assert!(
                 profile(bytes, sharex, false).is_ok(),
@@ -423,6 +650,7 @@ fn structured_parser_fuzz_uploader_response_extraction() {
 fn structured_parser_fuzz_boundary_and_private_errors() {
     const PRIVATE: &str = "synthetic-private-marker-🦊-2714";
     let started = std::time::Instant::now();
+    let mut max_output = 0;
     let cases = responses();
     let parsers: Vec<_> = cases.iter().map(ResponseCase::parser).collect();
     // Streaming admission owns MAX_RESPONSE; only its admitted byte count enters pure parsers.
@@ -439,6 +667,9 @@ fn structured_parser_fuzz_boundary_and_private_errors() {
         let body = format!("{}x{}", "<x>".repeat(depth), "</x>".repeat(depth));
         let first = xml_capture(&body, "/x", "fixture").map_err(|error| error.to_string());
         assert!(first == xml_capture(&body, "/x", "fixture").map_err(|error| error.to_string()));
+        if let Ok(value) = first {
+            max_output = max_output.max(value.len());
+        }
     }
     let header_parser =
         UploadResultParser::from_sharex("{header:Location}", UploadMethod::Post, false, "fixture")
@@ -457,7 +688,7 @@ fn structured_parser_fuzz_boundary_and_private_errors() {
     );
     for value in [
         serde_json::json!(PRIVATE),
-        serde_json::json!({PRIVATE:true}),
+        serde_json::json!({(PRIVATE):true}),
         serde_json::json!([PRIVATE]),
         serde_json::json!(false),
     ] {
@@ -487,7 +718,7 @@ fn structured_parser_fuzz_boundary_and_private_errors() {
         "protected link error echoed private value"
     );
     eprintln!(
-        "STRUCTURED_FUZZ {{\"family\":\"boundary_and_private_errors\",\"seed\":\"{:#x}\",\"max_input\":{},\"xml_node_boundary\":{},\"xml_max_depth\":160,\"elapsed_us\":{}}}",
+        "STRUCTURED_FUZZ {{\"family\":\"boundary_and_private_errors\",\"seed\":\"{:#x}\",\"cases\":24,\"max_input\":{},\"max_output\":{max_output},\"xml_node_boundary\":{},\"xml_max_depth\":160,\"elapsed_us\":{}}}",
         mutation::SEED,
         MAX_RESPONSE,
         MAX_XML_NODES + 1,

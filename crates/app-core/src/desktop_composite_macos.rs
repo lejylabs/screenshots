@@ -73,6 +73,7 @@ pub fn stitch_macos_desktop_with_cancel(
     }
     work.check()?;
     Ok(CapturedImage {
+        desktop_layout: None,
         display_id: "desktop".into(),
         window_id: None,
         width: layout.width,
@@ -95,6 +96,7 @@ mod tests {
 
     fn frame(display: &MacDisplayCoordinates) -> CapturedImage {
         CapturedImage {
+            desktop_layout: None,
             display_id: display.display_id.to_string(),
             window_id: None,
             width: display.pixel_width,
@@ -171,7 +173,7 @@ mod tests {
         let mut bad = frame(&source);
         bad.window_id = Some("1".into());
         assert!(stitch_macos_desktop_with_cancel(&layout, &[bad], &|| false).is_err());
-        let mut forged = layout.clone();
+        let mut forged = layout;
         forged.placements[0].x = u32::MAX;
         assert!(stitch_macos_desktop_with_cancel(&forged, &[frame(&source)], &|| false).is_err());
     }

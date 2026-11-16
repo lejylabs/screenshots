@@ -450,6 +450,7 @@ mod tests {
             ])
         });
         let image = crate::CapturedImage {
+            desktop_layout: None,
             display_id: String::new(),
             window_id: None,
             width: pixels.width(),

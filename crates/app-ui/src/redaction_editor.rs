@@ -245,6 +245,7 @@ fn oriented_source(
     result.height = out_height;
     result.pixels = Arc::new(output);
     result.display_geometry = None;
+    result.desktop_layout = None;
     Ok(result)
 }
 #[derive(Default)]
@@ -3386,6 +3387,7 @@ mod tests {
 
     fn orientation_fixture(width: u32, height: u32) -> CapturedImage {
         CapturedImage {
+            desktop_layout: None,
             width,
             height,
             display_id: "fixture".into(),
@@ -3398,6 +3400,50 @@ mod tests {
                 image::Rgba([x as u8, y as u8, (x + y) as u8, (x * 30 + y * 10) as u8])
             })),
         }
+    }
+
+    #[test]
+    fn desktop_layout_survives_only_the_original_orientation_fast_path() {
+        let mut original = orientation_fixture(4, 3);
+        original.display_id = "desktop".into();
+        let logical = app_core::MacLogicalRect {
+            x: 0.0,
+            y: 0.0,
+            width: 4.0,
+            height: 3.0,
+        };
+        let proof = app_core::MacDisplayProof {
+            id: 1,
+            uuid: "00000000-0000-0000-0000-000000000001".into(),
+            logical,
+            pixel_width: 4,
+            pixel_height: 3,
+            rotation: 0.0,
+        };
+        let coordinates =
+            app_core::MacDisplayCoordinates::from_filter(proof, logical, logical, 1.0).unwrap();
+        let layout = Arc::new(app_core::MacDesktopLayout::new(&[coordinates]).unwrap());
+        original.desktop_layout = Some(layout.clone());
+        let unchanged = oriented_source(&original, BaseOrientation::default(), || false).unwrap();
+        assert!(Arc::ptr_eq(&unchanged.pixels, &original.pixels));
+        assert!(Arc::ptr_eq(
+            unchanged.desktop_layout.as_ref().unwrap(),
+            &layout
+        ));
+        for orientation in [
+            BaseOrientation::default().rotate(),
+            BaseOrientation::default().flip(false),
+            BaseOrientation::default().flip(true),
+        ] {
+            let changed = oriented_source(&original, orientation, || false).unwrap();
+            assert!(changed.display_geometry.is_none());
+            assert!(changed.desktop_layout.is_none());
+            assert!(!Arc::ptr_eq(&changed.pixels, &original.pixels));
+        }
+        assert!(Arc::ptr_eq(
+            original.desktop_layout.as_ref().unwrap(),
+            &layout
+        ));
     }
 
     #[test]
@@ -3844,6 +3890,7 @@ mod tests {
             .is_none()
         );
         let source = CapturedImage {
+            desktop_layout: None,
             display_id: "test".into(),
             window_id: None,
             width: 100,

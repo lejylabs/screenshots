@@ -1867,6 +1867,7 @@ pub(super) fn render(
         height: size.1,
         pixels: Arc::new(output),
         display_geometry: None,
+        desktop_layout: None,
         png_path: snapshot.source.png_path.with_file_name(format!(
             "edited-{}.{}",
             uuid::Uuid::new_v4(),

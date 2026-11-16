@@ -97,8 +97,10 @@ scales, all four rotations, exact crop/cursor coordinates, before/after drift,
 bounded message storms, operation teardown and unchanged source pixels. Native
 Windows CI can verify API/handle lifecycle against its actual desktop; it
 cannot establish physical mixed-DPI/rotation, reconnect, sleep, device-loss or
-presentation acceptance. Linux/macOS coordinate policies remain their existing
-explicit policies until their own adapters establish physical coordinates.
+presentation acceptance. Linux retains its raw RandR physical-coordinate policy.
+macOS headless consumers now retain explicit Quartz/native-raster proofs and use
+the separately defined [derived desktop grid](macos-coordinate-consumers.md),
+with current-source SDK and hardware acceptance still open.
 
 Implementation checkpoints are independently buildable: (1) pure calibration
 model and GNU Windows all-target metadata; (2) native calibration/witness and
