@@ -1,6 +1,9 @@
 use image::RgbaImage;
 
-use crate::error::XCapResult;
+use crate::error::{XCapError, XCapResult};
+
+#[path = "physical_region_bounds.rs"]
+mod physical_region_bounds;
 
 use super::{
     impl_monitor::ImplMonitor,
@@ -43,17 +46,36 @@ pub fn capture_region(
     let monitor_info_buf = get_monitor_info_buf(impl_monitor.output)?;
 
     if wayland_detect() {
+        let monitor_width = impl_monitor.width()?;
+        let monitor_height = impl_monitor.height()?;
+        if width == 0
+            || height == 0
+            || x.checked_add(width).is_none_or(|end| end > monitor_width)
+            || y.checked_add(height).is_none_or(|end| end > monitor_height)
+        {
+            return Err(XCapError::InvalidCaptureRegion(
+                "Region is outside monitor bounds".into(),
+            ));
+        }
         wayland_capture(x as i32, y as i32, width as i32, height as i32)
     } else {
-        let screen_buf = get_current_screen_buf()?;
-
-        xorg_capture(
-            screen_buf.root(),
-            monitor_info_buf.x() as i32 + x as i32,
-            monitor_info_buf.y() as i32 + y as i32,
-            width,
-            height,
+        // Bounds and root-read origin use one raw RandR observation, never Xft scale.
+        let (native_x, native_y) = physical_region_bounds::physical_region_origin(
+            (
+                i32::from(monitor_info_buf.x()),
+                i32::from(monitor_info_buf.y()),
+                u32::from(monitor_info_buf.width()),
+                u32::from(monitor_info_buf.height()),
+            ),
+            (x, y, width, height),
         )
+        .ok_or_else(|| {
+            XCapError::InvalidCaptureRegion(
+                "Region is outside native physical monitor bounds or X11 coordinate range".into(),
+            )
+        })?;
+        let screen_buf = get_current_screen_buf()?;
+        xorg_capture(screen_buf.root(), native_x, native_y, width, height)
     }
 }
 

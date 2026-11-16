@@ -312,6 +312,19 @@ impl ImplMonitor {
         Ok(((height as f32) / scale_factor) as u32)
     }
 
+    pub fn physical_geometry(&self) -> XCapResult<(i32, i32, u32, u32)> {
+        if wayland_detect() {
+            return Err(XCapError::NotSupported);
+        }
+        let info = get_monitor_info_buf(self.output)?;
+        Ok((
+            i32::from(info.x()),
+            i32::from(info.y()),
+            u32::from(info.width()),
+            u32::from(info.height()),
+        ))
+    }
+
     pub fn rotation(&self) -> XCapResult<f32> {
         let mode_infos = get_mode_infos()?;
         let (rotation, _) = get_rotation_frequency(mode_infos, &self.output).unwrap_or((0.0, 0.0));
@@ -354,21 +367,6 @@ impl ImplMonitor {
     }
 
     pub fn capture_region(&self, x: u32, y: u32, width: u32, height: u32) -> XCapResult<RgbaImage> {
-        // Validate region bounds
-        let monitor_x = self.x()?;
-        let monitor_y = self.y()?;
-        let monitor_width = self.width()?;
-        let monitor_height = self.height()?;
-
-        if width > monitor_width
-            || height > monitor_height
-            || x + width > monitor_width
-            || y + height > monitor_height
-        {
-            return Err(XCapError::InvalidCaptureRegion(format!(
-                "Region ({x}, {y}, {width}, {height}) is outside monitor bounds ({monitor_x}, {monitor_y}, {monitor_width}, {monitor_height})"
-            )));
-        }
         capture_region(self, x, y, width, height)
     }
 

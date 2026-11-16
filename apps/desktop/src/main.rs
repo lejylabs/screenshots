@@ -35,6 +35,7 @@ mod record;
 mod record_windows;
 mod region_analysis;
 mod s3;
+mod screen_tools;
 mod scroll_capture;
 mod scroll_stitch;
 mod sharex;

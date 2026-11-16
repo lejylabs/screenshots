@@ -104,7 +104,12 @@ impl PreparedCapture {
                     return crate::capture_native::mac_display_dimensions(monitor)
                         .map_err(backend_error);
                 }
-                #[cfg(not(target_os = "macos"))]
+                #[cfg(target_os = "linux")]
+                {
+                    let geometry = monitor_geometry(monitor)?;
+                    Ok((geometry.width, geometry.height))
+                }
+                #[cfg(not(any(target_os = "macos", target_os = "linux")))]
                 {
                     Ok((
                         monitor.width().map_err(backend_error)?,
@@ -171,8 +176,8 @@ impl DisplayGeometry {
 }
 
 /// Validate coordinates returned by this platform's native display adapter.
-/// Windows observations are calibrated in physical pixels; other adapters keep
-/// their existing unscaled, unrotated region-coordinate policy.
+/// Windows observations are calibrated and X11 uses raw RandR physical pixels;
+/// other adapters keep their unscaled, unrotated region-coordinate policy.
 pub fn validate_display_pixel_coordinates(display: &DisplayInfo) -> Result<(), CaptureError> {
     validate_image_size(display.width, display.height)?;
     if !display.scale_factor.is_finite()
@@ -181,7 +186,9 @@ pub fn validate_display_pixel_coordinates(display: &DisplayInfo) -> Result<(), C
     {
         return Err(CaptureError::StaleRegion);
     }
-    if !cfg!(target_os = "windows") && (display.scale_factor != 1.0 || display.rotation != 0.0) {
+    if !cfg!(any(target_os = "windows", target_os = "linux"))
+        && (display.scale_factor != 1.0 || display.rotation != 0.0)
+    {
         return Err(CaptureError::Unsupported(
             "This native adapter requires unrotated 100% physical-pixel region coordinates",
         ));
@@ -679,7 +686,7 @@ impl XcapBackend {
                 let (display_id, window_id, image, label) = match prepared {
                     PreparedCapture::Display(monitor, id) => {
                         let cursor_geometry = cursor_geometry(&monitor, &self.options)?;
-                        let before = if cfg!(target_os = "windows") {
+                        let before = if cfg!(any(target_os = "windows", target_os = "linux")) {
                             Some(monitor_geometry(&monitor)?)
                         } else {
                             None
@@ -823,7 +830,12 @@ impl XcapBackend {
                 let (display_width, display_height) =
                     crate::capture_native::mac_display_dimensions(&monitor)
                         .map_err(backend_error)?;
-                #[cfg(not(target_os = "macos"))]
+                #[cfg(target_os = "linux")]
+                let (display_width, display_height) = {
+                    let geometry = monitor_geometry(&monitor)?;
+                    (geometry.width, geometry.height)
+                };
+                #[cfg(not(any(target_os = "macos", target_os = "linux")))]
                 let (display_width, display_height) = (
                     monitor.width().map_err(backend_error)?,
                     monitor.height().map_err(backend_error)?,
@@ -835,7 +847,7 @@ impl XcapBackend {
                 {
                     return Err(CaptureError::InvalidRegion);
                 }
-                let expected = if cfg!(target_os = "windows") {
+                let expected = if cfg!(any(target_os = "windows", target_os = "linux")) {
                     Some(monitor_geometry(&monitor)?)
                 } else {
                     None
@@ -1170,11 +1182,11 @@ fn cursor_geometry(
 }
 
 fn monitor_geometry(monitor: &Monitor) -> Result<DisplayGeometry, CaptureError> {
-    #[cfg(target_os = "windows")]
+    #[cfg(any(target_os = "windows", target_os = "linux"))]
     {
         crate::capture_native::physical_monitor_geometry(monitor).map_err(backend_error)
     }
-    #[cfg(not(target_os = "windows"))]
+    #[cfg(not(any(target_os = "windows", target_os = "linux")))]
     {
         Ok(DisplayGeometry {
             x: monitor.x().map_err(backend_error)?,

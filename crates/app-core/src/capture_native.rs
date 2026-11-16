@@ -39,7 +39,7 @@ pub(crate) fn dpi_scope() -> Result<platform::DpiScope> {
 pub(crate) fn topology_guard() -> Result<platform::TopologyGuard> {
     platform::TopologyGuard::new()
 }
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "linux"))]
 pub(crate) fn physical_monitor_geometry(monitor: &xcap::Monitor) -> Result<crate::DisplayGeometry> {
     platform::monitor_geometry(monitor)
 }
