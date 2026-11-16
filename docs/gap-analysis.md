@@ -5,6 +5,13 @@
 The [current checklist](non-ui-status.md) reconciles all project Markdown and
 the complete requested feature list; this file retains the historical detail.
 
+The 2026-11-16 continuation adds native defaults/templates and isolation,
+portable Library lifecycle/retention, bounded raster cancellation, modern SXCU
+execution and complete private-runtime packaging. Durable schedules, atomic
+Windows workers, real in-memory portal capture and URL input are under final
+integration. Consult the linked current checklist and each dated contract for
+actual source/test scope; none of this closes excluded UI or hardware gates.
+
 The historical tables below are not the current delivery checklist. Relative to
 main 523bc3c, the feature branch adds the following **CLI/core subsets**:
 

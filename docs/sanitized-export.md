@@ -1,7 +1,7 @@
 # Explicit history export metadata policy
 
 `screenshots history-manage export DATABASE DIRECTORY POLICY ID...` exports
-1–20 explicit capture-history references. `POLICY` is `original` or
+1–100 explicit capture-history references selected across pages. `POLICY` is `original` or
 `strip-metadata`. All IDs must exist before files are exported; the database is
 read without migrations and is never changed by export.
 

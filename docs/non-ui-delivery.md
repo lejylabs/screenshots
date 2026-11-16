@@ -1,5 +1,34 @@
 # Non-UI delivery plan
 
+## Current continuation (2026-11-16)
+
+The workstation stays powered on. The unattended non-UI task continues; final
+product design/controls remain excluded. Old reproducible artifacts were reduced
+from about 257 to 44 GiB apparent target size; new release-fast debug data is limited.
+
+Reviewed/committed follow-ups include Open With, recoverable user/native
+packaging, maintained native font/D-Bus dependencies, explicit FTP/FTPS/SFTP,
+public-client OAuth PKCE/device flow, bounded task execution, native hotkeys,
+authenticated IPC and retained clipboard ownership. See their focused contracts.
+The active native graph passes the default advisory policy without ignores;
+dormant optional backends and native acceptance limits are recorded separately.
+
+Current working-tree follow-ups are Library lifecycle/schema8 reservation safety,
+monitor-bound capture defaults/templates and bounded native process execution,
+full SXCU execution through a lazy private runtime, and cooperative raster work.
+Source reviews found real data-safety/authentication/native geometry issues;
+fixes and re-review remain part of delivery, not accepted risks by default.
+
+An intermediate optimized workspace passed 718 tests with 60 opt-ins excluded;
+subprocess test summaries were counted only once. Nine portable packaging,
+three native layout and 21 installer fixtures passed. A real intermediate Linux
+package including the helper passed extracted self-tests/profile inspection.
+These observations do not claim the later frozen tree, final release, native
+Windows/macOS permissions/hardware or the full performance contract accepted.
+Actual Wayland in-memory capture, durable scheduling, broader native composites,
+HDR and the remaining non-UI backlog continue after the current reviewed slices.
+
+
 Author: NewtTheWolf
 Date: 2026-11-14–15
 Status: implementation in progress; no platform or parity acceptance is implied.
@@ -1875,3 +1904,34 @@ memory. Raw timings, exact commands and this limitation are recorded in
 The final frozen-tree repeat passed 523 regular tests, 53 opt-in cases excluded
 and all doctests. The extra opt-in case is the saved-PNG timing fixture, already
 run separately. No required test remained pending in this local slice.
+
+
+## Integrated continuation snapshot — 2026-11-16
+
+Feature branch through `15e3084` now includes reviewed Library lifecycle,
+cooperative image work, modern SXCU/runtime packaging, native capture defaults/
+templates/isolation, atomic Windows workers, real authorized-FD portal frames,
+URL CLI/Task image input and durable sealed schedules. Full backlog remains open;
+editor document, macOS native and clipboard/import/output work is continuing.
+
+The current integrated optimized suite passed 786 regular cases, 62 explicit
+opt-ins excluded, across 57 outer suites. Clippy passed configured denied lints,
+Windows GNU dev app/tests metadata passed, and the default active dependency
+advisory check passed without ignores. Evidence is
+`target/verification/current-integrated-checks.json`. The first integrated attempt
+failed two host-capability UI fixtures; they now explicitly select synthetic
+capabilities, preserving actual unsupported-Wayland capability gating.
+
+Actual intermediate portable/.deb extraction passed help/version, profile
+inspection and 134 helper assertions with exact binary/digest, controlled native
+layout and declared glibc ABI. This host's binary requires glibc 2.44 and is an
+explicit prebuilt development artifact, not the Ubuntu native CI release.
+`target/verification/complete-runtime-package-abi.json` keeps that scope explicit.
+Five fresh SXCU rounds were capped; the last prefix-body finding was corrected
+and verified by 26 Rust/134 helper/94 HTTPS checks, not relabeled a clean round.
+
+Current exact-head native CI still must run through platform/SDK/runtime gates;
+previous failed/canceled jobs and ignored physical tests are not passes. No
+signing identity/account permission/reference hardware was invented. The PC
+remains on, user files and private clipboard remain untouched, and reproducible
+old build artifacts were cleaned as requested.
