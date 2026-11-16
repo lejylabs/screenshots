@@ -14,7 +14,7 @@ impl Fixture {
             uuid::Uuid::new_v4()
         ));
         std::fs::create_dir(&root).unwrap();
-        Self(root)
+        Self(root.canonicalize().unwrap())
     }
     fn path(&self, name: &str) -> PathBuf {
         self.0.join(name)
