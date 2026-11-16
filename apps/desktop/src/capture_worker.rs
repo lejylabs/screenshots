@@ -877,7 +877,7 @@ fn serve() -> Result<()> {
     let call = protocol::read_request(&mut io)?;
     io.deadline = Instant::now() + operation_timeout(&call);
     #[cfg(target_os = "macos")]
-    let lifeline = transport::Lifeline::new(&io.transport)?;
+    let lifeline = transport::Lifeline::new(parent)?;
     #[cfg(target_os = "macos")]
     if let NativeCaptureCall::MacVideo { request } = call {
         return video::serve(request, &mut io, &nonce, parent);
@@ -1017,6 +1017,35 @@ mod tests {
         assert_eq!(summary.frames, 3);
         assert_eq!(std::fs::read(output).unwrap().len(), 48);
         assert!(!BUSY.load(Ordering::Acquire));
+    }
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn mac_lifeline_preserves_normal_video_start_and_finish_control_packets() {
+        let _serial = lock(&SERIAL);
+        settle();
+        let folder = Folder::new();
+        // worker_fixture arms the production Mac Lifeline before VIDEO_READY.
+        // Each run sends START while it waits, then FINISH after probe flush.
+        for index in 0..8 {
+            let output = folder.0.join(format!("normal-{index}.raw"));
+            let plan = video_plan(output.clone());
+            let reply = execute_operation(
+                || Ok(fake_command("video", None)),
+                NativeCaptureCall::MacVideo {
+                    request: plan.request,
+                },
+                &|| Ok(()),
+                Duration::from_secs(5),
+                Operation::Video(plan),
+            )
+            .unwrap();
+            assert!(
+                matches!(reply, NativeCaptureReply::MacVideo { summary } if summary.frames == 3)
+            );
+            assert_eq!(std::fs::read(output).unwrap().len(), 48);
+            settle();
+            assert!(!BUSY.load(Ordering::Acquire));
+        }
     }
     #[cfg(unix)]
     #[test]
@@ -1258,6 +1287,60 @@ mod tests {
                 .any(|(key, value)| key == MODE && value == Some(std::ffi::OsStr::new("success")))
         );
     }
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn descriptor_only_wayland_context_is_rejected_before_sanitized_worker_launch() {
+        let _serial = lock(&SERIAL);
+        settle();
+        let marker = std::env::temp_dir().join(format!(
+            "screenshots-wayland-context-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let mut command = fake_command("success", Some(&marker));
+        command
+            .env("WAYLAND_SOCKET", "not-forwarded")
+            .env_remove("WAYLAND_DISPLAY")
+            .env_remove("XDG_SESSION_TYPE");
+        let error = execute_command(
+            command,
+            NativeCaptureCall::ClipboardInspect {
+                kind: app_core::ClipboardInspectKind::Text,
+                backend: app_core::NativeClipboardBackend::Automatic,
+            },
+            &|| Ok(()),
+            Duration::from_secs(5),
+        )
+        .err()
+        .unwrap();
+        assert!(matches!(error, CaptureError::Clipboard));
+        assert!(!marker.exists());
+        settle();
+    }
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn original_wayland_descriptor_is_not_forwarded_but_context_is_frozen() {
+        use std::os::fd::AsRawFd;
+        let _serial = lock(&SERIAL);
+        settle();
+        let (socket, _peer) = std::os::unix::net::UnixStream::pair().unwrap();
+        let descriptor = socket.as_raw_fd();
+        let flags = unsafe { libc::fcntl(descriptor, libc::F_GETFD) };
+        assert!(flags >= 0);
+        assert_eq!(
+            unsafe { libc::fcntl(descriptor, libc::F_SETFD, flags & !libc::FD_CLOEXEC) },
+            0
+        );
+        let mut command = fake_command("wayland_descriptor_closed", None);
+        command
+            .env("WAYLAND_SOCKET", descriptor.to_string())
+            .env("SCREENSHOTS_ORIGINAL_WAYLAND_FD", descriptor.to_string())
+            .env_remove("WAYLAND_DISPLAY")
+            .env_remove("XDG_SESSION_TYPE");
+        let result = execute_command(command, call(), &|| Ok(()), Duration::from_secs(5));
+        assert_eq!(unsafe { libc::fcntl(descriptor, libc::F_SETFD, flags) }, 0);
+        assert!(result.is_ok(), "{:?}", result.err());
+        settle();
+    }
     #[test]
     fn worker_fixture() -> Result<()> {
         let Ok(mode) = std::env::var(MODE) else {
@@ -1273,7 +1356,7 @@ mod tests {
         protocol::handshake(&mut io, protocol::ACK, &nonce)?;
         let fixture_call = protocol::read_request(&mut io)?;
         #[cfg(target_os = "macos")]
-        let _lifeline = transport::Lifeline::new(&io.transport)?;
+        let _lifeline = transport::Lifeline::new(parent)?;
         if let Some(marker) = std::env::var_os(MARKER) {
             std::fs::write(marker, std::process::id().to_string())?;
         }
@@ -1328,6 +1411,25 @@ mod tests {
             }
             "slow" => {
                 std::thread::sleep(Duration::from_millis(250));
+                protocol::reply(&mut io, NativeCaptureReply::Frames(vec![frame()]))?;
+            }
+            #[cfg(target_os = "linux")]
+            "wayland_descriptor_closed" => {
+                ensure!(
+                    std::env::var_os("WAYLAND_SOCKET").is_none(),
+                    "Raw Wayland descriptor environment escaped"
+                );
+                ensure!(
+                    std::env::var_os("XDG_SESSION_TYPE") == Some("wayland".into()),
+                    "Frozen Wayland context was lost"
+                );
+                let descriptor =
+                    std::env::var("SCREENSHOTS_ORIGINAL_WAYLAND_FD")?.parse::<i32>()?;
+                ensure!(
+                    unsafe { libc::fcntl(descriptor, libc::F_GETFD) } < 0
+                        && std::io::Error::last_os_error().raw_os_error() == Some(libc::EBADF),
+                    "Original Wayland descriptor was inherited"
+                );
                 protocol::reply(&mut io, NativeCaptureReply::Frames(vec![frame()]))?;
             }
             "success" => protocol::reply(&mut io, NativeCaptureReply::Frames(vec![frame()]))?,

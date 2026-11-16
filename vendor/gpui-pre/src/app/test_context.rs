@@ -393,6 +393,11 @@ impl TestAppContext {
         self.test_platform.read_from_clipboard()
     }
 
+    /// Installs the private native-drop adapter's cancellation callback for this test.
+    pub fn on_cancel_pending_native_drop(&self, cancel: impl FnMut() + 'static) {
+        *self.test_platform.pending_native_drop_cancel.borrow_mut() = Some(Box::new(cancel));
+    }
+
     /// Simulates choosing a File in the platform's "Open" dialog.
     pub fn simulate_new_path_selection(
         &self,

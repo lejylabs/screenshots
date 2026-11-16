@@ -801,8 +801,7 @@ impl DocumentSpec {
         Ok(value)
     }
     pub fn metadata_bytes(&self) -> usize {
-        // Serialized metadata has a bounded, stable upper bound for retained heap
-        // accounting, independent of shared source/font/raster backing.
+        // Count retained Vec/String capacities, independently of shared pixel/font backing.
         std::mem::size_of::<Self>()
             + self.layers.capacity() * std::mem::size_of::<Layer>()
             + self

@@ -339,6 +339,10 @@ impl<'a> Layout<'a> {
                     ])
                     .build();
                 let shaper = harfrust::ShaperFont::new(&face);
+                ensure!(
+                    !shaper.preprocessing_budget_exhausted(),
+                    "Editor font preprocessing exhausted its work/allocation bound"
+                );
                 let mut buffer = harfrust::Buffer::new();
                 buffer.push_str(text);
                 buffer.set_direction(if rtl {
@@ -358,6 +362,10 @@ impl<'a> Layout<'a> {
                 harfrust::shape(&shaper, &mut buffer, harfrust::ShapeOptions::new())
                     .map_err(|_| anyhow::anyhow!("Editor font shaping failed"))?;
                 work.check()?;
+                ensure!(
+                    !shaper.preprocessing_budget_exhausted(),
+                    "Editor font preprocessing exhausted its work/allocation bound"
+                );
                 ensure!(
                     buffer.allocation_successful() && buffer.glyph_infos().len() <= 8192,
                     "Editor shaping exhausted its work/glyph bound"

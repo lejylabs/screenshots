@@ -29,6 +29,7 @@ struct Session {
     owner: Window,
     generation: u64,
     baseline: u64,
+    baseline_timestamp: Option<(Option<u32>, Option<u32>)>,
     selection_timestamp: Option<u32>,
     event_timestamp: Option<u32>,
     deadline: Instant,
@@ -82,6 +83,7 @@ impl Session {
             owner: 0,
             generation: 0,
             baseline: 0,
+            baseline_timestamp: None,
             selection_timestamp: None,
             event_timestamp: None,
             deadline,
@@ -116,6 +118,7 @@ impl Session {
             .owner;
         session.drain_events()?;
         session.baseline = session.generation;
+        session.baseline_timestamp = Some((session.selection_timestamp, session.event_timestamp));
         // A second ordered round trip closes bootstrap races before any TARGETS read.
         session.check(&|| Ok(()))?;
         Ok(session)
@@ -169,7 +172,10 @@ impl Session {
             .owner;
         self.drain_events()?;
         ensure!(
-            owner == self.owner && self.generation == self.baseline,
+            owner == self.owner
+                && self.generation == self.baseline
+                && self.baseline_timestamp
+                    == Some((self.selection_timestamp, self.event_timestamp)),
             "Clipboard selection generation changed during transfer"
         );
         Ok(())

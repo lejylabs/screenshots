@@ -35,8 +35,17 @@ impl CaptureBudget {
         let total = u64::from(width)
             .checked_mul(u64::from(height))
             .and_then(|pixels| pixels.checked_mul(4))
-            .and_then(|bytes| self.0.checked_add(bytes))
-            .filter(|bytes| *bytes <= MAX_CAPTURE_BYTES)
+            .ok_or(CaptureError::MemoryLimit)?;
+        self.admit_bytes(total)
+    }
+    fn admit_bytes(&mut self, bytes: u64) -> Result<(), CaptureError> {
+        if bytes == 0 {
+            return Err(CaptureError::EmptyFrame);
+        }
+        let total = self
+            .0
+            .checked_add(bytes)
+            .filter(|total| *total <= MAX_CAPTURE_BYTES)
             .ok_or(CaptureError::MemoryLimit)?;
         self.0 = total;
         Ok(())
@@ -70,11 +79,23 @@ pub enum CaptureRequest {
 
 enum PreparedCapture {
     Display(Monitor, String),
+    #[cfg(not(target_os = "macos"))]
     Window(Window, String, String, Option<u32>),
+    #[cfg(target_os = "macos")]
+    MacWindow(crate::capture_native::MacPreparedWindow, String, String),
     Region(Monitor, String, u32, u32, u32, u32, Option<DisplayGeometry>),
 }
 
 impl PreparedCapture {
+    fn admission_bytes(&self) -> Result<u64, CaptureError> {
+        #[cfg(target_os = "macos")]
+        if let Self::MacWindow(source, ..) = self {
+            return Ok(source.admission_bytes());
+        }
+        let (width, height) = self.dimensions()?;
+        validate_image_size(width, height)?;
+        Ok(u64::from(width) * u64::from(height) * 4)
+    }
     fn dimensions(&self) -> Result<(u32, u32), CaptureError> {
         match self {
             Self::Display(monitor, _) => {
@@ -91,9 +112,14 @@ impl PreparedCapture {
                     ))
                 }
             }
+            #[cfg(not(target_os = "macos"))]
             Self::Window(window, _, _, _) => Ok((
                 window.width().map_err(backend_error)?,
                 window.height().map_err(backend_error)?,
+            )),
+            #[cfg(target_os = "macos")]
+            Self::MacWindow(..) => Err(CaptureError::Unsupported(
+                "Native window admission uses physical byte reservation",
             )),
             Self::Region(_, _, _, _, width, height, _) => Ok((*width, *height)),
         }
@@ -638,8 +664,7 @@ impl XcapBackend {
             .map(|request| {
                 self.check_native(check)?;
                 let prepared = self.prepare(request)?;
-                let (width, height) = prepared.dimensions()?;
-                budget.admit(width, height)?;
+                budget.admit_bytes(prepared.admission_bytes()?)?;
                 Ok(prepared)
             })
             .collect::<Result<Vec<_>, CaptureError>>()?;
@@ -648,8 +673,7 @@ impl XcapBackend {
             .into_iter()
             .map(|prepared| {
                 self.check_native(check)?;
-                let (width, height) = prepared.dimensions()?;
-                CaptureBudget(actual.0).admit(width, height)?;
+                CaptureBudget(actual.0).admit_bytes(prepared.admission_bytes()?)?;
                 let started = Instant::now();
                 let mut display_geometry = None;
                 let (display_id, window_id, image, label) = match prepared {
@@ -685,6 +709,7 @@ impl XcapBackend {
                         }
                         (id, None, image, "display".to_owned())
                     }
+                    #[cfg(not(target_os = "macos"))]
                     PreparedCapture::Window(window, display, id, expected_process) => {
                         if expected_process
                             .is_some_and(|expected| window.pid().ok() != Some(expected))
@@ -698,6 +723,11 @@ impl XcapBackend {
                         {
                             return Err(CaptureError::WindowNotFound(id));
                         }
+                        (display, Some(id.clone()), image, format!("window-{id}"))
+                    }
+                    #[cfg(target_os = "macos")]
+                    PreparedCapture::MacWindow(source, display, id) => {
+                        let image = source.capture().map_err(backend_error)?;
                         (display, Some(id.clone()), image, format!("window-{id}"))
                     }
                     PreparedCapture::Region(monitor, id, x, y, width, height, expected) => {
@@ -856,12 +886,21 @@ impl XcapBackend {
         let display = String::new();
         #[cfg(not(target_os = "linux"))]
         let display = monitor_id(&window.current_monitor().map_err(backend_error)?)?;
-        Ok(PreparedCapture::Window(
-            window,
-            display,
-            id,
-            expected_process,
-        ))
+        #[cfg(target_os = "macos")]
+        {
+            let source = crate::capture_native::MacPreparedWindow::new(&window, &self.options)
+                .map_err(backend_error)?;
+            Ok(PreparedCapture::MacWindow(source, display, id))
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            Ok(PreparedCapture::Window(
+                window,
+                display,
+                id,
+                expected_process,
+            ))
+        }
     }
 
     fn find_monitor(&self, display_id: &str) -> Result<Monitor, CaptureError> {
@@ -1924,6 +1963,19 @@ mod tests {
 
         let mut partial = CaptureBudget::default();
         partial.admit(3840, 2160).unwrap();
+
+        let mut unknown_native_extent = CaptureBudget::default();
+        unknown_native_extent
+            .admit_bytes(MAX_CAPTURE_BYTES)
+            .unwrap();
+        assert!(unknown_native_extent.admit(1, 1).is_err());
+        assert_eq!(unknown_native_extent.0, MAX_CAPTURE_BYTES);
+        let mut earlier_frame = CaptureBudget::default();
+        earlier_frame.admit(1, 1).unwrap();
+        assert!(earlier_frame.admit_bytes(MAX_CAPTURE_BYTES).is_err());
+        assert_eq!(earlier_frame.0, 4);
+        assert!(earlier_frame.admit_bytes(u64::MAX).is_err());
+        assert_eq!(earlier_frame.0, 4);
         let before = partial.0;
         assert!(partial.admit(8192, 8192).is_err());
         assert_eq!(partial.0, before);

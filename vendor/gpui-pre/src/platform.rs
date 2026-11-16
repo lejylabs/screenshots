@@ -608,6 +608,9 @@ pub trait Platform: 'static {
     /// Cancels only this platform's active explicit image-offer transfer.
     fn cancel_image_clipboard_read(&self) {}
 
+    /// Invalidates pending incoming native drops without dispatching reentrant input.
+    fn cancel_pending_native_drop(&self) {}
+
     #[cfg(any(target_os = "linux", target_os = "freebsd"))]
     fn read_from_primary(&self) -> Option<ClipboardItem>;
     #[cfg(any(target_os = "linux", target_os = "freebsd"))]

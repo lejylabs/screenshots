@@ -41,8 +41,13 @@ pub(crate) struct Read {
     pub lease: Lease,
 }
 impl Read {
-    pub fn execute(self) -> Result<Image, ClipboardReadError> {
-        let result = match self.input {
+    pub fn execute(self) -> (Result<Image, ClipboardReadError>, Lease) {
+        (self.input.execute(), self.lease)
+    }
+}
+impl Input {
+    fn execute(self) -> Result<Image, ClipboardReadError> {
+        match self {
             Input::Owned(item) => {
                 let image = item
                     .entries
@@ -78,9 +83,7 @@ impl Read {
                 let id = hash(&bytes);
                 Ok(Image { format, bytes, id })
             }
-        };
-        drop(self.lease);
-        result
+        }
     }
 }
 
@@ -88,17 +91,20 @@ impl Read {
 mod tests {
     use super::*;
     #[test]
-    fn lease_releases_after_owned_content_refusal() {
+    fn lease_covers_refused_completion_until_foreground_discard() {
         let active = Arc::new(AtomicBool::new(true));
         let read = Read {
             id: 1,
             input: Input::Owned(Arc::new(ClipboardItem::new_string("private text".into()))),
             lease: Lease(active.clone()),
         };
+        let (result, lease) = read.execute();
         assert!(matches!(
-            read.execute(),
+            result,
             Err(ClipboardReadError::UnsupportedContent)
         ));
+        assert!(active.load(Ordering::Acquire));
+        drop(lease);
         assert!(!active.load(Ordering::Acquire));
     }
     #[test]
@@ -115,9 +121,14 @@ mod tests {
             input: Input::Owned(item.clone()),
             lease: Lease(active.clone()),
         };
-        let result = read.execute().unwrap();
+        let (result, lease) = read.execute();
+        let result = result.unwrap();
         assert_eq!(result, image);
         assert_eq!(Arc::strong_count(&item), 1);
+        assert!(active.load(Ordering::Acquire));
+        drop(result);
+        assert!(active.load(Ordering::Acquire));
+        drop(lease);
         assert!(!active.load(Ordering::Acquire));
     }
 }

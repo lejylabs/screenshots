@@ -79,13 +79,22 @@ pub(super) fn display(
     if let Some(region) = region {
         proof.screen_input_crop(region)?;
     }
+    let selected_bytes = region.map_or_else(
+        || u64::from(proof.pixel_width) * u64::from(proof.pixel_height) * 4,
+        |region| u64::from(region.width) * u64::from(region.height) * 4,
+    );
+    crate::capture_macos_model::screenshot_buffer_admission(
+        proof.pixel_width,
+        proof.pixel_height,
+        selected_bytes,
+    )?;
     let mut legacy = false;
     let mut pixels = if let Some(source) = crate::capture_macos_sck::Display::new(id, until)? {
         ensure!(
             source.proof == proof,
             "Display identity changed before capture"
         );
-        let image = source.capture(options, until)?;
+        let image = source.capture(options, until, selected_bytes)?;
         unsafe { decode(image.0) }?
     } else {
         legacy = true;
@@ -161,16 +170,92 @@ pub(super) fn legacy_window(
     proof.verify_unchanged(crate::capture_macos_ax::window(proof.id)?)?;
     Ok(pixels)
 }
-pub(super) fn window(proof: MacWindowProof, options: &CaptureOptions) -> Result<image::RgbaImage> {
-    let until = Instant::now() + Duration::from_secs(20);
-    let mut pixels = if let Some(source) = crate::capture_macos_sck::Window::new(proof, until)? {
-        let image = source.capture(options, until)?;
-        unsafe { decode(image.0) }?
-    } else {
-        legacy_window(proof, options)?
-    };
-    options.flatten_window(&mut pixels);
-    Ok(pixels)
+pub(crate) struct PreparedWindow {
+    proof: MacWindowProof,
+    source: Option<crate::capture_macos_sck::Window>,
+    displays: Vec<crate::MacDisplayProof>,
+    dimensions: (u32, u32),
+    options: CaptureOptions,
+    until: Instant,
+}
+impl PreparedWindow {
+    pub(crate) fn new(window: &xcap::Window, options: &CaptureOptions) -> Result<Self> {
+        crate::capture_macos_ax::main_thread()?;
+        options.validate_for_capture(true)?;
+        let proof = crate::capture_macos_ax::window(window.id()?)?;
+        ensure!(
+            proof.pid == window.pid()?,
+            "Native macOS window process changed"
+        );
+        let until = Instant::now() + Duration::from_secs(20);
+        let displays = crate::capture_macos_ax::displays()?;
+        let source = crate::capture_macos_sck::Window::new(proof, until)?;
+        let dimensions = if let Some(source) = &source {
+            (source.width, source.height)
+        } else {
+            let mut matches = displays
+                .iter()
+                .filter(|display| display.logical.contains(proof.bounds));
+            let display = matches
+                .next()
+                .context("Legacy native window physical extent requires one containing display")?;
+            ensure!(
+                matches.next().is_none(),
+                "Legacy native window display is ambiguous"
+            );
+            proof.bounds.pixel_size(display.unrotated_scale()?)?
+        };
+        let prepared = Self {
+            proof,
+            source,
+            displays,
+            dimensions,
+            options: *options,
+            until,
+        };
+        prepared.check()?;
+        Ok(prepared)
+    }
+    pub(crate) fn admission_bytes(&self) -> u64 {
+        if self.options.window_shadow == CaptureWindowShadow::Include {
+            // The public API supplies no pre-capture full-shadow extent.
+            crate::MAX_CAPTURE_BYTES
+        } else {
+            u64::from(self.dimensions.0) * u64::from(self.dimensions.1) * 4
+        }
+    }
+    fn check(&self) -> Result<()> {
+        ensure!(
+            Instant::now() < self.until,
+            "Prepared native window deadline exceeded"
+        );
+        crate::capture_macos_loop::Topology::check()?;
+        self.proof
+            .verify_unchanged(crate::capture_macos_ax::window(self.proof.id)?)?;
+        ensure!(
+            crate::capture_macos_ax::displays()? == self.displays,
+            "Prepared native window display topology changed"
+        );
+        Ok(())
+    }
+    pub(crate) fn capture(self) -> Result<image::RgbaImage> {
+        self.check()?;
+        let selected_bytes = u64::from(self.dimensions.0) * u64::from(self.dimensions.1) * 4;
+        let mut pixels = if let Some(source) = &self.source {
+            let image = source.capture(&self.options, self.until, selected_bytes)?;
+            unsafe { decode(image.0) }?
+        } else {
+            legacy_window(self.proof, &self.options)?
+        };
+        self.check()?;
+        ensure!(
+            self.options.window_shadow == CaptureWindowShadow::Include
+                || pixels.dimensions() == self.dimensions,
+            "Prepared native window physical extent changed"
+        );
+        self.options.flatten_window(&mut pixels);
+        Ok(pixels)
+    }
 }
 struct Space(*const c_void);
 impl Drop for Space {
@@ -178,8 +263,8 @@ impl Drop for Space {
         unsafe { CGColorSpaceRelease(self.0) }
     }
 }
-struct Context(*mut c_void);
-impl Drop for Context {
+struct BitmapContext(*mut c_void);
+impl Drop for BitmapContext {
     fn drop(&mut self) {
         unsafe { CGContextRelease(self.0) }
     }
@@ -215,7 +300,7 @@ pub(super) unsafe fn cursor_pixels(
     ensure!(!space.0.is_null(), "Native cursor color space unavailable");
     let mut pixels = image::RgbaImage::new(width, height);
     let bytes: &mut [u8] = pixels.as_mut();
-    let context = Context(unsafe {
+    let context = BitmapContext(unsafe {
         CGBitmapContextCreate(
             bytes.as_mut_ptr().cast(),
             width as usize,
@@ -314,7 +399,7 @@ pub(super) unsafe fn opaque_bgra_srgb(
     let space = Space(unsafe { CGColorSpaceCreateWithName(kCGColorSpaceSRGB) });
     ensure!(!space.0.is_null(), "Native sRGB space unavailable");
     let mut output = vec![0u8; row * height as usize];
-    let context = Context(unsafe {
+    let context = BitmapContext(unsafe {
         CGBitmapContextCreate(
             output.as_mut_ptr().cast(),
             width as usize,
@@ -400,7 +485,7 @@ pub(super) unsafe fn decode(image: *const c_void) -> Result<image::RgbaImage> {
     ensure!(!space.0.is_null(), "Cannot create native sRGB color space");
     let mut pixels = image::RgbaImage::new(width, height);
     let target: &mut [u8] = pixels.as_mut();
-    let context = Context(unsafe {
+    let context = BitmapContext(unsafe {
         CGBitmapContextCreate(
             target.as_mut_ptr().cast(),
             width as usize,

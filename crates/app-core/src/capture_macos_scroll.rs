@@ -20,7 +20,10 @@ pub(crate) fn run(
     let result = (|| -> Result<_> {
         let start = Instant::now();
         let until = start + Duration::from_secs(120);
+        let events = crate::capture_macos_loop::EventLoop::new()?;
+        let _topology = crate::capture_macos_loop::Topology::new(events.wake())?;
         let check = || -> Result<()> {
+            crate::capture_macos_loop::Topology::check()?;
             ensure!(
                 Instant::now() < until,
                 "Native macOS scrolling deadline exceeded"
@@ -49,6 +52,7 @@ pub(crate) fn run(
                 let image = source.capture(
                     &options,
                     until.min(Instant::now() + Duration::from_secs(20)),
+                    u64::from(request.region.width) * u64::from(request.region.height) * 4,
                 )?;
                 unsafe { crate::capture_macos_image::decode(image.0) }?
             } else {

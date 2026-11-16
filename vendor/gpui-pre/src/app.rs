@@ -1860,6 +1860,21 @@ impl App {
         self.platform.cancel_image_clipboard_read()
     }
 
+    /// Retires an incoming drop when application input is canceled or replaced.
+    /// Native cancellation must not synchronously dispatch input into the caller.
+    pub fn cancel_pending_native_drop(&mut self) {
+        self.platform.cancel_pending_native_drop();
+        if self.active_drag.as_ref().is_some_and(|drag| {
+            drag.external_payload_source.is_none()
+                && (drag.value.is::<crate::ExternalPaths>()
+                    || drag.value.is::<crate::ExternalImageDrop>()
+                    || drag.value.is::<crate::ExternalUrlDrop>())
+        }) {
+            self.active_drag.take();
+            self.refresh_windows();
+        }
+    }
+
     /// Sets the text rendering mode for the application.
     pub fn set_text_rendering_mode(&mut self, mode: TextRenderingMode) {
         self.text_rendering_mode.set(mode);

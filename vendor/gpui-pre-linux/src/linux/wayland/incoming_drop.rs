@@ -12,12 +12,69 @@ impl Drop for Lease {
         self.0.store(false, Ordering::Release);
     }
 }
-fn lease(state: &DragState) -> Option<Lease> {
-    state
-        .read_active
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[derive(Clone)]
+    struct NoOffer;
+    impl FileDragDataOffer for NoOffer {
+        fn finish(&self) {}
+        fn destroy(&self) {}
+    }
+    #[test]
+    fn completed_bytes_keep_the_single_slot_while_foreground_delivery_is_withheld() {
+        use std::io::Write as _;
+        let mut drag = DragState::<NoOffer, ()> {
+            data_offer: None,
+            window: None,
+            position: Point::default(),
+            uri_read_generation: 0,
+            drop_pending: false,
+            data_ready: false,
+            copy_allowed: false,
+            image_format: None,
+            read_cancel: None,
+            read_active: Arc::new(AtomicBool::new(false)),
+        };
+        let lease = lease(&drag.read_active).unwrap();
+        let pipe = Pipe::new().unwrap();
+        let (cancel_read, _cancel_write) = UnixStream::pair().unwrap();
+        let background = std::thread::spawn(move || {
+            read_with_lease(pipe.read, cancel_read, 32 * 1024 * 1024, lease)
+        });
+        let mut writer = pipe.write;
+        writer.write_all(b"private completed raster bytes").unwrap();
+        drop(writer);
+        let (result, completed_lease) = background.join().unwrap();
+        assert_eq!(result.as_ref().unwrap(), b"private completed raster bytes");
+        for _ in 0..256 {
+            drag.begin_uri_read();
+            drag.cancel_from_application();
+            assert!(super::lease(&drag.read_active).is_none());
+        }
+        drop(result);
+        assert!(super::lease(&drag.read_active).is_none());
+        drop(completed_lease);
+        assert!(super::lease(&drag.read_active).is_some());
+    }
+}
+fn lease(active: &Arc<AtomicBool>) -> Option<Lease> {
+    active
         .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
         .ok()
-        .map(|_| Lease(state.read_active.clone()))
+        .map(|_| Lease(active.clone()))
+}
+fn read_with_lease(
+    fd: filedescriptor::FileDescriptor,
+    cancel: UnixStream,
+    maximum: usize,
+    lease: Lease,
+) -> (Result<Vec<u8>>, Lease) {
+    let result =
+        crate::linux::platform::read_fd_bounded(fd, PIPE_READ_TIMEOUT, maximum, Some(cancel));
+    // Completed bytes still occupy the one-reader budget until foreground delivery.
+    (result, lease)
 }
 fn transfer(
     state: &mut DragState,
@@ -48,7 +105,7 @@ impl WaylandClientStatePtr {
     pub(super) fn begin_incoming_drop(
         &self,
         state: &mut WaylandClientState,
-        offer: WlDataOffer,
+        metadata: DataOffer<WlDataOffer>,
         window: WaylandWindowStatePtr,
         position: Point<Pixels>,
         serial: u32,
@@ -60,22 +117,19 @@ impl WaylandClientStatePtr {
             events.push(old);
         }
         let generation = state.drag.begin_uri_read();
-        let metadata = state
-            .data_offers
-            .iter()
-            .find(|value| value.inner.id() == offer.id());
-        let format = metadata.and_then(|value| value.dnd_image_format());
+        let format = metadata.dnd_image_format();
         let mime = if let Some(format) = format {
             format.mime_type()
-        } else if metadata.is_some_and(|v| v.dnd_has_mime(FILE_LIST_MIME_TYPE)) {
+        } else if metadata.dnd_has_mime(FILE_LIST_MIME_TYPE) {
             FILE_LIST_MIME_TYPE
-        } else if metadata.is_some_and(|v| v.dnd_has_mime("text/plain")) {
+        } else if metadata.dnd_has_mime("text/plain") {
             "text/plain"
         } else {
-            offer.accept(serial, None);
-            FileDragDataOffer::destroy(&offer);
+            metadata.inner.accept(serial, None);
+            FileDragDataOffer::destroy(&metadata.inner);
             return events;
         };
+        let offer = metadata.inner;
         state.drag.copy_allowed = offer.version() < 3;
         if offer.version() >= 3 {
             offer.set_actions(DndAction::Copy, DndAction::Copy);
@@ -99,7 +153,7 @@ impl WaylandClientStatePtr {
             ));
             return events;
         }
-        let Some(lease) = lease(&state.drag) else {
+        let Some(lease) = lease(&state.drag.read_active) else {
             state.drag.drop_pending = false;
             state.drag.handle_leave();
             return events;
@@ -112,15 +166,11 @@ impl WaylandClientStatePtr {
             }
         };
         let read = state.common.borrow().background_executor.spawn(async move {
-            let result = crate::linux::platform::read_fd_bounded(
-                fd,
-                PIPE_READ_TIMEOUT,
-                64 * 1024,
-                Some(cancel),
+            let (result, lease) = read_with_lease(fd, cancel, 64 * 1024, lease);
+            (
+                result.and_then(|bytes| super::drop_metadata::parse(&bytes)),
+                lease,
             )
-            .and_then(|bytes| super::drop_metadata::parse(&bytes));
-            drop(lease);
-            result
         });
         let this = self.clone();
         state
@@ -129,7 +179,7 @@ impl WaylandClientStatePtr {
             .foreground_executor
             .clone()
             .spawn(async move {
-                let value = read.await;
+                let (value, _lease) = read.await;
                 let Some(client) = this.0.upgrade() else {
                     FileDragDataOffer::destroy(&offer);
                     return;
@@ -195,7 +245,7 @@ impl WaylandClientStatePtr {
         };
         let position = state.drag.position;
         let generation = state.drag.uri_read_generation;
-        let Some(lease) = lease(&state.drag) else {
+        let Some(lease) = lease(&state.drag.read_active) else {
             state.drag.drop_pending = false;
             return state.drag.handle_leave();
         };
@@ -206,16 +256,11 @@ impl WaylandClientStatePtr {
                 return state.drag.handle_leave();
             }
         };
-        let read = state.common.borrow().background_executor.spawn(async move {
-            let value = crate::linux::platform::read_fd_bounded(
-                fd,
-                PIPE_READ_TIMEOUT,
-                32 * 1024 * 1024,
-                Some(cancel),
-            );
-            drop(lease);
-            value
-        });
+        let read = state
+            .common
+            .borrow()
+            .background_executor
+            .spawn(async move { read_with_lease(fd, cancel, 32 * 1024 * 1024, lease) });
         let this = self.clone();
         state
             .common
@@ -223,7 +268,7 @@ impl WaylandClientStatePtr {
             .foreground_executor
             .clone()
             .spawn(async move {
-                let value = read.await;
+                let (value, _lease) = read.await;
                 let Some(client) = this.0.upgrade() else {
                     FileDragDataOffer::destroy(&offer);
                     return;

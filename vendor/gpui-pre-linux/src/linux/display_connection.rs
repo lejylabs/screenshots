@@ -198,6 +198,14 @@ impl DisplayConnection {
         }
     }
 
+    pub(crate) fn cancel_pending_native_drop(&self) {
+        match self {
+            #[cfg(feature = "wayland")]
+            Self::Wayland(connection) => connection.cancel_pending_native_drop(),
+            _ => {}
+        }
+    }
+
     pub(crate) fn read_image_from_clipboard_async(
         &self,
     ) -> Option<gpui::Task<gpui::Result<gpui::Image, gpui::ClipboardReadError>>> {

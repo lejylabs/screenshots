@@ -89,7 +89,7 @@ impl CaptureOptions {
 }
 
 /// An operation-owned cursor in premultiplied RGBA, matching native XFixes/ARGB.
-#[cfg(any(target_os = "linux", target_os = "windows",target_os="macos", test))]
+#[cfg(any(target_os = "linux", target_os = "windows", target_os = "macos", test))]
 pub(crate) struct CaptureCursorImage {
     pub pixels: RgbaImage,
     pub screen_x: i32,
@@ -97,7 +97,7 @@ pub(crate) struct CaptureCursorImage {
     pub hotspot_x: u32,
     pub hotspot_y: u32,
 }
-#[cfg(any(target_os = "linux", target_os = "windows",target_os="macos", test))]
+#[cfg(any(target_os = "linux", target_os = "windows", target_os = "macos", test))]
 impl CaptureCursorImage {
     pub fn validate(&self) -> Result<()> {
         let (width, height) = self.pixels.dimensions();

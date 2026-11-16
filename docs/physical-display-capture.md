@@ -16,7 +16,10 @@ Create `crates/app-core/src/capture_native_windows_geometry.rs` and
   `capture.rs`, `lib.rs`, `desktop_composite.rs`, `capture_catalog.rs` and
   `native_capture_job.rs` for calibration, coordinate policy and isolation.
 - `apps/desktop/src/capture_catalog.rs`, `region_analysis.rs`, `cli.rs` and
-  `capture_worker_protocol.rs` for existing consumers and the typed Desktop call.
+  `capture_worker_protocol.rs`, `capture_worker_windows.rs` for existing
+  consumers, the typed Desktop call and native private-commit containment.
+- `vendor/xcap/src/windows/gdi.rs` and `window_crop.rs` for checked native
+  bitmap byte admission and deselection before extraction/destruction.
 - `.github/workflows/rust.yml` and the existing Windows capture fixtures for
   explicit native CI checks; this document and `docs/desktop-composite.md`
   record evidence and limits.
@@ -47,11 +50,17 @@ that counter: the whole native operation runs in the existing owned helper,
 under its parent deadline/cancellation and process-family teardown. The helper
 thread owns only short app witness/calibration window procedures; it runs no
 GPUI or other user callbacks. No message pumping is added to the parent.
-A change rejects the result even
-if the observed geometry returns to the same values. On Windows 11 additionally
+An observed change rejects the result even if endpoint geometry returns to the
+same values. The Windows 10 fallback also owns one global
+`RegisterScaleChangeEvent` notification, retaining scale-change signals until
+the operation ends, rather than relying on a window on just one monitor.
+Its event/endpoint checks are not a claim that every unnotified transient handle
+or device-name change has a documented generation guarantee. On Windows 11
 resolve public `GetCurrentMonitorTopologyId` dynamically from the already
-loaded system User32 module; a changed generation also rejects the result.
-Missing optional generation support retains the Windows 10 event witness.
+loaded system User32 module; its documented generation covers DPI, handle/name,
+layout/work-area and restored topology changes. A changed generation rejects
+the result. Missing optional support retains the stated Windows 10 event and
+endpoint policy; its physical reconfiguration matrix remains an acceptance gate.
 One outer witness spans the entire native request, including template initial
 enumeration/physical identity resolution, capture and final identity checks.
 Desktop enumeration, all monitor acquisitions and assembly run in one typed
@@ -69,6 +78,17 @@ cancellation per bounded row of copy work. Existing capture admission and
 native process deadline contain blocking drivers. No application idle work is
 introduced. Optimized measurements must distinguish native acceptance from
 pure-model/copy timings and disclose any repeatable regression over 10%.
+
+GDI rereads native dimensions close to acquisition, so its bitmap and CPU-vector
+allocation sites independently reject nonpositive/overflowed extents and any
+RGBA extent above 256 MiB before allocation. Monitor and window bitmap selections
+are restored before GetDIBits and object destruction, including native failures.
+The Windows helper's existing atomic Job also enforces a 1 GiB per-process
+private-commit ceiling before its first instruction. This is an upper containment
+limit, not measured image ownership or a promise that every 256 MiB raster fits
+alongside backend/runtime allocations. Kernel/GPU/driver memory stays separately
+accounted and requires native measurement. No partial result is published on a
+native allocation/commit failure.
 
 Verify independent physical-mode/rectangle mismatches, negative origins, custom
 scales, all four rotations, exact crop/cursor coordinates, before/after drift,
@@ -99,5 +119,6 @@ count as a hard native deadline. Record which checks actually ran separately.
 
 Primary API contracts: [physical mode coordinates](https://learn.microsoft.com/en-us/windows/desktop/api/winuser/nf-winuser-enumdisplaysettingsw),
 [window DPI](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-getdpiforwindow),
+[scale events](https://learn.microsoft.com/en-us/windows/win32/api/shellscalingapi/nf-shellscalingapi-registerscalechangeevent),
 [monitor topology generation](https://learn.microsoft.com/en-us/windows/win32/winmsg/winuser/nf-winuser-getcurrentmonitortopologyid).
 These establish API behavior, not successful native app acceptance.

@@ -14,7 +14,10 @@ use windows::Win32::{
     },
     Storage::Xps::{PRINT_WINDOW_FLAGS, PrintWindow},
     UI::{
-        HiDpi::{DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, SetThreadDpiAwarenessContext},
+        HiDpi::{
+            DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
+            SetThreadDpiAwarenessContext,
+        },
         WindowsAndMessaging::{GetDesktopWindow, GetWindowRect, GetWindowThreadProcessId},
     },
 };
@@ -32,7 +35,7 @@ fn to_rgba_image(
     width: i32,
     height: i32,
 ) -> XCapResult<RgbaImage> {
-    let buffer_size = width * height * 4;
+    let buffer_size = super::window_crop::bitmap_bytes(width, height).map_err(XCapError::new)?;
     let mut bitmap_info = BITMAPINFO {
         bmiHeader: BITMAPINFOHEADER {
             biSize: mem::size_of::<BITMAPINFOHEADER>() as u32,
@@ -47,7 +50,7 @@ fn to_rgba_image(
         ..Default::default()
     };
 
-    let mut buffer = vec![0u8; buffer_size as usize];
+    let mut buffer = vec![0u8; buffer_size];
 
     unsafe {
         let is_failed = GetDIBits(
@@ -80,6 +83,10 @@ fn delete_bitmap_object(val: HBITMAP) {
 }
 
 pub(super) fn capture_monitor(x: i32, y: i32, width: i32, height: i32) -> XCapResult<RgbaImage> {
+    super::window_crop::bitmap_bytes(width, height).map_err(XCapError::new)?;
+    if x.checked_add(width).is_none() || y.checked_add(height).is_none() {
+        return Err(XCapError::new("GDI monitor coordinates overflow"));
+    }
     unsafe {
         let hwnd = GetDesktopWindow();
         let scope_guard_hdc_desktop_window = guard(GetWindowDC(Some(hwnd)), |val| {
@@ -87,6 +94,9 @@ pub(super) fn capture_monitor(x: i32, y: i32, width: i32, height: i32) -> XCapRe
                 log::error!("ReleaseDC({:?}) failed: {:?}", val, GetLastError());
             }
         });
+        if scope_guard_hdc_desktop_window.0.is_null() {
+            return Err(XCapError::new("Desktop DC is unavailable"));
+        }
 
         let scope_guard_mem = guard(
             CreateCompatibleDC(Some(*scope_guard_hdc_desktop_window)),
@@ -96,13 +106,25 @@ pub(super) fn capture_monitor(x: i32, y: i32, width: i32, height: i32) -> XCapRe
                 }
             },
         );
+        if scope_guard_mem.0.is_null() {
+            return Err(XCapError::new("Monitor bitmap DC is unavailable"));
+        }
 
         let scope_guard_h_bitmap = guard(
             CreateCompatibleBitmap(*scope_guard_hdc_desktop_window, width, height),
             delete_bitmap_object,
         );
+        if scope_guard_h_bitmap.0.is_null() {
+            return Err(XCapError::new("Monitor bitmap allocation failed"));
+        }
 
-        SelectObject(*scope_guard_mem, (*scope_guard_h_bitmap).into());
+        let previous = SelectObject(*scope_guard_mem, (*scope_guard_h_bitmap).into());
+        if previous.0.is_null() || previous.0 as isize == -1 {
+            return Err(XCapError::new("Cannot select monitor bitmap"));
+        }
+        let selection = guard(previous, |previous| {
+            SelectObject(*scope_guard_mem, previous);
+        });
 
         BitBlt(
             *scope_guard_mem,
@@ -116,13 +138,18 @@ pub(super) fn capture_monitor(x: i32, y: i32, width: i32, height: i32) -> XCapRe
             SRCCOPY,
         )?;
 
+        drop(selection);
         to_rgba_image(*scope_guard_mem, *scope_guard_h_bitmap, width, height)
     }
 }
 
 pub(super) fn capture_window(hwnd: HWND) -> XCapResult<RgbaImage> {
     unsafe {
-        let previous_dpi = SetThreadDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+        let mut previous_dpi =
+            SetThreadDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+        if previous_dpi.0.is_null() {
+            previous_dpi = SetThreadDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE);
+        }
         if previous_dpi.0.is_null() {
             return Err(XCapError::new("Physical window DPI context is unavailable"));
         }
@@ -138,10 +165,7 @@ pub(super) fn capture_window(hwnd: HWND) -> XCapResult<RgbaImage> {
         super::window_crop::physical_crop(raw, visible).map_err(XCapError::new)?;
         let bitmap_width = window_rect.right - window_rect.left;
         let bitmap_height = window_rect.bottom - window_rect.top;
-        if u64::from(bitmap_width as u32) * u64::from(bitmap_height as u32) * 4 > 256 * 1024 * 1024
-        {
-            return Err(XCapError::new("Physical GDI window bitmap exceeds 256 MiB"));
-        }
+        super::window_crop::bitmap_bytes(bitmap_width, bitmap_height).map_err(XCapError::new)?;
         let mut process = 0;
         if GetWindowThreadProcessId(hwnd, Some(&mut process)) == 0 || process == 0 {
             return Err(XCapError::new("Window process is unavailable"));

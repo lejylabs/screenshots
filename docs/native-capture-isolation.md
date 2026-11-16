@@ -79,8 +79,9 @@ with an escaped native call. Linux uses a process group and parent-death signal;
 Windows atomically assigns a kill-on-close Job Object and explicit inherited
 handle list with `PROC_THREAD_ATTRIBUTE_JOB_LIST`/`HANDLE_LIST` at creation.
 There is no unassigned suspended-child interval.
-macOS uses an operation-owned parent-pipe watcher because it has no Linux
-parent-death signal. After validating the inherited channel, Linux arms a
+macOS uses an operation-owned kqueue parent-process exit watch because it has no
+Linux parent-death signal. Its independent user event cancels/joins the watcher;
+it never reads or monitors video protocol traffic. After validating the inherited channel, Linux arms a
 parent-loss signal handler; both handlers kill the worker's own process group,
 including ordinary descendants. The pre-exec Linux parent-death signal covers
 the earlier startup interval. This does not contain a native helper that

@@ -3,6 +3,7 @@
 import argparse
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import signal
@@ -108,6 +109,82 @@ def write(path, value):
     return path
 
 
+def rotated_privacy(runner, directory):
+    source = directory / "rotated-secret.png"
+    sanitized = directory / "rotated-independent-reference.png"
+    png(source, 16, 16, lambda x, y: [217, 13, 131, 255] if 4 <= x < 8 and 4 <= y < 8 else [0, 17, 213, 255])
+    png(sanitized, 16, 16, lambda x, y: [0, 0, 0, 255] if 4 <= x < 8 and 4 <= y < 8 else [0, 17, 213, 255])
+    for shear in (0.0, 0.3):
+        sine, cosine = math.sin(math.pi / 6), math.cos(math.pi / 6)
+        a, b, c, d = cosine * 3, sine * 3, (cosine * shear - sine) * 3, (sine * shear + cosine) * 3
+        determinant = a * d - b * c
+        inverse = lambda x, y: ((d * (x - 40) - c * (y - 8)) / determinant, (-b * (x - 40) + a * (y - 8)) / determinant)
+        candidates = [(x, y, inverse(x + 0.5, y + 0.5)[0]) for y in range(64) for x in range(64)
+                      if all(inverse(cx, cy)[0] < 4 for cx, cy in ((x, y), (x + 1, y), (x, y + 1), (x + 1, y + 1)))
+                      and 3.6 < inverse(x + 0.5, y + 0.5)[0] < 3.95 and 4.5 < inverse(x + 0.5, y + 0.5)[1] < 7.5]
+        px, py, sx = candidates[0]
+        base = [a, b, c, d, 40, 8]
+        mask = layer(1, 4, 4, 4, 4, dict(tool="redaction"), transform=base)
+        clone = layer(2, 0, 70, 20, 20, dict(tool="clone", source=[1, 0, 0, 1, px - 5, py - 75]))
+        lens = layer(3, 64, 64, 28, 28, dict(tool="magnifier", source=[0.5, 0, 0, 0.5, px + 0.5 - 39.25, py + 0.5 - 39.25], interpolation="bilinear", style=dict(fill=None, stroke=[0, 255, 0, 255], width=1)))
+        value = scene(96, 96, [mask, clone, lens], source_size=[16, 16])
+        value["document"].update(base=base, interpolation="bilinear")
+        profile = write(directory / f"rotated-{shear}.json", value)
+        raw_output, reference_output = directory / f"rotated-{shear}.png", directory / f"reference-{shear}.png"
+        runner.render(source, profile, raw_output)
+        runner.render(sanitized, profile, reference_output)
+        image, reference = decode(raw_output), decode(reference_output)
+        assert image == reference, "rotated/sheared noninterference against independently sanitized source"
+        safe = pixel(image, px, py)
+        assert safe[0] == 0 and pixel(image, 5, 75) == safe and pixel(image, 78, 78) == safe
+        value["document"]["layers"] = [clone, lens]
+        profile = write(directory / f"unmasked-{shear}.json", value)
+        output = directory / f"unmasked-{shear}.png"
+        runner.render(source, profile, output)
+        image = decode(output)
+        # Independent source bilinear equation: outside mask geometry, but with
+        # a nonzero contribution from secret texel x=4. This prevents a uniform
+        # fixture/final-opaque-overlay-only implementation from passing.
+        red = math.floor(217 * (sx - 3.5) + 0.5)
+        assert red > 20
+        assert pixel(image, px, py)[0] == red and pixel(image, 5, 75)[0] == red and pixel(image, 78, 78)[0] == red
+    return True
+
+
+def font_budget_fixture(path, subtables):
+    # Source-derived aliased PairPos1 attack, built from the existing OFL font.
+    # The small default kern table revisits 128 x 128 pairs per aliased subtable.
+    def words(values):
+        return b"".join(struct.pack(">H", value) for value in values)
+    def checksum(data):
+        data += b"\0" * (-len(data) % 4)
+        return sum(struct.unpack(">" + "I" * (len(data) // 4), data)) & 0xffffffff
+    scripts = words([1]) + b"DFLT" + words([8, 4, 0, 0, 0xffff, 1, 0])
+    features = words([1]) + b"kern" + words([8, 0, 1, 0])
+    gpos = words([1, 0, 10, 10 + len(scripts), 10 + len(scripts) + len(features)]) + scripts + features
+    gpos += words([1, 4, 2, 0, subtables]) + words([6 + 2 * subtables] * subtables)
+    gpos += words([1, 266, 0, 0, 128]) + words([526] * 128) + words([1, 128]) + words(range(128)) + words([128]) + words(range(128))
+    font = bytearray((ROOT / "vendor/cosmic-text/fonts/FiraMono-Medium.ttf").read_bytes())
+    font += b"\0" * (-len(font) % 4)
+    offset = len(font)
+    font += gpos
+    font += b"\0" * (-len(font) % 4)
+    head = None
+    found = False
+    for entry in range(struct.unpack_from(">H", font, 4)[0]):
+        start = 12 + 16 * entry
+        if font[start:start + 4] == b"GPOS":
+            struct.pack_into(">III", font, start + 4, checksum(gpos), offset, len(gpos))
+            found = True
+        if font[start:start + 4] == b"head":
+            head = struct.unpack_from(">I", font, start + 8)[0] + 8
+    assert found and head is not None
+    struct.pack_into(">I", font, head, 0)
+    struct.pack_into(">I", font, head, (0xb1b0afba - checksum(bytes(font))) & 0xffffffff)
+    assert checksum(bytes(font)) == 0xb1b0afba
+    path.write_bytes(font)
+
+
 def check_cancellation(runner, directory):
     if os.name != "posix":
         return {"native_signal_cases": "Unix-only; Windows native CI remains separate"}
@@ -135,12 +212,13 @@ def check_cancellation(runner, directory):
         _, error = child.communicate(timeout=8)
         assert child.returncode != 0
         assert not output.exists()
-        assert not list(directory.glob("*partial*"))
+        assert not list(directory.glob(".screenshots-*.part"))
         canceled_ms = (time.monotonic() - start) * 1000
     finally:
         if child.poll() is None:
             child.kill()
             child.communicate(timeout=5)
+    # This cancels during heavy render work, not a proven publication phase.
     # Fill stdout before launching. The child publishes its explicit output,
     # drops cancellation cleanup, then blocks while writing its tiny JSON result.
     read_fd, write_fd = os.pipe()
@@ -169,7 +247,7 @@ def check_cancellation(runner, directory):
             child.kill()
             child.communicate(timeout=5)
         os.close(read_fd)
-    return {"sigterm_cleanup_ms": round(canceled_ms, 3), "blocked_success_stdout_terminates": True}
+    return {"sigterm_cleanup_ms": round(canceled_ms, 3), "render_cancellation_no_output_or_staging": True, "publication_cancellation_exercised": False, "blocked_success_stdout_terminates": True}
 
 
 def run(runner, directory):
@@ -271,7 +349,39 @@ def run(runner, directory):
         assert saved["format"] == format_name
         assert decode(output)[:2] == (8, 4)
     assert hashlib.sha256(source.read_bytes()).hexdigest() == initial_hash
-    return dict(all_tool_pixels=True, exact_edit_preset_pixels=True, effect_input_modes=True, source_aliases_refused=True, no_overwrite=True, format_mismatch_before_source=True, inspection_has_no_asset_io_or_text=True, formats=4, source_preserved=True, renders=runner.renders, **check_cancellation(runner, directory))
+    rotated = rotated_privacy(runner, directory)
+    invalid = scene(8, 4, [fill(1, 1, 1, 2, 1, [0, 255, 0, 255])], edits=[dict(action="remove", id=1), dict(action="reorder", id=1, index=0)], fonts=[dict(id="unused", path="missing.ttf")])
+    profile = write(directory / "invalid-sequence.json", invalid)
+    inspect_error = runner.call("inspect", profile, ok=False)
+    render_error = runner.call("render", directory / "missing.png", profile, directory / "invalid-sequence.png", ok=False)
+    assert inspect_error == render_error and "Could not open editor source" not in render_error
+    for use_preset in (False, True):
+        invalid = scene(1, 1, fonts=[dict(id="unused", path="missing.ttf")])
+        padding = dict(padding=[8192] * 4)
+        if use_preset:
+            invalid["presets"] = dict(version=1, exports=[dict(name="huge", preset=padding)])
+            invalid["export_preset"] = "huge"
+            invalid["edits"] = [dict(action="resize_canvas", width=2, height=2, anchor=[0, 0])]
+        else:
+            invalid["document"]["export"] = padding
+        profile = write(directory / f"huge-{use_preset}.json", invalid)
+        inspect_error = runner.call("inspect", profile, ok=False)
+        output = directory / f"huge-{use_preset}.png"
+        render_error = runner.call("render", directory / "missing.png", profile, output, ok=False)
+        assert inspect_error == render_error and "256 MiB" in render_error and not output.exists()
+    for subtables in (1, 512):
+        font = directory / f"budget-{subtables}.ttf"
+        font_budget_fixture(font, subtables)
+        profile = write(directory / f"font-budget-{subtables}.json", scene(1280, 720, [layer(1, 0, 0, 128, 64, dict(tool="text", text=dict(spans=[dict(text="AA", style=text_style(["budget"]))])))], fonts=[dict(id="budget", path=font.name)]))
+        output = directory / f"font-budget-{subtables}.png"
+        if subtables == 1:
+            runner.render(source, profile, output)
+            assert any(pixel(decode(output), x, y) != [0, 0, 200, 255] for y in range(0, 32) for x in range(16, 48))
+        else:
+            error = runner.call("render", source, profile, output, ok=False)
+            assert "preprocessing exhausted" in error and not output.exists()
+            assert not list(directory.glob(".screenshots-*.part"))
+    return dict(final_output_preflight_before_asset_io=True, real_font_preprocessing_exhaustion_refused=True, all_tool_pixels=True, exact_edit_preset_pixels=True, effect_input_modes=True, source_aliases_refused=True, no_overwrite=True, format_mismatch_before_source=True, inspection_has_no_asset_io_or_text=True, sequential_preflight_before_decode=True, rotated_sheared_bilinear_clone_lens_privacy=rotated, formats=4, source_preserved=True, renders=runner.renders, **check_cancellation(runner, directory))
 
 
 def main():

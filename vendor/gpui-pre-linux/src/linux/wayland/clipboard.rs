@@ -217,7 +217,16 @@ impl Clipboard {
     pub fn set_offer(&mut self, data_offer: Option<DataOffer<WlDataOffer>>) {
         self.cancel_image_read();
         self.cached_read = None;
-        self.current_offer = data_offer;
+        if let Some(retired) = std::mem::replace(&mut self.current_offer, data_offer) {
+            if self
+                .current_offer
+                .as_ref()
+                .is_none_or(|current| current.inner.id() != retired.inner.id())
+                && retired.inner.is_alive()
+            {
+                retired.inner.destroy();
+            }
+        }
     }
 
     pub fn set_primary_offer(&mut self, data_offer: Option<DataOffer<ZwpPrimarySelectionOfferV1>>) {

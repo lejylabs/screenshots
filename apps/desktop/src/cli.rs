@@ -95,8 +95,8 @@ Headless commands (no desktop UI; outputs and uploads require explicit actions):
   screenshots gif OUTPUT.gif --delay-ms N INPUT INPUT... (2–16 images)
   screenshots stitch-scroll OUTPUT MIN_OVERLAP INPUT INPUT [INPUT...]
   screenshots scroll-capture WINDOW OUTPUT.png --region X Y WIDTH HEIGHT [--steps N] [--wheel N] [--settle-ms N] [--delay-ms N] [--min-overlap N] [--tolerance N] [--trim-top N] [--trim-bottom N]
-  screenshots record x11|gdigrab|test OUTPUT.mkv|OUTPUT.gif --seconds N --fps N --width N --height N
-      [--x X --y Y] [--cursor show|hide]
+  screenshots record x11|gdigrab|avfoundation|test OUTPUT.mkv|OUTPUT.gif --seconds N --fps N --width N --height N
+      [--x X --y Y] [--cursor show|hide] [--display ID] (display is required only for macOS avfoundation video)
       [--audio-mode test|pulse|alsa|dshow|avfoundation --audio-device NAME --audio-channels 1|2] (MKV only)
   screenshots record-audio test|pulse|alsa|dshow|avfoundation OUTPUT.wav --seconds N [--device NAME] [--channels 1|2]
 

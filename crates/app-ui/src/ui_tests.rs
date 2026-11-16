@@ -9,10 +9,10 @@ fn native_capture_tokens_are_operation_owned_and_quit_cancels_the_current_job(
     let handle = open_workspace(cx);
     let (old, current, sources) = handle
         .update(cx, |this, _, cx| {
-            this.begin_capturing();
+            this.begin_capturing(cx);
             let old = this.native_capture_cancel.as_ref().unwrap().clone();
             this.finish_capturing(cx);
-            this.begin_capturing();
+            this.begin_capturing(cx);
             let current = this.native_capture_cancel.as_ref().unwrap().clone();
             let sources = app_core::NativeCaptureCancellation::default();
             this.native_sources_cancel = Some(sources.clone());
@@ -4218,7 +4218,7 @@ fn stale_clipboard_offer_cannot_finish_a_later_input_or_open_an_editor(cx: &mut 
         .update(cx, |this, _, cx| {
             this.native_capture_cancel.as_ref().unwrap().cancel();
             this.finish_capturing(cx);
-            this.begin_capturing();
+            this.begin_capturing(cx);
             this.native_capture_cancel.as_ref().unwrap().clone()
         })
         .unwrap();
@@ -4325,4 +4325,141 @@ fn native_url_drop_rejects_unbounded_or_unsupported_references_before_a_worker(
             }
         })
         .unwrap();
+}
+
+#[gpui::test]
+fn same_generation_cancel_after_render_cannot_open_or_finish_an_editor(cx: &mut TestAppContext) {
+    let handle = open_workspace(cx);
+    handle
+        .update(cx, |this, _, cx| {
+            this.output_directory = Some(std::env::temp_dir());
+            this.begin_capturing(cx);
+            let generation = this.capture_generation;
+            let token = this.native_capture_cancel.as_ref().unwrap().clone();
+            let pixels = image::RgbaImage::from_pixel(2, 1, image::Rgba([11, 23, 37, 128]));
+            let source = CapturedImage {
+                display_id: "private synthetic input".into(),
+                window_id: None,
+                width: 2,
+                height: 1,
+                png_path: PathBuf::new(),
+                pixels: Arc::new(pixels),
+                elapsed_ms: 0,
+                source_format: app_core::PixelFormat::Rgba8UnormSrgb,
+                display_geometry: None,
+            };
+            let render = render_frame(&source);
+            assert!(token.check().is_ok());
+            // Represents Escape arriving after the worker rendered but before its callback.
+            this.close_overlays(cx);
+            assert!(token.check().is_err());
+            assert_eq!(this.capture_generation, generation);
+            this.deliver_image_input(generation, &token, Ok((source, render)), cx);
+            assert!(!this.capturing && this.native_capture_cancel.is_none());
+            assert!(this.editor.is_none());
+            assert_eq!(this.capture_status, "Image opening canceled.");
+            assert!(this.last_capture.is_none() && this.last_saved.is_none());
+        })
+        .unwrap();
+    cx.run_until_parked();
+}
+
+fn delayed_native_drop_cancellation(cx: &mut TestAppContext, admit_newer_input: bool) {
+    use gpui::InputEvent as _;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    let handle = open_workspace(cx);
+    handle
+        .update(cx, |this, _, _| {
+            this.output_directory = Some(std::env::temp_dir())
+        })
+        .unwrap();
+    let canceled = Arc::new(AtomicBool::new(false));
+    let cancel_adapter = canceled.clone();
+    cx.on_cancel_pending_native_drop(move || cancel_adapter.store(true, Ordering::Release));
+    let position = point(px(600.), px(350.));
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.dispatch_event(
+            gpui::FileDropEvent::ImageEntered {
+                position,
+                image: gpui::ExternalImageDrop {
+                    format: gpui::ImageFormat::Png,
+                    bytes: None,
+                },
+            }
+            .to_platform_input(),
+            cx,
+        );
+        assert!(cx.has_active_drag());
+    })
+    .unwrap();
+    // Private native adapter: acquire bytes first, retaining cancellation until
+    // foreground delivery, just as the native transfer's generation guard does.
+    let executor = cx.background_executor.clone();
+    let timer = executor.clone();
+    let read = executor.spawn(async move {
+        timer.timer(std::time::Duration::from_secs(1)).await;
+        synthetic_clipboard_image()
+    });
+    let delivered = Arc::new(AtomicUsize::new(0));
+    let counted = delivered.clone();
+    let mut delivery = cx.clone();
+    cx.foreground_executor
+        .spawn(async move {
+            let image = read.await;
+            if canceled.load(Ordering::Acquire) {
+                return;
+            }
+            counted.fetch_add(1, Ordering::Release);
+            delivery
+                .update_window(handle.into(), |_, window, cx| {
+                    for event in [
+                        gpui::FileDropEvent::ImageEntered {
+                            position,
+                            image: gpui::ExternalImageDrop {
+                                format: image.format,
+                                bytes: Some(Arc::new(image.bytes)),
+                            },
+                        },
+                        gpui::FileDropEvent::Submit { position },
+                        gpui::FileDropEvent::Ended,
+                    ] {
+                        window.dispatch_event(event.to_platform_input(), cx);
+                    }
+                })
+                .unwrap();
+        })
+        .detach();
+    cx.run_until_parked();
+    handle
+        .update(cx, |this, _, cx| {
+            assert!(!this.capturing);
+            if admit_newer_input {
+                this.begin_capturing(cx);
+                this.finish_capturing(cx);
+            } else {
+                this.close_overlays(cx);
+            }
+            assert!(!this.capturing && !cx.has_active_drag());
+        })
+        .unwrap();
+    cx.executor()
+        .advance_clock(std::time::Duration::from_secs(1));
+    cx.run_until_parked();
+    assert_eq!(delivered.load(Ordering::Acquire), 0);
+    cx.update(|cx| {
+        let state = handle.read(cx).unwrap();
+        assert!(!state.capturing && state.editor.is_none());
+        assert!(state.last_capture.is_none() && state.last_saved.is_none());
+    });
+}
+
+#[gpui::test]
+fn escape_cancels_native_drop_before_application_image_admission(cx: &mut TestAppContext) {
+    delayed_native_drop_cancellation(cx, false);
+}
+
+#[gpui::test]
+fn newer_image_input_finishing_cannot_resurrect_an_old_native_drop(cx: &mut TestAppContext) {
+    delayed_native_drop_cancellation(cx, true);
 }

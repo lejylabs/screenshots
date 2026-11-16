@@ -97,6 +97,15 @@ pub(super) struct EventLoop {
 impl EventLoop {
     pub fn new() -> Result<Self> {
         crate::capture_macos_ax::main_thread()?;
+        Self::current_thread()
+    }
+    #[cfg(test)]
+    pub fn notification_test_loop() -> Result<Self> {
+        // Private Foundation-notification tests need a real CF loop on the Rust
+        // test thread; they never perform GUI/capture work or start a session.
+        Self::current_thread()
+    }
+    fn current_thread() -> Result<Self> {
         let loop_ = unsafe { CFRunLoopGetCurrent() };
         ensure!(!loop_.is_null(), "Native run loop is unavailable");
         let mut context = CFRunLoopSourceContext {

@@ -51,13 +51,16 @@ pub(crate) fn validate_template_session() -> Result<()> {
     platform::validate_template_session()
 }
 
+#[cfg(target_os = "macos")]
+pub(crate) use crate::capture_macos_image::PreparedWindow as MacPreparedWindow;
+#[cfg(not(target_os = "macos"))]
 pub(crate) fn capture_window(window: &xcap::Window, options: &CaptureOptions) -> Result<RgbaImage> {
     validate_options(options, true)?;
     let native = CaptureOptions {
         delay_ms: 0,
         ..*options
     };
-    if !cfg!(target_os = "macos") && native == CaptureOptions::default() {
+    if native == CaptureOptions::default() {
         return Ok(window.capture_image()?);
     }
     platform::capture_window(window, &native)

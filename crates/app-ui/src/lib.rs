@@ -2013,6 +2013,7 @@ impl CaptureWorkspace {
 
     fn close_overlays(&mut self, cx: &mut Context<Self>) {
         cx.cancel_image_clipboard_read();
+        cx.cancel_pending_native_drop();
         if let Some(cancellation) = &self.native_capture_cancel {
             cancellation.cancel();
         }
@@ -2226,6 +2227,7 @@ impl CaptureWorkspace {
         {
             return;
         }
+        cx.cancel_pending_native_drop();
         let label = match target {
             DelayedCapture::Region => "Region",
             #[cfg(target_os = "windows")]
@@ -2901,7 +2903,7 @@ impl CaptureWorkspace {
             return;
         }
         self.show_page(ControlPage::Captures, cx);
-        self.begin_capturing();
+        self.begin_capturing(cx);
         self.capture_status = "Choosing an image…".into();
         let dialog = cx.prompt_for_paths(gpui::PathPromptOptions {
             files: true,
@@ -3005,7 +3007,7 @@ impl CaptureWorkspace {
         let Some(directory) = self.output_directory.clone() else {
             return;
         };
-        self.begin_capturing();
+        self.begin_capturing(cx);
         let generation = self.capture_generation;
         let cancellation = self
             .native_capture_cancel
@@ -3285,7 +3287,7 @@ impl CaptureWorkspace {
         let remembered =
             crop.and_then(|area| app_core::RememberedRegion::from_snapshot(&source, area).ok());
         self.close_editor(cx);
-        self.begin_capturing();
+        self.begin_capturing(cx);
         self.capture_status = "Applying image edits…".into();
         cx.spawn(async move |this, cx| {
             let result = cx
@@ -3378,7 +3380,8 @@ impl CaptureWorkspace {
         }
     }
 
-    fn begin_capturing(&mut self) {
+    fn begin_capturing(&mut self, cx: &mut Context<Self>) {
+        cx.cancel_pending_native_drop();
         self.capture_generation = self.capture_generation.wrapping_add(1);
         self.cancel_history_thumb_job();
         if let Some(cancellation) = &self.native_sources_cancel {
@@ -3550,7 +3553,7 @@ impl CaptureWorkspace {
         let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
         self.history_preview_cancel = Some(cancel.clone());
         self.history_preview_status = "Loading preview…".into();
-        self.begin_capturing();
+        self.begin_capturing(cx);
         cx.spawn(async move |this, cx| {
             let flag = cancel.clone();
             let result = cx
@@ -6059,7 +6062,7 @@ impl CaptureWorkspace {
             self.preview_active = false;
         }
         self.close_overlays(cx);
-        self.begin_capturing();
+        self.begin_capturing(cx);
         self.capture_status = "Preparing selection…".into();
         cx.notify();
         cx.spawn(async move |this, cx| {
@@ -6160,7 +6163,7 @@ impl CaptureWorkspace {
             cx.notify();
             return;
         }
-        self.begin_capturing();
+        self.begin_capturing(cx);
         self.capture_status = format!("capturing {} job(s)…", jobs.len());
         cx.notify();
 
@@ -6707,6 +6710,7 @@ fn overlay_options(
 
 fn close_application(cx: &mut App) {
     cx.cancel_image_clipboard_read();
+    cx.cancel_pending_native_drop();
     if cx.has_global::<ResidentController>() {
         let entity = cx.global::<ResidentController>().0.clone();
         let busy = entity.update(cx, |this, cx| {
@@ -9504,6 +9508,25 @@ try {
 #[cfg(all(test, target_os = "linux"))]
 mod private_wayland_clipboard_fixture {
     use super::*;
+    fn named_display_only<T>(
+        socket: Option<&std::ffi::OsStr>,
+        construct: impl FnOnce() -> T,
+    ) -> Result<T, &'static str> {
+        if socket.is_some() {
+            return Err("Private fixture refuses WAYLAND_SOCKET descriptor overrides");
+        }
+        Ok(construct())
+    }
+    #[test]
+    fn descriptor_override_refuses_before_constructing_a_native_platform() {
+        let constructed = std::cell::Cell::new(false);
+        for socket in [std::ffi::OsStr::new("3"), std::ffi::OsStr::new("")] {
+            assert!(named_display_only(Some(socket), || constructed.set(true)).is_err());
+            assert!(!constructed.get());
+        }
+        named_display_only(None, || constructed.set(true)).unwrap();
+        assert!(constructed.get());
+    }
     #[test]
     #[ignore = "requires an owned private Wayland compositor and synthetic producer; never uses the user clipboard"]
     fn focused_wayland_paste_uses_native_offer_and_existing_editor() {
@@ -9546,7 +9569,10 @@ mod private_wayland_clipboard_fixture {
         std::fs::create_dir_all(&output).unwrap();
         let result = Arc::new(Mutex::new(None::<Result<(), String>>));
         let report = result.clone();
-        let platform = gpui_platform::current_platform(false);
+        let platform = named_display_only(std::env::var_os("WAYLAND_SOCKET").as_deref(), || {
+            gpui_platform::current_platform(false)
+        })
+        .expect("Private named-socket context required before constructing the native platform");
         let fonts = caption::CaptionFonts(platform.text_system());
         gpui::Application::with_platform(platform)
             .with_assets(assets::AppAssets)

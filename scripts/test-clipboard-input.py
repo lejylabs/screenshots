@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 import secrets
 import selectors
+import socket
 import shutil
 import struct
 import subprocess
@@ -90,6 +91,8 @@ class Owner:
                 os.environ["XAUTHORITY"] = previous
         require(self.connection, "Cannot connect private selection owner")
         self.window = x.XCreateSimpleWindow(self.connection, x.XDefaultRootWindow(self.connection), 0, 0, 1, 1, 0, 0, 0)
+        self.alternate_window = x.XCreateSimpleWindow(self.connection, x.XDefaultRootWindow(self.connection), 0, 0, 1, 1, 0, 0, 0)
+        self.requests = 0
         self.atoms = {name: x.XInternAtom(self.connection, name.encode(), 0) for name in
                       ("CLIPBOARD", "TARGETS", "UTF8_STRING", "text/uri-list", "image/png", "INCR")}
         x.XSetSelectionOwner(self.connection, self.atoms["CLIPBOARD"], self.window, 0)
@@ -101,10 +104,10 @@ class Owner:
         self.thread = threading.Thread(target=self.serve, daemon=True)
         self.thread.start()
 
-    def set(self, payloads, mode="direct", hint=None, chunk=32768):
+    def set(self, payloads, mode="direct", hint=None, chunk=32768, generation_change=None):
         with self.lock:
             self.configuration = {"payloads": {self.atoms[k]: v for k, v in payloads.items()}, "mode": mode,
-                                  "hint": hint, "chunk": chunk}
+                                  "hint": hint, "chunk": chunk, "generation_change": generation_change}
             self.pending.clear()
 
     def property(self, window, atom, kind, data, bits=8):
@@ -130,11 +133,17 @@ class Owner:
                 with self.lock:
                     config = dict(self.configuration)
                     if event.kind == 30:
+                        self.requests += 1
                         request = event.request
                         prop = request.property or request.target
                         payloads = config.get("payloads", {})
                         reply_property = prop
                         if request.target == self.atoms["TARGETS"]:
+                            if config.get("generation_change") in ("same", "aba"):
+                                if config["generation_change"] == "aba":
+                                    self.x.XSetSelectionOwner(self.connection, self.atoms["CLIPBOARD"], self.alternate_window, 0)
+                                self.x.XSetSelectionOwner(self.connection, self.atoms["CLIPBOARD"], self.window, 0)
+                                self.x.XFlush(self.connection)
                             self.property(request.requestor, prop, 4, [self.atoms["TARGETS"], *payloads], 32)
                         elif request.target not in payloads or config.get("mode") == "stall":
                             if config.get("mode") == "stall":
@@ -157,6 +166,10 @@ class Owner:
                         key = (event.property.window, event.property.atom)
                         if key in self.pending:
                             data, offset, chunk, target = self.pending[key]
+                            if offset > 0 and config.get("generation_change") == "incr_same":
+                                self.x.XSetSelectionOwner(self.connection, self.atoms["CLIPBOARD"], self.window, 0)
+                                self.x.XFlush(self.connection)
+                                self.configuration["generation_change"] = None
                             part = data[offset:offset + chunk]
                             self.property(key[0], key[1], target, part)
                             self.pending[key][1] += len(part)
@@ -204,9 +217,9 @@ def main():
             else:
                 raise RuntimeError("Private Xvfb was not ready")
             owner = Owner(display, authority)
-            def run(*values, success=True, environment=None):
+            def run(*values, success=True, environment=None, inherited=()):
                 result = subprocess.run([binary, "clipboard", *map(str, values)], env=environment or env,
-                                        stdin=subprocess.DEVNULL, capture_output=True, timeout=12)
+                                        stdin=subprocess.DEVNULL, capture_output=True, timeout=12, pass_fds=inherited)
                 require((result.returncode == 0) == success, "Unexpected clipboard result: " + result.stderr.decode(errors="replace"))
                 require(not result.stderr if success else not result.stdout, "Clipboard leaked an unexpected output channel")
                 return json.loads(result.stdout) if success else result
@@ -252,6 +265,24 @@ def main():
             result = run("text", success=False, environment=wayland)
             require(b"unrelated X11 value" not in result.stderr, "Wayland CLI read ambient X11 content")
             report["checks"].append("Wayland CLI refuses ambient X11 fallback")
+            left, right = socket.socketpair()
+            try:
+                descriptor = dict(env, WAYLAND_SOCKET=str(left.fileno()))
+                descriptor.pop("WAYLAND_DISPLAY", None)
+                descriptor.pop("XDG_SESSION_TYPE", None)
+                before = owner.requests
+                run("text", success=False, environment=descriptor, inherited=(left.fileno(),))
+                require(owner.requests == before, "Descriptor-only Wayland context requested unrelated X11 clipboard data")
+            finally:
+                left.close()
+                right.close()
+            report["checks"].append("descriptor-only private Wayland socket freezes/refuses context before unrelated X11 request")
+            for mutation in ("same", "aba"):
+                owner.set({"UTF8_STRING": b"must not be accepted across generation"}, generation_change=mutation)
+                run("text", success=False)
+            owner.set({"UTF8_STRING": b"x" * 65536}, mode="incr", generation_change="incr_same")
+            run("text", success=False)
+            report["checks"].append("XFixes same-owner republish/A-B-A across TARGETS and same-owner INCR republish rejected")
         finally:
             if owner:
                 owner.close()

@@ -7,6 +7,7 @@ use crate::{
     capture_macos_loop::{EventLoop, Topology, Wake},
 };
 use anyhow::{Context, Result, ensure};
+use block2::RcBlock;
 use core_foundation::{
     base::{CFGetTypeID, CFTypeRef, TCFType},
     string::{CFString, CFStringGetTypeID, CFStringRef},
@@ -17,7 +18,9 @@ use objc2::{
 };
 use objc2_av_foundation::{
     AVCaptureConnection, AVCaptureDevice, AVCaptureOutput, AVCaptureScreenInput, AVCaptureSession,
-    AVCaptureVideoDataOutput, AVCaptureVideoDataOutputSampleBufferDelegate, AVMediaTypeAudio,
+    AVCaptureSessionDidStopRunningNotification, AVCaptureSessionRuntimeErrorNotification,
+    AVCaptureSessionWasInterruptedNotification, AVCaptureVideoDataOutput,
+    AVCaptureVideoDataOutputSampleBufferDelegate, AVMediaTypeAudio,
 };
 use objc2_core_foundation::{CGPoint, CGRect, CGSize};
 use objc2_core_media::{CMSampleBuffer, CMTime};
@@ -27,10 +30,14 @@ use objc2_core_video::{
     CVPixelBufferIsPlanar, CVPixelBufferLockBaseAddress, CVPixelBufferLockFlags,
     CVPixelBufferUnlockBaseAddress, kCVPixelBufferPixelFormatTypeKey, kCVPixelFormatType_32BGRA,
 };
-use objc2_foundation::{NSDictionary, NSNumber, NSObject, NSObjectProtocol, NSString};
+use objc2_foundation::{
+    NSDictionary, NSNotification, NSNotificationCenter, NSNumber, NSObject, NSObjectProtocol,
+    NSString,
+};
 use std::{
     ffi::c_void,
     fmt,
+    ptr::NonNull,
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, AtomicU8, AtomicU32, Ordering},
@@ -50,6 +57,9 @@ const DROPPED: u8 = 3;
 const TIMESTAMP: u8 = 4;
 const WRITE: u8 = 5;
 const TOPOLOGY: u8 = 6;
+const INTERRUPTED: u8 = 7;
+const SESSION_ERROR: u8 = 8;
+const SESSION_STOPPED: u8 = 9;
 struct Frame {
     bytes: Vec<u8>,
     lease: MacFrameLease,
@@ -64,6 +74,7 @@ struct State {
     finished: AtomicBool,
     accepting: AtomicBool,
     delivered: AtomicU32,
+    stopping: AtomicBool,
     wake: Arc<Wake>,
 }
 impl State {
@@ -78,9 +89,73 @@ impl State {
     fn check(&self) -> Result<()> {
         ensure!(
             self.failure.load(Ordering::Acquire) == 0,
-            "Native screen source failed (format, clock, dropped frame, backpressure, topology or encoder)"
+            "Native screen source failed (format, clock, interruption, session error, dropped frame, backpressure, topology or encoder)"
         );
         Topology::check()
+    }
+}
+struct SessionNotifications {
+    center: Retained<NSNotificationCenter>,
+    tokens: Vec<Retained<ProtocolObject<dyn NSObjectProtocol>>>,
+    active: Arc<Mutex<bool>>,
+}
+impl SessionNotifications {
+    fn new(
+        center: Retained<NSNotificationCenter>,
+        session: &AVCaptureSession,
+        state: Arc<State>,
+    ) -> Self {
+        let active = Arc::new(Mutex::new(true));
+        let mut tokens = Vec::with_capacity(3);
+        for (name, failure) in unsafe {
+            [
+                (AVCaptureSessionWasInterruptedNotification, INTERRUPTED),
+                (AVCaptureSessionRuntimeErrorNotification, SESSION_ERROR),
+                (AVCaptureSessionDidStopRunningNotification, SESSION_STOPPED),
+            ]
+        } {
+            let state = state.clone();
+            let entered = active.clone();
+            let callback = RcBlock::new(move |_: NonNull<NSNotification>| {
+                let enabled = entered
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                if *enabled
+                    && !(failure == SESSION_STOPPED && state.stopping.load(Ordering::Acquire))
+                {
+                    state.fail(failure);
+                }
+            });
+            // A nil queue delivers synchronously on the posting thread. The short
+            // gate drains an entered callback; its Arc remains valid for late calls.
+            let token = unsafe {
+                center.addObserverForName_object_queue_usingBlock(
+                    Some(name),
+                    Some(session),
+                    None,
+                    &callback,
+                )
+            };
+            tokens.push(token);
+        }
+        Self {
+            center,
+            tokens,
+            active,
+        }
+    }
+}
+impl Drop for SessionNotifications {
+    fn drop(&mut self) {
+        for token in &self.tokens {
+            unsafe {
+                self.center.removeObserver(token);
+            }
+        }
+        *self
+            .active
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = false;
     }
 }
 struct Vars {
@@ -313,6 +388,14 @@ pub fn run_macos_video_source_in_worker(
     request: MacVideoRequest,
     expected: crate::MacDisplayProof,
     deadline: Instant,
+    sink: impl FnMut(&[u8]) -> Result<()> + Send,
+) -> Result<MacVideoSummary> {
+    objc2::rc::autoreleasepool(|_| run_source(request, expected, deadline, sink))
+}
+fn run_source(
+    request: MacVideoRequest,
+    expected: crate::MacDisplayProof,
+    deadline: Instant,
     mut sink: impl FnMut(&[u8]) -> Result<()> + Send,
 ) -> Result<MacVideoSummary> {
     ensure!(
@@ -341,10 +424,16 @@ pub fn run_macos_video_source_in_worker(
         finished: AtomicBool::new(false),
         accepting: AtomicBool::new(true),
         delivered: AtomicU32::new(0),
+        stopping: AtomicBool::new(false),
         wake: event.wake(),
     });
     let (sender, receiver) = mpsc::sync_channel::<Frame>(1);
     let session = unsafe { AVCaptureSession::new() };
+    let notifications = SessionNotifications::new(
+        NSNotificationCenter::defaultCenter(),
+        &session,
+        state.clone(),
+    );
     // This concrete class cannot select a video camera, irrespective of names or device count.
     let input = unsafe {
         AVCaptureScreenInput::initWithDisplayID(AVCaptureScreenInput::alloc(), request.display)
@@ -456,6 +545,7 @@ pub fn run_macos_video_source_in_worker(
             state.check()
         })();
         state.accepting.store(false, Ordering::Release);
+        state.stopping.store(true, Ordering::Release);
         session_queue.exec_sync(move || unsafe {
             (&*(session_ptr as *const AVCaptureSession)).stopRunning()
         });
@@ -466,6 +556,7 @@ pub fn run_macos_video_source_in_worker(
             let _: () = msg_send![&output,setSampleBufferDelegate:no_delegate,queue:no_queue];
         }
         queue.barrier_sync(|| {});
+        drop(notifications);
         if running.is_err() {
             state.fail(WRITE);
         }
@@ -503,6 +594,9 @@ pub fn run_macos_video_source_in_worker(
 pub fn preflight_macos_video_source_in_worker(
     request: MacVideoRequest,
 ) -> Result<crate::MacDisplayProof> {
+    objc2::rc::autoreleasepool(|_| preflight_source(request))
+}
+fn preflight_source(request: MacVideoRequest) -> Result<crate::MacDisplayProof> {
     request.validate()?;
     native::screen_permission()?;
     if request.microphone {
@@ -518,4 +612,109 @@ pub fn preflight_macos_video_source_in_worker(
     display.unrotated_scale()?;
     display.screen_input_crop(request.region)?;
     Ok(display)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn state(wake: Arc<Wake>) -> Arc<State> {
+        let request = MacVideoRequest {
+            display: 7,
+            region: crate::PixelRegion {
+                x: 0,
+                y: 0,
+                width: 2,
+                height: 2,
+            },
+            seconds: 1,
+            fps: 5,
+            cursor: false,
+            microphone: false,
+        };
+        Arc::new(State {
+            request,
+            slot: MacFrameSlot::default(),
+            clock: Mutex::new(MacFrameClock::new(request).unwrap()),
+            failure: AtomicU8::new(0),
+            started: AtomicBool::new(false),
+            captured: AtomicBool::new(false),
+            finished: AtomicBool::new(false),
+            accepting: AtomicBool::new(true),
+            delivered: AtomicU32::new(0),
+            stopping: AtomicBool::new(false),
+            wake,
+        })
+    }
+    #[test]
+    fn owned_session_notifications_fail_terminally_and_filter_the_exact_session() -> Result<()> {
+        objc2::rc::autoreleasepool(|_| -> Result<()> {
+            let events = EventLoop::notification_test_loop()?;
+            let center = NSNotificationCenter::new();
+            let session = unsafe { AVCaptureSession::new() };
+            let other = unsafe { AVCaptureSession::new() };
+            for (name, expected) in unsafe {
+                [
+                    (AVCaptureSessionWasInterruptedNotification, INTERRUPTED),
+                    (AVCaptureSessionRuntimeErrorNotification, SESSION_ERROR),
+                    (AVCaptureSessionDidStopRunningNotification, SESSION_STOPPED),
+                ]
+            } {
+                let source = state(events.wake());
+                let observations =
+                    SessionNotifications::new(center.clone(), &session, source.clone());
+                unsafe {
+                    center.postNotificationName_object(name, Some(&other));
+                }
+                assert_eq!(source.failure.load(Ordering::Acquire), 0);
+                unsafe {
+                    center.postNotificationName_object(name, Some(&session));
+                }
+                assert_eq!(source.failure.load(Ordering::Acquire), expected);
+                assert!(!source.accepting.load(Ordering::Acquire));
+                assert!(source.slot.reserve().is_err());
+                // An immediately ended interruption cannot recover within PTS slack.
+                unsafe {
+                    center.postNotificationName_object(
+                        objc2_av_foundation::AVCaptureSessionInterruptionEndedNotification,
+                        Some(&session),
+                    );
+                }
+                assert_eq!(source.failure.load(Ordering::Acquire), expected);
+                assert!(source.check().is_err());
+                drop(observations);
+            }
+            Ok(())
+        })
+    }
+    #[test]
+    fn owned_notification_removal_and_expected_stop_cannot_mutate_retired_state() -> Result<()> {
+        objc2::rc::autoreleasepool(|_| -> Result<()> {
+            let events = EventLoop::notification_test_loop()?;
+            let center = NSNotificationCenter::new();
+            let session = unsafe { AVCaptureSession::new() };
+            let source = state(events.wake());
+            let observations = SessionNotifications::new(center.clone(), &session, source.clone());
+            source.stopping.store(true, Ordering::Release);
+            unsafe {
+                center.postNotificationName_object(
+                    AVCaptureSessionDidStopRunningNotification,
+                    Some(&session),
+                );
+            }
+            assert_eq!(source.failure.load(Ordering::Acquire), 0);
+            let active = observations.active.clone();
+            drop(observations);
+            assert!(!*active.lock().unwrap());
+            unsafe {
+                center.postNotificationName_object(
+                    AVCaptureSessionRuntimeErrorNotification,
+                    Some(&session),
+                );
+            }
+            assert_eq!(source.failure.load(Ordering::Acquire), 0);
+            assert!(source.accepting.load(Ordering::Acquire));
+            Ok(())
+        })
+    }
 }

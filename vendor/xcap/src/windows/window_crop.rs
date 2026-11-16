@@ -1,6 +1,17 @@
 //! Physical GDI window coordinates. No DPI inference, interpolation or clamped crop.
 use image::RgbaImage;
 
+pub(super) fn bitmap_bytes(width: i32, height: i32) -> Result<usize, &'static str> {
+    let width = u32::try_from(width).map_err(|_| "Invalid GDI bitmap width")?;
+    let height = u32::try_from(height).map_err(|_| "Invalid GDI bitmap height")?;
+    let bytes = u64::from(width)
+        .checked_mul(u64::from(height))
+        .and_then(|n| n.checked_mul(4))
+        .filter(|n| width > 0 && height > 0 && *n <= 256 * 1024 * 1024)
+        .ok_or("GDI bitmap exceeds the 256 MiB decoded limit")?;
+    usize::try_from(bytes).map_err(|_| "GDI bitmap exceeds addressable memory")
+}
+
 pub(super) fn physical_crop(
     raw: [i32; 4],
     visible: [i32; 4],
@@ -61,6 +72,20 @@ pub(super) fn crop_gdi_window(
 mod tests {
     use super::*;
     use image::Rgba;
+    #[test]
+    fn native_bitmap_admission_rejects_changed_oversize_before_allocation() {
+        assert_eq!(bitmap_bytes(8192, 8192).unwrap(), 256 * 1024 * 1024);
+        for (width, height) in [
+            (0, 1),
+            (-1, 1),
+            (1, -1),
+            (8193, 8192),
+            (i32::MAX, i32::MAX),
+            (32768, 32768),
+        ] {
+            assert!(bitmap_bytes(width, height).is_err());
+        }
+    }
     #[test]
     fn dwm_resize_borders_are_cropped_once_without_resizing_or_losing_right_bottom_pixels() {
         let source = RgbaImage::from_fn(18, 12, |x, y| {

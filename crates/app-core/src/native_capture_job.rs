@@ -371,6 +371,16 @@ impl NativeCaptureCall {
 
     /// Private worker entry: the executable must handle this before installing its executor.
     pub fn run_inline(self, originating_pid: u32) -> Result<NativeCaptureReply, CaptureError> {
+        #[cfg(target_os = "macos")]
+        {
+            objc2::rc::autoreleasepool(|_| self.run_inline_unpooled(originating_pid))
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            self.run_inline_unpooled(originating_pid)
+        }
+    }
+    fn run_inline_unpooled(self, originating_pid: u32) -> Result<NativeCaptureReply, CaptureError> {
         if executor().is_some() || originating_pid == 0 {
             return Err(invalid());
         }
@@ -431,20 +441,39 @@ impl NativeCaptureCall {
             ));
         }
         #[cfg(target_os = "macos")]
-        if matches!(
+        let native_pixels = matches!(
             self,
             Self::Batch { .. }
                 | Self::FocusedWindow { .. }
                 | Self::FocusedDisplay { .. }
                 | Self::Template { .. }
                 | Self::Desktop { .. }
-        ) {
+        );
+        #[cfg(target_os = "macos")]
+        if native_pixels {
             crate::capture_macos_ax::screen_permission().map_err(|error| {
                 error
                     .downcast::<CaptureError>()
                     .unwrap_or_else(|_| CaptureError::MacScreenPermissionDenied)
             })?;
         }
+        #[cfg(target_os = "macos")]
+        let native_events = if native_pixels {
+            Some(crate::capture_macos_loop::EventLoop::new().map_err(|_| {
+                CaptureError::Backend("Native capture event loop unavailable".into())
+            })?)
+        } else {
+            None
+        };
+        #[cfg(target_os = "macos")]
+        let native_topology = native_events
+            .as_ref()
+            .map(|events| {
+                crate::capture_macos_loop::Topology::new(events.wake()).map_err(|_| {
+                    CaptureError::Backend("Native topology observer unavailable".into())
+                })
+            })
+            .transpose()?;
         #[cfg(target_os = "linux")]
         {
             let display = std::env::var("DISPLAY").map_err(|_| {
@@ -518,6 +547,10 @@ impl NativeCaptureCall {
         topology
             .check()
             .map_err(|error| CaptureError::Backend(error.to_string()))?;
+        #[cfg(target_os = "macos")]
+        if native_topology.is_some() {
+            crate::capture_macos_loop::Topology::check().map_err(|_| CaptureError::StaleRegion)?;
+        }
         self.validate_reply(&reply)?;
         Ok(reply)
     }

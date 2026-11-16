@@ -107,6 +107,27 @@ fn validate_region(region: PixelRegion, width: u32, height: u32) -> Result<()> {
     Ok(())
 }
 
+#[cfg(any(target_os = "macos", test))]
+pub(crate) fn screenshot_buffer_admission(
+    width: u32,
+    height: u32,
+    selected_bytes: u64,
+) -> Result<()> {
+    validate_image_size(width, height)?;
+    ensure!(
+        selected_bytes > 0 && selected_bytes <= crate::MAX_CAPTURE_BYTES,
+        "Invalid native screenshot memory admission"
+    );
+    let source = u64::from(width) * u64::from(height) * 4;
+    let scratch = 32 * 1024 * 1024;
+    // Native CGImage + provider bytes + decoded RGBA can coexist while reading.
+    ensure!(
+        3 * source + selected_bytes <= 2 * source + 2 * selected_bytes + scratch,
+        "Native macOS screenshot exceeds active-image memory admission; choose a smaller source"
+    );
+    Ok(())
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MacDisplayProof {
@@ -149,6 +170,25 @@ impl MacDisplayProof {
             "Ambiguous macOS display scale"
         );
         Ok(x)
+    }
+    #[cfg(any(target_os = "macos", test))]
+    pub(crate) fn screenshot_dimensions(
+        &self,
+        display_frame: MacLogicalRect,
+        content: MacLogicalRect,
+        scale: f64,
+    ) -> Result<(u32, u32)> {
+        self.validate()?;
+        ensure!(
+            self.logical.same_bounds(display_frame),
+            "Native display logical geometry changed"
+        );
+        let size = content.pixel_size(scale)?;
+        ensure!(
+            size == (self.pixel_width, self.pixel_height),
+            "Native display content scale/pixel geometry changed or needs rotation calibration"
+        );
+        Ok(size)
     }
     /// Actual macOS SDK AVCaptureInput.h declares display-local POINTS,
     /// bottom-left; pair this rectangle with scaleFactor=unrotated_scale().
@@ -597,6 +637,43 @@ mod tests {
             cursor: false,
             microphone: false,
         }
+    }
+    #[test]
+    fn screenshot_display_uses_content_point_scale_and_never_guesses_from_point_width() {
+        let source = display();
+        let mut content = source.logical;
+        content.x = 0.0;
+        content.y = 0.0;
+        assert_eq!(
+            source
+                .screenshot_dimensions(source.logical, content, 2.0)
+                .unwrap(),
+            (2880, 1800)
+        );
+        assert!(
+            source
+                .screenshot_dimensions(source.logical, content, 1.0)
+                .is_err()
+        );
+        let mut moved = source.logical;
+        moved.x += 1.0;
+        assert!(source.screenshot_dimensions(moved, content, 2.0).is_err());
+        content.width += 1.0;
+        assert!(
+            source
+                .screenshot_dimensions(source.logical, content, 2.0)
+                .is_err()
+        );
+    }
+    #[test]
+    fn screenshot_provider_and_crop_admission_preserve_the_plan_cpu_memory_budget() {
+        let source = 8192 * 1024 * 4;
+        screenshot_buffer_admission(8192, 1024, source).unwrap();
+        screenshot_buffer_admission(3840, 2160, 4).unwrap();
+        screenshot_buffer_admission(8192, 1024, 4).unwrap();
+        assert!(screenshot_buffer_admission(8193, 1024, 4).is_err());
+        screenshot_buffer_admission(16384, 2048, 16384 * 2048 * 4).unwrap();
+        assert!(screenshot_buffer_admission(1, 1, 0).is_err());
     }
     #[test]
     fn scroll_summary_never_claims_completion_without_progress_and_two_end_frames() {

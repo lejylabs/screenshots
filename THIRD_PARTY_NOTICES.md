@@ -149,3 +149,9 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+The vendored HarfRust 0.15.0 retains its upstream MIT license and published
+version in `vendor/harfrust/LICENSE`. Its observational preprocessing-budget
+exhaustion status patch and exact upstream provenance are documented in
+`vendor/harfrust/LOCAL-PATCH.md`. Existing shaping defaults and limits remain
+unchanged; the editor refuses exhausted preprocessing results.

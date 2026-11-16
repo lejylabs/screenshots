@@ -57,6 +57,35 @@ fn identity_preserves_exact_alpha_hidden_rgb_and_original_backing() -> Result<()
     assert_eq!(document.memory().retained_raster_bytes, 9 * 7 * 4);
     Ok(())
 }
+
+#[test]
+fn retained_raster_and_metadata_capacity_slack_is_counted_before_admission() -> Result<()> {
+    let reserved = 1024 * 1024;
+    let pixel = || {
+        let mut bytes = Vec::with_capacity(reserved);
+        bytes.extend_from_slice(&[1, 2, 3, 255]);
+        Arc::new(RgbaImage::from_raw(1, 1, bytes).unwrap())
+    };
+    let mut input = source(1, 1);
+    input.pixels = pixel();
+    let mut document = EditorDocument::from_image(input)?;
+    assert_eq!(document.memory().retained_raster_bytes, reserved as u64);
+    document.insert_raster("slack", pixel())?;
+    assert_eq!(
+        document.memory().retained_raster_bytes,
+        (reserved * 2) as u64
+    );
+    let mut metadata = DocumentSpec::new(1, 1);
+    metadata
+        .layers
+        .reserve(MAX_METADATA / std::mem::size_of::<Layer>() + 1);
+    assert!(EditorDocument::new(source(1, 1), EditorAssets::new(), metadata).is_err());
+    let mut input = source(1, 1);
+    input.display_id = String::with_capacity(1024 * 1024);
+    input.display_id.push('x');
+    assert!(EditorDocument::from_image(input).is_err());
+    Ok(())
+}
 #[test]
 fn effect_order_is_real_and_translucent_vector_ink_retains_selected_rgba() -> Result<()> {
     let mut input = source(8, 4);
@@ -225,6 +254,91 @@ fn invalid_edits_and_preset_extension_conflicts_leave_state_unchanged() -> Resul
             .is_err()
     );
     assert_eq!(document.revision(), revision);
+    Ok(())
+}
+
+#[test]
+fn metadata_state_rejects_invalid_sequential_edits_without_any_pixel_backing() -> Result<()> {
+    let mut spec = DocumentSpec::new(8, 4);
+    spec.layers
+        .push(fill(1, Rect::new(1.0, 1.0, 2.0, 1.0), [0, 255, 0, 255]));
+    let catalog = AssetCatalog::declared([], [])?;
+    let mut state = EditorState::new(spec.clone(), [16, 8], catalog)?;
+    let presets = PresetBook {
+        tools: vec![ToolPreset {
+            name: "green".into(),
+            content: spec.layers[0].content.clone(),
+        }],
+        ..Default::default()
+    };
+    for edit in [
+        EditorEdit::TransformDocument {
+            transform: Affine::IDENTITY,
+            canvas: [0, 0],
+        },
+        EditorEdit::ResizeCanvas {
+            width: 8,
+            height: 4,
+            anchor: [2.0, 0.0],
+        },
+        EditorEdit::Remove { id: 99 },
+        EditorEdit::Reorder { id: 1, index: 9 },
+        EditorEdit::ToolPreset {
+            id: 99,
+            name: "green".into(),
+        },
+        EditorEdit::Crop {
+            area: Some(crate::PixelRegion {
+                x: 7,
+                y: 0,
+                width: 2,
+                height: 1,
+            }),
+        },
+    ] {
+        let revision = state.revision();
+        assert!(state.apply(&edit, &presets).is_err());
+        assert_eq!(state.spec(), &spec);
+        assert_eq!(state.revision(), revision);
+    }
+    state.apply(&EditorEdit::Remove { id: 1 }, &presets)?;
+    assert!(
+        state
+            .apply(
+                &EditorEdit::TransformLayer {
+                    id: 1,
+                    transform: Affine::IDENTITY
+                },
+                &presets
+            )
+            .is_err()
+    );
+    state.apply(&EditorEdit::Undo, &presets)?;
+    state.apply(
+        &EditorEdit::TransformLayer {
+            id: 1,
+            transform: Affine::translate(1.0, 0.0),
+        },
+        &presets,
+    )?;
+    state.apply(&EditorEdit::Reset, &presets)?;
+    assert_eq!(state.spec().canvas, [16, 8]);
+    state.apply(
+        &EditorEdit::Crop {
+            area: Some(crate::PixelRegion {
+                x: 12,
+                y: 4,
+                width: 4,
+                height: 4,
+            }),
+        },
+        &presets,
+    )?;
+    let document = EditorDocument::from_state(source(16, 8), EditorAssets::new(), state)?;
+    assert_eq!(
+        document.snapshot().render(|| false)?.pixels.dimensions(),
+        (4, 4)
+    );
     Ok(())
 }
 
@@ -620,6 +734,121 @@ fn privacy_outside_crop_and_rotated_mask_shape() -> Result<()> {
 }
 
 #[test]
+fn rotated_and_sheared_bilinear_source_secrets_cannot_escape_through_clone_or_lens() -> Result<()> {
+    for shear in [0.0, 0.3] {
+        let (sin, cos) = 30f64.to_radians().sin_cos();
+        let [a, b, c, d] = [
+            cos * 3.0,
+            sin * 3.0,
+            (cos * shear - sin) * 3.0,
+            (sin * shear + cos) * 3.0,
+        ];
+        let base = Affine([a, b, c, d, 40.0, 8.0]);
+        let determinant = a * d - b * c;
+        // Independent inverse equations choose a destination pixel completely
+        // outside the mask's source-x>=4 half-plane, but whose bilinear support
+        // includes secret texel x=4. A final opaque mask alone cannot hide it.
+        let inverse = |x: f64, y: f64| {
+            [
+                (d * (x - 40.0) - c * (y - 8.0)) / determinant,
+                (-b * (x - 40.0) + a * (y - 8.0)) / determinant,
+            ]
+        };
+        let (px, py, sx) = (0..64)
+            .flat_map(|y| (0..64).map(move |x| (x, y)))
+            .find_map(|(x, y)| {
+                let p = inverse(x as f64 + 0.5, y as f64 + 0.5);
+                let outside = [
+                    [x as f64, y as f64],
+                    [x as f64 + 1.0, y as f64],
+                    [x as f64, y as f64 + 1.0],
+                    [x as f64 + 1.0, y as f64 + 1.0],
+                ]
+                .iter()
+                .all(|p| inverse(p[0], p[1])[0] < 4.0);
+                (outside && p[0] > 3.6 && p[0] < 3.95 && p[1] > 4.5 && p[1] < 7.5)
+                    .then_some((x, y, p[0]))
+            })
+            .expect("a discriminating interpolation pixel exists");
+        let make = |sanitized: bool| {
+            let mut input = source(16, 16);
+            input.pixels = Arc::new(RgbaImage::from_fn(16, 16, |x, y| {
+                if (4..8).contains(&x) && (4..8).contains(&y) {
+                    if sanitized {
+                        Rgba([0, 0, 0, 255])
+                    } else {
+                        Rgba([217, 13, 131, 255])
+                    }
+                } else {
+                    Rgba([0, 17, 213, 255])
+                }
+            }));
+            input
+        };
+        let mut spec = DocumentSpec::new(96, 96);
+        spec.base = base;
+        spec.interpolation = Interpolation::Bilinear;
+        let mut mask = layer(1, Rect::new(4.0, 4.0, 4.0, 4.0), LayerKind::Redaction);
+        mask.transform = base;
+        spec.layers.push(mask);
+        spec.layers.push(layer(
+            2,
+            Rect::new(0.0, 70.0, 20.0, 20.0),
+            LayerKind::Clone {
+                source: Affine::translate(px as f64 - 5.0, py as f64 - 75.0),
+                interpolation: Interpolation::Nearest,
+            },
+        ));
+        spec.layers.push(layer(
+            3,
+            Rect::new(64.0, 64.0, 28.0, 28.0),
+            LayerKind::Magnifier {
+                source: Affine([
+                    0.5,
+                    0.0,
+                    0.0,
+                    0.5,
+                    px as f64 + 0.5 - 39.25,
+                    py as f64 + 0.5 - 39.25,
+                ]),
+                interpolation: Interpolation::Bilinear,
+                style: Style {
+                    fill: None,
+                    stroke: Some([0, 255, 0, 255]),
+                    width: 1.0,
+                },
+            },
+        ));
+        let raw = EditorDocument::new(make(false), EditorAssets::new(), spec.clone())?
+            .snapshot()
+            .render(|| false)?;
+        let independently_sanitized =
+            EditorDocument::new(make(true), EditorAssets::new(), spec.clone())?
+                .snapshot()
+                .render(|| false)?;
+        assert_eq!(
+            raw.pixels.as_ref(),
+            independently_sanitized.pixels.as_ref(),
+            "noninterference shear={shear}"
+        );
+        let safe = raw.pixels.get_pixel(px, py).0;
+        assert_eq!(safe[0], 0);
+        assert_eq!(raw.pixels.get_pixel(5, 75).0, safe);
+        assert_eq!(raw.pixels.get_pixel(78, 78).0, safe);
+        spec.layers.remove(0);
+        let unmasked = EditorDocument::new(make(false), EditorAssets::new(), spec)?
+            .snapshot()
+            .render(|| false)?;
+        let expected_red = (217.0 * (sx - 3.5)).round() as u8;
+        assert_eq!(unmasked.pixels.get_pixel(px, py)[0], expected_red);
+        assert!(expected_red > 20);
+        assert_eq!(unmasked.pixels.get_pixel(5, 75)[0], expected_red);
+        assert_eq!(unmasked.pixels.get_pixel(78, 78)[0], expected_red);
+    }
+    Ok(())
+}
+
+#[test]
 fn preset_book_roundtrip_applies_actual_tool_and_export_pixels() -> Result<()> {
     let book = PresetBook {
         version: 1,
@@ -845,5 +1074,35 @@ fn optimized_editor_resource_observation() -> Result<()> {
         "EDITOR_RESOURCE_REPORT:{}",
         serde_json::json!({"cases":reports,"process_before":process_before,"process_after":rss(),"reference_hardware_acceptance":false,"presentation_included":false,"rss_includes_test_process_and_allocator_caches":true})
     );
+    Ok(())
+}
+
+#[test]
+fn metadata_final_output_plan_shares_actual_crop_padding_limit() -> Result<()> {
+    let mut spec = DocumentSpec::new(1, 1);
+    spec.export.padding = [8192; 4];
+    let mut state = EditorState::new(spec, [1, 1], AssetCatalog::default())?;
+    assert!(
+        state
+            .planned_output_size()
+            .unwrap_err()
+            .to_string()
+            .contains("256 MiB")
+    );
+    let preset = ExportPreset {
+        padding: [4095; 4],
+        ..ExportPreset::default()
+    };
+    state.set_export(preset)?;
+    assert_eq!(state.planned_output_size()?, [8191, 8191]);
+    state.resize_canvas(8, 8, [0.0, 0.0])?;
+    assert!(state.planned_output_size().is_err());
+    state.set_crop(Some(crate::PixelRegion {
+        x: 0,
+        y: 0,
+        width: 1,
+        height: 1,
+    }))?;
+    assert_eq!(state.planned_output_size()?, [8191, 8191]);
     Ok(())
 }

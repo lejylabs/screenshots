@@ -1,10 +1,11 @@
 //! Finite raw-video side channel within the existing native job/admission family.
-use super::{Job, SharedJob, lock, protocol, transport};
+use super::{SharedJob, lock, protocol, transport};
 use anyhow::{Context, Result, ensure};
 use app_core::{CaptureError, MacVideoRequest, NativeCaptureCall, NativeCaptureReply};
+#[cfg(any(test, target_os = "macos"))]
+use std::io::Write;
 use std::{
     fs::File,
-    io::{Read, Write},
     os::{
         fd::{AsRawFd, FromRawFd, OwnedFd},
         unix::{net::UnixStream, process::CommandExt},
@@ -262,7 +263,7 @@ pub(super) fn inherited_sink(nonce: &[u8; 16], parent: u32) -> Result<UnixStream
             && address.ss_family as i32 == libc::AF_UNIX,
         "Raw video sink is not local/connected"
     );
-    let mut sink = unsafe { UnixStream::from_raw_fd(fd) };
+    let sink = unsafe { UnixStream::from_raw_fd(fd) };
     sink.set_nonblocking(true)?;
     Ok(sink)
 }

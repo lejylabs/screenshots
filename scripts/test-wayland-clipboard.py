@@ -75,6 +75,22 @@ def main():
                     time.sleep(.025)
                 else:
                     raise RuntimeError("Private Wayland socket readiness timed out")
+                # The underlying ignored fixture must reject descriptor overrides
+                # independently of this runner's environment cleanup.
+                left, right = socket.socketpair()
+                try:
+                    refused = subprocess.run(
+                        [binary, "--exact", "private_wayland_clipboard_fixture::focused_wayland_paste_uses_native_offer_and_existing_editor",
+                         "--ignored", "--nocapture", "--test-threads=1"],
+                        env=dict(env, WAYLAND_SOCKET=str(left.fileno())), pass_fds=(left.fileno(),),
+                        stdin=subprocess.DEVNULL, capture_output=True, timeout=8)
+                    require(refused.returncode != 0 and
+                            b"Private fixture refuses WAYLAND_SOCKET descriptor overrides" in refused.stderr,
+                            "Private native fixture did not reject a descriptor override before platform construction")
+                finally:
+                    left.close()
+                    right.close()
+                report["checks"].append("direct native fixture invocation rejects a private descriptor override before native platform construction")
                 # An input-free headless seat needs a private virtual keyboard for standard
                 # keyboard-focus/selection events. It never connects to the user's socket.
                 keyboard = subprocess.Popen([str(Path(compositor).with_name("wtype")), "-k", "Shift_L", "-s", "20000"],

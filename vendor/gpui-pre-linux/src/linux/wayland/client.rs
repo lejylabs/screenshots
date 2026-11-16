@@ -416,7 +416,7 @@ pub(crate) struct WaylandClientState {
     cursor_style: Option<CursorStyle>,
     cursor_hidden_window: Option<WaylandWindowStatePtr>,
     clipboard: Clipboard,
-    data_offers: Vec<DataOffer<WlDataOffer>>,
+    pending_data_offers: Vec<DataOffer<WlDataOffer>>,
     primary_data_offer: Option<DataOffer<ZwpPrimarySelectionOfferV1>>,
     cursor: Cursor,
     startup_activation_token: Option<String>,
@@ -426,6 +426,17 @@ pub(crate) struct WaylandClientState {
     registrations: Vec<RegistrationToken>,
     pub common: Rc<RefCell<LinuxCommon>>,
     ime_enabled: Option<bool>,
+}
+
+fn store_pending_data_offer<T>(pending: &mut Vec<T>, offer: T) -> Option<T> {
+    let retired = (pending.len() == 2).then(|| pending.remove(0));
+    pending.push(offer);
+    retired
+}
+
+fn claim_pending_data_offer<T>(pending: &mut Vec<T>, matches: impl Fn(&T) -> bool) -> Option<T> {
+    let index = pending.iter().position(matches)?;
+    Some(pending.remove(index))
 }
 
 struct DragState<DataOffer = wl_data_offer::WlDataOffer, Window = WaylandWindowStatePtr> {
@@ -442,6 +453,13 @@ struct DragState<DataOffer = wl_data_offer::WlDataOffer, Window = WaylandWindowS
 }
 
 impl<DataOffer: FileDragDataOffer + Clone, Window: Clone> DragState<DataOffer, Window> {
+    fn cancel_from_application(&mut self) {
+        self.drop_pending = false;
+        // No synchronous input dispatch: this can be called from an input handler.
+        self.handle_leave();
+        self.copy_allowed = false;
+    }
+
     fn begin_uri_read(&mut self) -> u64 {
         self.invalidate_uri_read();
         if let Some(offer) = self.data_offer.take() {
@@ -973,6 +991,12 @@ impl Drop for WaylandConnection {
         }
 
         let mut state = self.0.borrow_mut();
+        state.clipboard.set_offer(None);
+        state.drag.drop_pending = false;
+        state.drag.handle_leave();
+        for offer in state.pending_data_offers.drain(..) {
+            FileDragDataOffer::destroy(&offer.inner);
+        }
         state.windows.clear();
 
         if let Some(wl_pointer) = &state.wl_pointer {
@@ -1214,7 +1238,7 @@ impl WaylandConnection {
             cursor_style: None,
             cursor_hidden_window: None,
             clipboard: Clipboard::new(conn.clone(), handle.clone()),
-            data_offers: Vec::new(),
+            pending_data_offers: Vec::new(),
             primary_data_offer: None,
             cursor,
             startup_activation_token: activation_token,
@@ -1579,6 +1603,10 @@ impl WaylandConnection {
         self.0.borrow_mut().clipboard.cancel_image_read();
     }
 
+    pub(crate) fn cancel_pending_native_drop(&self) {
+        self.0.borrow_mut().drag.cancel_from_application();
+    }
+
     pub(crate) fn read_image_from_clipboard_async(
         &self,
     ) -> gpui::Task<Result<gpui::Image, gpui::ClipboardReadError>> {
@@ -1597,7 +1625,7 @@ impl WaylandConnection {
         let read = background.spawn(async move { read.execute() });
         let owner = Rc::downgrade(&self.0);
         foreground.spawn(async move {
-            let result = read.await;
+            let (result, _lease) = read.await;
             let Some(owner) = owner.upgrade() else {
                 return Err(gpui::ClipboardReadError::Canceled);
             };
@@ -3010,23 +3038,22 @@ impl Dispatch<wl_data_device::WlDataDevice, ()> for WaylandClientStatePtr {
         match event {
             // Clipboard
             wl_data_device::Event::DataOffer { id: data_offer } => {
-                state.data_offers.push(DataOffer::new(data_offer));
-                if state.data_offers.len() > 2 {
-                    // At most we store a clipboard offer and a drag and drop offer.
-                    state.data_offers.remove(0).inner.destroy();
+                // Active clipboard/drag roles own their offers separately from this
+                // bounded, not-yet-assigned negotiation queue.
+                if let Some(retired) = store_pending_data_offer(
+                    &mut state.pending_data_offers,
+                    DataOffer::new(data_offer),
+                ) {
+                    FileDragDataOffer::destroy(&retired.inner);
                 }
             }
             wl_data_device::Event::Selection { id: data_offer } => {
-                if let Some(offer) = data_offer {
-                    let offer = state
-                        .data_offers
-                        .iter()
-                        .find(|wrapper| wrapper.inner.id() == offer.id());
-                    let offer = offer.cloned();
-                    state.clipboard.set_offer(offer);
-                } else {
-                    state.clipboard.set_offer(None);
-                }
+                let offer = data_offer.and_then(|offer| {
+                    claim_pending_data_offer(&mut state.pending_data_offers, |wrapper| {
+                        wrapper.inner.id() == offer.id()
+                    })
+                });
+                state.clipboard.set_offer(offer);
             }
 
             // Drag and drop
@@ -3041,13 +3068,21 @@ impl Dispatch<wl_data_device::WlDataDevice, ()> for WaylandClientStatePtr {
                 let Some(offer) = data_offer else {
                     return;
                 };
+                let Some(metadata) =
+                    claim_pending_data_offer(&mut state.pending_data_offers, |wrapper| {
+                        wrapper.inner.id() == offer.id()
+                    })
+                else {
+                    FileDragDataOffer::destroy(&offer);
+                    return;
+                };
                 let Some(window) = get_window(&mut state, &surface.id()) else {
                     FileDragDataOffer::destroy(&offer);
                     return;
                 };
                 let events = this.begin_incoming_drop(
                     &mut state,
-                    offer,
+                    metadata,
                     window,
                     Point::new(x.into(), y.into()),
                     serial,
@@ -3126,7 +3161,7 @@ impl Dispatch<wl_data_offer::WlDataOffer, ()> for WaylandClientStatePtr {
         if let wl_data_offer::Event::Offer { mime_type } = event {
             // Clipboard
             if let Some(offer) = state
-                .data_offers
+                .pending_data_offers
                 .iter_mut()
                 .find(|wrapper| wrapper.inner.id() == data_offer.id())
             {
@@ -3383,6 +3418,79 @@ mod tests {
         }
     }
 
+    fn pending_offer(pending: &mut Vec<FakeDataOffer>, offer: FakeDataOffer) {
+        if let Some(retired) = store_pending_data_offer(pending, offer) {
+            retired.destroy();
+        }
+        assert!(pending.len() <= 2);
+    }
+
+    #[test]
+    fn completed_and_rejected_drags_cannot_evict_the_current_clipboard_offer() {
+        let mut pending = Vec::new();
+        let clipboard = FakeDataOffer::new("clipboard");
+        pending_offer(&mut pending, clipboard.clone());
+        let clipboard_role =
+            claim_pending_data_offer(&mut pending, |offer| offer.name == "clipboard").unwrap();
+        let mut drag = drag_state();
+        for name in ["completed drag", "rejected drag"] {
+            let offer = FakeDataOffer::new(name);
+            pending_offer(&mut pending, offer.clone());
+            let drag_role = claim_pending_data_offer(&mut pending, |v| v.name == name).unwrap();
+            let generation = drag.begin_uri_read();
+            drag.data_offer = Some(drag_role.clone());
+            drag.window = Some("window");
+            if name == "completed drag" {
+                assert!(
+                    complete_drag_uri_read(&mut drag, generation, drag_role, "window").is_some()
+                );
+                assert!(drag.handle_drop().is_some());
+                assert!(offer.finished.get());
+            } else {
+                assert!(drag.handle_leave().is_some());
+                assert!(!offer.finished.get());
+            }
+            assert!(offer.destroyed.get());
+            assert!(pending.is_empty());
+            assert!(!clipboard.destroyed.get());
+        }
+        pending_offer(&mut pending, FakeDataOffer::new("new drag"));
+        assert_eq!(pending.len(), 1);
+        assert!(!clipboard_role.destroyed.get());
+    }
+
+    #[test]
+    fn selection_churn_and_unassigned_offer_bound_preserve_a_delayed_drag() {
+        let mut pending = Vec::new();
+        let mut clipboard_role: Option<FakeDataOffer> = None;
+        let mut drag = drag_state();
+        let offer = FakeDataOffer::new("delayed drag");
+        pending_offer(&mut pending, offer.clone());
+        let drag_role =
+            claim_pending_data_offer(&mut pending, |v| v.name == "delayed drag").unwrap();
+        let generation = drag.begin_uri_read();
+        drag.data_offer = Some(drag_role.clone());
+        drag.window = Some("window");
+        assert!(drag.handle_drop().is_none());
+        for _ in 0..32 {
+            let unassigned = FakeDataOffer::new("unassigned");
+            pending_offer(&mut pending, unassigned.clone());
+            pending_offer(&mut pending, FakeDataOffer::new("next clipboard"));
+            let next = claim_pending_data_offer(&mut pending, |v| v.name == "next clipboard");
+            if let Some(retired) = std::mem::replace(&mut clipboard_role, next) {
+                retired.destroy();
+            }
+            assert!(!offer.destroyed.get());
+            assert_eq!(drag.uri_read_generation, generation);
+        }
+        let remaining_clipboard = clipboard_role.unwrap();
+        assert!(complete_drag_uri_read(&mut drag, generation, drag_role, "window").is_some());
+        assert!(drag.handle_drop().is_some());
+        assert!(offer.finished.get() && offer.destroyed.get());
+        assert!(!remaining_clipboard.destroyed.get());
+        assert!(pending.iter().all(|value| value.name == "unassigned"));
+    }
+
     fn complete_drag_uri_read(
         drag: &mut DragState<FakeDataOffer, &'static str>,
         generation: u64,
@@ -3447,6 +3555,74 @@ mod tests {
         ));
         assert!(offer.finished.get() && offer.destroyed.get());
         assert!(drag.window.is_none() && drag.data_offer.is_none());
+    }
+
+    #[test]
+    fn delayed_uri_metadata_preserves_motion_and_final_drop_coordinates() {
+        let mut drag = drag_state();
+        let offer = FakeDataOffer::new("A");
+        let generation = drag.begin_uri_read();
+        let entered = Point::new(px(1.0), px(2.0));
+        let final_position = Point::new(px(71.0), px(93.0));
+        drag.position = entered;
+        drag.position = final_position;
+        assert!(drag.handle_drop().is_none());
+        assert!(drag.handle_leave().is_none());
+        let (_, input) = drag
+            .complete_uri_read(
+                generation,
+                offer,
+                "window A",
+                entered,
+                gpui::ExternalPaths(SmallVec::from_vec(vec![PathBuf::from("/tmp/private-file")])),
+            )
+            .unwrap();
+        let PlatformInput::FileDrop(FileDropEvent::Entered { position, .. }) = input else {
+            panic!()
+        };
+        assert_eq!(position, final_position);
+        assert_eq!(drag.position, final_position);
+        let (_, input) = drag.handle_drop().unwrap();
+        let PlatformInput::FileDrop(FileDropEvent::Submit { position }) = input else {
+            panic!()
+        };
+        assert_eq!(position, final_position);
+    }
+
+    #[test]
+    fn application_cancellation_retires_and_wakes_a_pending_native_image() {
+        let mut drag = drag_state();
+        let offer = FakeDataOffer::new("old native image");
+        let generation = drag.begin_uri_read();
+        drag.data_offer = Some(offer.clone());
+        drag.window = Some("window");
+        drag.image_format = Some(gpui::ImageFormat::Png);
+        drag.drop_pending = true;
+        let (cancel_read, cancel_write) = UnixStream::pair().unwrap();
+        cancel_read.set_nonblocking(true).unwrap();
+        drag.read_cancel = Some(cancel_write);
+        drag.cancel_from_application();
+        assert!(!drag.is_uri_read_current(generation));
+        assert!(offer.destroyed.get());
+        let mut byte = [0];
+        use std::io::Read as _;
+        assert_eq!((&cancel_read).read(&mut byte).unwrap(), 1);
+        let late = drag.complete_data_read(
+            generation,
+            offer.clone(),
+            "window",
+            Point::default(),
+            PlatformInput::FileDrop(FileDropEvent::ImageEntered {
+                position: Point::default(),
+                image: gpui::ExternalImageDrop {
+                    format: gpui::ImageFormat::Png,
+                    bytes: Some(Arc::new(vec![1, 2, 3])),
+                },
+            }),
+        );
+        assert!(late.is_none());
+        assert!(drag.window.is_none() && drag.data_offer.is_none());
+        assert!(!drag.data_ready && !drag.copy_allowed);
     }
 
     #[test]

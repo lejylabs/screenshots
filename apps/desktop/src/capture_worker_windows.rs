@@ -14,7 +14,33 @@ pub(super) struct Process {
 }
 pub(super) struct Container(pub OwnedHandle);
 pub(super) fn container() -> Result<Container> {
-    Ok(Container(windows_child::job(None, None)?))
+    Ok(Container(windows_child::job(
+        None,
+        Some(1024 * 1024 * 1024),
+    )?))
+}
+#[cfg(test)]
+#[test]
+fn native_worker_job_has_an_explicit_commit_ceiling() -> Result<()> {
+    let container = container()?;
+    let mut information = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
+    ensure!(
+        unsafe {
+            QueryInformationJobObject(
+                container.0.as_raw_handle(),
+                JobObjectExtendedLimitInformation,
+                std::ptr::from_mut(&mut information).cast(),
+                size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+                std::ptr::null_mut(),
+            )
+        } != 0
+    );
+    assert_ne!(
+        information.BasicLimitInformation.LimitFlags & JOB_OBJECT_LIMIT_PROCESS_MEMORY,
+        0
+    );
+    assert_eq!(information.ProcessMemoryLimit, 1024 * 1024 * 1024);
+    Ok(())
 }
 pub(super) fn spawn(
     command: &Command,

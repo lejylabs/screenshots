@@ -149,8 +149,8 @@ impl LegacyAnnotation {
     pub(crate) fn draw(&self) -> &DrawAnnotation {
         &self.0.draw
     }
-    pub(crate) fn belongs_to(&self, assets: &EditorAssets) -> bool {
-        Weak::ptr_eq(&self.0.pool, &Arc::downgrade(&assets.pool))
+    pub(super) fn belongs_to_pool(&self, pool: &Weak<Pool>) -> bool {
+        Weak::ptr_eq(&self.0.pool, pool)
     }
     pub(crate) fn stamp_size(&self) -> Result<[u32; 2]> {
         let bounds = self.bounds();

@@ -8,15 +8,23 @@ use anyhow::{Context, Result, ensure};
 use std::{
     marker::PhantomData,
     mem::size_of,
+    os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle},
     ptr,
     rc::Rc,
     sync::atomic::{AtomicBool, AtomicU64, Ordering},
 };
 use windows_sys::Win32::{
-    Foundation::{HWND, LPARAM, LRESULT, POINT, WPARAM},
+    Foundation::{HWND, LPARAM, LRESULT, POINT, WAIT_TIMEOUT, WPARAM},
     Graphics::Gdi::*,
-    System::LibraryLoader::{GetModuleHandleW, GetProcAddress},
-    UI::{HiDpi::GetDpiForWindow, WindowsAndMessaging::*},
+    System::{
+        LibraryLoader::{GetModuleHandleW, GetProcAddress},
+        Threading::{CreateEventW, ResetEvent, WaitForSingleObject},
+    },
+    UI::{
+        HiDpi::GetDpiForWindow,
+        Shell::{RegisterScaleChangeEvent, UnregisterScaleChangeEvent},
+        WindowsAndMessaging::*,
+    },
 };
 
 struct Window(HWND, PhantomData<Rc<()>>);
@@ -141,7 +149,11 @@ unsafe extern "system" fn witness_proc(
         }
         if matches!(
             message,
-            WM_DISPLAYCHANGE | WM_DEVICECHANGE | WM_SETTINGCHANGE | WM_POWERBROADCAST
+            WM_DISPLAYCHANGE
+                | WM_DEVICECHANGE
+                | WM_SETTINGCHANGE
+                | WM_POWERBROADCAST
+                | WM_DPICHANGED
         ) {
             let changed = GetWindowLongPtrW(window, GWLP_USERDATA) as *const AtomicBool;
             if let Some(changed) = changed.as_ref() {
@@ -155,6 +167,44 @@ unsafe extern "system" fn witness_proc(
     }
 }
 type TopologyId = unsafe extern "system" fn() -> u32;
+
+struct ScaleNotice {
+    event: OwnedHandle,
+    cookie: usize,
+}
+impl ScaleNotice {
+    fn new() -> Result<Self> {
+        let raw = unsafe { CreateEventW(ptr::null(), 1, 0, ptr::null()) };
+        ensure!(!raw.is_null(), "Cannot create native scale-change witness");
+        let event = unsafe { OwnedHandle::from_raw_handle(raw) };
+        let mut cookie = 0;
+        ensure!(
+            unsafe { RegisterScaleChangeEvent(event.as_raw_handle(), &mut cookie) } == 0,
+            "Cannot register native scale-change witness"
+        );
+        let notice = Self { event, cookie };
+        // Registration precedes every source observation; preserve all later signals.
+        ensure!(
+            unsafe { ResetEvent(notice.event.as_raw_handle()) } != 0,
+            "Cannot initialize native scale witness"
+        );
+        Ok(notice)
+    }
+    fn check(&self) -> Result<()> {
+        ensure!(
+            unsafe { WaitForSingleObject(self.event.as_raw_handle(), 0) } == WAIT_TIMEOUT,
+            "Native display scale changed or its witness became unavailable"
+        );
+        Ok(())
+    }
+}
+impl Drop for ScaleNotice {
+    fn drop(&mut self) {
+        unsafe {
+            UnregisterScaleChangeEvent(self.cookie);
+        }
+    }
+}
 fn generation() -> Option<(TopologyId, u32)> {
     const USER32: &[u16] = &[117, 115, 101, 114, 51, 50, 46, 100, 108, 108, 0];
     unsafe {
@@ -173,6 +223,7 @@ pub(crate) struct TopologyGuard {
     class: Vec<u16>,
     changed: Box<AtomicBool>,
     generation: Option<(TopologyId, u32)>,
+    scale: Option<ScaleNotice>,
     _dpi: DpiScope,
     _thread: PhantomData<Rc<()>>,
 }
@@ -196,6 +247,7 @@ impl TopologyGuard {
             class,
             changed: Box::new(AtomicBool::new(false)),
             generation: None,
+            scale: None,
             _dpi: dpi,
             _thread: PhantomData,
         };
@@ -238,6 +290,9 @@ impl TopologyGuard {
         guard.drain()?;
         guard.changed.store(false, Ordering::Release);
         guard.generation = lookup();
+        if guard.generation.is_none() {
+            guard.scale = Some(ScaleNotice::new()?);
+        }
         Ok(guard)
     }
     fn drain(&self) -> Result<()> {
@@ -271,6 +326,9 @@ impl TopologyGuard {
                 "Native display topology generation changed during capture"
             );
         }
+        if let Some(scale) = &self.scale {
+            scale.check()?;
+        }
         Ok(())
     }
 }
@@ -278,6 +336,18 @@ impl TopologyGuard {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn fallback_scale_signal_is_retained_without_monitor_messages() -> Result<()> {
+        let witness = TopologyGuard::with_generation(|| None)?;
+        let scale = witness.scale.as_ref().unwrap();
+        ensure!(
+            unsafe { windows_sys::Win32::System::Threading::SetEvent(scale.event.as_raw_handle()) }
+                != 0
+        );
+        assert!(witness.check().is_err());
+        assert!(witness.check().is_err());
+        Ok(())
+    }
     #[test]
     fn actual_native_display_observations_agree_in_a_per_monitor_scope() -> Result<()> {
         let witness = TopologyGuard::new()?;

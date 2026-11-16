@@ -33,6 +33,13 @@ Each layer has local geometry, one local-to-canvas affine transform, explicit
 straight RGBA styling and a typed payload. All numbers are finite and range
 checked; invertibility and transformed bounds are checked before raster work.
 
+EditorState owns the actual metadata transitions/history without requiring
+pixels. EditorDocument delegates edits to it; the scene consumer uses that same
+implementation with a declared AssetCatalog for sequential preflight. No dummy
+image or second transition engine is used. Invalid IDs, ordering, crop,
+dimensions, anchors and undo/redo-dependent sequences fail during inspection
+and before source/font/raster decode.
+
 Coordinates describe pixel boundaries, with sampling at pixel centers. Default
 base placement and nearest sampling retain exact RGBA bytes, including RGB in
 transparent pixels. Source-over uses the existing integer straight-alpha rule.
@@ -57,11 +64,13 @@ The layer payload inventory is concrete:
 
 - Rectangle, ellipse, arrow, pen/path, highlight and spotlight with arbitrary
   validated RGBA fill/stroke, stroke width and per-object affine placement.
-- Prepared rich text retaining literal text/style/font identity plus immutable
-  shared glyph-mask assets. Text supports explicit family/face selection,
+- Rich text retains literal text/style/font identity. Each render prepares real
+  glyph outlines into temporary RGBA and per-span coverage rasters; those rasters
+  are dropped after composition and are not retained assets or undo snapshots.
+  Text supports explicit family/face selection,
   size/weight/italic, multiline alignment/wrapping, underline/strike and RGBA.
-- Speech-bubble geometry with bounded rounded corners and a tail, plus a
-  convenience insertion transaction for bubble and text as one undo operation.
+- Speech-bubble geometry with bounded rounded corners and a tail. Bubble and
+  text layers can be inserted in one metadata edit transaction/undo operation.
 - Inserted raster objects for images, logos, clipboard pixels and emoji. The
   caller explicitly supplies their pixels and semantic label; no network,
   clipboard read, file open or emoji download happens inside the renderer.
@@ -121,14 +130,15 @@ All admission precedes large allocation or mutation. Initial limits:
 
 | Resource | Limit |
 | --- | --- |
-| Source plus distinct retained raster/mask assets | 256 MiB actual backing bytes, including assets retained by undo/redo |
+| Source plus distinct retained raster/mask assets | 256 MiB actual backing allocation, including Vec capacity slack and assets retained by undo/redo |
 | Layers | 100 combined draw/effect/privacy instances |
 | Undo/redo | 100 combined states and 4 MiB counted metadata; prune oldest complete states |
 | Geometry | 8,192 shared pen/path points per document; finite bounded affine values |
 | Raster assets | 64 unique admitted immutable assets; deduplicate shared backing identity |
 | Font data | 8 MiB total, 2 MiB per face source, explicit bytes/index only |
 | Text | 4,096 UTF-8 bytes per object, 32 KiB document text, 64 lines; no controls except tab/newline |
-| Prepared text mask | 1 MiB per object; every retained mask charged in the raster ledger |
+| Rich-text render raster | 1 MiB RGBA output plus a 1 MiB temporary coverage raster, included in render scratch; no retained cache |
+| Legacy text masks | Immutable shared alpha assets, charged in the retained raster ledger |
 | Presets | 32 entries per family, 64-byte names, strict typed fields |
 | External document spec | 256 KiB, strict version/fields/counts; asset IDs, not implicit file/network expressions |
 | Blur/shadow | Radius at most 64; bounded scratch and declared work cost |
@@ -179,7 +189,14 @@ face whose potential scratch does not fit the operation budget is refused before
 cache creation, without silently disabling its shaping features. Caches are
 dropped before switching faces. Runs are capped at 128 Unicode scalars, and
 glyph-buffer expansion/operation bounds are included in the plan. Unsupported
-or budget-exhausted shaping returns an error rather than guessed glyphs.
+or budget-exhausted shaping returns an error rather than guessed glyphs. The
+published 0.15 source skips exhausted lookups internally; its narrow local patch
+exposes a sticky work/allocation-exhausted flag, including allocation arithmetic
+overflow. The editor checks this flag after shaper construction and after every
+shape before accepting glyphs. `vendor/harfrust/LOCAL-PATCH.md` records the exact
+published revision, unchanged default behavior, MIT notice and source-derived
+adversarial regression. The observer adds one atomic boolean and one optional
+shared-budget reference to the existing font cache; no new runtime or idle work.
 
 Skrifa reports required outline scratch before drawing; the renderer supplies a checked buffer
 of at most 1 MiB. A bounded outline sink caps path commands and finite geometry
@@ -202,25 +219,27 @@ New core files, owned by this implementation:
 3. `crates/app-core/src/editor_document_render.rs`: protected source/stage
    sampling, ordered drawing/effects, cloning/lens/eraser and final masks.
 4. `crates/app-core/src/editor_document_text.rs`: explicit bounded font
-   admission, shaping/layout/outline raster preparation and mask assets.
+   admission and per-render shaping/layout/outline raster preparation.
 5. `crates/app-core/src/editor_document_tests.rs`: independent pixel/privacy,
    state/asset, transform/order/alpha/crop/cancel and performance fixtures.
 6. `crates/app-core/src/editor_document_text_tests.rs`: real font fixtures and
    malformed/resource/cancellation cases using existing licensed repository fonts.
 7. `crates/app-core/src/editor_document_legacy.rs`: validated programmatic legacy
    objects, annotation-only stamps and asset-bank-bound text-mask leases.
+8. `crates/app-core/src/editor_document_state.rs`: shared metadata transitions,
+   bounded history and declared asset-catalog validation, without pixel backing.
 
 New consumers/tests:
 
-8. `apps/desktop/src/editor_document.rs`: a bounded strict-spec headless
+9. `apps/desktop/src/editor_document.rs`: a bounded strict-spec headless
    consumer, explicit existing image/font input admission, current cancellation,
    shared core render and create-new final save. It does not duplicate tools.
-9. `apps/desktop/tests/editor_document.rs` and
+10. `apps/desktop/tests/editor_document.rs` and
    `scripts/test-editor-document.py`: actual executable fixtures, independent
    FFmpeg/Python pixel checks and failure/no-publication checks.
-10. `crates/app-core/src/file_identity.rs`: stable native object comparison for
+11. `crates/app-core/src/file_identity.rs`: stable native object comparison for
     source alias refusal; existing version bytes/equality remain unchanged.
-11. This contract records exact proof, resource cost, review and remaining native
+12. This contract records exact proof, resource cost, review and remaining native
    or UI acceptance as work completes.
 
 Parent-coordinated changes only: core lib module/exports, narrow direct edges to
@@ -258,6 +277,12 @@ validated against the declared manifest before decoding. Repeated opened files
 share their admitted raster/font backing. Images retain the existing input
 codec/32 MiB encoded-file policy and share the remaining 256 MiB decoded budget;
 font files share 8 MiB, with a 2 MiB per-source ceiling.
+
+An optional `source_size: [width, height]` declares the input's post-orientation
+dimensions and defaults to the initial document canvas. Declare it explicitly
+when the initial canvas differs from the source. Reset uses those original
+dimensions during metadata preflight. The actual shared decoder verifies them;
+inspection validates the declaration and sequence without reading image assets.
 
 For example, this scene adds a translucent green rectangle to an 800×600 input:
 
@@ -327,3 +352,186 @@ owned source/output/scratch/undo bytes and process RSS separately, plus retained
 state after repeated edits/render/drop. They do not close physical presentation,
 native font/IME/accessibility or reference-hardware acceptance. Core/CLI coverage
 does not mark the excluded editor controls or final GPUI design complete.
+
+## First source-review checkpoint evidence
+
+The optimized core suite passed 20 regular editor tests, with the separate
+performance observation explicitly ignored by the ordinary suite. This includes
+byte-for-byte comparison with the old renderer for mixed drawing/text/pen and
+overlapping original-source blur/pixelation, rotated legacy pixels, mask lease
+provenance, masked clone sampling outside the export ROI, transformed source
+footprints, RGBA ink, actual bubble/emoji/shadow/eraser output, presets, quota/
+undo/cancellation and real Arabic/Hebrew/combining/variable-font preparation.
+Two FileIdentity tests and one consumer policy test independently reproduce a
+same-object/different-version hardlink interleaving; version validation still
+refuses changed content while stable object comparison rejects reinsertion.
+Four actual executable integration tests passed. Repository-configured Clippy
+and Windows GNU core/desktop all-target metadata checks passed. These checks
+do not establish native Windows/macOS runtime behavior.
+
+The independent executable fixture completed eight renders and explicit refusal/
+signal cases using the optimized binary with SHA256
+`1d9915937063ff13c015fc7373e8d7ab1f65200ca3053182595a74d351a86b94`.
+Python writes synthetic PNG inputs; independent FFmpeg decoding verifies actual
+tool/preset/edit pixels and all four encoding modes. It checks source preservation,
+original hardlink/symlink refusal, no overwrite, preset conflict before a missing
+source, metadata-only inspection without font/asset reads or text disclosure,
+SIGTERM cancellation without an output and termination while success stdout is
+blocked. The final Linux cancellation observation was 3.699 ms after SIGTERM;
+this is one development observation, not a responsiveness distribution.
+No real desktop, microphone, clipboard, credentials, account or printer is used.
+
+The optimized resource observation ran two warmups plus 100 warm iterations per
+case; old/new identity copy order alternates. Mixed work includes a privacy mask,
+RGBA drawing, blur, pixelation, clone and real styled text. Times exclude image
+loading/encoding, UI and presentation:
+
+| Synthetic case | p50 | p95 | p99 |
+| --- | --- | --- | --- |
+| 2560×1440 identity | 0.188 ms | 0.194 ms | 0.204 ms |
+| 2560×1440 ordered effects/text | 12.438 ms | 13.456 ms | 14.301 ms |
+| 3840×2160 identity | 0.488 ms | 0.596 ms | 0.757 ms |
+| 3840×2160 ordered effects/text | 22.349 ms | 28.502 ms | 32.899 ms |
+
+The old identity copy p95 values were 0.202/0.623 ms; these small differences are
+inconclusive rather than a claimed performance improvement. Metadata edit p95
+was approximately 1.2 µs across 150 edits. Raster/font leases remained bounded
+through history and reached zero after the document's references were dropped.
+The full test process reached 123,824 KiB RSS high water, including fixture,
+font/layout and allocator costs. After fixture drops it still had 59,476 KiB RSS
+versus 8,140 KiB initially. This retention is explicitly **not** a passing idle/
+return-to-baseline measurement; ownership counters are not process memory.
+Reference-hardware private/GPU memory, native UI/presentation, energy and long
+soak acceptance remain open. No budget was relaxed to hide that distinction.
+
+Evidence: `target/editor-document-core-tests.log`,
+`target/editor-document-file-identity-tests.log`,
+`target/editor-document-alias-race-test.log`, `target/editor-document-cli-tests.log`,
+`target/editor-document-configured-clippy.log`,
+`target/editor-document-windows-check.log`, `target/editor-document-e2e.log`,
+`target/verification/editor-document-e2e.json`,
+`target/editor-document-performance.log`, and
+`target/verification/editor-document-performance.json`.
+
+This is implementation/test evidence awaiting fresh EGM source review. It is not
+a clean-review claim or completion of the excluded editor/overlay controls.
+
+## First review fixes and second review checkpoint
+
+The first fresh source review reported three technical Majors and one
+documentation blocker. All four have focused fixes and regressions:
+
+- Raster admission now charges the retained Vec capacity, including a 1×1 image
+  with large unused backing, for original sources and inserted assets. Source
+  metadata capacities are bounded; document Vec/String capacities are counted,
+  and declared catalog strings are normalized before retention.
+- Rich text stores literals/styles/font identity and prepares temporary RGBA/
+  per-span coverage during each render. Only legacy alpha masks are retained
+  shared mask assets. Both temporary rich-text rasters are included in the
+  existing scratch allowance; no cache was added merely to match old wording.
+- EditorState is the single metadata history/transition implementation used by
+  EditorDocument and inspection/preflight. Invalid sequential IDs, order, crop,
+  dimensions and anchors fail before any image/font decode. Declared oriented
+  source_size makes reset deterministic. The shared existing decoder checks its
+  oriented header before pixel allocation; default codec/PNG behavior is unchanged.
+- New rotation/shear/scale-3 fixtures use a distinct secret source, bilinear
+  interpolation, clone and lens. Output must equal an independently pre-sanitized
+  source. Independent inverse equations select an unmasked-geometry pixel whose
+  interpolation support would contain secret red; the unmasked control reproduces
+  that red contribution, proving the fixture discriminates a missing protection.
+
+The updated optimized editor suite passed 23 regular tests; nine shared-loader
+regressions passed with four explicit opt-ins skipped. Six executable integration
+tests passed, including inspection/render refusal of invalid edit sequences before
+missing source/fonts. Configured Clippy and Windows GNU all-target metadata passed.
+The expanded executable fixture passed 14 renders, four encoder modes, render-work
+cancellation and no-overwrite/format-refusal cases. It did not prove cancellation
+during file publication. Its pinned optimized binary SHA256 was
+`79857d70c114f0794915bb8bd1fbeefaa573fe1599b302abdd0bbe51a5c74f36`;
+the final Linux SIGTERM cleanup observation was 4.292 ms.
+
+After two warmups, 100 alternating-order identity samples and 100 mixed samples
+per resolution, identity p95 was 0.219/0.700 ms at 1440p/4K and mixed effects/text
+p95 was 12.816/22.929 ms. Metadata edit p95 was approximately 1.2 µs. These are
+development CPU observations, not a causal improvement claim or hardware/UI gate.
+The complete test process reached 124,080 KiB RSS high water and retained
+60,016 KiB RSS after fixture drops; the return-to-baseline/private-memory gate
+remains open despite document-owned raster/font leases reaching zero.
+
+Latest evidence: `target/editor-round2-core-tests.log`,
+`target/editor-round2-loader-tests.log`, `target/editor-round2-cli-tests.log`,
+`target/editor-round2-loader-check.log`, `target/editor-round2-clippy.log`,
+`target/editor-round2-windows-check.log`, `target/editor-round2-e2e.log`,
+`target/verification/editor-document-round2-e2e.json`,
+`target/editor-round2-performance.log`, and
+`target/verification/editor-document-round2-performance.json`.
+These fixes/tests await a second fresh source review; no clean-review claim is made.
+
+
+## Second review fixes and third review checkpoint
+
+The second fresh source review found a shaping refusal blocker, an early-output
+admission Major and a staging-file-check Nit. All three receive focused fixes:
+
+- HarfRust's fixed 0.15 preprocessing budget now exposes sticky exhaustion across
+  initial/lazy cache construction and variation instances. Exact-budget spending
+  remains successful; a later underflow or allocation-multiplication overflow
+  records exhaustion. Other callers keep upstream shaping defaults. The editor
+  refuses before accepting glyphs when initial or lazy preprocessing exhausts.
+- The font regression constructs valid aliased GPOS pair sets over the existing
+  supplied OFL outline fixture. A one-subtable control shapes and renders; 512
+  aliased subtables exhaust the real preprocessing budget while the glyph Buffer
+  still reports allocation success. The status and editor refusal are checked
+  independently. No altered font is distributed or system font read performed.
+- The final prepared EditorState calls the same output_size planner used during
+  rendering. Final crop, canvas edits and selected export-preset padding must fit
+  the existing 256 MiB individual raster bound before any source/font/asset I/O.
+  Inspection and render reject identically, even with missing input assets.
+- The SIGTERM fixture checks the real `.screenshots-*.part` staging name. Its
+  existing cancellation observation exercises heavy input/render work and proves
+  no final output or staging remains. It does not establish interruption during
+  publication; the report explicitly leaves that distinct case unexercised.
+
+The optimized focused suite passed 25 editor tests (the explicit performance
+observation remains excluded from ordinary runs), four standalone budget-source
+tests and seven CLI integration tests. Configured Clippy passed with no new
+editor/vendor warnings. Windows GNU all-target **dev-profile metadata** passed;
+the extra release-profile Linux cross-host attempt failed at the unchanged GPUI
+`shaders_bytes.rs` generation prerequisite and is not counted as passed. Native
+Windows execution remains a separate CI gate. Cargo metadata confirms the four
+original workspace members; HarfRust remains a dependency, not a workspace member.
+
+Actual E2E passed 15 real renders, the adversarial-font refusal, oversized final
+output refusal before missing assets, and all previous pixel/privacy/format/
+provenance checks. It used pinned optimized binary SHA256
+`cd770d5abc37680ae5cbf330fe37fefda803051bf49bfb0bd0d4bb8807005406`.
+Heavy-work SIGTERM cleanup took 4.905 ms in that observation; the real staging
+pattern was absent afterward. Publication-phase cancellation is explicitly not
+claimed exercised.
+
+Two direct optimized resource observations each used two warmups and 100 warm
+samples per case. The first/repeat mixed-effects/text p95 values were
+14.676/14.739 ms at 1440p and 26.170/19.349 ms at 4K. Identity p95 was
+0.242/0.250 ms and 0.844/0.534 ms; unchanged legacy-copy p95 was 0.284/0.226 ms
+and 0.838/0.552 ms. These uncontrolled development observations do not establish
+a causal improvement or regression. The 1440p mixed p95 is about 15% above the
+previous single observation and needs controlled baseline investigation before
+performance acceptance; the copy/4K variation is retained rather than hidden.
+No performance budget was relaxed. The complete process reached 124,508/123,856
+KiB RSS high water and retained 60,228/59,620 KiB after fixture drops, while owned
+raster/font leases reached zero. Native/UI/reference-hardware, private/GPU memory
+and return-to-baseline gates remain open.
+
+Evidence: `target/editor-round3-budget-tests.log`,
+`target/editor-round3-core-tests.log`, `target/editor-round3-cli-tests.log`,
+`target/editor-round3-clippy.log`, `target/editor-round3-windows-check.log`,
+`target/editor-round3-e2e.log`, `target/verification/editor-document-round3-e2e.json`,
+`target/editor-round3-performance.log`, `target/editor-round3-performance-repeat.log`,
+`target/verification/editor-document-round3-performance.json`,
+`target/verification/editor-document-round3-performance-repeat.json`, and
+`target/verification/editor-document-round3-windows-release-check-status.json`.
+Source hashes and the reading list reside in
+`target/verification/editor-document-round3-checkpoint.json`.
+
+All three second-review findings have focused fixes and evidence; this frozen
+source awaits a third fresh review. It is not a clean-review claim.

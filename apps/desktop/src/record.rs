@@ -58,6 +58,9 @@ impl Options<'_> {
         if let Some(show) = self.cursor {
             result["cursor"] = if show { "show" } else { "hide" }.into();
         }
+        if let Some(display) = self.display {
+            result["display_id"] = display.into();
+        }
         if let Some(audio) = self.audio {
             result["audio"] = audio.summary(self.seconds);
         }
@@ -76,7 +79,7 @@ fn options(args: &[OsString]) -> Result<Options<'_>> {
             || (cfg!(unix) && mode == "x11")
             || (cfg!(target_os = "windows") && mode == "gdigrab")
             || (cfg!(target_os = "macos") && mode == "avfoundation"),
-        "Choose recording mode x11/test on Unix or gdigrab/test on Windows"
+        "Choose test, x11 on Unix, gdigrab on Windows, or fixed-display avfoundation on macOS"
     );
     let destination = Path::new(&args[1]);
     let format = match destination

@@ -389,6 +389,28 @@ fn failure(_: anyhow::Error) -> crate::CaptureError {
     crate::CaptureError::Clipboard
 }
 
+#[cfg(any(target_os = "windows", test))]
+fn registered_format_label(name: &[u16], count: i32) -> Result<Option<String>> {
+    if count == 0 {
+        return Ok(None);
+    }
+    ensure!(
+        count > 0 && count as usize <= CLIPBOARD_FORMAT_BYTES,
+        "Clipboard format name is too long"
+    );
+    let count = count as usize;
+    ensure!(
+        name.get(count) == Some(&0),
+        "Clipboard format name has no terminator"
+    );
+    let label = String::from_utf16(&name[..count])?;
+    ensure!(
+        label.len() <= CLIPBOARD_FORMAT_BYTES,
+        "Clipboard format label exceeds its UTF-8 bound"
+    );
+    Ok(Some(label))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -455,5 +477,23 @@ mod tests {
         assert!(uri_files(b"file:///definitely-nonexistent/input.png\r\n").is_ok());
         assert!(uri_files(b"https://example.invalid/image.png\r\n").is_err());
         assert!(uri_files(&vec![b'x'; CLIPBOARD_FILES_BYTES + 1]).is_err());
+    }
+    #[test]
+    fn registered_format_name_rejects_native_truncation_and_utf8_overflow() {
+        // Model GetClipboardFormatNameW: it copies at most buffer_len-1 units
+        // and reports the copied length, excluding its null terminator.
+        for length in [128, 129, 256] {
+            let mut name = [0u16; CLIPBOARD_FORMAT_BYTES + 2];
+            let copied = length.min(name.len() - 1);
+            name[..copied].fill(b'x' as u16);
+            let result = registered_format_label(&name, copied as i32);
+            assert_eq!(result.is_ok(), length == 128);
+        }
+        let mut name = [0u16; CLIPBOARD_FORMAT_BYTES + 2];
+        name[..128].fill(0x4e00);
+        assert!(registered_format_label(&name, 128).is_err());
+        name[128] = b'x' as u16;
+        assert!(registered_format_label(&name, 128).is_err());
+        assert_eq!(registered_format_label(&name, 0).unwrap(), None);
     }
 }

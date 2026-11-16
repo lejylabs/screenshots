@@ -1174,6 +1174,10 @@ impl Platform for LinuxPlatform {
         self.connection.borrow().cancel_image_clipboard_read()
     }
 
+    fn cancel_pending_native_drop(&self) {
+        self.connection.borrow().cancel_pending_native_drop()
+    }
+
     fn read_image_from_clipboard_async(
         &self,
     ) -> Option<Task<Result<gpui::Image, gpui::ClipboardReadError>>> {

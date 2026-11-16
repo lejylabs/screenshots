@@ -124,3 +124,100 @@ fn source_file_alias_cannot_be_reinserted_as_an_external_raster() {
     assert!(String::from_utf8_lossy(&output.stderr).contains("original source file"));
     assert!(!destination.exists());
 }
+
+#[test]
+fn sequential_metadata_errors_are_rejected_by_inspect_and_before_source_or_font_decode() {
+    let fixture = Fixture::new();
+    let initial = json!({"id":1,"bounds":{"x":1,"y":1,"width":2,"height":1},"content":{"tool":"draw","shape":{"shape":"rectangle"},"style":{"fill":[0,255,0,255],"stroke":null,"width":0}}});
+    let invalid = vec![
+        json!([{"action":"transform_document","transform":[1,0,0,1,0,0],"canvas":[0,0]}]),
+        json!([{"action":"resize_canvas","width":8,"height":4,"anchor":[2,0]}]),
+        json!([{"action":"remove","id":99}]),
+        json!([{"action":"reorder","id":99,"index":0}]),
+        json!([{"action":"tool_preset","id":99,"name":"green"}]),
+        json!([{"action":"crop","area":{"x":7,"y":0,"width":2,"height":1}}]),
+        json!([{"action":"remove","id":1},{"action":"transform_layer","id":1,"transform":[1,0,0,1,0,0]}]),
+        json!([{"action":"duplicate","id":1,"new_id":1,"transform":[1,0,0,1,1,0]}]),
+    ];
+    for (index, edits) in invalid.into_iter().enumerate() {
+        let mut scene = basic();
+        scene["document"]["layers"] = json!([initial.clone()]);
+        scene["fonts"] = json!([{"id":"unused","path":"missing.ttf"}]);
+        scene["presets"] =
+            json!({"version":1,"tools":[{"name":"green","content":initial["content"].clone()}]});
+        scene["edits"] = edits;
+        let path = fixture.scene(&format!("invalid-{index}.json"), scene);
+        let inspected = invoke([std::ffi::OsStr::new("inspect"), path.as_os_str()]);
+        assert!(!inspected.status.success(), "case{index}");
+        let output = fixture.path(&format!("invalid-{index}.png"));
+        let result = render(&fixture.path("missing.png"), &path, &output);
+        assert!(!result.status.success());
+        assert_eq!(
+            result.stderr, inspected.stderr,
+            "both commands must use the same sequential metadata validator"
+        );
+        assert!(!String::from_utf8_lossy(&result.stderr).contains("Could not open editor source"));
+        assert!(!output.exists());
+    }
+}
+
+#[test]
+fn declared_source_size_drives_reset_preflight_and_matches_actual_oriented_input() {
+    let fixture = Fixture::new();
+    let input = fixture.path("wide.png");
+    RgbaImage::from_pixel(16, 8, Rgba([3, 5, 7, 255]))
+        .save(&input)
+        .unwrap();
+    let mut scene = basic();
+    scene["source_size"] = json!([16, 8]);
+    scene["edits"] =
+        json!([{"action":"reset"},{"action":"crop","area":{"x":12,"y":4,"width":4,"height":4}}]);
+    let profile = fixture.scene("declared.json", scene);
+    let info = success(invoke([
+        std::ffi::OsStr::new("inspect"),
+        profile.as_os_str(),
+    ]));
+    assert_eq!(info["canvas"], json!([16, 8]));
+    assert_eq!(info["source_size"], json!([16, 8]));
+    let output = fixture.path("declared.png");
+    let result = success(render(&input, &profile, &output));
+    assert_eq!(result["width"], 4);
+    assert_eq!(result["height"], 4);
+    let small = fixture.source();
+    let output = fixture.path("mismatch.png");
+    assert!(!render(&small, &profile, &output).status.success());
+    assert!(!output.exists());
+}
+
+#[test]
+fn final_output_extent_is_refused_before_missing_source_or_asset_io() {
+    let fixture = Fixture::new();
+    for use_preset in [false, true] {
+        let mut value = basic();
+        value["document"]["canvas"] = json!([1, 1]);
+        value["fonts"] = json!([{"id":"unused","path":"missing.ttf"}]);
+        if use_preset {
+            value["presets"] = json!({"version":1,"exports":[{"name":"huge","preset":{"padding":[8192,8192,8192,8192]}}]});
+            value["export_preset"] = json!("huge");
+            value["edits"] =
+                json!([{"action":"resize_canvas","width":2,"height":2,"anchor":[0,0]}]);
+        } else {
+            value["document"]["export"] = json!({"padding":[8192,8192,8192,8192]});
+        }
+        let scene = fixture.scene(&format!("huge-{use_preset}.json"), value);
+        let inspected = invoke([std::ffi::OsStr::new("inspect"), scene.as_os_str()]);
+        assert!(!inspected.status.success());
+        let destination = fixture.path(&format!("huge-{use_preset}.png"));
+        let result = render(&fixture.path("missing.png"), &scene, &destination);
+        assert!(!result.status.success());
+        assert_eq!(
+            result.stderr, inspected.stderr,
+            "same final-output planner must run in both commands"
+        );
+        let error = String::from_utf8_lossy(&result.stderr);
+        assert!(error.contains("256 MiB"), "{error}");
+        assert!(!error.contains("Could not open editor source"));
+        assert!(!error.contains("missing.ttf"));
+        assert!(!destination.exists());
+    }
+}

@@ -141,11 +141,16 @@ pub(crate) struct DpiContext(windows_sys::Win32::UI::HiDpi::DPI_AWARENESS_CONTEX
 impl DpiContext {
     pub(crate) fn enter() -> Result<Self> {
         use windows_sys::Win32::UI::HiDpi::{
-            DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, SetThreadDpiAwarenessContext,
+            DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
+            SetThreadDpiAwarenessContext,
         };
         // This headless thread owns no windows; restore its prior context on exit.
-        let previous =
+        let mut previous =
             unsafe { SetThreadDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2) };
+        if previous.is_null() {
+            previous =
+                unsafe { SetThreadDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE) };
+        }
         ensure!(
             !previous.is_null(),
             "Could not establish native pixel coordinates"

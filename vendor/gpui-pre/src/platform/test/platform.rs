@@ -38,6 +38,7 @@ pub(crate) struct TestPlatform {
     displays_changed_callback: RefCell<Option<Box<dyn FnMut()>>>,
     active_cursor: Mutex<CursorStyle>,
     current_clipboard_item: Mutex<Option<ClipboardItem>>,
+    pub(crate) pending_native_drop_cancel: RefCell<Option<Box<dyn FnMut()>>>,
     #[cfg(any(target_os = "linux", target_os = "freebsd"))]
     current_primary_item: Mutex<Option<ClipboardItem>>,
     #[cfg(target_os = "macos")]
@@ -253,6 +254,7 @@ impl TestPlatform {
             active_window: Default::default(),
             expect_restart: Default::default(),
             current_clipboard_item: Mutex::new(None),
+            pending_native_drop_cancel: RefCell::new(None),
             #[cfg(any(target_os = "linux", target_os = "freebsd"))]
             current_primary_item: Mutex::new(None),
             #[cfg(target_os = "macos")]
@@ -794,6 +796,12 @@ impl Platform for TestPlatform {
 
     fn read_from_clipboard(&self) -> Option<ClipboardItem> {
         self.current_clipboard_item.lock().clone()
+    }
+
+    fn cancel_pending_native_drop(&self) {
+        if let Some(cancel) = self.pending_native_drop_cancel.borrow_mut().as_mut() {
+            cancel();
+        }
     }
 
     fn write_to_clipboard(&self, item: ClipboardItem) {

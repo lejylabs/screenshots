@@ -26,54 +26,6 @@ struct FontFile {
     index: u32,
 }
 #[derive(Deserialize)]
-#[serde(tag = "action", rename_all = "snake_case", deny_unknown_fields)]
-enum Edit {
-    Insert {
-        layer: Layer,
-    },
-    Remove {
-        id: u64,
-    },
-    Duplicate {
-        id: u64,
-        new_id: u64,
-        transform: Affine,
-    },
-    Reorder {
-        id: u64,
-        index: usize,
-    },
-    TransformLayer {
-        id: u64,
-        transform: Affine,
-    },
-    TransformDocument {
-        transform: Affine,
-        canvas: [u32; 2],
-    },
-    ResizeCanvas {
-        width: u32,
-        height: u32,
-        anchor: [f64; 2],
-    },
-    Scale {
-        width: u32,
-        height: u32,
-        #[serde(default)]
-        interpolation: Interpolation,
-    },
-    Crop {
-        area: Option<app_core::PixelRegion>,
-    },
-    ToolPreset {
-        id: u64,
-        name: String,
-    },
-    Undo,
-    Redo,
-    Reset,
-}
-#[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Scene {
     version: u32,
@@ -87,7 +39,11 @@ struct Scene {
     #[serde(default)]
     export_preset: Option<String>,
     #[serde(default)]
-    edits: Vec<Edit>,
+    edits: Vec<EditorEdit>,
+    #[serde(default)]
+    source_size: Option<[u32; 2]>,
+    #[serde(skip)]
+    prepared: Option<EditorState>,
 }
 fn read_file(path: &Path, limit: u64) -> Result<Vec<u8>> {
     let (mut file, id) =
@@ -132,9 +88,10 @@ fn asset_path(parent: &Path, path: &Path) -> Result<PathBuf> {
     })
 }
 impl Scene {
-    fn read(path: &Path) -> Result<Self> {
+    fn read(path: &Path, cancelled: &impl Fn() -> bool) -> Result<Self> {
+        check(cancelled)?;
         let bytes = read_file(path, 512 * 1024)?;
-        let value: Self = serde_json::from_slice(&bytes)
+        let mut value: Self = serde_json::from_slice(&bytes)
             .map_err(|_| anyhow::anyhow!("Invalid strict editor scene"))?;
         ensure!(
             value.version == 1
@@ -164,65 +121,26 @@ impl Scene {
             );
             asset_path(Path::new("."), &asset.path)?;
         }
-        let references = |content: &LayerKind| -> Result<()> {
-            match content {
-                LayerKind::Raster { asset, .. } => ensure!(
-                    value.rasters.iter().any(|entry| entry.id == *asset),
-                    "Unknown declared editor raster asset"
-                ),
-                LayerKind::Text { text } => {
-                    for span in &text.spans {
-                        for id in &span.style.fonts {
-                            ensure!(
-                                value.fonts.iter().any(|entry| entry.id == *id),
-                                "Unknown declared editor font asset"
-                            );
-                        }
-                    }
-                }
-                _ => {}
-            }
-            Ok(())
-        };
-        for layer in &value.document.layers {
-            references(&layer.content)?;
-        }
+        let catalog = AssetCatalog::declared(
+            value.rasters.iter().map(|entry| entry.id.clone()),
+            value.fonts.iter().map(|entry| entry.id.clone()),
+        )?;
+        let export = value.export()?;
+        let mut spec = value.document.clone();
+        spec.export = export.clone();
+        let mut state = EditorState::new(
+            spec,
+            value.source_size.unwrap_or(value.document.canvas),
+            catalog,
+        )?;
         for edit in &value.edits {
-            match edit {
-                Edit::TransformLayer { transform, .. }
-                | Edit::TransformDocument { transform, .. }
-                | Edit::Duplicate { transform, .. } => transform.validate()?,
-                Edit::Insert { layer } => {
-                    let mut spec =
-                        DocumentSpec::new(value.document.canvas[0], value.document.canvas[1]);
-                    spec.layers.push(layer.clone());
-                    spec.validate()?;
-                    references(&layer.content)?;
-                }
-                Edit::Scale { width, height, .. } | Edit::ResizeCanvas { width, height, .. } => {
-                    app_core::validate_image_size(*width, *height)?
-                }
-                Edit::ToolPreset { name, .. } => {
-                    let preset = value
-                        .presets
-                        .tools
-                        .iter()
-                        .find(|preset| preset.name == *name)
-                        .context("Unknown editor tool preset")?;
-                    references(&preset.content)?;
-                }
-                _ => {}
-            }
+            check(cancelled)?;
+            state.apply(edit, &value.presets)?;
         }
-        if let Some(watermark) = &value.export()?.watermark {
-            ensure!(
-                value
-                    .rasters
-                    .iter()
-                    .any(|entry| entry.id == watermark.asset),
-                "Unknown declared editor watermark asset"
-            );
-        }
+        state.set_export(export)?;
+        state.planned_output_size()?;
+        value.prepared = Some(state);
+        check(cancelled)?;
         Ok(value)
     }
     fn export(&self) -> Result<ExportPreset> {
@@ -238,68 +156,6 @@ impl Scene {
         } else {
             Ok(self.document.export.clone())
         }
-    }
-    fn apply(&self, document: &mut EditorDocument, cancelled: &impl Fn() -> bool) -> Result<()> {
-        for edit in &self.edits {
-            check(cancelled)?;
-            match edit {
-                Edit::Insert { layer } => {
-                    document.insert(layer.clone())?;
-                }
-                Edit::Remove { id } => {
-                    document.remove(*id)?;
-                }
-                Edit::Duplicate {
-                    id,
-                    new_id,
-                    transform,
-                } => {
-                    document.duplicate(*id, *new_id, *transform)?;
-                }
-                Edit::Reorder { id, index } => {
-                    document.reorder(*id, *index)?;
-                }
-                Edit::TransformLayer { id, transform } => {
-                    document.transform_layer(*id, *transform)?;
-                }
-                Edit::TransformDocument { transform, canvas } => {
-                    document.transform_document(*transform, *canvas)?;
-                }
-                Edit::ResizeCanvas {
-                    width,
-                    height,
-                    anchor,
-                } => {
-                    document.resize_canvas(*width, *height, *anchor)?;
-                }
-                Edit::Scale {
-                    width,
-                    height,
-                    interpolation,
-                } => {
-                    document.scale_to(*width, *height, *interpolation)?;
-                }
-                Edit::Crop { area } => {
-                    document.set_crop(*area)?;
-                }
-                Edit::ToolPreset { id, name } => {
-                    self.presets.apply_tool(name, document, *id)?;
-                }
-                Edit::Undo => {
-                    document.undo();
-                }
-                Edit::Redo => {
-                    document.redo();
-                }
-                Edit::Reset => {
-                    document.reset()?;
-                }
-            }
-        }
-        // Export options are the final explicit request, independently of undo
-        // within the edit sequence. The same preset was checked against OUTPUT.
-        document.set_export(self.export()?)?;
-        check(cancelled)
     }
 }
 fn check(cancelled: &impl Fn() -> bool) -> Result<()> {
@@ -383,7 +239,11 @@ fn render(
     destination: &Path,
     cancelled: &impl Fn() -> bool,
 ) -> Result<serde_json::Value> {
-    let scene = Scene::read(profile)?;
+    let mut scene = Scene::read(profile, cancelled)?;
+    let state = scene
+        .prepared
+        .take()
+        .context("Editor metadata plan missing")?;
     let export = scene.export()?;
     export.validate_extension(destination)?;
     ensure!(
@@ -398,13 +258,23 @@ fn render(
     check(cancelled)?;
     let (source_file, source_id) =
         app_core::FileIdentity::open(input).context("Could not open editor source")?;
-    let pixels = app_core::load_editor_image_with_identity_and_limit(
+    let pixels = app_core::load_editor_image_with_identity_limit_and_dimensions(
         input,
         &source_id,
         app_core::MAX_CAPTURE_BYTES,
+        state.source_size(),
     )?;
+    ensure!(
+        [pixels.width(), pixels.height()] == state.source_size(),
+        "Oriented editor input dimensions differ from source_size"
+    );
     source_id.verify_file(&source_file)?;
-    let mut remaining = app_core::MAX_CAPTURE_BYTES - pixels.as_raw().len() as u64;
+    let source_backing = pixels.as_raw().capacity() as u64;
+    ensure!(
+        source_backing <= app_core::MAX_CAPTURE_BYTES,
+        "Editor source backing allocation exceeds its budget"
+    );
+    let mut remaining = app_core::MAX_CAPTURE_BYTES - source_backing;
     let mut assets = EditorAssets::new();
     let parent = profile.parent().unwrap_or(Path::new("."));
     let mut raster_cache: Vec<(app_core::FileIdentity, Arc<image::RgbaImage>)> = Vec::new();
@@ -424,7 +294,12 @@ fn render(
                     &path, &identity, remaining,
                 )?);
                 identity.verify_file(&file)?;
-                remaining -= image.as_raw().len() as u64;
+                let backing = image.as_raw().capacity() as u64;
+                ensure!(
+                    backing <= remaining,
+                    "Editor raster backing exceeds remaining allocation budget"
+                );
+                remaining -= backing;
                 raster_cache.push((identity, image.clone()));
                 image
             };
@@ -465,11 +340,8 @@ fn render(
     drop(font_cache);
     drop(source_file);
     check(cancelled)?;
-    let mut spec = scene.document.clone();
-    spec.export = export.clone();
-    let mut document = EditorDocument::new(crate::cli::frame(pixels), assets, spec)?;
-    scene.apply(&mut document, cancelled)?;
     drop(scene);
+    let document = EditorDocument::from_state(crate::cli::frame(pixels), assets, state)?;
     let snapshot = document.snapshot();
     let output = snapshot.render(cancelled)?;
     check(cancelled)?;
@@ -495,9 +367,13 @@ pub(crate) fn run(args: &[OsString]) -> Result<()> {
     let scope = Cancellation::new()?;
     let result = match args.first().and_then(|arg| arg.to_str()) {
         Some("inspect") if args.len() == 2 => {
-            let scene = Scene::read(Path::new(&args[1]))?;
+            let scene = Scene::read(Path::new(&args[1]), &|| scope.canceled())?;
+            let prepared = scene
+                .prepared
+                .as_ref()
+                .context("Editor metadata plan missing")?;
             Ok(
-                serde_json::json!({"version":1,"canvas":scene.document.canvas,"layers":scene.document.layers.len(),"rasters":scene.rasters.len(),"fonts":scene.fonts.len(),"edit_commands":scene.edits.len(),"tool_presets":scene.presets.tools.len(),"export_presets":scene.presets.exports.len()}),
+                serde_json::json!({"version":1,"canvas":prepared.spec().canvas,"source_size":prepared.source_size(),"layers":prepared.spec().layers.len(),"rasters":scene.rasters.len(),"fonts":scene.fonts.len(),"edit_commands":scene.edits.len(),"tool_presets":scene.presets.tools.len(),"export_presets":scene.presets.exports.len()}),
             )
         }
         Some("render") if args.len() == 4 => render(

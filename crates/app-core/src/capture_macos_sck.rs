@@ -274,20 +274,30 @@ impl Display {
             }
         }
         let selected = selected.context("Selected display is not shareable")?;
-        let width: usize = unsafe { msg_send![&selected, width] };
-        let height: usize = unsafe { msg_send![&selected, height] };
-        let width = u32::try_from(width)?;
-        let height = u32::try_from(height)?;
-        crate::validate_image_size(width, height)?;
-        ensure!(
-            (width, height) == (proof.pixel_width, proof.pixel_height),
-            "Native display pixel geometry changed or needs rotation calibration"
-        );
+        // SCDisplay dimensions are points, not the requested output's pixels.
+        let frame: CGRect = unsafe { msg_send![&selected, frame] };
         let empty = NSArray::<AnyObject>::new();
         let allocated: Allocated<AnyObject> =
             unsafe { msg_send![class(c"SCContentFilter")?, alloc] };
         let filter: Retained<AnyObject> =
             unsafe { msg_send![allocated,initWithDisplay:&*selected,excludingWindows:&*empty] };
+        let scale: f32 = unsafe { msg_send![&filter, pointPixelScale] };
+        let rect: CGRect = unsafe { msg_send![&filter, contentRect] };
+        let (width, height) = proof.screenshot_dimensions(
+            MacLogicalRect {
+                x: frame.origin.x,
+                y: frame.origin.y,
+                width: frame.size.width,
+                height: frame.size.height,
+            },
+            MacLogicalRect {
+                x: rect.origin.x,
+                y: rect.origin.y,
+                width: rect.size.width,
+                height: rect.size.height,
+            },
+            f64::from(scale),
+        )?;
         Ok(Some(Self {
             filter,
             proof,
@@ -295,14 +305,40 @@ impl Display {
             height,
         }))
     }
-    pub fn capture(&self, options: &CaptureOptions, until: Instant) -> Result<Image> {
+    pub fn capture(
+        &self,
+        options: &CaptureOptions,
+        until: Instant,
+        selected_bytes: u64,
+    ) -> Result<Image> {
         native::screen_permission()?;
         self.check()?;
         // A display image includes its real composited window shadows; per-window
         // shadow options do not remove elements from an explicitly selected display.
         let mut capture = *options;
         capture.window_shadow = CaptureWindowShadow::Exclude;
-        let image = capture_legacy_sck(&self.filter, self.width, self.height, &capture, until)?;
+        let image = if AnyClass::get(c"SCScreenshotConfiguration").is_some() {
+            crate::capture_macos_model::screenshot_buffer_admission(
+                self.width,
+                self.height,
+                selected_bytes,
+            )?;
+            capture_modern(
+                &self.filter,
+                &capture,
+                Some((self.width, self.height)),
+                until,
+            )?
+        } else {
+            capture_legacy_sck(
+                &self.filter,
+                self.width,
+                self.height,
+                selected_bytes,
+                &capture,
+                until,
+            )?
+        };
         self.check()?;
         Ok(image)
     }
@@ -381,7 +417,12 @@ impl Window {
             height,
         }))
     }
-    pub fn capture(&self, options: &CaptureOptions, until: Instant) -> Result<Image> {
+    pub fn capture(
+        &self,
+        options: &CaptureOptions,
+        until: Instant,
+        selected_bytes: u64,
+    ) -> Result<Image> {
         native::screen_permission()?;
         self.proof
             .verify_unchanged(native::window(self.proof.id)?)?;
@@ -389,10 +430,22 @@ impl Window {
             options.window_frame != crate::CaptureWindowFrame::Client,
             "Client-only macOS window bounds are unavailable"
         );
+        crate::capture_macos_model::screenshot_buffer_admission(
+            self.width,
+            self.height,
+            selected_bytes,
+        )?;
         let image = if AnyClass::get(c"SCScreenshotConfiguration").is_some() {
-            capture_modern(&self.filter, options, until)?
+            capture_modern(&self.filter, options, None, until)?
         } else {
-            capture_legacy_sck(&self.filter, self.width, self.height, options, until)?
+            capture_legacy_sck(
+                &self.filter,
+                self.width,
+                self.height,
+                selected_bytes,
+                options,
+                until,
+            )?
         };
         self.proof
             .verify_unchanged(native::window(self.proof.id)?)?;
@@ -403,9 +456,11 @@ fn capture_legacy_sck(
     filter: &AnyObject,
     width: u32,
     height: u32,
+    selected_bytes: u64,
     options: &CaptureOptions,
     until: Instant,
 ) -> Result<Image> {
+    crate::capture_macos_model::screenshot_buffer_admission(width, height, selected_bytes)?;
     // The older fixed-canvas API supplies no public full-shadow extent.
     ensure!(
         options.window_shadow != CaptureWindowShadow::Include,
@@ -422,7 +477,6 @@ fn capture_legacy_sck(
             msg_send![&config,setShowsCursor:Bool::new(options.cursor==CaptureCursor::Include)];
         let _: () = msg_send![&config,setShouldBeOpaque:Bool::NO];
         let _: () = msg_send![&config,setIgnoreShadowsSingleWindow:Bool::YES];
-        let _: () = msg_send![&config,setQueueDepth:1usize];
     }
     let pending = Completion::new(ValueKind::Image)?;
     let state = pending.0.clone();
@@ -434,11 +488,20 @@ fn capture_legacy_sck(
     }
     Ok(Image(pending.0.wait(until)? as *const c_void))
 }
-fn capture_modern(filter: &AnyObject, options: &CaptureOptions, until: Instant) -> Result<Image> {
+fn capture_modern(
+    filter: &AnyObject,
+    options: &CaptureOptions,
+    dimensions: Option<(u32, u32)>,
+    until: Instant,
+) -> Result<Image> {
     // macOS26 defaults to captured-content dimensions, including requested native effects.
     let config: Retained<AnyObject> =
         unsafe { msg_send![class(c"SCScreenshotConfiguration")?, new] };
     unsafe {
+        if let Some((width, height)) = dimensions {
+            let _: () = msg_send![&config,setWidth:width as usize];
+            let _: () = msg_send![&config,setHeight:height as usize];
+        }
         let _: () = msg_send![&config,setFileURL:ptr::null::<AnyObject>()];
         let _: () = msg_send![&config,setDynamicRange:0isize];
         let _: () =

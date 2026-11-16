@@ -103,24 +103,14 @@ pub(super) fn inspect(
                 let label = if let Some(label) = standard {
                     label.to_owned()
                 } else {
-                    let mut name = [0u16; CLIPBOARD_FORMAT_BYTES + 1];
+                    // One extra copied unit distinguishes an oversized/truncated
+                    // name from an exactly 128-unit name plus its terminator.
+                    let mut name = [0u16; CLIPBOARD_FORMAT_BYTES + 2];
                     let count = unsafe {
                         GetClipboardFormatNameW(format, name.as_mut_ptr(), name.len() as i32)
                     };
-                    if count == 0 {
-                        format!("native-format-{format}")
-                    } else {
-                        ensure!(
-                            count as usize <= CLIPBOARD_FORMAT_BYTES,
-                            "Clipboard format name is too long"
-                        );
-                        let label = String::from_utf16(&name[..count as usize])?;
-                        ensure!(
-                            label.len() <= CLIPBOARD_FORMAT_BYTES,
-                            "Clipboard format label exceeds its UTF-8 bound"
-                        );
-                        label
-                    }
+                    registered_format_label(&name, count)?
+                        .unwrap_or_else(|| format!("native-format-{format}"))
                 };
                 formats.push(label);
             }

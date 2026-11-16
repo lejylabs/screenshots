@@ -77,19 +77,3 @@ pub(super) fn validate_template_session() -> Result<()> {
 pub(super) fn apply_cursor(_: &mut RgbaImage, _: i32, _: i32) -> Result<()> {
     bail!("macOS cursor must be embedded by its admitted native source, not composed a second time")
 }
-pub(super) fn capture_window(window: &xcap::Window, options: &CaptureOptions) -> Result<RgbaImage> {
-    validate_options(options, true)?;
-    let id = window.id()?;
-    let pid = window.pid()?;
-    let proof = crate::capture_macos_ax::window(id)?;
-    ensure!(
-        proof.pid == pid,
-        "Native macOS window process changed before capture"
-    );
-    let pixels = crate::capture_macos_image::window(proof, options)?;
-    ensure!(
-        window.id()? == id && window.pid()? == pid,
-        "Native macOS window process changed after capture"
-    );
-    Ok(pixels)
-}

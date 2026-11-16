@@ -31,7 +31,7 @@ The optional Unix recorder accepts local X11/test video; macOS AVFoundation audi
 already has an explicit `none:AUDIO_DEVICE` selector, fixed PCM sample count,
 bounded diagnostics, exact probe verification and no-replace publication.
 There is no native macOS screen-video source. The Unix recorder's process group
-currently has no macOS parent-pipe lifeline; adding a source must not inherit
+at the initial inventory had no macOS parent-loss lifeline; adding a source must not inherit
 that missing parent-loss guarantee or blindly signal a group after its leader
 has been reaped.
 
@@ -121,8 +121,8 @@ stop reason/complete). It is not an arbitrary input-automation API.
 ## Still cursor, framing, shadow and transparency
 
 Use public ScreenCaptureKit on versions where the needed API is available:
-`SCScreenshotManager` on macOS 14+, with a one-frame `SCStream` fallback on
-12.3–13 where needed. `SCStreamConfiguration.showsCursor` supplies compositor
+`SCScreenshotManager` on macOS 14+, with the required public single-CGImage
+legacy path on 12–13. `SCStreamConfiguration.showsCursor` supplies compositor
 cursor shape/hotspot/scale and avoids using the helper app's current cursor.
 Do not substitute `NSCursor.currentCursor`, an arrow image or a private cursor
 query for the user's actual system cursor. A legacy fallback, if retained for
@@ -360,8 +360,9 @@ regressions require the same recorded cause/remediation decision.
 ## Current implementation checkpoint
 
 Portable geometry/identity/clock/slot models passed six initial optimized tests;
-subsequent packed-pixel and completion checks bring the focused core set to ten.
-`target/macos-video-worker-final.log` records 38 passing optimized worker/protocol/
+subsequent packed-pixel, completion and display point/pixel calibration checks
+bring the focused core set to twelve.
+`target/macos-video-worker-final.log` records 40 passing optimized worker/protocol/
 private generated-video tests with two separately invoked cases ignored. They
 include retention of the source leader through encoder/probe flush and parent
 loss during both encoding and probing. `target/macos-record-tests.log` records
@@ -375,3 +376,133 @@ real existing binding features, never guessed selectors or SDK stubs. The
 newest display/cursor and parent recorder paths still require the next complete
 SDK/app check. Native prompt-free permission, cursor/shadow/Retina pixel and
 recording timing gates remain explicit until their owned native fixtures pass.
+
+The separately invoked generated-source optional-runtime test passed FFV1,
+48-kHz synthetic PCM audio and GIF through actual installed FFmpeg/ffprobe,
+including an independent decoded-pixel oracle. FFV1 preserves the generated
+opaque primary colors exactly. GIF uses the existing fixed RGB8 palette, so its
+oracle compares the nearest encoded palette entries rather than claiming
+lossless source RGB. The log is `target/macos-video-codec-e2e.log`.
+
+`scripts/test-macos-capture.py --self-test` passed its independent FFmpeg
+PNG/FFV1/GIF oracles, including rejection of a modified middle video frame. Its explicit
+`--owned-session` native gate compiles `tools/MacCaptureFixture/main.swift`,
+opens only that fixture's generated window/content, checks exact physical
+window/display ROI rows, retained AX scrolling and finite camera-free FFV1/GIF
+recording with optional generated 48-kHz audio. It uses existing authorization only and exits 77 if the native
+platform/session or Screen Recording authorization is unavailable. Cursor
+visual acceptance requires a fully contained, unchanged native pointer footprint.
+The fixture paints an explicit half-alpha patch and verifies native preservation
+plus the chosen opaque-background blend. Full-shadow extent and microphone
+acceptance remain reported as unpassed, rather than treated as established by
+invoking the source path. The
+owned native gate has not run on this Linux host.
+
+Apple documents `SCDisplay.width`/`height` in points. Display capture therefore
+binds `SCDisplay.frame` to the admitted logical geometry and independently
+derives physical output from `SCContentFilter.contentRect × pointPixelScale`,
+requiring agreement with the native display-mode dimensions. The application
+does not guess or resize a mismatched frame. An explicit queue depth of one
+would contradict the stream configuration's documented minimum, so the
+screenshot path leaves that property at its native default. No `SCStream` is
+created; `SCScreenshotManager` documents one returned image, but does not publish
+its internal compositor-buffer count. Stream queue-depth requirements alone
+do not establish that the still API allocates three frames. Only one returned
+app-owned image is retained; native/compositor buffers are additional active memory,
+released with the helper and not measured as reference-hardware acceptance.
+See Apple's [SCDisplay dimensions](https://developer.apple.com/documentation/screencapturekit/scdisplay/width)
+and [queueDepth contract](https://developer.apple.com/documentation/screencapturekit/scstreamconfiguration/queuedepth).
+
+The CPU check admits known simultaneous CGImage/provider/decoded bytes against
+`2*S + 2*E + 32 MiB`. `E` is the selected region's actual byte count, rather than
+assuming a full-display output. Small crops from a 4K source fit this check;
+much larger source/small-output combinations can be refused before native
+pixels. A refused job reports active-image admission, never silently resizes
+or drops displays. macOS26's screenshot configuration has no stream
+queue setting; display capture uses that API with exact calibrated physical
+dimensions. The earlier public one-CGImage path remains for older systems.
+Tight-buffer arithmetic is conservative admission of known representations;
+native row-stride, IOSurface/driver metadata and whole-process peaks still need
+actual native measurement. The 256-MiB general ceiling and PLAN budgets remain
+unchanged. The GPU formula `S + E + 32 MiB` remains a native measurement gate;
+neither an undocumented still-buffer count nor compile success establishes it.
+
+Native window preparation now retains the actual SCK filter, PID/start-time and
+display proof set through admission and capture. Aggregate preflight reserves
+physical `contentRect × pointPixelScale` bytes, rather than XCap's logical
+`CGWindowBounds` width/height. A shadow-including request whose full native
+extent is unavailable before capture reserves the entire existing 256-MiB job
+ceiling as bytes. It cannot share a batch with another nonempty target; no fake
+geometry or guessed shadow margin is used. Decode/provider/stride limits still
+apply to the returned native bitmap. The legacy path reconciles one containing
+display's native pixel scale; ambiguous geometry fails explicitly. The prepared
+source is operation/main-thread owned, with no retained source/filter at idle.
+
+Still batches and whole AX scrolling operations also use the existing native
+CG display-reconfiguration observer once per helper operation. Endpoint proof
+checks and the event flag must both pass, including after pixel work, so a
+transient topology change cannot be accepted merely because geometry later
+returns to its original values. This adds only operation-scoped callback/runloop
+metadata; no polling, repeating timer or resident observer is installed.
+The raw Rust-main-thread helper also encloses Mac native operations in explicit
+Objective-C autorelease pools; retained native sources are dropped within the
+operation and only Rust pixels/summary data leave those scopes.
+
+The focused aggregate-byte regression passed after this preparation change
+(`target/macos-physical-admission-tests.log`), including an unknown native extent
+before/after another frame, arithmetic overflow and an unchanged budget on
+failure. GNU Windows core/tests metadata also passed after the shared private
+budget change (`target/macos-window-admission-windows-check.log`), preserving
+the non-Mac source arms. Configured all-target core Clippy passed
+(`target/macos-core-clippy.log`); remaining warnings are not treated as native
+runtime or performance evidence. The newest prepared source/topology/pool
+changes still require the next actual macOS SDK snapshot and owned runtime
+gate; this Linux check does not compile Mac-only branches.
+
+## Fresh source-review corrections
+
+The first review found that the macOS parent-loss watcher read from a cloned
+protocol socket. That could consume valid `VIDEO_START`/`VIDEO_FINISH` bytes and
+terminate an otherwise valid recording. It now watches the authenticated direct
+parent with `EVFILT_PROC/NOTE_EXIT`, checking parentage before/after registration,
+and cancels/joins with an independent `EVFILT_USER/NOTE_TRIGGER`. It has no
+reference to the control transport, performs no protocol reads/peeks and has no
+periodic timeout. The existing 128-KiB watcher thread remains operation scoped;
+one close-on-exec kqueue FD replaces the cloned protocol descriptors. An
+eight-run Mac-only regression exercises normal START/FINISH with the production
+watcher enabled. Parent-loss fixtures cover both encoding and probe flush. See
+Apple's [kqueue process contract](https://developer.apple.com/library/archive/documentation/System/Conceptual/ManPages_iPhoneOS/man2/kevent.2.html)
+and public [event constants](https://github.com/apple-oss-distributions/xnu/blob/main/bsd/sys/event.h).
+
+The AV producer now registers three exact-session Foundation notifications
+before source start: interrupted, runtime error and unexpectedly stopped.
+Callbacks synchronously mark the existing state terminal and wake its native
+loop; an immediately ended interruption cannot recover within the PTS slack.
+The explicit own-stop flag permits the normal stop notification. After native
+stop and the sample callback barrier, observer removal closes/drains a short
+active gate before delegate/writer/session teardown. Late copied blocks retain
+safe Arc metadata and cannot mutate retired state. There is no new runtime,
+notification queue, polling or idle observer. Two Mac-only permission-free tests
+use a private notification center and empty, never-started sessions: owner
+filtering/terminal failure, expected stop and removal. Their real CF loop runs on
+the Rust test thread without doing GUI/capture work; production main-thread
+guards remain unchanged. The existing Foundation binding enables only its
+`NSOperation`/`block2` features, with no package/version addition. Apple's
+[interruption](https://developer.apple.com/documentation/avfoundation/avcapturesession/wasinterruptednotification)
+and [runtime-error](https://developer.apple.com/documentation/avfoundation/avcapturesession/runtimeerrornotification)
+notifications are treated as failure, not source-timing heuristics.
+
+The owned native recorder gate now independently decodes every frame, rather
+than trusting summary/nonempty-file checks. The fixture paints nine-bit row
+barcodes using opaque RGB primaries. FFV1 pixels must match the exact admitted
+physical ROI (the existing two-code-value native sRGB tolerance); GIF pixels
+must match the corresponding declared RGB8 palette levels, allowing one
+adjacent level for the encoder's error diffusion/reserved transparency entry.
+Primary bits remain distinct, and alpha must stay opaque. The bounded decoder
+admits the expected frame count plus one to detect extra frames. The portable
+self-test encodes/decodes actual FFV1/GIF and deliberately corrupts the middle
+frame in each oracle; it passed. It does not establish that the native gate ran.
+
+All three changes still require a fresh source recheck and real Mac SDK/native
+permission-free test execution. Native TCC, physical ROI/cursor/AX/AV capture,
+microphone, shadow and full CPU/GPU budgets remain unaccepted on this Linux host.

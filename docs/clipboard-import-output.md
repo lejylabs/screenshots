@@ -24,7 +24,7 @@ history. `clipboard image-info` explicitly reads one image and returns dimension
 no-overwrite exporter. No command captures the desktop, changes clipboard
 ownership, uploads, writes History or opens referenced files.
 
-Limits are 256 offered formats, 128 native bytes per format label, 64 KiB UTF-8
+Limits are 256 offered formats, 128 UTF-8 bytes per retained format label, 64 KiB UTF-8
 text, 32 file references, 4096 native bytes per file reference and 64 KiB total
 native path bytes. Image input is <=32 MiB encoded, with existing Windows DIB
 admission <=256 MiB +64 KiB headers; decoded RGBA stays within 256 MiB. One
@@ -35,12 +35,29 @@ silently used for filesystem actions. Metadata inspection never requests image
 or text payloads just to discover offered types.
 
 X11 uses one requestor window/connection in the owned worker and CLIPBOARD only,
-never PRIMARY. TARGETS and property reads use finite requested extents; INCR
+never PRIMARY. The current reader accepts local numeric `DISPLAY` names such as
+`:0` or `:10.0`, within 64 bytes. Forwarded/remote names such as
+`localhost:10.0` are explicitly unsupported by this adapter.
+TARGETS and property reads use finite requested extents; INCR
 hints/chunks and cumulative bytes are checked before append, with one absolute
 deadline and owner/generation checks. No arboard/GPUI unbounded image getter or
 clipboard-manager handover is introduced by import. Windows checks HGLOBAL
 extent before copying/locking payload data; format iteration, Unicode text and
 CF_HDROP parsing are bounded. Delayed native rendering stays in the owned worker.
+Registered Windows format labels have two additional UTF-16 buffer units, so a
+truncated native copy cannot appear to meet the 128-byte label policy. Copied
+length, termination and the resulting UTF-8 byte length are all checked before
+retention, following [GetClipboardFormatNameW's truncation contract](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-getclipboardformatnamew).
+
+The X11 reader uses the already pinned x11rb connection and requires XFixes
+selection tracking. It subscribes before the owner baseline/TARGETS, records each
+server selection event plus its selection/event timestamps, and uses ordered
+round trips on that same connection before accepting TARGETS or payload chunks.
+Same-owner assertions and A→B→A ownership changes invalidate the operation; equal
+timestamps do not hide an event. Synthetic XFixes events are rejected. The
+operation owns one requestor window and at most 4096 queued/processed events;
+destroying it ends observation, with no idle watcher. Protocol basis:
+[XFixes selection tracking](https://xorg.freedesktop.org/archive/current/doc/fixesproto/fixesproto.txt).
 
 macOS native pasteboard APIs can create an opaque data object before its length
 is inspectable. That is not described as a 32 MiB transfer bound. The single-job
@@ -61,16 +78,40 @@ without that authority fails with guidance to use focused application Paste.
 It never falls through to an unrelated X11 selection or starts a global
 clipboard-control protocol. This follows the
 [Wayland selection/transfer protocol](https://wayland.freedesktop.org/docs/html/apa.html).
+Linux authority detection includes descriptor-only `WAYLAND_SOCKET`, even when
+`DISPLAY` also exists. Automatic reads reject that original context before worker
+environment cleanup. Other native requests retain a frozen Wayland session marker
+after cleanup, preserving display/region capability refusal while explicit X11
+window operations keep their existing support. The original descriptor is marked
+close-on-exec in the child only and its environment name is removed; the parent
+descriptor is neither consumed nor changed.
+
+Wayland's unassigned-offer queue holds at most two metadata wrappers. Selection
+and Enter consume/remove an offer from that queue into the current clipboard or
+drag role. Completed/rejected drags leave no historical queue entry, and selection
+replacement destroys only the previous clipboard proxy. Selection churn cannot
+evict a delayed drag; later drags cannot evict the current clipboard. The maximum
+retention is one clipboard metadata wrapper plus two unassigned wrappers (each
+<=256 labels of <=128 bytes), with one separate raw drag proxy. Native connection
+teardown retires current roles and pending offers. This adds no timer, task,
+thread, image cache or idle work.
 
 The existing Paste image action starts a bounded image-specific asynchronous
 GPUI offer read. Offer selection/receive/flush stays on the native event thread;
 only a captured pipe descriptor and fixed metadata reach the existing background
 executor. Pipe reads use <=64 KiB chunks, cumulative encoded limit and absolute
-four-second deadline. A one-reader lease, focus/offer generation and UI job token
+four-second deadline beginning when the background reader starts. Executor
+scheduling latency is separate; offer/focus/job identity and cancellation apply
+from admission through foreground delivery. The one-reader lease travels with
+the background result and remains owned until foreground delivery or discard,
+including a completed result waiting on that executor. A one-reader lease, focus/offer generation and UI job token
 cancel obsolete work; no old result may open an editor after Quit, another input
 or window close. External encoded image data is never kept in GPUI's clipboard
 cache after transfer. Legacy synchronous offer paths gain byte/absolute-time
 bounds; image import itself never waits on the foreground executor.
+The foreground completion also checks the retained operation cancellation token
+before releasing admission or opening an editor, covering Escape/Quit after
+background render preparation has finished within the same generation.
 
 The existing drop target accepts one file, one supported encoded image or one
 explicit HTTP(S) image URL where native data offers expose them. Metadata-only
@@ -83,6 +124,22 @@ there is no PNG staging/round trip, implicit upload or History insertion.
 Malformed, multiple or unsupported payloads fail truthfully. Native transaction
 finish/cancel and source/window generations prevent callbacks leaking into a
 later drag. File paths retain their existing native encoding semantics.
+Delayed URI metadata uses the native drag state's latest position. Metadata
+captured at Enter cannot replace a later Motion position or the frozen final Drop
+position when transfer completion arrives after Drop/Leave.
+
+Native Drop acquisition can precede the application image-worker token. A short,
+foreground-only cancellation seam links that phase to Escape, Quit and every new
+application image admission (including delayed capture admission). It increments
+the native drag generation, wakes its owned pipe reader, retires the incoming
+offer and clears only incoming GPUI drag state, without synchronous/reentrant
+window input dispatch. A newer input finishing cannot restore that generation.
+Both raw and metadata reads retain their single lease through foreground
+delivery/discard, bounding active plus completed native transfer bodies to one
+<=32 MiB raster body or one <=64 KiB metadata body. New native generations cannot
+start another read while a completed body still awaits foreground consumption.
+The focused clipboard reader uses the same result-owned lifetime rule. No new
+queue, runtime, permanent thread, polling timer or idle work is added.
 
 ## Print and file drag-out
 
@@ -168,7 +225,8 @@ The delivered file boundary is exact:
   `docs/clipboard-import-output.md`.
 - Create `vendor/gpui-pre-linux/src/linux/wayland/clipboard_image_read.rs`,
   `incoming_drop.rs` and `drop_metadata.rs`.
-- Modify `crates/app-core/src/capture.rs`, `native_capture_job.rs`, `lib.rs`,
+- Modify `crates/app-core/src/capture.rs`, `capture_native_linux.rs`,
+  `native_capture_job.rs`, `lib.rs`,
   `clipboard_windows.rs` and `clipboard.rs` (the latter also exports the actual
   opened-identity plus remaining-decoded-budget loader for the editor consumer).
 - Modify `apps/desktop/src/capture_worker.rs`, `capture_worker_protocol.rs`,
@@ -177,13 +235,17 @@ The delivered file boundary is exact:
 - Modify `vendor/gpui-pre/src/platform.rs`, `app.rs`, `interactive.rs` and
   `window.rs`, plus `vendor/gpui-pre-linux/src/linux/platform.rs`,
   `display_connection.rs`, `wayland/clipboard.rs` and `wayland/client.rs`.
+- Modify `vendor/gpui-pre/src/app/test_context.rs` and
+  `platform/test/platform.rs` for one test-only private native cancellation hook.
 - Modify `crates/app-ui/src/lib.rs`, `workspace.rs` and `ui_tests.rs` for existing
   action/source dispatch, cancellation/job generation and private fixtures.
 
-The actual private X11 CLI proof is
-`target/verification/clipboard-x11-executable.json` (six groups), and the focused
-native GPUI Wayland proof is
-`target/verification/clipboard-wayland-native.json`. Both use only generated data
+The current private X11 CLI proof is
+`target/verification/clipboard-review-fixes-x11.json` (eight groups, executable
+SHA-256 `08677e65ac8de979b59256090fad587f5f4b443c3c6bba7dca9ae53d185f8696`), and
+the focused native GPUI Wayland proof is
+`target/verification/clipboard-round4-wayland.json` (test executable SHA-256
+`e9600165097c625268eebce484155a52512751aba80467833a73e20fcbe5472e`). Both use only generated data
 and owned private displays/compositors. The latter creates a private virtual
 keyboard solely to make the headless compositor deliver ordinary keyboard-focus
 and selection events; production reading uses standard `wl_data_offer.receive`,
@@ -198,3 +260,55 @@ busy admission, transfer errors, stale callbacks and no image/disk/clipboard
 output. The foreground validates offer/focus again after transfer, so a completed
 background read cannot bypass a focus/selection change queued before delivery.
 No external image is placed in GPUI's persistent clipboard cache.
+
+The first fresh review reported four accepted defects; its fix batch additionally
+passed actual CLI cases for descriptor-only private Wayland with an unrelated
+private X11 selection (no selection request), XFixes same-owner/A→B→A changes
+during TARGETS, and same-owner change during INCR. Focused optimized Rust tests
+pass original-context refusal before helper launch, child-only descriptor
+close-on-exec/frozen context, same-generation cancellation after rendering, and
+delayed metadata after final Motion/Drop. Linux desktop check/build and Windows
+GNU desktop/test metadata checks pass. Reused optimized test binaries pass all
+57 UI tests and all 65 Linux platform tests. Formatting and focused core/UI/
+desktop Clippy pass (existing warning categories remain). XFixes observation
+reuses the operation's connection and ends with the requestor; extra ordered
+round trips occur only during an explicit transfer. No numerical idle/resource
+or hardware performance acceptance is inferred from these functional checks.
+These fixes require a new independent
+review; passing author checks do not declare that review complete.
+
+The second fresh review confirmed those four fixes and found two additional
+Wayland lifetime/fixture defects plus a Windows native-name truncation issue.
+The role-owned offer correction passes 67 optimized Linux platform tests,
+including clipboard→completed/rejected drag→new drag and delayed drag with 32
+selection replacements/unassigned-offer churn. Four optimized core clipboard
+contract tests pass, including the native-copy truncation/UTF-8 label model.
+The actual ignored Wayland fixture now checks absence of `WAYLAND_SOCKET` before
+its platform constructor; a pure constructor-sentinel test and a direct ignored
+fixture invocation with an owned private descriptor both prove refusal. The
+private Wayland script passes both that refusal and the successful real focused
+Paste/editor path. All 57 optimized UI tests, Linux check, Windows GNU desktop/
+test metadata, formatting, Clippy and diff/Python syntax checks pass. No actual
+Windows general clipboard or user compositor was accessed by these checks.
+Current author evidence is under `target/verification/clipboard-round2-*`;
+the third fresh review found no Major/Blocker and one documentation Nit, which
+was corrected. That single clean round was not convergence: the fourth review
+then identified the acquisition-cancellation gap and prematurely released read
+leases described above.
+
+The fourth review's fix batch passes all 69 optimized Linux platform tests and
+all 59 optimized UI tests. The actual bounded private-pipe reader completes while
+foreground delivery is withheld; 256 native-generation/cancellation churn
+attempts cannot acquire another reader lease until the completed body and lease
+are discarded. Native cancellation writes its wake descriptor and rejects a late
+raw-image completion. Headless app tests use a private native adapter and the
+actual Escape/common image admission paths: both Escape during acquisition and
+a newer image input finishing before old completion prevent Submit/editor open.
+Clipboard success/refusal completions retain their own lease until foreground
+delivery/discard. The real private Wayland fixture passes descriptor refusal and
+focused Paste with exact pixels through that adjusted clipboard lifetime. Linux
+check, Windows GNU desktop/test metadata, formatting, Clippy and diff checks pass.
+This adds no production queue/thread/timer; the test cancellation hook exists
+only on the test platform. Evidence is under `target/verification/clipboard-round4-*`.
+The source is frozen for fresh fifth review; author checks do not establish
+independent convergence or physical input/presentation acceptance.

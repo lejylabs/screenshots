@@ -404,6 +404,9 @@ fn task_host_absolute_frame_deadline_rejects_trickled_unauthenticated_payloads()
     stream
         .set_write_timeout(Some(Duration::from_millis(100)))
         .unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(1)))
+        .unwrap();
     stream.write_all(&256u32.to_be_bytes()).unwrap();
     let started = Instant::now();
     while started.elapsed() < Duration::from_millis(2500) {
@@ -412,9 +415,6 @@ fn task_host_absolute_frame_deadline_rejects_trickled_unauthenticated_payloads()
         }
         std::thread::sleep(Duration::from_millis(250));
     }
-    stream
-        .set_read_timeout(Some(Duration::from_secs(1)))
-        .unwrap();
     let mut byte = [0];
     match stream.read(&mut byte) {
         Ok(0) => {}
