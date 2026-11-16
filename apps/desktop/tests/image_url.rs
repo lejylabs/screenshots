@@ -113,6 +113,8 @@ impl Server {
                 match listener.accept() {
                     Ok((mut socket, _)) => {
                         c.fetch_add(1, Ordering::Relaxed);
+                        // BSD accepts can inherit O_NONBLOCK from the listener.
+                        socket.set_nonblocking(false).unwrap();
                         socket
                             .set_read_timeout(Some(Duration::from_secs(2)))
                             .unwrap();
