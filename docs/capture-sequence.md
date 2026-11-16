@@ -182,3 +182,7 @@ requires both `SCREENSHOTS_NATIVE_CAPTURE=1` and `SCREENSHOTS_TEST_DISPLAY_ID`;
 it reads the selected display and writes only to an isolated temporary directory.
 Run it deliberately in a suitable native session. Test definitions alone do not
 establish native permission, display-loss, latency or resource acceptance.
+
+Durable, repeating and window/region sequences are now available through the
+explicit [saved-Task scheduler](capture-scheduling.md). This display-only
+command retains the finite invocation semantics documented above.

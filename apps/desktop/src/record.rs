@@ -3,6 +3,9 @@
 use anyhow::{Context, Result, bail, ensure};
 use serde::Deserialize;
 use std::{ffi::OsString, path::Path};
+#[cfg(target_os = "macos")]
+#[path = "record_macos.rs"]
+mod macos;
 
 #[derive(Clone, Copy, PartialEq)]
 pub(crate) enum OutputFormat {
@@ -37,6 +40,8 @@ pub(crate) struct Options<'a> {
     pub(crate) y: u32,
     pub(crate) format: OutputFormat,
     pub(crate) cursor: Option<bool>,
+    pub(crate) display: Option<u32>,
+    pub(crate) audio: Option<crate::audio_record::AudioInput<'a>>,
 }
 
 impl Options<'_> {
@@ -53,21 +58,28 @@ impl Options<'_> {
         if let Some(show) = self.cursor {
             result["cursor"] = if show { "show" } else { "hide" }.into();
         }
+        if let Some(display) = self.display {
+            result["display_id"] = display.into();
+        }
+        if let Some(audio) = self.audio {
+            result["audio"] = audio.summary(self.seconds);
+        }
         result
     }
 }
 
 fn options(args: &[OsString]) -> Result<Options<'_>> {
     ensure!(
-        matches!(args.len(), 10 | 12 | 14 | 16),
-        "Usage: screenshots record MODE OUTPUT.mkv|OUTPUT.gif --seconds N --fps N --width N --height N [--x X --y Y] [--cursor show|hide]"
+        (10..=24).contains(&args.len()) && args.len().is_multiple_of(2),
+        "Usage: screenshots record MODE OUTPUT.mkv|OUTPUT.gif --seconds N --fps N --width N --height N [--x X --y Y] [--cursor show|hide] [--audio-mode MODE --audio-device NAME --audio-channels 1|2]"
     );
     let mode = args[0].to_str().context("Recording mode must be UTF-8")?;
     ensure!(
         mode == "test"
             || (cfg!(unix) && mode == "x11")
-            || (cfg!(target_os = "windows") && mode == "gdigrab"),
-        "Choose recording mode x11/test on Unix or gdigrab/test on Windows"
+            || (cfg!(target_os = "windows") && mode == "gdigrab")
+            || (cfg!(target_os = "macos") && mode == "avfoundation"),
+        "Choose test, x11 on Unix, gdigrab on Windows, or fixed-display avfoundation on macOS"
     );
     let destination = Path::new(&args[1]);
     let format = match destination
@@ -86,7 +98,49 @@ fn options(args: &[OsString]) -> Result<Options<'_>> {
     );
     let mut values = [None; 6];
     let mut cursor = None;
+    let mut display = None;
+    let mut audio_mode = None;
+    let mut audio_device = None;
+    let mut audio_channels = None;
     for pair in args[2..].chunks_exact(2) {
+        match pair[0].to_str() {
+            Some("--display") => {
+                ensure!(display.is_none(), "Duplicate --display option");
+                let id = pair[1]
+                    .to_str()
+                    .context("Display ID must be UTF-8")?
+                    .parse::<u32>()
+                    .context("Display ID must be a positive integer")?;
+                ensure!(id > 0, "Display ID must be positive");
+                display = Some(id);
+                continue;
+            }
+            Some("--audio-mode") => {
+                ensure!(audio_mode.is_none(), "Duplicate --audio-mode option");
+                audio_mode = Some(pair[1].to_str().context("Audio mode must be UTF-8")?);
+                continue;
+            }
+            Some("--audio-device") => {
+                ensure!(audio_device.is_none(), "Duplicate --audio-device option");
+                audio_device = Some(pair[1].to_str().context("Audio device must be UTF-8")?);
+                continue;
+            }
+            Some("--audio-channels") => {
+                ensure!(
+                    audio_channels.is_none(),
+                    "Duplicate --audio-channels option"
+                );
+                audio_channels = Some(
+                    pair[1]
+                        .to_str()
+                        .context("Audio channels must be UTF-8")?
+                        .parse::<u16>()
+                        .context("Audio channels must be a whole number")?,
+                );
+                continue;
+            }
+            _ => {}
+        }
         if pair[0] == "--cursor" {
             ensure!(cursor.is_none(), "Duplicate --cursor option");
             cursor = Some(match pair[1].to_str() {
@@ -140,7 +194,7 @@ fn options(args: &[OsString]) -> Result<Options<'_>> {
     app_core::validate_image_size(width, height)?;
     ensure!(x.is_some() == y.is_some(), "Use --x and --y together");
     ensure!(
-        matches!(mode, "x11" | "gdigrab") || x.is_none(),
+        matches!(mode, "x11" | "gdigrab" | "avfoundation") || x.is_none(),
         "Offsets apply only to desktop recording"
     );
     ensure!(
@@ -148,6 +202,27 @@ fn options(args: &[OsString]) -> Result<Options<'_>> {
         "Cursor option applies only to desktop recording"
     );
     let (x, y) = (x.unwrap_or(0), y.unwrap_or(0));
+    ensure!(
+        (mode == "avfoundation") == display.is_some(),
+        "Use --display only and always for native macOS screen video"
+    );
+    let audio = if let Some(mode) = audio_mode {
+        ensure!(
+            format == OutputFormat::Matroska,
+            "Audio recording requires Matroska output; GIF has no audio"
+        );
+        Some(crate::audio_record::AudioInput::new(
+            mode,
+            audio_device,
+            audio_channels,
+        )?)
+    } else {
+        ensure!(
+            audio_device.is_none() && audio_channels.is_none(),
+            "Audio device/channels require --audio-mode"
+        );
+        None
+    };
     ensure!(
         x.checked_add(width)
             .is_some_and(|end| end <= i32::MAX as u32)
@@ -166,6 +241,8 @@ fn options(args: &[OsString]) -> Result<Options<'_>> {
         y,
         format,
         cursor,
+        display,
+        audio,
     })
 }
 
@@ -188,6 +265,10 @@ fn local_display(value: &str) -> Result<&str> {
 
 pub fn run(args: &[OsString]) -> Result<()> {
     let options = options(args)?;
+    #[cfg(target_os = "macos")]
+    if options.mode == "avfoundation" {
+        return macos::record(options, args.to_vec());
+    }
     #[cfg(not(any(unix, target_os = "windows")))]
     {
         let _ = options;
@@ -200,7 +281,7 @@ pub fn run(args: &[OsString]) -> Result<()> {
 }
 
 #[cfg(unix)]
-mod unix {
+pub(crate) mod unix {
     use super::*;
     use std::{
         fs::{DirBuilder, File},
@@ -222,26 +303,37 @@ mod unix {
     const MAX_DIAGNOSTIC_BYTES: usize = 16 * 1024;
     const CHECK_INTERVAL: Duration = Duration::from_millis(25);
 
-    struct Cancellation {
+    pub(crate) struct Cancellation {
         flag: Arc<AtomicBool>,
         finished: Arc<AtomicBool>,
         handlers: Vec<signal_hook::SigId>,
     }
 
     impl Cancellation {
-        fn new() -> Result<Self> {
+        pub(crate) fn new() -> Result<Self> {
+            Self::create(Arc::new(AtomicBool::new(false)), false)
+        }
+        pub(crate) fn with_flag(flag: Arc<AtomicBool>) -> Result<Self> {
+            Self::create(flag, true)
+        }
+        fn create(flag: Arc<AtomicBool>, scoped: bool) -> Result<Self> {
             let mut result = Self {
-                flag: Arc::new(AtomicBool::new(false)),
+                flag,
                 finished: Arc::new(AtomicBool::new(false)),
-                handlers: Vec::with_capacity(2),
+                handlers: Vec::with_capacity(4),
             };
             for signal in [signal_hook::consts::SIGINT, signal_hook::consts::SIGTERM] {
                 // Keep termination available after cleanup, including blocked result output.
-                signal_hook::flag::register_conditional_shutdown(
+                let shutdown = signal_hook::flag::register_conditional_shutdown(
                     signal,
                     1,
                     result.finished.clone(),
                 )?;
+                // Standalone commands retain termination after cleanup if result output blocks.
+                // Reused scheduled tasks are scoped: retired handlers must not kill a later run.
+                if scoped {
+                    result.handlers.push(shutdown);
+                }
                 result
                     .handlers
                     .push(signal_hook::flag::register(signal, result.flag.clone())?);
@@ -249,13 +341,21 @@ mod unix {
             Ok(result)
         }
 
-        fn check(&self, deadline: Instant) -> Result<()> {
+        pub(crate) fn check(&self, deadline: Instant) -> Result<()> {
             ensure!(!self.flag.load(Ordering::Relaxed), "Recording canceled");
             ensure!(
                 Instant::now() < deadline,
                 "Recording exceeded its duration plus 10 second deadline"
             );
             Ok(())
+        }
+
+        pub(crate) fn output_phase(&self, active: bool) {
+            self.finished.store(active, Ordering::SeqCst);
+        }
+
+        pub(crate) fn flag(&self) -> Arc<AtomicBool> {
+            self.flag.clone()
         }
     }
 
@@ -268,13 +368,13 @@ mod unix {
         }
     }
 
-    struct Staging {
+    pub(crate) struct Staging {
         directory: PathBuf,
-        file: PathBuf,
+        pub(crate) file: PathBuf,
     }
 
     impl Staging {
-        fn new(parent: &Path, format: OutputFormat) -> Result<Self> {
+        pub(crate) fn new(parent: &Path, format: OutputFormat) -> Result<Self> {
             let directory = parent.join(format!(".screenshots-record-{}", uuid::Uuid::new_v4()));
             DirBuilder::new().mode(0o700).create(&directory)?;
             let file = directory.join(if format == OutputFormat::Gif {
@@ -285,7 +385,7 @@ mod unix {
             Ok(Self { directory, file })
         }
 
-        fn cleanup(&self) -> Result<()> {
+        pub(crate) fn cleanup(&self) -> Result<()> {
             match std::fs::remove_file(&self.file) {
                 Ok(()) => {}
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
@@ -310,15 +410,87 @@ mod unix {
         group: i32,
         workers: Vec<JoinHandle<()>>,
         finished: bool,
+        cooperative: bool,
+        borrowed_group: bool,
+        status: Option<bool>,
+        reaped: bool,
     }
 
     impl Engine {
-        fn stop(&mut self) {
-            unsafe {
-                libc::kill(-self.group, libc::SIGKILL);
+        fn observe(&mut self) -> Result<Option<bool>> {
+            if self.status.is_some() {
+                return Ok(self.status);
             }
-            let _ = self.child.kill();
-            let _ = self.child.wait();
+            if self.borrowed_group {
+                if let Some(status) = self.child.try_wait()? {
+                    self.status = Some(status.success());
+                    self.reaped = true;
+                }
+            } else {
+                let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+                loop {
+                    if unsafe {
+                        libc::waitid(
+                            libc::P_PID,
+                            self.child.id() as libc::id_t,
+                            &mut info,
+                            libc::WEXITED | libc::WNOWAIT | libc::WNOHANG,
+                        )
+                    } == 0
+                    {
+                        break;
+                    }
+                    let error = std::io::Error::last_os_error();
+                    if error.kind() != std::io::ErrorKind::Interrupted {
+                        return Err(error.into());
+                    }
+                }
+                if unsafe { info.si_pid() } == self.child.id() as i32 {
+                    self.status =
+                        Some(info.si_code == libc::CLD_EXITED && unsafe { info.si_status() } == 0);
+                }
+            }
+            Ok(self.status)
+        }
+        fn signal(&mut self, signal: i32) {
+            if self.reaped {
+                return;
+            }
+            let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+            if unsafe {
+                libc::waitid(
+                    libc::P_PID,
+                    self.child.id() as libc::id_t,
+                    &mut info,
+                    libc::WEXITED | libc::WNOWAIT | libc::WNOHANG,
+                )
+            } == 0
+            {
+                let target = if self.borrowed_group {
+                    self.child.id() as i32
+                } else {
+                    -self.group
+                };
+                unsafe {
+                    libc::kill(target, signal);
+                }
+            }
+        }
+        fn stop(&mut self) {
+            if self.cooperative && self.observe().ok().flatten().is_none() {
+                self.signal(libc::SIGTERM);
+                let until = Instant::now() + Duration::from_millis(250);
+                while Instant::now() < until && self.observe().ok().flatten().is_none() {
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+            }
+            // Keep the leader waitable through all signaling. A borrowed group
+            // belongs to the live native source; this peer never signals it.
+            self.signal(libc::SIGKILL);
+            if !self.reaped {
+                let _ = self.child.wait();
+                self.reaped = true;
+            }
             for worker in self.workers.drain(..) {
                 let _ = worker.join();
             }
@@ -368,13 +540,12 @@ mod unix {
         let mut output = Vec::new();
         loop {
             cancellation.check(deadline)?;
-            if let Some(status) = job
-                .child
-                .try_wait()
+            if let Some(success) = job
+                .observe()
                 .context("Could not observe recording engine")?
             {
                 ensure!(
-                    status.success(),
+                    success,
                     "Recording engine failed; check installed FFmpeg capabilities and capture access"
                 );
                 if received == expected {
@@ -403,17 +574,79 @@ mod unix {
         }
     }
 
-    fn engine(
-        mut command: Command,
+    pub(crate) fn engine(
+        command: Command,
         probe: bool,
         cancellation: &Cancellation,
         deadline: Instant,
     ) -> Result<Vec<u8>> {
+        engine_owned(command, probe, cancellation, deadline, false, None, None)
+    }
+
+    pub(crate) fn cooperative_engine(
+        command: Command,
+        cancellation: &Cancellation,
+        deadline: Instant,
+    ) -> Result<Vec<u8>> {
+        engine_owned(command, true, cancellation, deadline, true, None, None)
+    }
+
+    pub(crate) fn cooperative_engine_guarded(
+        command: Command,
+        cancellation: &Cancellation,
+        deadline: Instant,
+        identity: Option<&app_core::FileIdentity>,
+    ) -> Result<Vec<u8>> {
+        if identity.is_none() {
+            return cooperative_engine(command, cancellation, deadline);
+        }
+        engine_owned(command, true, cancellation, deadline, true, identity, None)
+    }
+
+    pub(crate) struct BorrowedGroup {
+        pub group: i32,
+        pub stdin: Option<File>,
+        pub ready: Option<mpsc::SyncSender<Result<(), app_core::CaptureError>>>,
+    }
+    pub(crate) fn borrowed_group_engine(
+        command: Command,
+        probe: bool,
+        cancellation: &Cancellation,
+        deadline: Instant,
+        identity: Option<&app_core::FileIdentity>,
+        group: BorrowedGroup,
+    ) -> Result<Vec<u8>> {
+        ensure!(group.group > 0, "Invalid reserved recording group");
+        engine_owned(
+            command,
+            probe,
+            cancellation,
+            deadline,
+            false,
+            identity,
+            Some(group),
+        )
+    }
+
+    fn engine_owned(
+        mut command: Command,
+        probe: bool,
+        cancellation: &Cancellation,
+        deadline: Instant,
+        cooperative: bool,
+        identity: Option<&app_core::FileIdentity>,
+        mut borrowed: Option<BorrowedGroup>,
+    ) -> Result<Vec<u8>> {
         cancellation.check(deadline)?;
         command
-            .stdin(Stdio::null())
+            .stdin(
+                borrowed
+                    .as_mut()
+                    .and_then(|group| group.stdin.take())
+                    .map_or_else(Stdio::null, Stdio::from),
+            )
             .stderr(Stdio::piped())
-            .process_group(0);
+            .process_group(borrowed.as_ref().map_or(0, |group| group.group));
         if probe {
             command.stdout(Stdio::piped());
         } else {
@@ -422,9 +655,13 @@ mod unix {
         command.env_remove("FFREPORT");
         #[cfg(target_os = "linux")]
         let controller_pid = std::process::id() as libc::pid_t;
+        let abort_before_exec = cancellation.flag();
         // Bound file growth in the child; a cap hit cannot be mistaken for a full recording.
         unsafe {
             command.pre_exec(move || {
+                if abort_before_exec.load(Ordering::Acquire) {
+                    return Err(std::io::Error::other("Recording startup canceled"));
+                }
                 #[cfg(target_os = "linux")]
                 {
                     if libc::getppid() != controller_pid {
@@ -451,14 +688,27 @@ mod unix {
                 if libc::setrlimit(libc::RLIMIT_CORE, &no_core) != 0 {
                     return Err(std::io::Error::last_os_error());
                 }
+                if abort_before_exec.load(Ordering::Acquire) {
+                    return Err(std::io::Error::other("Recording startup canceled"));
+                }
                 Ok(())
             });
         }
+        // Retain the checked script/executable through the native spawn. The OS still
+        // resolves the pathname/shebang; this is not an atomic hostile-user executable pin.
+        let _admitted_program = if let Some(identity) = identity {
+            let (file, _) = app_core::FileIdentity::open(Path::new(command.get_program()))?;
+            identity.verify_file(&file)?;
+            Some(file)
+        } else {
+            None
+        };
         let mut child = command.spawn().map_err(|_| {
             anyhow::anyhow!(
                 "Recording engine is unavailable; install FFmpeg and ffprobe separately"
             )
         })?;
+        drop(_admitted_program);
         let group = match i32::try_from(child.id()) {
             Ok(group) => group,
             Err(_) => {
@@ -472,7 +722,16 @@ mod unix {
             group,
             workers: Vec::with_capacity(2),
             finished: false,
+            cooperative,
+            borrowed_group: borrowed.is_some(),
+            status: None,
+            reaped: false,
         };
+        if let Some(ready) = borrowed.and_then(|group| group.ready) {
+            ready
+                .send(Ok(()))
+                .map_err(|_| anyhow::anyhow!("Recording source startup was canceled"))?;
+        }
         let stderr = job
             .child
             .stderr
@@ -516,6 +775,17 @@ mod unix {
     }
 
     pub(super) fn encoder(options: &Options<'_>, stage: &Path, display: Option<&str>) -> Command {
+        encoder_kind(options, stage, display, false)
+    }
+    pub(crate) fn raw_encoder(options: &Options<'_>, stage: &Path) -> Command {
+        encoder_kind(options, stage, None, true)
+    }
+    fn encoder_kind(
+        options: &Options<'_>,
+        stage: &Path,
+        display: Option<&str>,
+        raw: bool,
+    ) -> Command {
         let mut command = Command::new("ffmpeg");
         command.args([
             "-hide_banner",
@@ -534,7 +804,20 @@ mod unix {
             "-thread_queue_size",
             "1",
         ]);
-        if let Some(display) = display {
+        if raw {
+            command.args([
+                "-f",
+                "rawvideo",
+                "-pixel_format",
+                "bgra",
+                "-video_size",
+                &format!("{}x{}", options.width, options.height),
+                "-framerate",
+                &options.fps.to_string(),
+                "-i",
+                "pipe:0",
+            ]);
+        } else if let Some(display) = display {
             command.args([
                 "-f",
                 "x11grab",
@@ -559,10 +842,16 @@ mod unix {
                 ),
             ]);
         }
+        if let Some(audio) = options.audio {
+            audio.append_input(&mut command);
+        }
+        command.args(["-map", "0:v:0"]);
+        if options.audio.is_some() {
+            command.args(["-map", "1:a:0"]);
+        } else {
+            command.arg("-an");
+        }
         command.args([
-            "-map",
-            "0:v:0",
-            "-an",
             "-sn",
             "-dn",
             "-map_metadata",
@@ -590,6 +879,9 @@ mod unix {
         } else {
             // RGB8 uses a fixed small palette; no whole-video palette generation pass.
             command.args(["-c:v", "gif", "-pix_fmt", "rgb8", "-loop", "-1"]);
+        }
+        if let Some(audio) = options.audio {
+            audio.append_pcm(&mut command, options.seconds, true);
         }
         command.args([
             "-threads",
@@ -641,9 +933,20 @@ mod unix {
                 "Recording header does not match its output format"
             );
             let mut probe = Command::new("ffprobe");
-            probe.args(["-hide_banner", "-loglevel", "error", "-max_alloc", "67108864", "-threads", "2", "-protocol_whitelist", "file", "-f", options.format.container(), "-max_streams", "1", "-count_frames", "-show_entries", "stream=codec_name,codec_type,width,height,avg_frame_rate,nb_read_frames,duration:format=format_name", "-of", "json", "-i"]);
+            probe.args(["-hide_banner", "-loglevel", "error", "-max_alloc", "67108864", "-threads", "2", "-protocol_whitelist", "file", "-f", options.format.container(), "-max_streams", if options.audio.is_some() { "2" } else { "1" }, "-count_frames", "-show_entries", if options.audio.is_some() { "stream=codec_name,codec_type,width,height,avg_frame_rate,nb_read_frames,duration,sample_rate,channels,bits_per_sample:format=format_name" } else { "stream=codec_name,codec_type,width,height,avg_frame_rate,nb_read_frames,duration:format=format_name" }, "-of", "json", "-i"]);
             probe.arg(&staging.file);
             verify_probe(&engine(probe, true, &cancellation, deadline)?, &options)?;
+            if options.audio.is_some() {
+                verify_audio_samples(
+                    &engine(
+                        audio_sample_probe(&staging.file, false),
+                        true,
+                        &cancellation,
+                        deadline,
+                    )?,
+                    options.seconds,
+                )?;
+            }
             file.sync_all()?;
             cancellation.check(deadline)?;
             std::fs::hard_link(&staging.file, &destination)
@@ -685,16 +988,86 @@ struct Format {
 struct Stream {
     codec_name: String,
     codec_type: String,
+    #[serde(default)]
     width: u32,
+    #[serde(default)]
     height: u32,
+    #[serde(default)]
     avg_frame_rate: String,
+    #[serde(default)]
     nb_read_frames: String,
     duration: Option<String>,
+    sample_rate: Option<String>,
+    channels: Option<u16>,
+    bits_per_sample: Option<u16>,
+}
+
+pub(crate) fn audio_sample_probe(path: &Path, windows: bool) -> std::process::Command {
+    let mut command = std::process::Command::new(if windows { "ffprobe.exe" } else { "ffprobe" });
+    command
+        .args([
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-max_alloc",
+            "67108864",
+            "-threads",
+            "2",
+            "-protocol_whitelist",
+            "file",
+            "-f",
+            "matroska",
+            "-max_streams",
+            "2",
+            "-select_streams",
+            "a:0",
+            "-show_entries",
+            "frame=nb_samples",
+            "-of",
+            "csv=p=0",
+            "-i",
+        ])
+        .arg(path);
+    command
+}
+
+pub(crate) fn verify_audio_samples(bytes: &[u8], seconds: u32) -> Result<()> {
+    ensure!(
+        bytes.len() <= 8192 && (1..=60).contains(&seconds),
+        "Audio sample verification exceeds its limits"
+    );
+    let text = std::str::from_utf8(bytes).context("Invalid audio sample verification result")?;
+    let mut total = 0u32;
+    let mut frames = 0u32;
+    for line in text.lines().filter(|line| !line.is_empty()) {
+        ensure!(
+            line.bytes().all(|byte| byte.is_ascii_digit()),
+            "Invalid audio sample count"
+        );
+        let samples = line.parse::<u32>().context("Invalid audio sample count")?;
+        ensure!(
+            (1..=crate::audio_record::RATE).contains(&samples),
+            "Audio sample frame exceeds its limit"
+        );
+        frames += 1;
+        ensure!(
+            frames <= seconds + 1,
+            "Audio contains too many sample frames"
+        );
+        total = total
+            .checked_add(samples)
+            .context("Audio sample count overflow")?;
+    }
+    ensure!(
+        total == seconds * crate::audio_record::RATE,
+        "Recording is incomplete: audio sample count does not match the request"
+    );
+    Ok(())
 }
 
 pub(crate) fn verify_probe(bytes: &[u8], options: &Options<'_>) -> Result<()> {
-    let probe: Probe =
-        serde_json::from_slice(bytes).context("Invalid recording verification result")?;
+    let probe: Probe = serde_json::from_slice(bytes)
+        .map_err(|_| anyhow::anyhow!("Invalid recording verification result"))?;
     ensure!(
         probe
             .format
@@ -704,10 +1077,38 @@ pub(crate) fn verify_probe(bytes: &[u8], options: &Options<'_>) -> Result<()> {
         "Recording container verification failed"
     );
     ensure!(
-        probe.streams.len() == 1,
+        probe.streams.len() == if options.audio.is_some() { 2 } else { 1 },
+        "Recording stream count does not match the request"
+    );
+    let videos = probe
+        .streams
+        .iter()
+        .filter(|stream| stream.codec_type == "video")
+        .collect::<Vec<_>>();
+    ensure!(
+        videos.len() == 1,
         "Recording must contain exactly one video stream"
     );
-    let stream = &probe.streams[0];
+    let stream = videos[0];
+    if let Some(audio) = options.audio {
+        let audios = probe
+            .streams
+            .iter()
+            .filter(|stream| stream.codec_type == "audio")
+            .collect::<Vec<_>>();
+        ensure!(
+            audios.len() == 1,
+            "Recording must contain exactly one requested audio stream"
+        );
+        let recorded = audios[0];
+        ensure!(
+            recorded.codec_name == "pcm_s16le"
+                && recorded.sample_rate.as_deref() == Some("48000")
+                && recorded.channels == Some(audio.channels)
+                && recorded.bits_per_sample == Some(16),
+            "Recording audio codec, rate or channels verification failed"
+        );
+    }
     ensure!(
         stream.codec_name == options.format.codec() && stream.codec_type == "video",
         "Recording codec verification failed"
@@ -763,6 +1164,176 @@ pub(crate) fn verify_probe(bytes: &[u8], options: &Options<'_>) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
+    #[test]
+    fn mac_video_encoder_input_is_raw_and_cannot_resolve_a_camera_label_or_index() {
+        let options = Options {
+            mode: "test",
+            destination: Path::new("unused.mkv"),
+            seconds: 1,
+            fps: 3,
+            width: 2,
+            height: 2,
+            x: 0,
+            y: 0,
+            format: OutputFormat::Matroska,
+            cursor: Some(true),
+            display: None,
+            audio: None,
+        };
+        let command = unix::raw_encoder(&options, Path::new("private-stage.mkv"));
+        let args = command
+            .get_args()
+            .map(|value| value.to_str().unwrap())
+            .collect::<Vec<_>>();
+        assert!(args.windows(2).any(|pair| pair == ["-f", "rawvideo"]));
+        assert!(
+            args.windows(2)
+                .any(|pair| pair == ["-pixel_format", "bgra"])
+        );
+        assert!(args.windows(2).any(|pair| pair == ["-i", "pipe:0"]));
+        assert!(!args.iter().any(|arg| arg.contains("Capture screen")
+            || arg.contains("avfoundation")
+            || arg.contains("video_device_index")
+            || arg.contains("draw_mouse")));
+        assert!(args.windows(2).any(|pair| pair == ["-frames:v", "3"]));
+        assert!(args.windows(2).any(|pair| pair == ["-c:v", "ffv1"]));
+    }
+
+    #[test]
+    fn optional_audio_is_explicit_matroska_only_and_preserves_silent_summary() {
+        let output = std::env::temp_dir().join(format!(
+            "screenshots-av-options-{}.mkv",
+            uuid::Uuid::new_v4()
+        ));
+        let base = vec![
+            "test".into(),
+            output.into_os_string(),
+            "--seconds".into(),
+            "1".into(),
+            "--fps".into(),
+            "2".into(),
+            "--width".into(),
+            "16".into(),
+            "--height".into(),
+            "12".into(),
+        ];
+        assert!(options(&base).unwrap().summary(12).get("audio").is_none());
+        let mut valid = base.clone();
+        valid.extend([
+            "--audio-mode".into(),
+            "test".into(),
+            "--audio-channels".into(),
+            "1".into(),
+        ]);
+        let parsed = options(&valid).unwrap();
+        assert_eq!(
+            parsed.summary(12)["audio"],
+            serde_json::json!({"mode":"test","codec":"pcm_s16le","sample_rate":48000,"channels":1,"samples":48000})
+        );
+        for extra in [
+            vec!["--audio-device", "default"],
+            vec!["--audio-channels", "1"],
+            vec!["--audio-mode", "test", "--audio-mode", "test"],
+            vec!["--audio-mode", "test", "--audio-device", "default"],
+            vec!["--audio-mode", "test", "--audio-channels", "3"],
+        ] {
+            let mut invalid = base.clone();
+            invalid.extend(extra.into_iter().map(OsString::from));
+            assert!(options(&invalid).is_err());
+        }
+        let mut gif = valid;
+        gif[1] = std::env::temp_dir()
+            .join(format!(
+                "screenshots-av-options-{}.gif",
+                uuid::Uuid::new_v4()
+            ))
+            .into_os_string();
+        assert!(options(&gif).is_err());
+    }
+
+    #[test]
+    fn combined_probe_requires_both_complete_streams_and_exact_audio_samples() {
+        let options = Options {
+            mode: "test",
+            destination: Path::new("unused.mkv"),
+            seconds: 2,
+            fps: 3,
+            width: 16,
+            height: 12,
+            x: 0,
+            y: 0,
+            format: OutputFormat::Matroska,
+            cursor: None,
+            display: None,
+            audio: Some(crate::audio_record::AudioInput::new("test", None, Some(2)).unwrap()),
+        };
+        let valid = serde_json::json!({"streams":[{"codec_name":"pcm_s16le","codec_type":"audio","sample_rate":"48000","channels":2,"bits_per_sample":16},{"codec_name":"ffv1","codec_type":"video","width":16,"height":12,"avg_frame_rate":"3/1","nb_read_frames":"6"}],"format":{"format_name":"matroska,webm"}});
+        verify_probe(&serde_json::to_vec(&valid).unwrap(), &options).unwrap();
+        for field in [
+            "codec_name",
+            "codec_type",
+            "sample_rate",
+            "channels",
+            "bits_per_sample",
+        ] {
+            let mut invalid = valid.clone();
+            invalid["streams"][0][field] = if matches!(field, "channels" | "bits_per_sample") {
+                1.into()
+            } else {
+                "invalid".into()
+            };
+            assert!(verify_probe(&serde_json::to_vec(&invalid).unwrap(), &options).is_err());
+        }
+        let mut missing = valid;
+        missing["streams"].as_array_mut().unwrap().remove(0);
+        assert!(verify_probe(&serde_json::to_vec(&missing).unwrap(), &options).is_err());
+        verify_audio_samples(b"48000\n48000\n", 2).unwrap();
+        for invalid in [
+            b"".as_slice(),
+            b"0\n96000\n",
+            b"48000\n47999\n",
+            b"48001\n47999\n",
+            b"48000\n48000\n1\n",
+            b"nb_samples=96000\n",
+            b"48000,48000\n",
+        ] {
+            assert!(verify_audio_samples(invalid, 2).is_err());
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn combined_encoder_has_two_explicit_inputs_and_bounded_pcm_frames() {
+        let options = Options {
+            mode: "test",
+            destination: Path::new("unused.mkv"),
+            seconds: 2,
+            fps: 3,
+            width: 16,
+            height: 12,
+            x: 0,
+            y: 0,
+            format: OutputFormat::Matroska,
+            cursor: None,
+            display: None,
+            audio: Some(crate::audio_record::AudioInput::new("test", None, Some(1)).unwrap()),
+        };
+        let command = unix::encoder(&options, Path::new("stage.mkv"), None);
+        let args = command
+            .get_args()
+            .map(|arg| arg.to_str().unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(args.iter().filter(|arg| **arg == "-i").count(), 2);
+        assert!(!args.contains(&"-an"));
+        assert!(args.windows(2).any(|pair| pair == ["-map", "1:a:0"]));
+        assert!(args.windows(2).any(|pair| pair == ["-c:a", "pcm_s16le"]));
+        assert!(args.windows(2).any(|pair| pair == ["-ac", "1"]));
+        assert!(
+            args.iter()
+                .any(|arg| arg.ends_with("asetnsamples=n=48000:p=0"))
+        );
+    }
 
     #[test]
     fn cursor_option_is_explicit_desktop_only_and_defaults_preserve_json() {
@@ -826,6 +1397,8 @@ mod tests {
                 y: 0,
                 format: OutputFormat::Matroska,
                 cursor,
+                display: None,
+                audio: None,
             };
             let command = unix::encoder(&options, Path::new("stage.mkv"), Some(":9"));
             let args = command
@@ -856,6 +1429,8 @@ mod tests {
             y: 0,
             format: OutputFormat::Matroska,
             cursor: None,
+            display: None,
+            audio: None,
         };
         let valid = serde_json::json!({"streams":[{"codec_name":"ffv1","codec_type":"video","width":16,"height":12,"avg_frame_rate":"2/1","nb_read_frames":"2"}],"format":{"format_name":"matroska,webm"}});
         verify_probe(&serde_json::to_vec(&valid).unwrap(), &options).unwrap();

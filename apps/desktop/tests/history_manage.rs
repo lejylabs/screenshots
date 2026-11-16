@@ -14,7 +14,7 @@ impl Fixture {
             uuid::Uuid::new_v4()
         ));
         std::fs::create_dir(&root).unwrap();
-        Self(root)
+        Self(root.canonicalize().unwrap())
     }
     fn path(&self, name: &str) -> PathBuf {
         self.0.join(name)
@@ -155,7 +155,10 @@ fn import_reports_added_existing_and_individual_failures_without_changing_files(
     assert_eq!(result["failures"].as_array().unwrap().len(), 2);
     let entries = app_core::capture_history_page(&database, None).unwrap();
     assert_eq!(entries.len(), 1);
-    assert_eq!(entries[0].path, image);
+    assert_eq!(
+        entries[0].path.canonicalize().unwrap(),
+        image.canonicalize().unwrap()
+    );
     let again = success(fixture.run("import", &database, &[image.clone().into()]));
     assert_eq!(again["added"], 0);
     assert_eq!(again["existing"], 1);
@@ -221,7 +224,11 @@ fn relink_conflicts_missing_ids_and_bad_images_preserve_existing_metadata() {
     let database = fixture.path("history.sqlite3");
     app_core::import_capture_files(&database, &[one.clone(), two.clone()]).unwrap();
     let entries = app_core::capture_history_page(&database, None).unwrap();
-    let first = entries.iter().find(|entry| entry.path == one).unwrap();
+    let canonical_one = std::fs::canonicalize(&one).unwrap();
+    let first = entries
+        .iter()
+        .find(|entry| entry.path == canonical_one)
+        .unwrap();
     for values in [
         vec![first.id.to_string().into(), two.into()],
         vec!["9999999".into(), one.clone().into()],
@@ -255,7 +262,7 @@ fn invalid_ids_counts_and_missing_mutation_database_never_create_storage() {
         failure(fixture.run("relink", &database, &[id.into(), "image.png".into()]));
     }
     failure(fixture.run("remove", &database, &[]));
-    failure(fixture.run("remove", &database, &vec![OsString::from("1"); 21]));
+    failure(fixture.run("remove", &database, &vec![OsString::from("1"); 101]));
     failure(fixture.run("import", &database, &[]));
     failure(fixture.run("import", &database, &vec![OsString::from("image.png"); 101]));
     failure(fixture.run("remove", &database, &["1".into()]));

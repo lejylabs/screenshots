@@ -6,9 +6,14 @@ use std::{ffi::OsString, path::Path, sync::Arc};
 const HELP: &str = "screenshots — native capture and image tools
 
 Desktop: screenshots [--show]
-Headless commands (no desktop UI, clipboard writes or implicit uploads):
+Open image: screenshots --open FILE
+Headless commands (no desktop UI; outputs and uploads require explicit actions):
   screenshots --help | --version
+  screenshots clipboard inspect|text|files|image-info
+  screenshots clipboard image NEW.png
   screenshots autostart status|enable|disable
+  screenshots desktop associations status|enable|disable
+  screenshots desktop notify TITLE BODY
   screenshots hash-file FILE [--expect SHA256_HEX]
   screenshots image convert INPUT OUTPUT [--width N] [--height N]
       [--rotate 90|180|270] [--flip-horizontal] [--flip-vertical]
@@ -21,7 +26,12 @@ Headless commands (no desktop UI, clipboard writes or implicit uploads):
   screenshots image compare FIRST SECOND OUTPUT.png
   screenshots image split INPUT DIRECTORY --columns N --rows N
   screenshots image info INPUT
+  screenshots image-url URL OUTPUT [--allow-http] [--recipe FILE]
   screenshots image pixel INPUT X Y
+  screenshots editor-document inspect SCENE.json
+  screenshots editor-document render INPUT SCENE.json OUTPUT
+  screenshots screen-color DISPLAY X Y [--global]
+  screenshots ruler X1 Y1 X2 Y2 [--dpi X_DPI Y_DPI]
   screenshots image metadata INPUT
   screenshots list displays|windows
   screenshots capture display|window ID OUTPUT
@@ -35,11 +45,19 @@ Headless commands (no desktop UI, clipboard writes or implicit uploads):
   screenshots capture-task region DISPLAY X Y WIDTH HEIGHT OUTPUT [same options]
   screenshots history DATABASE [--before ID] [--search WORDS]
   screenshots history-audit DATABASE [--cursor ID]
-  screenshots history-manage import|remove|relink DATABASE ARGUMENTS...
+  screenshots history-manage import|remove|remove-missing|relink DATABASE ARGUMENTS...
   screenshots history-manage export DATABASE DIRECTORY original|strip-metadata ID...
   screenshots history-manage move DATABASE ID NEW.png
+  screenshots history-manage transfer DATABASE ID NEW.png
+  screenshots history-manage trash DATABASE DIRECTORY ID... (1–100 IDs)
+  screenshots history-manage trash-list DATABASE [CURSOR]
+  screenshots history-manage restore DATABASE TRASH_UUID [NEW.png]
+  screenshots history-manage purge DATABASE TRASH_UUID... (1–100 IDs)
+  screenshots history-manage retention DATABASE POLICY.json preview|apply
+  screenshots history-manage index-identities DATABASE [CURSOR]
   screenshots history-manage pending-move DATABASE
   screenshots history-manage recover-move DATABASE OPERATION finish|cancel
+  screenshots history-manage recover-file DATABASE OPERATION finish|cancel
   screenshots history-query captures|uploads DATABASE [--order newest|oldest]
       [--cursor ID] [--from YYYY-MM-DD] [--through YYYY-MM-DD]
       [--search TEXT] [--source all|captures|imports]
@@ -53,6 +71,11 @@ Headless commands (no desktop UI, clipboard writes or implicit uploads):
   screenshots link format plain|markdown|html [--label TEXT] (upload-result JSON on stdin)
   screenshots link qr OUTPUT.png (upload-result JSON on stdin)
   screenshots s3-upload PROFILE FILE
+  screenshots provider-upload PROFILE FILE
+  screenshots provider-credentials target|store|remove PROFILE
+  screenshots oauth login|refresh|remove|target PROFILE [--allow-loopback-http]
+  screenshots sharex inspect PROFILE [--options FILE]
+  screenshots sharex image|file|text|url|url-sharing PROFILE INPUT_FILE [--options FILE]
   screenshots s3-credentials target|store|remove PROFILE
   screenshots credentials target|store|remove PROFILE_JSON [--username NAME]
   screenshots qr generate TEXT OUTPUT_PNG
@@ -61,10 +84,25 @@ Headless commands (no desktop UI, clipboard writes or implicit uploads):
   screenshots ocr-region DISPLAY X Y WIDTH HEIGHT [--language LANG]
   screenshots qr-region DISPLAY X Y WIDTH HEIGHT
   screenshots workflow RECIPE INPUT OUTPUT
+  screenshots task run|validate PROFILE.json
+  screenshots schedule add DATABASE ID PROFILE --at RFC3339 [--every-ms N --count N|--forever]
+      [--until RFC3339] [--missed skip|once|pause] [--grace-ms N] [--wake]
+  screenshots schedule list|serve DATABASE
+  screenshots schedule pause|resume|remove DATABASE ID
+  screenshots schedule resolve DATABASE RUN_ID complete|skip
+  screenshots capture-catalog monitors|validate|bind|add|defaults|capture|run-task|host-config ...
+  screenshots capture-portal display|window OUTPUT [--cursor exclude|include] [--delay-ms MS] [--recipe FILE]
+  screenshots task-host validate CONFIG.json
+  screenshots task-host serve CONFIG.json ENDPOINT.json
+  screenshots task-host trigger ENDPOINT.json PROFILE_ID
+  screenshots task-host status|stop ENDPOINT.json
   screenshots gif OUTPUT.gif --delay-ms N INPUT INPUT... (2–16 images)
   screenshots stitch-scroll OUTPUT MIN_OVERLAP INPUT INPUT [INPUT...]
-  screenshots record x11|gdigrab|test OUTPUT.mkv|OUTPUT.gif --seconds N --fps N --width N --height N
-      [--x X --y Y] [--cursor show|hide]
+  screenshots scroll-capture WINDOW OUTPUT.png --region X Y WIDTH HEIGHT [--steps N] [--wheel N] [--settle-ms N] [--delay-ms N] [--min-overlap N] [--tolerance N] [--trim-top N] [--trim-bottom N]
+  screenshots record x11|gdigrab|avfoundation|test OUTPUT.mkv|OUTPUT.gif --seconds N --fps N --width N --height N
+      [--x X --y Y] [--cursor show|hide] [--display ID] (display is required only for macOS avfoundation video)
+      [--audio-mode test|pulse|alsa|dshow|avfoundation --audio-device NAME --audio-channels 1|2] (MKV only)
+  screenshots record-audio test|pulse|alsa|dshow|avfoundation OUTPUT.wav --seconds N [--device NAME] [--channels 1|2]
 
 Image input: PNG/JPEG/WebP, supported truecolor BMP or uncompressed TIFF, <=32 MiB encoded and <=256 MiB decoded.
 Output: PNG/JPEG/WebP; image convert also supports BMP/TIFF output.
@@ -89,6 +127,13 @@ pub fn run(args: Vec<OsString>) -> Result<bool> {
         return Ok(false);
     };
     match command {
+        "--open" => {
+            ensure!(
+                args.len() == 2 && !args[1].is_empty() && args[1].as_encoded_bytes().len() <= 4096,
+                "Usage: screenshots --open FILE (path at most 4096 bytes)"
+            );
+            return Ok(false);
+        }
         "--show" | "--resource-probe" => return Ok(false),
         value if value.starts_with("--resource-probe=") || value.starts_with("--exit-after=") => {
             return Ok(false);
@@ -136,6 +181,11 @@ pub fn run(args: Vec<OsString>) -> Result<bool> {
         "history-audit" => crate::history_audit::run(&args[1..])?,
         "history-manage" => crate::history_manage::run(&args[1..])?,
         "hash-file" => crate::hash_file::run(&args[1..])?,
+        "clipboard" => crate::clipboard_command::run(&args[1..])?,
+        "screen-color" => crate::screen_tools::run(&args[1..], true)?,
+        "ruler" => crate::screen_tools::run(&args[1..], false)?,
+        "image-url" => crate::image_url::run(&args[1..])?,
+        "editor-document" => crate::editor_document::run(&args[1..])?,
         "history-query" => history_query(&args[1..])?,
         "storage" => storage(&args[1..])?,
         "credentials" => credentials(&args[1..])?,
@@ -148,25 +198,32 @@ pub fn run(args: Vec<OsString>) -> Result<bool> {
             crate::region_analysis::run(&args[1..], crate::region_analysis::Analysis::Qr)?
         }
         "workflow" => crate::workflow::run(&args[1..])?,
+        "task" => crate::task::run(&args[1..])?,
+        "schedule" => crate::capture_scheduling::run(&args[1..])?,
+        "capture-catalog" => crate::capture_catalog::run(&args[1..])?,
+        "capture-portal" => crate::capture_portal::run(&args[1..])?,
+        "task-host" => crate::task_host::run(&args[1..])?,
         "gif" => crate::gif_assembly::run(&args[1..])?,
         "stitch-scroll" => crate::scroll_stitch::run(&args[1..])?,
+        "scroll-capture" => crate::scroll_capture::run(&args[1..])?,
         "record" => crate::record::run(&args[1..])?,
+        "record-audio" => crate::audio_record::run(&args[1..])?,
+        "desktop" => crate::desktop_integration::run(&args[1..])?,
         "upload-images" => crate::upload_batch::run(&args[1..])?,
         "upload-file" => crate::upload_file::run(&args[1..])?,
         "upload-files" => crate::upload_files::run(&args[1..])?,
         "link" => crate::upload_results::run(&args[1..])?,
         "s3-upload" => crate::s3::upload(&args[1..])?,
+        "provider-upload" => crate::sharing_provider::upload(&args[1..])?,
+        "provider-credentials" => crate::sharing_provider::credentials(&args[1..])?,
+        "oauth" => crate::oauth_provider::run(&args[1..])?,
+        "sharex" => crate::sharex::run(&args[1..])?,
+        #[cfg(any(unix, target_os = "windows"))]
+        "provider-engine" => crate::sharing_provider_worker::run(&args[1..])?,
         "s3-credentials" => crate::s3::credentials(&args[1..])?,
         "upload" => {
             ensure!(args.len() == 3, "Usage: screenshots upload PROFILE PNG");
-            let destination = load_upload_profile(Path::new(&args[1]))?;
-            let source = std::path::absolute(&args[2])?;
-            let url = app_core::upload_png(
-                &destination,
-                &source,
-                app_core::UploadCancellation::default(),
-            )?;
-            println!("{}", json!({"url": url}));
+            crate::sharex::single(&args[1..], true)?;
         }
         _ => bail!("Unknown command; use --help"),
     }

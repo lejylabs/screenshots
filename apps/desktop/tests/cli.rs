@@ -162,7 +162,8 @@ fn unsupported_stitched_capture_never_creates_output() {
     assert!(!output.exists());
 }
 
-#[cfg(unix)]
+// APFS rejects invalid UTF-8 names before the application can open them.
+#[cfg(all(unix, not(target_os = "macos")))]
 #[test]
 fn non_utf8_input_paths_are_supported_without_shell_interpretation() {
     use std::os::unix::ffi::OsStringExt;
@@ -218,6 +219,8 @@ fn executable_upload_sends_exact_png_and_reports_remote_failures() {
                     Err(error) => panic!("{error}"),
                 }
             };
+            // BSD accepts inherit O_NONBLOCK from the listener; normalize before buffered reads.
+            socket.set_nonblocking(false).unwrap();
             socket
                 .set_read_timeout(Some(std::time::Duration::from_secs(5)))
                 .unwrap();
@@ -311,7 +314,8 @@ fn executable_storage_backup_preserves_existing_history() {
     );
 }
 
-#[cfg(unix)]
+// APFS rejects invalid UTF-8 names before the application can open them.
+#[cfg(all(unix, not(target_os = "macos")))]
 #[test]
 fn part_inspection_handles_non_utf8_directory_names_without_panicking() {
     use std::os::unix::ffi::OsStringExt;
@@ -423,4 +427,48 @@ fn interrupting_a_stalled_upload_terminates_without_local_outputs() {
     ] {
         assert!(!f.path(name).exists());
     }
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn filesystem_rejected_non_utf8_paths_fail_without_outputs_or_user_state() {
+    use std::os::unix::ffi::OsStringExt as _;
+    let fixture = Fixture::new();
+    let invalid = fixture
+        .0
+        .join(std::ffi::OsString::from_vec(b"invalid-\xff.png".to_vec()));
+    let error = std::fs::File::create(&invalid).unwrap_err();
+    assert_eq!(error.raw_os_error(), Some(libc::EILSEQ));
+    let output = fixture.path("output.png");
+    let arguments: Vec<Vec<std::ffi::OsString>> = vec![
+        vec![
+            "image".into(),
+            "convert".into(),
+            invalid.clone().into(),
+            output.clone().into(),
+        ],
+        vec!["image".into(), "info".into(), invalid.clone().into()],
+        vec!["hash-file".into(), invalid.clone().into()],
+        vec![
+            "image".into(),
+            "combine".into(),
+            "horizontal".into(),
+            output.clone().into(),
+            invalid.clone().into(),
+            invalid.clone().into(),
+        ],
+        vec![
+            "storage".into(),
+            "inspect-parts".into(),
+            invalid.clone().into(),
+        ],
+        vec!["upload".into(), invalid.clone().into(), invalid.into()],
+    ];
+    for args in arguments {
+        let result = fixture.command().args(args).output().unwrap();
+        assert!(!result.status.success());
+        assert!(result.stdout.is_empty());
+        assert!(!output.exists());
+    }
+    assert_eq!(std::fs::read_dir(&fixture.0).unwrap().count(), 0);
 }

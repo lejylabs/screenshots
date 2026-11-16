@@ -10,6 +10,17 @@ pub fn remove_image_strip(
     start: u32,
     length: u32,
 ) -> Result<RgbaImage, CaptureError> {
+    remove_image_strip_with_cancel(source, vertical, start, length, || false)
+}
+
+pub fn remove_image_strip_with_cancel(
+    source: &RgbaImage,
+    vertical: bool,
+    start: u32,
+    length: u32,
+    cancelled: impl Fn() -> bool,
+) -> Result<RgbaImage, CaptureError> {
+    let mut work = crate::image_cancel::ImageWork::new(&cancelled)?;
     let (width, height) = source.dimensions();
     crate::validate_image_size(width, height)?;
     if source.as_raw().len() as u64 != u64::from(width) * u64::from(height) * 4 {
@@ -41,15 +52,16 @@ pub fn remove_image_strip(
         for row in 0..height as usize {
             let input = &input[row * source_row..(row + 1) * source_row];
             let output = &mut destination[row * output_row..(row + 1) * output_row];
-            output[..left].copy_from_slice(&input[..left]);
-            output[left..].copy_from_slice(&input[right..]);
+            work.copy(&mut output[..left], &input[..left])?;
+            work.copy(&mut output[left..], &input[right..])?;
         }
     } else {
         let top = start as usize * source_row;
         let bottom = end as usize * source_row;
-        destination[..top].copy_from_slice(&input[..top]);
-        destination[top..].copy_from_slice(&input[bottom..]);
+        work.copy(&mut destination[..top], &input[..top])?;
+        work.copy(&mut destination[top..], &input[bottom..])?;
     }
+    work.check()?;
     Ok(output)
 }
 

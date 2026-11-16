@@ -80,7 +80,7 @@ const MAX_XML_PATH: usize = 256;
 const MAX_XML_STEPS: usize = 8;
 const MAX_XML_INDEX: usize = 256;
 const MAX_XML_NODES: u32 = 4096;
-const RESERVED_QUERY_NAMES: &[&str] = &[
+pub(crate) const RESERVED_QUERY_NAMES: &[&str] = &[
     "password",
     "passwd",
     "secret",
@@ -636,8 +636,12 @@ impl UploadDestination {
 
     pub fn load(path: &Path) -> Result<Self> {
         let bytes = read_upload_profile(path, "Upload configuration")?;
+        Self::from_json_snapshot(&bytes)
+    }
+
+    pub(crate) fn from_json_snapshot(bytes: &[u8]) -> Result<Self> {
         let destination: Self =
-            serde_json::from_slice(&bytes).context("Invalid upload configuration")?;
+            serde_json::from_slice(bytes).context("Invalid upload configuration")?;
         destination.validate()?;
         Ok(destination)
     }
@@ -829,8 +833,15 @@ impl UploadDestination {
 
     fn read_sharex(path: &Path, file_upload: bool) -> Result<(Self, Option<String>)> {
         let bytes = read_upload_profile(path, "ShareX profile")?;
+        Self::from_sharex_snapshot(&bytes, file_upload)
+    }
+
+    pub(crate) fn from_sharex_snapshot(
+        bytes: &[u8],
+        file_upload: bool,
+    ) -> Result<(Self, Option<String>)> {
         let profile: ShareXCustomUploader =
-            serde_json::from_slice(&bytes).context("Invalid ShareX profile")?;
+            serde_json::from_slice(bytes).context("Invalid ShareX profile")?;
         profile.into_destination(file_upload)
     }
 
@@ -1907,11 +1918,80 @@ impl UploadConfiguration {
     }
 }
 
+#[derive(Default)]
+struct UploadCancellationState {
+    notify: tokio::sync::Notify,
+    canceled: std::sync::atomic::AtomicBool,
+}
+
 #[derive(Clone, Default)]
-pub struct UploadCancellation(Arc<tokio::sync::Notify>);
+pub struct UploadCancellation {
+    state: Arc<UploadCancellationState>,
+    signal: Option<Arc<std::sync::atomic::AtomicBool>>,
+    source_identity: Option<Arc<crate::FileIdentity>>,
+}
 impl UploadCancellation {
+    /// Observe an operation's existing signal flag without installing handlers.
+    pub fn with_atomic_flag(flag: Arc<std::sync::atomic::AtomicBool>) -> Self {
+        Self {
+            signal: Some(flag),
+            ..Self::default()
+        }
+    }
+
+    /// Restrict this transfer's payload to the prepared opened-object identity.
+    pub fn with_source_identity(mut self, identity: crate::FileIdentity) -> Self {
+        self.source_identity = Some(Arc::new(identity));
+        self
+    }
+    pub fn verify_source_file(&self, file: &std::fs::File) -> Result<()> {
+        self.check()?;
+        if let Some(expected) = &self.source_identity {
+            expected.verify_file(file)?;
+        }
+        Ok(())
+    }
     pub fn cancel(&self) {
-        self.0.notify_one();
+        self.state
+            .canceled
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        self.state.notify.notify_one();
+    }
+
+    pub fn is_canceled(&self) -> bool {
+        self.state
+            .canceled
+            .load(std::sync::atomic::Ordering::Relaxed)
+            || self
+                .signal
+                .as_ref()
+                .is_some_and(|flag| flag.load(std::sync::atomic::Ordering::Relaxed))
+    }
+
+    pub(crate) fn check(&self) -> Result<()> {
+        ensure!(
+            !self.is_canceled(),
+            "Upload canceled. The server may already have received the file."
+        );
+        Ok(())
+    }
+
+    pub(crate) async fn wait(&self) {
+        if self.is_canceled() {
+            return;
+        }
+        if self.signal.is_none() {
+            self.state.notify.notified().await;
+            return;
+        }
+        // Only a running CLI transfer observes a signal flag; ordinary UI
+        // cancellation stays event-driven and creates no timer.
+        while !self.is_canceled() {
+            tokio::select! {
+                _ = self.state.notify.notified() => return,
+                _ = tokio::time::sleep(Duration::from_millis(25)) => {}
+            }
+        }
     }
 }
 
@@ -2035,12 +2115,15 @@ async fn open_upload_source(
     minimum: u64,
     maximum: u64,
     message: &'static str,
+    cancel: UploadCancellation,
 ) -> Result<(tokio::fs::File, u64)> {
     ensure!(path.is_absolute(), "Upload source must be an absolute path");
     let (file, length) = tokio::task::spawn_blocking(move || {
         let metadata = path.metadata().context("Could not inspect upload source")?;
         validate_upload_source(&metadata, minimum, maximum, message)?;
-        open_upload_source_after_preflight(&path, minimum, maximum, message)
+        let (file, length) = open_upload_source_after_preflight(&path, minimum, maximum, message)?;
+        cancel.verify_source_file(&file)?;
+        Ok::<_, anyhow::Error>((file, length))
     })
     .await
     .context("Upload source worker failed")??;
@@ -2064,6 +2147,7 @@ fn run_upload(
     cancel: UploadCancellation,
     progress: Option<UploadProgressReporter>,
 ) -> Result<UploadOutcome> {
+    cancel.check()?;
     let url = destination.validate()?;
     ensure!(
         !matches!(&source, UploadPng::FilePath(_)) || destination.json.is_empty(),
@@ -2076,8 +2160,8 @@ fn run_upload(
     runtime.block_on(async {
         tokio::select! {
             biased;
-            _ = cancel.0.notified() => anyhow::bail!("Upload canceled. The server may already have received the file."),
-            result = tokio::time::timeout(Duration::from_secs(60), transfer(destination, source, url, progress)) => {
+            _ = cancel.wait() => anyhow::bail!("Upload canceled. The server may already have received the file."),
+            result = tokio::time::timeout(Duration::from_secs(60), transfer(destination, source, url, progress,cancel.clone())) => {
                 result.context("Upload exceeded its 60 second deadline; the server may have received the file")?
             }
         }
@@ -2089,6 +2173,7 @@ async fn transfer(
     source: UploadPng,
     url: reqwest::Url,
     progress: Option<UploadProgressReporter>,
+    cancel: UploadCancellation,
 ) -> Result<UploadOutcome> {
     const PNG_SIGNATURE: [u8; 8] = [137, 80, 78, 71, 13, 10, 26, 10];
     let (length, png, mut file, content_type, filename) = match source {
@@ -2098,6 +2183,7 @@ async fn transfer(
                 8,
                 crate::MAX_CAPTURE_BYTES + 16 * 1024 * 1024,
                 "PNG file exceeds the upload size limit or is not a regular file",
+                cancel.clone(),
             )
             .await
             .context("Could not open the saved PNG")?;
@@ -2130,6 +2216,7 @@ async fn transfer(
                 0,
                 64 * 1024 * 1024,
                 "Upload file exceeds the 64 MiB limit or is not a regular file",
+                cancel.clone(),
             )
             .await
             .context("Could not inspect the upload file")?;
@@ -4154,7 +4241,7 @@ mod tests {
         assert!(
             destination
                 .clone()
-                .with_regex(&"a".repeat(257), None)
+                .with_regex("a".repeat(257), None)
                 .is_err()
         );
         let extras = destination.with_thumbnail(r#"{regex:thumb="(.+)"|1}"#)?;
@@ -4243,7 +4330,7 @@ mod tests {
         assert!(destination.clone().with_xml("/@href").is_err());
         assert!(destination.clone().with_xml("/text()").is_err());
         assert!(destination.clone().with_xml("/a/b/c/d/e/f/g/h/i").is_err());
-        assert!(destination.clone().with_xml(&"/a".repeat(130)).is_err());
+        assert!(destination.clone().with_xml("/a".repeat(130)).is_err());
         assert!(xml_capture("not xml", "/files/url", "result").is_err());
         assert!(xml_capture(
             r#"<!DOCTYPE files [<!ELEMENT files ANY>]><files><url>https://example.invalid/x</url></files>"#,
@@ -6204,6 +6291,23 @@ mod tests {
                 .contains("307")
         );
         task.join().unwrap();
+        let (sent, received) = mpsc::sync_channel(1);
+        let (url, task) = server(Vec::new(), Some(sent), Duration::from_millis(150));
+        let flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let cancel = UploadCancellation::with_atomic_flag(flag.clone());
+        let image = path.clone();
+        let worker = thread::spawn(move || upload_png(&destination(url), &image, cancel));
+        received.recv_timeout(Duration::from_secs(3)).unwrap();
+        flag.store(true, std::sync::atomic::Ordering::SeqCst);
+        assert!(
+            worker
+                .join()
+                .unwrap()
+                .unwrap_err()
+                .to_string()
+                .contains("canceled")
+        );
+        task.join().unwrap();
         assert_eq!(
             forbidden.accept().unwrap_err().kind(),
             std::io::ErrorKind::WouldBlock
@@ -6238,5 +6342,20 @@ mod tests {
             .contains("canceled")
         );
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn signal_cancellation_refuses_upload_before_file_admission() {
+        let flag = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let cancel = UploadCancellation::with_atomic_flag(flag);
+        let result = upload_file(
+            &destination("http://127.0.0.1:9/upload".into()),
+            Path::new("absent-canceled-input"),
+            cancel,
+        );
+        assert!(result.unwrap_err().to_string().contains("canceled"));
+        let cancel = UploadCancellation::default();
+        cancel.cancel();
+        assert!(cancel.is_canceled());
     }
 }

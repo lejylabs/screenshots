@@ -1,12 +1,25 @@
-//! Journaled file moves. Recovery never renames or removes an image.
+//! Journaled file operations with explicit, verified finish/cancel recovery.
 
 use anyhow::{Context, Result, ensure};
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use serde::{Deserialize, Serialize};
 use std::path::{Component, Path, PathBuf};
 
+#[path = "history_lifecycle.rs"]
+mod lifecycle;
 #[path = "history_file_ops_native.rs"]
 mod native;
+#[path = "history_reservations.rs"]
+mod reservations;
+pub use lifecycle::{
+    RetentionPlan, RetentionPolicy, RetentionReport, TrashEntry, TrashPage, apply_retention,
+    plan_retention, purge_history_trash, recover_history_file_operation, restore_history_trash,
+    transfer_history_file, trash_history_file, trash_history_page,
+};
+pub use reservations::IdentityIndexReport;
+pub(super) use reservations::{
+    MIGRATION as RESERVATION_MIGRATION, register as register_reservations,
+};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct PendingMove {
@@ -14,6 +27,7 @@ pub struct PendingMove {
     pub capture_id: i64,
     pub source_path: PathBuf,
     pub destination_path: PathBuf,
+    pub kind: &'static str,
 }
 
 #[derive(Debug, Serialize)]
@@ -23,6 +37,11 @@ pub struct MoveOutcome {
     pub source_path: PathBuf,
     pub destination_path: PathBuf,
     pub status: &'static str,
+    pub kind: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub trash_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub preserved_path: Option<PathBuf>,
 }
 
 #[derive(Clone, Copy)]
@@ -53,6 +72,53 @@ struct Payload {
     source_path: PathBuf,
     destination_path: PathBuf,
     stamp: native::FileStamp,
+    #[serde(default, skip_serializing_if = "FileAction::is_move")]
+    action: FileAction,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    destination_stamp: Option<native::FileStamp>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+enum FileAction {
+    #[default]
+    Move,
+    Transfer {
+        stage_path: PathBuf,
+    },
+    Trash {
+        trash_id: String,
+        trashed_at: String,
+    },
+    Restore {
+        trash_id: String,
+    },
+    Purge {
+        trash_id: String,
+        trashed_at: String,
+    },
+}
+impl FileAction {
+    fn is_move(&self) -> bool {
+        matches!(self, Self::Move)
+    }
+    fn name(&self) -> &'static str {
+        match self {
+            Self::Move => "move",
+            Self::Transfer { .. } => "transfer",
+            Self::Trash { .. } => "trash",
+            Self::Restore { .. } => "restore",
+            Self::Purge { .. } => "purge",
+        }
+    }
+    fn trash_id(&self) -> Option<&str> {
+        match self {
+            Self::Move | Self::Transfer { .. } => None,
+            Self::Trash { trash_id, .. }
+            | Self::Restore { trash_id }
+            | Self::Purge { trash_id, .. } => Some(trash_id),
+        }
+    }
 }
 
 fn bounded_text(value: &str, max: usize) -> bool {
@@ -128,6 +194,10 @@ fn capture_row(connection: &Connection, id: i64) -> Result<CaptureRow> {
     Ok(row)
 }
 
+pub(super) fn selected_path(connection: &Connection, id: i64) -> Result<PathBuf> {
+    Ok(PathBuf::from(capture_row(connection, id)?.file_path))
+}
+
 fn operation_id(value: &str) -> Result<()> {
     ensure!(
         value.len() == 36
@@ -143,9 +213,9 @@ fn read_pending(connection: &Connection) -> Result<Option<(PendingMove, Payload)
          CASE WHEN typeof(source_path)='text' AND length(CAST(source_path AS BLOB))<=4096 THEN source_path END,
          CASE WHEN typeof(destination_path)='text' AND length(CAST(destination_path AS BLOB))<=4096 THEN destination_path END,
          CASE WHEN typeof(payload)='text' AND length(CAST(payload AS BLOB))<=16384 THEN payload END FROM pending_file_move WHERE singleton=1",
-        [], |row| Ok((PendingMove { operation_id: row.get(0)?, capture_id: row.get(1)?, source_path: PathBuf::from(row.get::<_,String>(2)?), destination_path: PathBuf::from(row.get::<_,String>(3)?) }, row.get::<_,String>(4)?)),
+        [], |row| Ok((PendingMove { operation_id: row.get(0)?, capture_id: row.get(1)?, source_path: PathBuf::from(row.get::<_,String>(2)?), destination_path: PathBuf::from(row.get::<_,String>(3)?), kind: "move" }, row.get::<_,String>(4)?)),
     ).optional()?;
-    let Some((pending, json)) = record else {
+    let Some((mut pending, json)) = record else {
         return Ok(None);
     };
     operation_id(&pending.operation_id)?;
@@ -158,6 +228,8 @@ fn read_pending(connection: &Connection) -> Result<Option<(PendingMove, Payload)
     let payload: Payload = serde_json::from_str(&json)
         .map_err(|_| anyhow::anyhow!("Invalid history move journal payload"))?;
     validate_row(&payload.row)?;
+    lifecycle::validate_action(&payload)?;
+    pending.kind = payload.action.name();
     ensure!(
         payload.version == 1
             && payload.row.id == pending.capture_id
@@ -185,7 +257,7 @@ pub fn pending_history_move(database: &Path) -> Result<Option<PendingMove>> {
     let connection = crate::storage::open_read_only(database)?;
     let version: u32 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
     ensure!(
-        (1..=5).contains(&version),
+        (1..=9).contains(&version),
         "Unsupported history schema version"
     );
     if version < 5 {
@@ -194,12 +266,72 @@ pub fn pending_history_move(database: &Path) -> Result<Option<PendingMove>> {
     Ok(read_pending(&connection)?.map(|(pending, _)| pending))
 }
 
+/// Refresh metadata identities in bounded batches; never read image contents or move files.
+pub fn prime_history_file_identities(
+    database: &Path,
+    cursor: Option<i64>,
+    cancelled: impl Fn() -> bool,
+) -> Result<IdentityIndexReport> {
+    supported()?;
+    ensure!(
+        cursor.is_none_or(|id| id > 0),
+        "Invalid identity index cursor"
+    );
+    ensure!(
+        !cancelled(),
+        "Reference identity preparation canceled before opening storage"
+    );
+    let mut connection = super::open_existing(database)?;
+    reservations::prime(&mut connection, cursor, false, &cancelled)
+}
+
+fn prepare_identities(connection: &mut Connection, cancelled: &dyn Fn() -> bool) -> Result<()> {
+    let progress = reservations::prime(connection, None, true, cancelled)?;
+    ensure!(
+        progress.complete,
+        "Reference identity preparation incomplete: {} indexed, {} OS-missing, {} unavailable, {} unresolved, {} deferred; use index-identities to continue; image files are unchanged",
+        progress.indexed,
+        progress.missing,
+        progress.unavailable,
+        progress
+            .remaining
+            .map_or_else(|| "unknown".to_owned(), |value| value.to_string()),
+        progress
+            .protected
+            .map_or_else(|| "unknown".to_owned(), |value| value.to_string())
+    );
+    Ok(())
+}
+
 fn prepare(
     database: &Path,
     row: CaptureRow,
     source: PathBuf,
     destination: PathBuf,
     stamp: native::FileStamp,
+) -> Result<(PendingMove, Payload)> {
+    prepare_action(database, row, source, destination, stamp, FileAction::Move)
+}
+
+fn prepare_action(
+    database: &Path,
+    row: CaptureRow,
+    source: PathBuf,
+    destination: PathBuf,
+    stamp: native::FileStamp,
+    action: FileAction,
+) -> Result<(PendingMove, Payload)> {
+    prepare_action_checked(database, row, source, destination, stamp, action, &|| false)
+}
+
+fn prepare_action_checked(
+    database: &Path,
+    row: CaptureRow,
+    source: PathBuf,
+    destination: PathBuf,
+    stamp: native::FileStamp,
+    action: FileAction,
+    cancelled: &dyn Fn() -> bool,
 ) -> Result<(PendingMove, Payload)> {
     ensure!(
         stamp.width == row.width
@@ -212,6 +344,7 @@ fn prepare(
         capture_id: row.id,
         source_path: source,
         destination_path: destination,
+        kind: action.name(),
     };
     let payload = Payload {
         version: 1,
@@ -219,28 +352,45 @@ fn prepare(
         source_path: pending.source_path.clone(),
         destination_path: pending.destination_path.clone(),
         stamp,
+        action,
+        destination_stamp: None,
     };
     let json = serde_json::to_string(&payload)?;
-    ensure!(json.len() <= 16384, "History move journal exceeds 16 KiB");
+    let limit = if matches!(payload.action, FileAction::Transfer { .. }) {
+        15360
+    } else {
+        16384
+    };
+    ensure!(
+        json.len() <= limit,
+        "History move journal exceeds its byte limit"
+    );
     let mut connection = super::open_existing(database)?;
+    ensure!(
+        read_pending(&connection)?.is_none(),
+        "A history file operation is pending; recover it first"
+    );
+    prepare_identities(&mut connection, cancelled)?;
     let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
     ensure!(
         read_pending(&transaction)?.is_none(),
         "A history file move is pending; recover it first"
     );
-    ensure!(
-        capture_row(&transaction, pending.capture_id)? == payload.row,
-        "History capture changed before move preparation"
-    );
-    let conflict: bool = transaction.query_row(
-        "SELECT EXISTS(SELECT 1 FROM captures WHERE file_path=?1)",
-        [path_text(&pending.destination_path)?],
-        |row| row.get(0),
-    )?;
-    ensure!(
-        !conflict,
-        "Move destination is already referenced by history"
-    );
+    lifecycle::verify_action(&transaction, &payload)?;
+    let owner = if matches!(
+        payload.action,
+        FileAction::Move | FileAction::Transfer { .. } | FileAction::Trash { .. }
+    ) {
+        Some(payload.row.id)
+    } else {
+        None
+    };
+    reservations::check_captures(&transaction, &pending.destination_path, owner)?;
+    reservations::check_trash(&transaction, &pending.destination_path, None)?;
+    if let FileAction::Transfer { stage_path } = &payload.action {
+        reservations::check_captures(&transaction, stage_path, owner)?;
+        reservations::check_trash(&transaction, stage_path, None)?;
+    }
     transaction.execute("INSERT INTO pending_file_move(singleton,operation_id,capture_id,source_path,destination_path,payload) VALUES(1,?1,?2,?3,?4,?5)",params![pending.operation_id,pending.capture_id,path_text(&pending.source_path)?,path_text(&pending.destination_path)?,json])?;
     transaction.commit().with_context(|| {
         format!(
@@ -262,7 +412,12 @@ fn finalize_transaction(
         "DELETE FROM pending_file_move WHERE singleton=1 AND operation_id=?1",
         [&pending.operation_id],
     )?;
-    if matches!(action, MoveRecovery::Finish) {
+    if matches!(action, MoveRecovery::Finish)
+        && matches!(
+            payload.action,
+            FileAction::Move | FileAction::Transfer { .. }
+        )
+    {
         let row = &payload.row;
         let size = i64::try_from(payload.stamp.size).context("Invalid move file size")?;
         let changed=transaction.execute("UPDATE captures SET file_path=?1,thumbnail_path=NULL,width=?2,height=?3,file_size=?4
@@ -273,6 +428,14 @@ fn finalize_transaction(
             "History capture changed before move finalization"
         );
     }
+    if matches!(action, MoveRecovery::Finish)
+        && !matches!(
+            payload.action,
+            FileAction::Move | FileAction::Transfer { .. }
+        )
+    {
+        lifecycle::finalize_action(&transaction, pending, payload)?;
+    }
     transaction.commit()?;
     Ok(MoveOutcome {
         operation_id: pending.operation_id.clone(),
@@ -280,10 +443,19 @@ fn finalize_transaction(
         source_path: pending.source_path.clone(),
         destination_path: pending.destination_path.clone(),
         status: if matches!(action, MoveRecovery::Finish) {
-            "moved"
+            match payload.action {
+                FileAction::Move => "moved",
+                FileAction::Transfer { .. } => "transferred",
+                FileAction::Trash { .. } => "trashed",
+                FileAction::Restore { .. } => "restored",
+                FileAction::Purge { .. } => "purged",
+            }
         } else {
             "canceled"
         },
+        kind: payload.action.name(),
+        trash_id: payload.action.trash_id().map(str::to_owned),
+        preserved_path: None,
     })
 }
 
@@ -293,10 +465,7 @@ fn verify_pending(connection: &Connection, pending: &PendingMove, payload: &Payl
             .is_some_and(|(current, data)| current == *pending && data == *payload),
         "History move journal changed during recovery"
     );
-    ensure!(
-        capture_row(connection, pending.capture_id)? == payload.row,
-        "History capture changed during move"
-    );
+    lifecycle::verify_action(connection, payload)?;
     Ok(())
 }
 
@@ -315,8 +484,12 @@ fn apply_prepared(
 
 fn supported() -> Result<()> {
     ensure!(
-        cfg!(target_os = "linux"),
-        "History file moves and recovery are currently supported on Linux only"
+        cfg!(any(
+            target_os = "linux",
+            target_os = "macos",
+            target_os = "windows"
+        )),
+        "History file moves are unavailable on this operating system"
     );
     Ok(())
 }
@@ -362,10 +535,22 @@ pub fn recover_history_move(
     id: &str,
     action: MoveRecovery,
 ) -> Result<MoveOutcome> {
+    recover_operation(database, id, action, false)
+}
+
+fn recover_operation(
+    database: &Path,
+    id: &str,
+    action: MoveRecovery,
+    allow_lifecycle: bool,
+) -> Result<MoveOutcome> {
     supported()?;
     operation_id(id)?;
     (|| {
         let mut connection = super::open_existing(database)?;
+        let (current,_)=read_pending(&connection)?.context("No history file move is pending")?;
+        ensure!(current.operation_id==id,"History move operation ID does not match");
+        prepare_identities(&mut connection,&||false)?;
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let (pending, payload) =
             read_pending(&transaction)?.context("No history file move is pending")?;
@@ -373,10 +558,8 @@ pub fn recover_history_move(
             pending.operation_id == id,
             "History move operation ID does not match"
         );
-        ensure!(
-            capture_row(&transaction, pending.capture_id)? == payload.row,
-            "History capture changed during move"
-        );
+        ensure!(allow_lifecycle || payload.action.is_move(), "Use recover-file for a trash, restore or purge operation");
+        lifecycle::verify_action(&transaction, &payload)?;
         ensure!(
             normalized_path(Path::new(&payload.row.file_path))? == pending.source_path,
             "Original history path changed its parent resolution"
@@ -386,8 +569,21 @@ pub fn recover_history_move(
                 && normalized_path(&pending.destination_path)? == pending.destination_path,
             "History move parent paths changed"
         );
+        if matches!(payload.action,FileAction::Transfer{..}) {
+            return lifecycle::recover_transfer(transaction,&pending,&payload,action);
+        }
         let source = native::inspect(&pending.source_path)?;
         let destination = native::inspect(&pending.destination_path)?;
+        if matches!(payload.action, FileAction::Purge {..}) && matches!(action, MoveRecovery::Finish) {
+            ensure!(source.is_none() && (destination.is_none() || destination.as_ref() == Some(&payload.stamp)),
+                    "Cannot finish purge: file state is ambiguous or quarantine has not happened");
+            if destination.is_some() {
+                native::remove_expected(&pending.destination_path, &payload.stamp)?;
+            }
+            native::sync_absent(&pending.source_path)?;
+            native::sync_absent(&pending.destination_path)?;
+            return finalize_transaction(transaction, &pending, &payload, action);
+        }
         match action {
             MoveRecovery::Finish => {
                 ensure!(
@@ -412,7 +608,10 @@ pub fn recover_history_move(
     })
 }
 
-#[cfg(all(test, target_os = "linux"))]
+#[cfg(all(
+    test,
+    any(target_os = "linux", target_os = "macos", target_os = "windows")
+))]
 mod tests {
     use super::*;
 
@@ -426,6 +625,7 @@ mod tests {
             let root = std::env::temp_dir()
                 .join(format!("screenshots-history-file-{}", uuid::Uuid::new_v4()));
             std::fs::create_dir(&root).unwrap();
+            let root = root.canonicalize().unwrap();
             let source = root.join("original.png");
             image::RgbaImage::from_pixel(3, 2, image::Rgba([7, 21, 83, 129]))
                 .save(&source)

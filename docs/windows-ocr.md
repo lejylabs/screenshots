@@ -14,22 +14,19 @@ are untouched. Engine stderr is counted and discarded. The external process is a
 trusted local engine, not a sandbox for arbitrary executables.
 
 The Windows launcher creates a non-inheritable Job Object with
-`JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`. It creates the engine with `CREATE_SUSPENDED`
-and `CREATE_NO_WINDOW`, assigns it to the job, then resumes its initial thread.
-Assignment or thread-inspection failure kills and reaps the still-suspended child;
-there is no fallback to an uncontained engine. The process gets the same direct
-Tesseract arguments and `OMP_THREAD_LIMIT=2` as Unix. No shell interprets the path
-or language. The thread snapshot is taken once, scans at most 65,536 entries, and
-validates the opened thread's owner before resuming it.
+`JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`. The shared native Windows launcher attaches
+that Job Object during process creation with `PROC_THREAD_ATTRIBUTE_JOB_LIST`,
+alongside an explicit inherited-handle list and hidden process creation. Startup
+fails closed if atomic containment is unavailable. No engine code runs through
+a suspended-create/late-assignment interval. The process receives the same direct
+Tesseract arguments and `OMP_THREAD_LIMIT=2` as Unix; no shell interprets the path
+or language.
 
 The job permits no child-process breakaway. Closing the last job handle kills the
-engine and its descendants, including descendants that retain inherited pipe
-ends. Cleanup closes the job, waits for the direct child, then joins all pipe
-workers. Once assigned, default
-Windows Ctrl+C/process termination also closes the job handle through OS process
-cleanup. There is a small crash window between suspended process creation and job
-assignment: abrupt parent death there can leave a suspended process, but engine
-code has not run. This launcher does not claim atomic crash containment.
+engine and its descendants, including descendants retaining pipe ends. Cleanup
+closes the job, waits for the direct child, then joins pipe workers. Parent
+termination closes its Job handle through native process cleanup. Actual native
+process/handle checks remain distinct from emulated or metadata-only evidence.
 
 The active operation uses at most three pipe workers with requested 256 KiB
 stacks, a three-message channel, at most 32 MiB PNG input, 256 KiB recognized
@@ -37,8 +34,8 @@ output, and 8 KiB read chunks. Stderr is capped at 16 KiB and never retained.
 Decoded RGBA is capped at 16 MiB and encoded source input at 32 MiB. A 30-second
 deadline and 25 ms active-operation completion checks bound normal engine work;
 there is no idle timer, OCR service, runtime, image cache or background stream.
-Native spawn, snapshot, pipe and process-cleanup calls still depend on the OS.
-Job bookkeeping, the OS thread-snapshot allocation, pipe allocations, thread-stack
+Native spawn, pipe and process-cleanup calls still depend on the OS.
+Job bookkeeping, native process-creation attributes, pipe allocations, thread-stack
 commitment and the external engine's own memory are not measured or hard-capped by
 these application limits.
 
@@ -73,6 +70,6 @@ unavailable/model error. It never installs an engine or changes those directorie
 
 API behavior follows Microsoft's documentation for
 [Job Object limits](https://learn.microsoft.com/en-us/windows/win32/api/winnt/ns-winnt-jobobject_basic_limit_information),
-[process assignment](https://learn.microsoft.com/en-us/windows/win32/api/jobapi2/nf-jobapi2-assignprocesstojobobject),
+[atomic child containment](windows-child-startup.md),
 [process creation flags](https://learn.microsoft.com/en-us/windows/win32/procthread/process-creation-flags)
-and [resuming the suspended thread](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-resumethread).
+and [process creation attributes](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-updateprocthreadattribute).

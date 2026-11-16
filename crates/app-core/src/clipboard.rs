@@ -48,6 +48,40 @@ pub fn load_editor_image(path: &std::path::Path) -> Result<image::RgbaImage> {
     load_editor_image_with_limit(path, crate::MAX_CAPTURE_BYTES)
 }
 
+/// Verify the actual opened object and decode that same retained handle.
+pub fn load_editor_image_with_identity(
+    path: &std::path::Path,
+    expected: &crate::FileIdentity,
+) -> Result<image::RgbaImage> {
+    load_image_input_guarded(path, crate::MAX_CAPTURE_BYTES, false, Some(expected))
+}
+
+/// Verify the consumed opened object while admitting only the remaining decoded budget.
+pub fn load_editor_image_with_identity_and_limit(
+    path: &std::path::Path,
+    expected: &crate::FileIdentity,
+    max_decoded_bytes: u64,
+) -> Result<image::RgbaImage> {
+    load_image_input_guarded(path, max_decoded_bytes, false, Some(expected))
+}
+
+/// Check oriented header dimensions before allocating a decoded pixel raster.
+pub fn load_editor_image_with_identity_limit_and_dimensions(
+    path: &std::path::Path,
+    expected: &crate::FileIdentity,
+    max_decoded_bytes: u64,
+    dimensions: [u32; 2],
+) -> Result<image::RgbaImage> {
+    crate::validate_image_size(dimensions[0], dimensions[1])?;
+    load_image_input_guarded_dimensions(
+        path,
+        max_decoded_bytes,
+        false,
+        Some(expected),
+        Some(dimensions),
+    )
+}
+
 /// Admit another image within a composition's remaining decoded-source budget.
 pub fn load_editor_image_with_limit(
     path: &std::path::Path,
@@ -65,6 +99,23 @@ fn load_image_input(
     max_decoded_bytes: u64,
     png_only: bool,
 ) -> Result<image::RgbaImage> {
+    load_image_input_guarded(path, max_decoded_bytes, png_only, None)
+}
+fn load_image_input_guarded(
+    path: &std::path::Path,
+    max_decoded_bytes: u64,
+    png_only: bool,
+    expected: Option<&crate::FileIdentity>,
+) -> Result<image::RgbaImage> {
+    load_image_input_guarded_dimensions(path, max_decoded_bytes, png_only, expected, None)
+}
+fn load_image_input_guarded_dimensions(
+    path: &std::path::Path,
+    max_decoded_bytes: u64,
+    png_only: bool,
+    expected: Option<&crate::FileIdentity>,
+    expected_dimensions: Option<[u32; 2]>,
+) -> Result<image::RgbaImage> {
     anyhow::ensure!(
         max_decoded_bytes > 0 && max_decoded_bytes <= crate::MAX_CAPTURE_BYTES,
         "Invalid decoded image budget"
@@ -81,6 +132,9 @@ fn load_image_input(
         options.custom_flags(libc::O_NONBLOCK);
     }
     let file = options.open(path)?;
+    if let Some(expected) = expected {
+        expected.verify_file(&file)?;
+    }
     let metadata = file.metadata()?;
     anyhow::ensure!(metadata.is_file(), "Image input must be a regular file");
     let length = metadata.len();
@@ -88,12 +142,47 @@ fn load_image_input(
         length <= MAX_EDITOR_FILE_BYTES,
         "Image file exceeds the 32 MiB input limit"
     );
-    let mut reader = image::ImageReader::new(std::io::BufReader::new(EditorFile {
+    let reader = image::ImageReader::new(std::io::BufReader::new(EditorFile {
         file,
         length,
         position: 0,
     }))
     .with_guessed_format()?;
+    decode_image_reader_dimensions(
+        reader,
+        length,
+        max_decoded_bytes,
+        png_only,
+        expected_dimensions,
+    )
+}
+
+/// Explicit encoded clipboard, drop or URL input; decode on a blocking worker.
+/// Keeps the same format/admission/orientation policy as an opened editor file.
+pub fn decode_editor_image_bytes(bytes: &[u8]) -> Result<image::RgbaImage> {
+    anyhow::ensure!(
+        !bytes.is_empty() && bytes.len() as u64 <= MAX_EDITOR_FILE_BYTES,
+        "Encoded image exceeds the 32 MiB input limit or is empty"
+    );
+    let reader = image::ImageReader::new(std::io::Cursor::new(bytes)).with_guessed_format()?;
+    decode_image_reader(reader, bytes.len() as u64, crate::MAX_CAPTURE_BYTES, false)
+}
+
+fn decode_image_reader<R: std::io::BufRead + std::io::Seek>(
+    reader: image::ImageReader<R>,
+    length: u64,
+    max_decoded_bytes: u64,
+    png_only: bool,
+) -> Result<image::RgbaImage> {
+    decode_image_reader_dimensions(reader, length, max_decoded_bytes, png_only, None)
+}
+fn decode_image_reader_dimensions<R: std::io::BufRead + std::io::Seek>(
+    mut reader: image::ImageReader<R>,
+    length: u64,
+    max_decoded_bytes: u64,
+    png_only: bool,
+    expected_dimensions: Option<[u32; 2]>,
+) -> Result<image::RgbaImage> {
     anyhow::ensure!(
         !png_only || reader.format() == Some(image::ImageFormat::Png),
         "History metadata export requires PNG input"
@@ -112,7 +201,6 @@ fn load_image_input(
         "Choose a PNG, JPEG, WebP, supported truecolor BMP or uncompressed TIFF image"
     );
     if reader.format() == Some(image::ImageFormat::WebP) {
-        use std::io::{Read as _, Seek as _};
         // The WebP decoder trusts metadata/frame lengths before applying image limits.
         // Validate and decode the same bounded bytes, including under in-place file edits.
         let mut input = reader.into_inner();
@@ -125,14 +213,14 @@ fn load_image_input(
         let mut limits = image::Limits::default();
         limits.max_alloc = Some(crate::MAX_CAPTURE_BYTES);
         reader.limits(limits);
-        return decode_editor_pixels_with_limit(
+        return decode_editor_pixels_dimensions(
             reader.into_decoder()?,
             max_decoded_bytes,
             Some(orientation),
+            expected_dimensions,
         );
     }
     if reader.format() == Some(image::ImageFormat::Bmp) {
-        use std::io::{Read as _, Seek as _};
         let mut input = reader.into_inner();
         input.seek(std::io::SeekFrom::Start(0))?;
         let mut bytes = vec![0; usize::try_from(length)?];
@@ -143,14 +231,14 @@ fn load_image_input(
         let mut limits = image::Limits::default();
         limits.max_alloc = Some(crate::MAX_CAPTURE_BYTES);
         reader.limits(limits);
-        return decode_editor_pixels_with_limit(
+        return decode_editor_pixels_dimensions(
             reader.into_decoder()?,
             max_decoded_bytes,
             Some(image::metadata::Orientation::NoTransforms),
+            expected_dimensions,
         );
     }
     if reader.format() == Some(image::ImageFormat::Tiff) {
-        use std::io::{Read as _, Seek as _};
         // TIFF parses IFDs before limits apply; validate the exact snapshot it decodes.
         let mut input = reader.into_inner();
         input.seek(std::io::SeekFrom::Start(0))?;
@@ -158,16 +246,22 @@ fn load_image_input(
         input.read_exact(&mut bytes)?;
         crate::tiff_input::validate_tiff(&bytes, max_decoded_bytes)?;
         let decoder = image::codecs::tiff::TiffDecoder::new(std::io::Cursor::new(bytes))?;
-        return decode_editor_pixels_with_limit(
+        return decode_editor_pixels_dimensions(
             decoder,
             max_decoded_bytes,
             Some(image::metadata::Orientation::NoTransforms),
+            expected_dimensions,
         );
     }
     let mut limits = image::Limits::default();
     limits.max_alloc = Some(crate::MAX_CAPTURE_BYTES);
     reader.limits(limits);
-    decode_editor_pixels_with_limit(reader.into_decoder()?, max_decoded_bytes, None)
+    decode_editor_pixels_dimensions(
+        reader.into_decoder()?,
+        max_decoded_bytes,
+        None,
+        expected_dimensions,
+    )
 }
 
 const MAX_WEBP_CHUNKS: usize = 4096;
@@ -367,10 +461,19 @@ pub(crate) fn decode_editor_pixels(decoder: impl image::ImageDecoder) -> Result<
     decode_editor_pixels_with_limit(decoder, crate::MAX_CAPTURE_BYTES, None)
 }
 
+#[cfg(any(test, target_os = "windows"))]
 fn decode_editor_pixels_with_limit(
+    decoder: impl image::ImageDecoder,
+    max_decoded_bytes: u64,
+    orientation: Option<image::metadata::Orientation>,
+) -> Result<image::RgbaImage> {
+    decode_editor_pixels_dimensions(decoder, max_decoded_bytes, orientation, None)
+}
+fn decode_editor_pixels_dimensions(
     mut decoder: impl image::ImageDecoder,
     max_decoded_bytes: u64,
     orientation: Option<image::metadata::Orientation>,
+    expected_dimensions: Option<[u32; 2]>,
 ) -> Result<image::RgbaImage> {
     let mut limits = image::Limits::default();
     limits.max_alloc = Some(crate::MAX_CAPTURE_BYTES);
@@ -386,6 +489,24 @@ fn decode_editor_pixels_with_limit(
         Some(orientation) => orientation,
         None => decoder.orientation()?,
     };
+    if let Some(expected) = expected_dimensions {
+        use image::metadata::Orientation;
+        let oriented = if matches!(
+            orientation,
+            Orientation::Rotate90
+                | Orientation::Rotate270
+                | Orientation::Rotate90FlipH
+                | Orientation::Rotate270FlipH
+        ) {
+            [height, width]
+        } else {
+            [width, height]
+        };
+        anyhow::ensure!(
+            oriented == expected,
+            "Oriented editor input dimensions differ from source_size"
+        );
+    }
     let mut decoded = image::DynamicImage::from_decoder(decoder)?;
     decoded.apply_orientation(orientation);
     Ok(decoded.into_rgba8())
@@ -863,6 +984,17 @@ mod tests {
             image::imageops::rotate90(&source)
         );
         assert_eq!(std::fs::read(&path)?, oriented);
+        let (_opened, identity) = crate::FileIdentity::open(&path)?;
+        assert_eq!(
+            load_editor_image_with_identity_limit_and_dimensions(&path, &identity, 24, [2, 3])?,
+            image::imageops::rotate90(&source)
+        );
+        assert!(
+            load_editor_image_with_identity_limit_and_dimensions(&path, &identity, 24, [3, 2])
+                .unwrap_err()
+                .to_string()
+                .contains("source_size")
+        );
 
         let mut frame = vec![0; 16];
         frame[6..9].copy_from_slice(&2_u32.to_le_bytes()[..3]);
@@ -890,6 +1022,31 @@ mod tests {
         std::fs::remove_file(path)?;
         std::fs::remove_dir(root)?;
         Ok(())
+    }
+
+    #[test]
+    fn oriented_dimension_mismatch_refuses_before_pixel_decode() {
+        struct HeaderOnly;
+        impl image::ImageDecoder for HeaderOnly {
+            fn dimensions(&self) -> (u32, u32) {
+                (3, 2)
+            }
+            fn color_type(&self) -> image::ColorType {
+                image::ColorType::Rgba8
+            }
+            fn orientation(&mut self) -> image::ImageResult<image::metadata::Orientation> {
+                Ok(image::metadata::Orientation::Rotate90)
+            }
+            fn read_image(self, _: &mut [u8]) -> image::ImageResult<()> {
+                panic!("mismatched source_size must not allocate/decode pixels")
+            }
+            fn read_image_boxed(self: Box<Self>, bytes: &mut [u8]) -> image::ImageResult<()> {
+                (*self).read_image(bytes)
+            }
+        }
+        let error =
+            decode_editor_pixels_dimensions(HeaderOnly, 24, None, Some([3, 2])).unwrap_err();
+        assert!(error.to_string().contains("source_size"));
     }
 
     #[test]
@@ -1100,5 +1257,52 @@ mod tests {
         std::fs::remove_file(path)?;
         assert_eq!(result?, (3, 2));
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod encoded_input_tests {
+    use super::*;
+    use image::{ImageEncoder as _, Rgba, RgbaImage};
+
+    #[test]
+    fn encoded_import_keeps_alpha_hidden_rgb_and_does_not_require_a_path() {
+        let source = RgbaImage::from_raw(2, 1, vec![11, 22, 33, 0, 44, 55, 66, 128]).unwrap();
+        let mut png = Vec::new();
+        image::codecs::png::PngEncoder::new(&mut png)
+            .write_image(source.as_raw(), 2, 1, image::ExtendedColorType::Rgba8)
+            .unwrap();
+        assert_eq!(decode_editor_image_bytes(&png).unwrap(), source);
+        let mut webp = Vec::new();
+        image::codecs::webp::WebPEncoder::new_lossless(&mut webp)
+            .write_image(source.as_raw(), 2, 1, image::ExtendedColorType::Rgba8)
+            .unwrap();
+        assert_eq!(decode_editor_image_bytes(&webp).unwrap(), source);
+        assert!(decode_editor_image_bytes(&[]).is_err());
+        assert!(decode_editor_image_bytes(b"<svg>untrusted</svg>").is_err());
+        assert!(decode_editor_image_bytes(&vec![0; 32 * 1024 * 1024 + 1]).is_err());
+    }
+
+    #[test]
+    fn encoded_png_dimensions_are_admitted_before_pixel_allocation() {
+        use std::io::Cursor;
+        let source = RgbaImage::from_pixel(1, 1, Rgba([1, 2, 3, 4]));
+        let mut png = Cursor::new(Vec::new());
+        source.write_to(&mut png, image::ImageFormat::Png).unwrap();
+        let mut bytes = png.into_inner();
+        bytes[16..20].copy_from_slice(&100_000_000_u32.to_be_bytes());
+        let mut crc = !0_u32;
+        for byte in &bytes[12..29] {
+            crc ^= u32::from(*byte);
+            for _ in 0..8 {
+                crc = (crc >> 1) ^ (0xedb88320_u32 & 0_u32.wrapping_sub(crc & 1));
+            }
+        }
+        bytes[29..33].copy_from_slice(&(!crc).to_be_bytes());
+        let error = decode_editor_image_bytes(&bytes).unwrap_err();
+        assert!(
+            error.to_string().to_ascii_lowercase().contains("limit"),
+            "{error:#}"
+        );
     }
 }

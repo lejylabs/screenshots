@@ -104,9 +104,15 @@ fn flush(
     crop: PixelRegion,
     raster: PixelRegion,
     area: PixelRegion,
-) {
-    for y in area.y.max(crop.y)..(area.y + area.height).min(crop.y + crop.height) {
-        for x in area.x.max(crop.x)..(area.x + area.width).min(crop.x + crop.width) {
+    work: &mut crate::image_cancel::ImageWork<'_, impl Fn() -> bool>,
+) -> Result<()> {
+    work.charge(4)?;
+    let Some(area) = area.intersection(crop) else {
+        return Ok(());
+    };
+    for y in area.y..area.y + area.height {
+        for x in area.x..area.x + area.width {
+            work.pixel()?;
             let index = (((y - raster.y) * raster.width + x - raster.x) * 4) as usize;
             let overlay = &mut layer.data_mut()[index..index + 4];
             let alpha = u32::from(overlay[3]);
@@ -128,6 +134,7 @@ fn flush(
             overlay.fill(0);
         }
     }
+    Ok(())
 }
 
 pub(crate) fn paint_ordered(
@@ -135,6 +142,7 @@ pub(crate) fn paint_ordered(
     crop: PixelRegion,
     annotations: &[DrawAnnotation],
     source_size: [u32; 2],
+    work: &mut crate::image_cancel::ImageWork<'_, impl Fn() -> bool>,
 ) -> Result<()> {
     // Keep crop pixels away from rasterizer clipping edges without a second vector buffer.
     let raster = if annotations.iter().any(|item| {
@@ -149,18 +157,20 @@ pub(crate) fn paint_ordered(
     };
     let mut layer: Option<tiny_skia::Pixmap> = None;
     for annotation in annotations {
+        work.check()?;
         match annotation {
             DrawAnnotation::Highlight(highlight) => {
                 for area in highlight.segments(crop) {
-                    if area.width == 0 || area.height == 0 {
+                    work.charge(4)?;
+                    let Some(area) = area.intersection(crop) else {
                         continue;
-                    }
+                    };
                     if let Some(layer) = &mut layer {
-                        flush(layer, pixels, crop, raster, area);
+                        flush(layer, pixels, crop, raster, area, work)?;
                     }
-                    for y in area.y.max(crop.y)..(area.y + area.height).min(crop.y + crop.height) {
-                        for x in area.x.max(crop.x)..(area.x + area.width).min(crop.x + crop.width)
-                        {
+                    for y in area.y..area.y + area.height {
+                        for x in area.x..area.x + area.width {
+                            work.pixel()?;
                             crate::text::blend_ink(
                                 pixels.get_pixel_mut(x - crop.x, y - crop.y),
                                 highlight.color,
@@ -194,6 +204,7 @@ pub(crate) fn paint_ordered(
                     )?,
                     _ => unreachable!(),
                 }
+                work.check()?;
             }
             DrawAnnotation::Frame(frame) => {
                 let color = image::Rgba([
@@ -203,15 +214,16 @@ pub(crate) fn paint_ordered(
                     255,
                 ]);
                 for area in frame.segments() {
-                    if area.width == 0 || area.height == 0 {
+                    work.charge(4)?;
+                    let Some(area) = area.intersection(crop) else {
                         continue;
-                    }
+                    };
                     if let Some(layer) = &mut layer {
-                        flush(layer, pixels, crop, raster, area);
+                        flush(layer, pixels, crop, raster, area, work)?;
                     }
-                    for y in area.y.max(crop.y)..(area.y + area.height).min(crop.y + crop.height) {
-                        for x in area.x.max(crop.x)..(area.x + area.width).min(crop.x + crop.width)
-                        {
+                    for y in area.y..area.y + area.height {
+                        for x in area.x..area.x + area.width {
+                            work.pixel()?;
                             pixels.put_pixel(x - crop.x, y - crop.y, color);
                         }
                     }
@@ -219,14 +231,14 @@ pub(crate) fn paint_ordered(
             }
             DrawAnnotation::Text(text) => {
                 if let Some(layer) = &mut layer {
-                    flush(layer, pixels, crop, raster, text.area);
+                    flush(layer, pixels, crop, raster, text.area, work)?;
                 }
-                text.paint(pixels, crop);
+                text.paint(pixels, crop, work)?;
             }
         }
     }
     if let Some(layer) = &mut layer {
-        flush(layer, pixels, crop, raster, crop);
+        flush(layer, pixels, crop, raster, crop, work)?;
     }
     Ok(())
 }

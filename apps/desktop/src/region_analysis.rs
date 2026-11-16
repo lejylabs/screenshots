@@ -99,10 +99,13 @@ pub(crate) fn require_x11(
 }
 
 pub(crate) fn validate_geometry(display: &DisplayInfo, area: PixelRegion, x11: bool) -> Result<()> {
-    ensure!(
-        display.scale_factor == 1.0 && display.rotation == 0.0,
-        "Region analysis currently requires an unrotated display at 100% scale"
-    );
+    if x11 {
+        ensure!(
+            display.scale_factor == 1.0 && display.rotation == 0.0,
+            "X11 region analysis requires an unrotated display at 100% scale"
+        );
+    }
+    app_core::validate_display_pixel_coordinates(display)?;
     ensure!(
         area.x
             .checked_add(area.width)
@@ -138,11 +141,16 @@ pub(crate) struct DpiContext(windows_sys::Win32::UI::HiDpi::DPI_AWARENESS_CONTEX
 impl DpiContext {
     pub(crate) fn enter() -> Result<Self> {
         use windows_sys::Win32::UI::HiDpi::{
-            DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, SetThreadDpiAwarenessContext,
+            DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
+            SetThreadDpiAwarenessContext,
         };
         // This headless thread owns no windows; restore its prior context on exit.
-        let previous =
+        let mut previous =
             unsafe { SetThreadDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2) };
+        if previous.is_null() {
+            previous =
+                unsafe { SetThreadDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE) };
+        }
         ensure!(
             !previous.is_null(),
             "Could not establish native pixel coordinates"

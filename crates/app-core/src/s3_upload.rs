@@ -27,6 +27,8 @@ pub struct S3Profile {
     #[serde(default)]
     pub key_prefix: String,
     pub credential: String,
+    #[serde(default)]
+    pub public_base: Option<String>,
 }
 
 impl S3Profile {
@@ -50,6 +52,22 @@ impl S3Profile {
     }
 
     pub fn validate(&self) -> Result<reqwest::Url> {
+        if let Some(base) = &self.public_base {
+            let public = reqwest::Url::parse(base).context("Invalid S3 public URL base")?;
+            ensure!(
+                base.len() <= 1400
+                    && base.ends_with('/')
+                    && !base.chars().any(char::is_control)
+                    && public.scheme() == "https"
+                    && public.host_str().is_some()
+                    && public.username().is_empty()
+                    && public.password().is_none()
+                    && public.query().is_none()
+                    && public.fragment().is_none()
+                    && public.as_str() == base,
+                "S3 public base must be canonical HTTPS without credentials, query or fragment"
+            );
+        }
         ensure!(
             self.endpoint.len() <= 2048 && !self.endpoint.chars().any(char::is_control),
             "Invalid S3 endpoint"
@@ -108,6 +126,23 @@ impl S3Profile {
             "Invalid S3 credential reference"
         );
         Ok(url)
+    }
+
+    pub fn public_url(&self, key: &str) -> Result<Option<String>> {
+        self.validate()?;
+        ensure!(
+            key.len() <= 600
+                && key.split('/').all(|p| !p.is_empty()
+                    && p != "."
+                    && p != ".."
+                    && p.bytes()
+                        .all(|b| b.is_ascii_alphanumeric() || b"-._~".contains(&b))),
+            "Invalid S3 public object key"
+        );
+        self.public_base
+            .as_ref()
+            .map(|base| crate::upload::validate_link(&format!("{base}{key}")))
+            .transpose()
     }
 
     pub fn credential_target(&self) -> Result<String> {
@@ -269,32 +304,70 @@ pub fn upload_s3_file(
     path: &Path,
     credentials: S3Credentials,
 ) -> Result<S3Outcome> {
+    upload_s3_file_with_cancellation(
+        profile,
+        path,
+        credentials,
+        crate::UploadCancellation::default(),
+    )
+}
+
+pub fn upload_s3_file_with_cancellation(
+    profile: &S3Profile,
+    path: &Path,
+    credentials: S3Credentials,
+    cancel: crate::UploadCancellation,
+) -> Result<S3Outcome> {
+    cancel.check()?;
     let endpoint = profile.validate()?;
     credentials.validate()?;
-    upload_at(
+    upload_at_with_cancellation(
         profile,
         path,
         credentials,
         endpoint,
         chrono::Utc::now().format("%Y%m%dT%H%M%SZ").to_string(),
+        cancel,
     )
 }
 
+#[cfg(test)]
 fn upload_at(
+    profile: &S3Profile,
+    path: &Path,
+    credentials: S3Credentials,
+    endpoint: reqwest::Url,
+    date: String,
+) -> Result<S3Outcome> {
+    upload_at_with_cancellation(
+        profile,
+        path,
+        credentials,
+        endpoint,
+        date,
+        crate::UploadCancellation::default(),
+    )
+}
+
+fn upload_at_with_cancellation(
     profile: &S3Profile,
     path: &Path,
     credentials: S3Credentials,
     mut endpoint: reqwest::Url,
     date: String,
+    cancel: crate::UploadCancellation,
 ) -> Result<S3Outcome> {
+    cancel.check()?;
     let deadline = Instant::now() + DEADLINE;
     let mut file = open_regular(path)?;
+    cancel.verify_source_file(&file)?;
     let metadata = file.metadata()?;
     ensure!(metadata.len() <= MAX_FILE_BYTES, "S3 input exceeds 64 MiB");
     let mut hash = Sha256::new();
     let mut buffer = [0u8; 64 * 1024];
     let mut remaining = metadata.len();
     while remaining > 0 {
+        cancel.check()?;
         ensure!(
             Instant::now() < deadline,
             "S3 upload exceeded its 60 second deadline before sending"
@@ -353,6 +426,10 @@ fn upload_at(
         .max_blocking_threads(1)
         .build()?;
     let result = runtime.block_on(async {
+        tokio::select! {
+            biased;
+            _ = cancel.wait() => anyhow::bail!("S3 upload canceled; the remote object may exist and no retry was attempted"),
+            result = async {
         let remaining = deadline.saturating_duration_since(Instant::now());
         ensure!(
             !remaining.is_zero(),
@@ -411,6 +488,8 @@ fn upload_at(
         })
         .await
         .context("S3 upload exceeded its 60 second deadline; the remote object may exist and no retry was attempted")?
+            } => result,
+        }
     });
     result.context("S3 upload did not return a confirmed result; the remote object may exist and no retry was attempted")
 }
@@ -427,10 +506,51 @@ mod tests {
             bucket: "fixture-bucket".into(),
             key_prefix: "safe/path".into(),
             credential: "main".into(),
+            public_base: None,
         }
     }
     fn credentials() -> S3Credentials {
         S3Credentials::from_json(br#"{"access_key_id":"AKIAIOSFODNN7EXAMPLE","secret_access_key":"wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"}"#).unwrap()
+    }
+
+    #[test]
+    fn public_links_are_explicit_bounded_and_leave_credential_scope_unchanged() {
+        let mut p = profile();
+        let scope = p.credential_target().unwrap();
+        assert_eq!(p.public_url("safe/path/image.png").unwrap(), None);
+        p.public_base = Some("https://images.example.invalid/public/".into());
+        assert_eq!(p.credential_target().unwrap(), scope);
+        assert_eq!(
+            p.public_url("safe/path/image.png").unwrap().as_deref(),
+            Some("https://images.example.invalid/public/safe/path/image.png")
+        );
+        for key in [
+            "",
+            "/image.png",
+            "../image.png",
+            "a//b",
+            "a?x=y",
+            "a%2fb",
+            "a#b",
+        ] {
+            assert!(p.public_url(key).is_err(), "{key}");
+        }
+        for base in [
+            "http://images.example.invalid/",
+            "https://images.example.invalid",
+            "https://user:secret@images.example.invalid/",
+            "https://images.example.invalid/?token=secret/",
+            "https://images.example.invalid/#fragment/",
+            "https://IMAGES.example.invalid/",
+        ] {
+            p.public_base = Some(base.into());
+            assert!(p.validate().is_err(), "{base}");
+        }
+        p.public_base = Some(format!(
+            "https://images.example.invalid/{}/",
+            "a".repeat(1400)
+        ));
+        assert!(p.validate().is_err());
     }
     struct Fixture(std::path::PathBuf);
     impl Fixture {
@@ -580,6 +700,14 @@ mod tests {
         status: u16,
         body: &'static [u8],
     ) -> (reqwest::Url, std::thread::JoinHandle<Vec<u8>>) {
+        server_with_signal(status, body, None)
+    }
+
+    fn server_with_signal(
+        status: u16,
+        body: &'static [u8],
+        signal: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+    ) -> (reqwest::Url, std::thread::JoinHandle<Vec<u8>>) {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         listener.set_nonblocking(true).unwrap();
         let url =
@@ -598,6 +726,11 @@ mod tests {
                     Err(e) => panic!("{e}"),
                 }
             };
+            // Accepted sockets inherit nonblocking mode on some supported platforms.
+            socket.set_nonblocking(false).unwrap();
+            socket
+                .set_write_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
             socket
                 .set_read_timeout(Some(Duration::from_secs(5)))
                 .unwrap();
@@ -621,11 +754,54 @@ mod tests {
             reader.read_exact(&mut bytes).unwrap();
             request.extend(bytes);
             drop(reader);
+            if let Some(signal) = signal {
+                signal.store(true, std::sync::atomic::Ordering::SeqCst);
+                let mut byte = [0];
+                assert_eq!(
+                    socket.read(&mut byte).unwrap(),
+                    0,
+                    "Canceled S3 request did not close its connection"
+                );
+                return request;
+            }
             write!(socket,"HTTP/1.1 {status} Result\r\nContent-Length: {}\r\nETag: \"fixture-etag\"\r\nLocation: http://127.0.0.1:1/never\r\nConnection: close\r\n\r\n",body.len()).unwrap();
             socket.write_all(body).unwrap();
             request
         });
         (url, worker)
+    }
+
+    #[test]
+    fn signal_cancellation_prevents_admission_and_closes_a_waiting_s3_request() {
+        use std::sync::{Arc, atomic::AtomicBool};
+        let flag = Arc::new(AtomicBool::new(true));
+        let result = upload_s3_file_with_cancellation(
+            &profile(),
+            Path::new("absent-canceled-s3-input"),
+            credentials(),
+            crate::UploadCancellation::with_atomic_flag(flag),
+        );
+        assert!(result.unwrap_err().to_string().contains("canceled"));
+
+        let fixture = Fixture::new();
+        let path = fixture.0.join("input");
+        std::fs::write(&path, b"bounded explicit upload").unwrap();
+        let flag = Arc::new(AtomicBool::new(false));
+        let (url, server) = server_with_signal(200, b"", Some(flag.clone()));
+        let result = upload_at_with_cancellation(
+            &profile(),
+            &path,
+            credentials(),
+            url,
+            "20261115T120000Z".into(),
+            crate::UploadCancellation::with_atomic_flag(flag),
+        );
+        let error = format!("{:#}", result.unwrap_err());
+        assert!(
+            error.contains("canceled") && error.contains("remote object may exist"),
+            "{error}"
+        );
+        assert!(server.join().unwrap().ends_with(b"bounded explicit upload"));
     }
 
     #[test]
@@ -742,6 +918,10 @@ mod tests {
                         Err(error) => panic!("{error}"),
                     }
                 };
+                socket.set_nonblocking(false).unwrap();
+                socket
+                    .set_write_timeout(Some(Duration::from_secs(5)))
+                    .unwrap();
                 socket
                     .set_read_timeout(Some(Duration::from_secs(5)))
                     .unwrap();

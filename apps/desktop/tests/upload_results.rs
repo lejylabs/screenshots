@@ -24,6 +24,23 @@ const STATE: [&str; 7] = [
     "XDG_CACHE_HOME",
 ];
 
+#[test]
+fn full_sxcu_results_format_links_and_refuse_failed_or_linkless_outcomes() {
+    let f = Fixture::new();
+    let mut value = serde_json::json!({"success":true,"status":201,"url":URL,"thumbnail":null,"deletion":null,"error_message":null,"events":[{"title":"Result","text":"explicit bounded output"}]});
+    assert_eq!(
+        success(f.run(&["format", "plain"], &serde_json::to_vec(&value).unwrap()))["text"],
+        URL
+    );
+    value["success"] = false.into();
+    value["error_message"] = SECRET.into();
+    rejected(f.run(&["format", "plain"], &serde_json::to_vec(&value).unwrap()));
+    value["success"] = true.into();
+    value["url"] = serde_json::Value::Null;
+    rejected(f.run(&["format", "plain"], &serde_json::to_vec(&value).unwrap()));
+    f.no_state();
+}
+
 struct Fixture(PathBuf);
 impl Fixture {
     fn new() -> Self {
@@ -566,6 +583,7 @@ impl Server {
                     }
                     Err(error) => panic!("{error}"),
                 };
+                socket.set_nonblocking(false).unwrap();
                 socket
                     .set_read_timeout(Some(Duration::from_secs(5)))
                     .unwrap();

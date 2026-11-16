@@ -22,3 +22,9 @@ support is claimed.
 No new runtime, timer, task, cache, worker or idle activity is introduced.
 `web-time` was already present in this crate and the application graph. Remove
 the local patch when the pinned upstream version includes this migration.
+
+The Linux ashpd requirement is also updated from 0.13 to 0.14 for the maintained
+zbus 6 family. The selected portal settings feature and async-io compatibility
+feature remain enabled. This native dependency migration has separate runtime
+and acceptance evidence in `docs/dependency-maintenance.md`; the no-runtime-cost
+statement above applies to the time-crate replacement.

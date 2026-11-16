@@ -2,6 +2,40 @@ use super::*;
 use gpui::test::{TestQueryExt, TestWindowExt};
 use gpui::{AppContext, TestAppContext, px, rgb};
 
+#[gpui::test]
+fn native_capture_tokens_are_operation_owned_and_quit_cancels_the_current_job(
+    cx: &mut TestAppContext,
+) {
+    let handle = open_workspace(cx);
+    let (old, current, sources) = handle
+        .update(cx, |this, _, cx| {
+            this.begin_capturing(cx);
+            let old = this.native_capture_cancel.as_ref().unwrap().clone();
+            this.finish_capturing(cx);
+            this.begin_capturing(cx);
+            let current = this.native_capture_cancel.as_ref().unwrap().clone();
+            let sources = app_core::NativeCaptureCancellation::default();
+            this.native_sources_cancel = Some(sources.clone());
+            this.refreshing = true;
+            (old, current, sources)
+        })
+        .unwrap();
+    old.cancel();
+    assert!(current.check().is_ok());
+    cx.update(close_application);
+    assert!(current.check().is_err());
+    assert!(sources.check().is_err());
+    handle
+        .update(cx, |this, _, cx| {
+            assert!(this.quitting && this.capturing && this.refreshing);
+            this.finish_capturing(cx);
+            assert!(this.native_capture_cancel.is_none());
+            this.refreshing = false;
+            this.native_sources_cancel = None;
+        })
+        .unwrap();
+}
+
 fn shortcut(key: &str) -> String {
     format!(
         "{}-{key}",
@@ -11,6 +45,79 @@ fn shortcut(key: &str) -> String {
             "ctrl"
         }
     )
+}
+
+#[gpui::test]
+fn open_with_waits_for_settings_and_uses_the_existing_image_worker(cx: &mut TestAppContext) {
+    let handle = open_workspace(cx);
+    let path = std::env::temp_dir().join(format!(
+        "screenshots-open-with-{}.png",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let pixels = image::RgbaImage::from_pixel(3, 2, image::Rgba([7, 22, 37, 128]));
+    pixels.save(&path).unwrap();
+    let before = std::fs::read(&path).unwrap();
+    handle
+        .update(cx, |this, _, cx| {
+            this.output_directory = path.parent().map(PathBuf::from);
+            this.settings_loading = true;
+            this.queue_open_image(path.clone(), cx);
+            assert_eq!(this.pending_open_image.as_ref(), Some(&path));
+            assert!(!this.capturing);
+            this.settings_loading = false;
+            this.saving = true;
+            this.finish_quit_if_idle(cx);
+            assert!(this.pending_open_image.is_some());
+            this.saving = false;
+            this.finish_quit_if_idle(cx);
+            assert!(this.pending_open_image.is_none());
+            assert!(this.capturing);
+        })
+        .unwrap();
+    cx.run_until_parked();
+    handle
+        .update(cx, |this, _, cx| {
+            assert!(this.editor.is_some());
+            assert!(!this.capturing);
+            assert!(this.last_saved.is_none());
+            assert!(this.last_capture.is_none());
+            let editor = this.editor.take().unwrap();
+            editor
+                .update(cx, |editor, window, _| {
+                    editor.release_images(window);
+                    window.remove_window();
+                })
+                .unwrap();
+        })
+        .unwrap();
+    cx.run_until_parked();
+    assert_eq!(std::fs::read(&path).unwrap(), before);
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn file_open_urls_are_local_bounded_and_decode_paths_only() {
+    assert_eq!(
+        file_open_url("file:///tmp/a%20b%23c%3Fd.png").unwrap(),
+        PathBuf::from("/tmp/a b#c?d.png")
+    );
+    assert_eq!(
+        file_open_url("file://localhost/tmp/a.png").unwrap(),
+        PathBuf::from("/tmp/a.png")
+    );
+    for value in [
+        "https://example.invalid/a.png",
+        "file://remote/tmp/a.png",
+        "file:///tmp/a?token=1",
+        "file:///tmp/a#part",
+        "file:///tmp/%",
+        "file:///tmp/%00.png",
+    ] {
+        assert!(file_open_url(value).is_err());
+    }
 }
 
 #[gpui::test]
@@ -868,6 +975,9 @@ fn exact_region_fields_are_named_validate_and_release_with_the_page(cx: &mut Tes
     handle
         .update(cx, |this, _, _| {
             this.output_directory = Some(std::env::temp_dir());
+            let mut capabilities = this.backend.capabilities();
+            capabilities.capture_region = true;
+            this.test_capture_capabilities = Some(capabilities);
             this.xcap_displays = vec![exact_display()];
         })
         .unwrap();
@@ -922,6 +1032,9 @@ fn region_presets_load_without_capture_reject_stale_actions_and_preserve_failed_
     handle
         .update(cx, |this, _, _| {
             this.output_directory = Some(blocker.clone());
+            let mut capabilities = this.backend.capabilities();
+            capabilities.capture_region = true;
+            this.test_capture_capabilities = Some(capabilities);
             this.xcap_displays = vec![exact_display()];
             this.region_presets = vec![preset.clone()];
         })
@@ -1006,9 +1119,8 @@ fn open_image_cancel_and_invalid_input_release_admission(cx: &mut TestAppContext
             assert!(this.capturing);
         })
         .unwrap();
-    #[cfg(target_os = "windows")]
     cx.update_window(handle.into(), |_, window, cx| {
-        window.press("ctrl-shift-v", cx);
+        window.press(&shortcut("shift-v"), cx);
     })
     .unwrap();
     cx.update(|cx| {
@@ -3995,4 +4107,359 @@ fn library_checkbox_keeps_controlled_selection_and_disabled_state(cx: &mut TestA
     })
     .unwrap();
     cx.update(|cx| assert_eq!(handle.read(cx).unwrap().history_selected, vec![42]));
+}
+
+fn synthetic_clipboard_image() -> gpui::Image {
+    let source = image::RgbaImage::from_raw(2, 1, vec![11, 23, 37, 0, 43, 59, 71, 128]).unwrap();
+    let mut bytes = std::io::Cursor::new(Vec::new());
+    source
+        .write_to(&mut bytes, image::ImageFormat::Png)
+        .unwrap();
+    gpui::Image {
+        format: gpui::ImageFormat::Png,
+        bytes: bytes.into_inner(),
+        id: 19,
+    }
+}
+
+#[gpui::test]
+fn bounded_clipboard_offer_opens_existing_editor_without_clipboard_or_disk_output(
+    cx: &mut TestAppContext,
+) {
+    let handle = open_workspace(cx);
+    let root = std::env::temp_dir().join(format!(
+        "screenshots-ui-offer-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir(&root).unwrap();
+    handle
+        .update(cx, |this, _, cx| {
+            this.output_directory = Some(root.clone());
+            this.open_redaction_source_with_read(
+                EditorImage::Clipboard(app_core::NativeClipboardBackend::Automatic),
+                Some(gpui::Task::ready(Ok(synthetic_clipboard_image()))),
+                cx,
+            );
+            assert!(this.capturing);
+            let generation = this.capture_generation;
+            this.paste_image(cx);
+            assert_eq!(this.capture_generation, generation);
+        })
+        .unwrap();
+    cx.run_until_parked();
+    cx.update(|cx| {
+        let state = handle.read(cx).unwrap();
+        assert!(!state.capturing);
+        assert!(state.last_capture.is_none() && state.last_saved.is_none());
+        assert_eq!(state.clipboard_status, "No capture yet");
+        let editor = state.editor.unwrap().read(cx).unwrap();
+        assert_eq!(
+            editor.source.pixels.as_raw(),
+            &[11, 23, 37, 0, 43, 59, 71, 128]
+        );
+    });
+    assert_eq!(std::fs::read_dir(&root).unwrap().count(), 0);
+    std::fs::remove_dir(root).unwrap();
+}
+
+#[gpui::test]
+fn clipboard_offer_failures_release_the_same_input_admission(cx: &mut TestAppContext) {
+    let handle = open_workspace(cx);
+    for error in [
+        gpui::ClipboardReadError::TooLarge,
+        gpui::ClipboardReadError::TimedOut,
+        gpui::ClipboardReadError::Canceled,
+    ] {
+        handle
+            .update(cx, |this, _, cx| {
+                this.output_directory = Some(std::env::temp_dir());
+                this.open_redaction_source_with_read(
+                    EditorImage::Clipboard(app_core::NativeClipboardBackend::Automatic),
+                    Some(gpui::Task::ready(Err(error))),
+                    cx,
+                );
+                assert!(this.capturing);
+            })
+            .unwrap();
+        cx.run_until_parked();
+        cx.update(|cx| {
+            let state = handle.read(cx).unwrap();
+            assert!(!state.capturing && state.editor.is_none());
+            assert!(state.capture_status.starts_with("Could not load image:"));
+            assert!(state.last_capture.is_none() && state.last_saved.is_none());
+        });
+    }
+}
+
+#[gpui::test]
+fn stale_clipboard_offer_cannot_finish_a_later_input_or_open_an_editor(cx: &mut TestAppContext) {
+    let handle = open_workspace(cx);
+    let executor = cx.background_executor.clone();
+    let timer = executor.clone();
+    let read = executor.spawn(async move {
+        timer.timer(std::time::Duration::from_secs(1)).await;
+        Ok(synthetic_clipboard_image())
+    });
+    handle
+        .update(cx, |this, _, cx| {
+            this.output_directory = Some(std::env::temp_dir());
+            this.open_redaction_source_with_read(
+                EditorImage::Clipboard(app_core::NativeClipboardBackend::Automatic),
+                Some(read),
+                cx,
+            );
+        })
+        .unwrap();
+    cx.run_until_parked();
+    let current = handle
+        .update(cx, |this, _, cx| {
+            this.native_capture_cancel.as_ref().unwrap().cancel();
+            this.finish_capturing(cx);
+            this.begin_capturing(cx);
+            this.native_capture_cancel.as_ref().unwrap().clone()
+        })
+        .unwrap();
+    cx.executor()
+        .advance_clock(std::time::Duration::from_secs(1));
+    cx.run_until_parked();
+    handle
+        .update(cx, |this, _, cx| {
+            assert!(this.capturing && this.editor.is_none());
+            assert!(current.check().is_ok());
+            this.finish_capturing(cx);
+        })
+        .unwrap();
+}
+
+#[gpui::test]
+fn native_encoded_drop_negotiates_without_decode_then_opens_exact_pixels(cx: &mut TestAppContext) {
+    use gpui::InputEvent as _;
+    let handle = open_workspace(cx);
+    let root = std::env::temp_dir().join(format!(
+        "screenshots-ui-raw-drop-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir(&root).unwrap();
+    handle
+        .update(cx, |this, _, _| this.output_directory = Some(root.clone()))
+        .unwrap();
+    let bytes = Arc::new(synthetic_clipboard_image().bytes);
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.dispatch_event(
+            gpui::FileDropEvent::ImageEntered {
+                position: point(px(600.), px(350.)),
+                image: gpui::ExternalImageDrop {
+                    format: gpui::ImageFormat::Png,
+                    bytes: None,
+                },
+            }
+            .to_platform_input(),
+            cx,
+        );
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update(|cx| {
+        let state = handle.read(cx).unwrap();
+        assert!(!state.capturing && state.editor.is_none());
+    });
+    cx.update_window(handle.into(), |_, window, cx| {
+        let position = point(px(600.), px(350.));
+        for event in [
+            gpui::FileDropEvent::ImageEntered {
+                position,
+                image: gpui::ExternalImageDrop {
+                    format: gpui::ImageFormat::Png,
+                    bytes: Some(bytes.clone()),
+                },
+            },
+            gpui::FileDropEvent::Submit { position },
+            gpui::FileDropEvent::Ended,
+        ] {
+            window.dispatch_event(event.to_platform_input(), cx);
+        }
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update(|cx| {
+        let state = handle.read(cx).unwrap();
+        assert!(
+            !state.capturing && state.editor.is_some(),
+            "{}",
+            state.capture_status
+        );
+        assert!(state.last_capture.is_none() && state.last_saved.is_none());
+        let editor = state.editor.unwrap().read(cx).unwrap();
+        assert_eq!(
+            editor.source.pixels.as_raw(),
+            &[11, 23, 37, 0, 43, 59, 71, 128]
+        );
+    });
+    assert_eq!(Arc::strong_count(&bytes), 1);
+    assert_eq!(std::fs::read_dir(&root).unwrap().count(), 0);
+    std::fs::remove_dir(root).unwrap();
+}
+
+#[gpui::test]
+fn native_url_drop_rejects_unbounded_or_unsupported_references_before_a_worker(
+    cx: &mut TestAppContext,
+) {
+    let handle = open_workspace(cx);
+    handle
+        .update(cx, |this, _, cx| {
+            this.output_directory = Some(std::env::temp_dir());
+            for url in [
+                Arc::<str>::from("data:image/png,invalid"),
+                Arc::from("https://example.invalid/".to_owned() + &"x".repeat(4096)),
+            ] {
+                this.open_dropped_url(&gpui::ExternalUrlDrop { url }, cx);
+                assert!(!this.capturing && this.editor.is_none());
+                assert!(this.capture_status.starts_with("Drop one supported"));
+            }
+        })
+        .unwrap();
+}
+
+#[gpui::test]
+fn same_generation_cancel_after_render_cannot_open_or_finish_an_editor(cx: &mut TestAppContext) {
+    let handle = open_workspace(cx);
+    handle
+        .update(cx, |this, _, cx| {
+            this.output_directory = Some(std::env::temp_dir());
+            this.begin_capturing(cx);
+            let generation = this.capture_generation;
+            let token = this.native_capture_cancel.as_ref().unwrap().clone();
+            let pixels = image::RgbaImage::from_pixel(2, 1, image::Rgba([11, 23, 37, 128]));
+            let source = CapturedImage {
+                display_id: "private synthetic input".into(),
+                window_id: None,
+                width: 2,
+                height: 1,
+                png_path: PathBuf::new(),
+                pixels: Arc::new(pixels),
+                elapsed_ms: 0,
+                source_format: app_core::PixelFormat::Rgba8UnormSrgb,
+                display_geometry: None,
+            };
+            let render = render_frame(&source);
+            assert!(token.check().is_ok());
+            // Represents Escape arriving after the worker rendered but before its callback.
+            this.close_overlays(cx);
+            assert!(token.check().is_err());
+            assert_eq!(this.capture_generation, generation);
+            this.deliver_image_input(generation, &token, Ok((source, render)), cx);
+            assert!(!this.capturing && this.native_capture_cancel.is_none());
+            assert!(this.editor.is_none());
+            assert_eq!(this.capture_status, "Image opening canceled.");
+            assert!(this.last_capture.is_none() && this.last_saved.is_none());
+        })
+        .unwrap();
+    cx.run_until_parked();
+}
+
+fn delayed_native_drop_cancellation(cx: &mut TestAppContext, admit_newer_input: bool) {
+    use gpui::InputEvent as _;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    let handle = open_workspace(cx);
+    handle
+        .update(cx, |this, _, _| {
+            this.output_directory = Some(std::env::temp_dir())
+        })
+        .unwrap();
+    let canceled = Arc::new(AtomicBool::new(false));
+    let cancel_adapter = canceled.clone();
+    cx.on_cancel_pending_native_drop(move || cancel_adapter.store(true, Ordering::Release));
+    let position = point(px(600.), px(350.));
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.dispatch_event(
+            gpui::FileDropEvent::ImageEntered {
+                position,
+                image: gpui::ExternalImageDrop {
+                    format: gpui::ImageFormat::Png,
+                    bytes: None,
+                },
+            }
+            .to_platform_input(),
+            cx,
+        );
+        assert!(cx.has_active_drag());
+    })
+    .unwrap();
+    // Private native adapter: acquire bytes first, retaining cancellation until
+    // foreground delivery, just as the native transfer's generation guard does.
+    let executor = cx.background_executor.clone();
+    let timer = executor.clone();
+    let read = executor.spawn(async move {
+        timer.timer(std::time::Duration::from_secs(1)).await;
+        synthetic_clipboard_image()
+    });
+    let delivered = Arc::new(AtomicUsize::new(0));
+    let counted = delivered.clone();
+    let mut delivery = cx.clone();
+    cx.foreground_executor
+        .spawn(async move {
+            let image = read.await;
+            if canceled.load(Ordering::Acquire) {
+                return;
+            }
+            counted.fetch_add(1, Ordering::Release);
+            delivery
+                .update_window(handle.into(), |_, window, cx| {
+                    for event in [
+                        gpui::FileDropEvent::ImageEntered {
+                            position,
+                            image: gpui::ExternalImageDrop {
+                                format: image.format,
+                                bytes: Some(Arc::new(image.bytes)),
+                            },
+                        },
+                        gpui::FileDropEvent::Submit { position },
+                        gpui::FileDropEvent::Ended,
+                    ] {
+                        window.dispatch_event(event.to_platform_input(), cx);
+                    }
+                })
+                .unwrap();
+        })
+        .detach();
+    cx.run_until_parked();
+    handle
+        .update(cx, |this, _, cx| {
+            assert!(!this.capturing);
+            if admit_newer_input {
+                this.begin_capturing(cx);
+                this.finish_capturing(cx);
+            } else {
+                this.close_overlays(cx);
+            }
+            assert!(!this.capturing && !cx.has_active_drag());
+        })
+        .unwrap();
+    cx.executor()
+        .advance_clock(std::time::Duration::from_secs(1));
+    cx.run_until_parked();
+    assert_eq!(delivered.load(Ordering::Acquire), 0);
+    cx.update(|cx| {
+        let state = handle.read(cx).unwrap();
+        assert!(!state.capturing && state.editor.is_none());
+        assert!(state.last_capture.is_none() && state.last_saved.is_none());
+    });
+}
+
+#[gpui::test]
+fn escape_cancels_native_drop_before_application_image_admission(cx: &mut TestAppContext) {
+    delayed_native_drop_cancellation(cx, false);
+}
+
+#[gpui::test]
+fn newer_image_input_finishing_cannot_resurrect_an_old_native_drop(cx: &mut TestAppContext) {
+    delayed_native_drop_cancellation(cx, true);
 }

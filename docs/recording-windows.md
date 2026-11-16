@@ -1,5 +1,10 @@
 # Optional Windows recording
 
+Audio follow-up: Matroska recording supports explicit PCM audio with `--audio-mode`,
+`--audio-device` and `--audio-channels`; standalone `record-audio` supports DirectShow.
+See [audio and combined A/V contracts](audio-recording.md). Omitted audio options
+preserve the original video-only behavior described below.
+
 Windows supports explicit `gdigrab` desktop recording and synthetic `test` mode
 through separately installed `ffmpeg.exe` and `ffprobe.exe`:
 

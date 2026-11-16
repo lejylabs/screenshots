@@ -11,7 +11,7 @@ impl Fixture {
             uuid::Uuid::new_v4()
         ));
         std::fs::create_dir(&root).unwrap();
-        Self(root)
+        Self(root.canonicalize().unwrap())
     }
     fn path(&self, name: &str) -> PathBuf {
         self.0.join(name)
@@ -62,7 +62,7 @@ fn success(output: Output) -> serde_json::Value {
     serde_json::from_slice(&output.stdout).unwrap()
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 #[test]
 fn executable_move_preserves_pixels_identity_and_updates_history() {
     let f = Fixture::new();
@@ -103,7 +103,7 @@ fn executable_move_preserves_pixels_identity_and_updates_history() {
         app_core::check_history_database(&db)
             .unwrap()
             .schema_version,
-        5
+        9
     );
     f.no_state();
 }
@@ -123,7 +123,7 @@ fn invalid_move_commands_do_not_create_databases_or_files() {
     f.no_state();
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 #[test]
 fn collision_never_moves_source_or_publishes_pending_intent() {
     let f = Fixture::new();

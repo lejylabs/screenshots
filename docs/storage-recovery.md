@@ -14,8 +14,15 @@ folder reached through a symlink work. The final database component is checked
 without following it and must be a regular file; final symlinks remain rejected.
 Missing paths are not created. No application
 migrations, WAL-mode changes or history writes run. It accepts the known history
-schema versions 1–5, checks the expected columns and runs `quick_check(1)`.
+schema versions 1–9, checks the expected columns and runs `quick_check(1)`.
 Version 5 also requires the pending-file-move table and reservation triggers.
+Version 6 additionally checks the indexed trash table and capture/trash guards
+for the explicit [physical Library lifecycle](history-lifecycle.md). Version 7
+also checks the after-insert guard that reserves SQLite-assigned capture IDs.
+Version 8 checks the indexed native identity/name metadata and capture reservation
+triggers, including transfer staging paths. Read-only checks need no registration
+of the mutation-only filesystem functions. Version 9 also requires the partial
+unresolved-identity index used by bounded physical-operation preparation.
 Unknown versions, foreign databases without the expected schema and corruption
 fail explicitly. A successful result gives the schema version and `ok`; it is
 not a complete filesystem or power-loss durability guarantee.
@@ -89,3 +96,9 @@ replacement and platform-specific filesystem behavior remain native acceptance
 cases. Paths should be chosen in user-controlled storage, not directories writable
 by another user. No claim is made that standard path-based APIs isolate a job
 from every privileged or same-user filesystem race.
+
+The [durable scheduler](capture-scheduling.md) uses its own private SQLite
+database and singleton run-intent recovery, separate from capture History.
+History `storage check`/backup schema admission does not treat a schedule
+database as a History database. Inspect and resolve uncertain run IDs explicitly;
+maintenance never replays scheduled Tasks or uploads.

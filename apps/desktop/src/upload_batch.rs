@@ -11,7 +11,16 @@ pub fn run(args: &[OsString]) -> Result<()> {
         (2..=MAX_IMAGES + 1).contains(&args.len()),
         "Usage: screenshots upload-images PROFILE IMAGE... (1–20 images)"
     );
-    let destination = crate::cli::load_upload_profile(std::path::Path::new(&args[0]))?;
+    #[cfg(unix)]
+    let cancellation = crate::record::unix::Cancellation::new()?;
+    #[cfg(unix)]
+    let cancel = app_core::UploadCancellation::with_atomic_flag(cancellation.flag());
+    #[cfg(not(unix))]
+    let cancel = app_core::UploadCancellation::default();
+    let destination = crate::sharex::prepare(
+        std::path::Path::new(&args[0]),
+        app_core::ShareXInputKind::Image,
+    )?;
     let paths = args[1..]
         .iter()
         .map(|path| {
@@ -30,14 +39,9 @@ pub fn run(args: &[OsString]) -> Result<()> {
         let result = (|| {
             let pixels = app_core::load_editor_image(path)?;
             stage = "PNG preparation failed";
-            let png = crate::cli::frame(pixels).png_bytes()?;
+            let png = crate::cli::frame(pixels).png_bytes_with_cancel(|| cancel.is_canceled())?;
             stage = "Upload failed; check the destination and credentials";
-            app_core::upload_png_bytes_with_progress(
-                &destination,
-                png,
-                app_core::UploadCancellation::default(),
-                None,
-            )
+            crate::sharex::upload_png(&destination, png, cancel.clone())
         })();
         let outcome = match result {
             Ok(outcome) => outcome,
@@ -52,18 +56,21 @@ pub fn run(args: &[OsString]) -> Result<()> {
                 );
             }
         };
+        #[cfg(unix)]
+        cancellation.output_phase(true);
+        let mut outcome = outcome;
+        let confirmed = crate::sharex::confirmed(&outcome).is_ok();
+        let object = outcome
+            .as_object_mut()
+            .context("Upload result must be an object")?;
+        object.insert(
+            "type".into(),
+            if confirmed { "uploaded" } else { "failed" }.into(),
+        );
+        object.insert("index".into(), (offset + 1).into());
+        object.insert("total".into(), paths.len().into());
         let written = (|| -> Result<()> {
-            serde_json::to_writer(
-                &mut output,
-                &serde_json::json!({
-                    "type": "uploaded",
-                    "index": offset + 1,
-                    "total": paths.len(),
-                    "url": outcome.url,
-                    "thumbnail": outcome.thumbnail,
-                    "deletion": outcome.deletion,
-                }),
-            )?;
+            serde_json::to_writer(&mut output, &outcome)?;
             output.write_all(b"\n")?;
             output.flush()?;
             Ok(())
@@ -73,7 +80,17 @@ pub fn run(args: &[OsString]) -> Result<()> {
             "Image {} was uploaded but its result could not be written; the remote file exists and no later image was attempted",
             offset + 1
         );
+        ensure!(
+            confirmed,
+            "Image {} failed after {} confirmed uploads; the remote object may exist and no later image was attempted",
+            offset + 1,
+            offset
+        );
+        #[cfg(unix)]
+        cancellation.output_phase(false);
     }
+    #[cfg(unix)]
+    cancellation.output_phase(true);
     let summary = (|| -> Result<()> {
         serde_json::to_writer(
             &mut output,

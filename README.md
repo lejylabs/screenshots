@@ -37,10 +37,14 @@ Additional commands support strict [offline image recipes](docs/workflows.md),
 [multiple crops from shared display snapshots](docs/capture-regions.md),
 [physical desktop composition](docs/desktop-composite.md) and
 [sequential image upload batches](docs/upload-batch.md). Stitched native desktop
-capture currently requires Windows and 100% scaling; capture sequences and upload
+capture currently requires Windows, with calibrated physical coordinates for
+mixed DPI and quarter-turn rotation. Physical hardware/topology acceptance is
+tracked in the [capture contract](docs/physical-display-capture.md). Capture sequences and upload
 batches are explicit bounded commands. None starts from merely opening the app. Optional [Unix recording](docs/recording.md) uses an explicitly installed
 FFmpeg/ffprobe pair for bounded FFV1/Matroska or GIF output; it is not bundled and does
-not imply macOS/Wayland recorder support. The separate
+not imply Wayland recorder support. The native macOS AVFoundation source and
+its remaining permission/hardware gates are recorded in the
+[macOS completion contract](docs/macos-capture-completion.md). The separate
 [Windows recording path](docs/recording-windows.md) has bounded staging and process
 tests; native gdigrab/FFmpeg runtime acceptance remains open.
 

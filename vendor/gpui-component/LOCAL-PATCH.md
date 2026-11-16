@@ -29,3 +29,8 @@ unchanged; `pastey::paste!` supports their identifier generation. No feature or
 generated API is intentionally changed. This is a build-time helper only and
 adds no application runtime work. Remove this alias patch once upstream adopts
 a maintained token-pasting crate.
+
+The Windows native menu SVG dependency is updated from resvg 0.45.1 to 0.50,
+matching the maintained GPUI SVG/font family. Existing menu construction and
+image conversion stay unchanged. Source/native-target checks and rendering
+fixtures are recorded separately in `docs/dependency-maintenance.md`.

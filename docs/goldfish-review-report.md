@@ -358,3 +358,209 @@ implementation review found no blocking defect and requested a direct opened-
 handle oversize regression in addition to pathname preflight/FIFO tests. This
 was added. The existing header-limit and aggregate-memory caveats remain
 explicit; this slice does not claim all PNG allocations are strictly bounded.
+
+
+## Library lifecycle continuation (2026-11-16)
+
+Fresh `library_lifecycle_goldfish`, `library_lifecycle_round2`,
+`library_lifecycle_round3` and `library_lifecycle_round4` reviewers audited the
+lifecycle implementation. These are separate contexts, not same-reviewer
+follow-ups. The first three rounds found reservation/recovery, pathname-alias
+and indexed-query/cancellation Majors. They caused schema versions 7–9, held-path
+delete durability barriers, staging reservations, conservative alias keys/native
+identity checks and unresolved-only preparation with scoped SQLite VM checks.
+Round four found no Blocker or Major; its stale module-comment Nit is fixed.
+This is one clean source-review round for this slice, not full-plan convergence.
+
+The author separately ran 66 history tests, seven storage tests, ten CLI tests,
+Windows metadata compilation, Clippy and the real Linux fault-interposition
+fixture. The final native fixture report is
+`target/verification/history-round3-native-e2e.json`. The fourth reviewer also
+checked query plans independently with 30,000 already indexed rows; the partial
+unresolved index avoids a full-history scan during ordinary physical operations.
+Read-only source assessment does not establish native Windows/macOS durability,
+power-loss or inaccessible-drive acceptance.
+
+The historical nine-advisory failure above is superseded for the current active
+production graph: default `cargo deny check advisories` passes without ignores
+following the maintained native dependency migration. The default-branch glib
+alert and platform acceptance remain separate gates.
+
+
+## Cooperative image work continuation (2026-11-16)
+
+Fresh `image_cancellation_goldfish` found aggregate-budget gaps in sparse/skinny
+traversal and untyped blur/PNG-flush cancellation. The implementation now shares
+one counter through traversal and blur chunks, skips empty intersections, merges
+pixelation bands and normalizes latched cancellation before propagating flush
+errors. `image_cancellation_round2` independently found no Blocker or Major.
+Its two Nits are fixed: unchanged-size reduction checks after its copy, and an
+actual partial-width narrow crop now asserts cancellation on the third callback.
+This is one clean source-review round; it is not full-plan convergence.
+
+The author ran 301 optimized core tests, 11 Task and 10 workflow cases,
+Windows core compilation, Clippy and native Linux output-fault E2E. The final
+Nit-focused run passed 13 raster tests (two measurements explicitly excluded).
+Independent before/after pixel hashes matched; narrow blur/sparse pixelation
+improved and representative wide work did not cross the documented regression
+threshold. Raw evidence: `image-work-budget-comparison.json` and
+`image-output-failures-work-budget.json` under `target/verification`.
+Native filesystem/codec/vector internals and reference-hardware presentation
+remain separate gates. Native capture and SXCU Task integration have their own
+reviews; these checks do not establish their acceptance.
+
+
+## SXCU execution continuation (2026-11-16)
+
+Five fresh SXCU source reviews ran with the bundled EGM persona/standard. The
+first four rounds found auth-name/Cookie classification, preflight prompt,
+Task failure events, encoded/raw link and inspection, XML body and frozen
+NameParser inspection defects. Author fixes added independent Rust policy
+checks, bounded shared helper body classification and known-value masking;
+actual transfer, Task and inspection regressions were added for each finding.
+
+The fifth capped review found raw forms beginning with JSON/XML-looking keys
+were skipped after failed syntax sniffing. The Elephant corrected ordinary
+parse-failure fallthrough while preserving successful JSON/XML and hard
+resource/DTD refusals. Correction checks passed 26 optimized Rust/process tests,
+134 helper assertions and 94 real loopback HTTPS requests, including finalized
+pixels, failure events/later-action suppression, anonymous/copy/private-runtime
+and retained old-process install/upgrade behavior. The review cap was reached;
+this is not a clean fresh-review convergence claim. Source record:
+`target/verification/sharex-round5-goldfish.md`; runtime correction record:
+`target/verification/sharex-prefix-e2e.json`.
+
+A separate Windows startup audit found suspended-child-to-Job assignment gaps
+in the interpreter and other optional process workers. Atomic native association
+is active follow-up implementation work, independent of accounts and signing.
+The modern pinned SXCU contract and explicitly retained older importer subset
+are described in `sharex-runtime.md`; no arbitrary-version parity or full-plan
+completion is claimed.
+
+
+## Native capture and templates continuation (2026-11-16)
+
+The initial fresh isolation review found Unix descendants surviving natural root
+exit, handoff admission theft after enumeration released BUSY, and run-task
+rereading a previously validated Task/catalog. Corrections retain the unreaped
+leader until owned-group signaling finishes, prove remaining live members with
+bounded native inspection and post-registration identity checks, reserve the
+handoff exclusively, and execute one immutable prepared Task/template snapshot.
+Fresh `native_capture_isolation_round2` found no Blocker, Major or Nit. Earlier
+catalog/GDI source reviews also corrected the DWM double-crop/resizing defect;
+real Windows owned-window pixels remain an explicit native CI gate.
+
+Author verification passed 25 worker/protocol tests, 16 Task/capture-task cases,
+four catalog CLI cases, Windows app/test metadata and private native E2E:
+17 CLI calls, 48,259 exact pixels and three rapid native hotkey taps. Final
+private report: `target/verification/capture-worker-private-review-fixes-final.json`.
+This source review does not turn compilation into physical/native acceptance.
+
+Group ownership proof initially increased local latency; getpgid-first bounded
+inspection reduced its syscall work without UID assumptions. Two remediated
+serial repeats measured worker p95 37.234/37.379 ms. The latter inline baseline
+was 24.999 ms: +12.380 ms/+49.522%. The Elephant retains per-operation processes
+after that recorded remediation to preserve cleanup/privacy and zero default
+idle worker; the 250 ms 4K target is unchanged. Actual process memory, all cases
+and swap qualifications remain in `native-capture-isolation.md`. These component
+measurements do not establish reference-hardware or end-to-end acceptance.
+
+
+## Runtime packaging and encoded-input continuation (2026-11-16)
+
+Fresh `package_import_goldfish` found manual Linux instructions separating the
+executable from its runtime and an unbounded undeclared-file scan. The fixes
+retain full version folders with controlled launchers and stream directory
+entries, rejecting undeclared members immediately. Fresh
+`package_import_round2` found no Blocker or Major. Its packaged documentation
+link Nit is fixed during staging, with an archive assertion for the actual
+uppercase companion file. The shared encoded-input reader preserves opened-file
+extent, format validators, orientation/alpha and 32 MiB/256 MiB admission;
+optional unreadable WebP EXIF retains the documented legacy fallback.
+
+Portable/native-layout/installer fixtures passed 11/3/21. After the source
+review, the actual refreshed intermediate ELF/runtime archive and `.deb` passed
+private extracted execution: help/version, profile inspection and 134 helper
+assertions, with a matching actual glibc floor and unchanged isolated user state.
+Evidence: `target/verification/complete-runtime-package-abi.json`. This is an
+explicit prebuilt intermediate executable, not final native/ABI portability or
+system installation acceptance. No full-plan convergence is claimed.
+
+
+## Authorized portal and URL input (2026-11-16)
+
+Fresh `portal_import_goldfish` found no Blocker or Major in authorized-FD
+ScreenCast/PipeWire still capture, strict source/serial/buffer/color validation,
+finite session/process ownership, disk-fallback removal and explicit URL input.
+Its two documentation Nits are fixed: transform/crop/header refusals are stated,
+and URL limits use readable unit spacing.
+
+Private real D-Bus/PipeWire tests cover 19 CLI calls, 40 exact RGBA pixels,
+11 negative modes, actual missing-frame timeout, parent loss and source removal,
+Task crop and named-source refusal. Two 4K generated-source observations retain
+both repeats; latest p95 is 50 ms native frame and 91.327 ms CLI including PNG,
+with process/whole-fixture memory separated. This is not physical compositor or
+reference-hardware acceptance. URL core/executable fixtures cover exact pixels,
+streamed 32 MiB rejection before EOF, cancellation, no redirect/implicit state,
+Task output and preflight before a second GET. User devices/data are untouched.
+
+The complete current integrated optimized workspace passed 786 regular tests,
+62 opt-ins excluded across 57 outer suites. Clippy passed the configured denied
+lints (existing warnings remain), Windows GNU dev app/tests metadata passed, and
+default active-graph advisories passed without ignores. The two host-capability
+UI fixtures are now explicit test fixtures; production capability gating stays
+truthful on Wayland. Evidence: `target/verification/current-integrated-checks.json`.
+Editor/macOS additions, real platform/signing/account gates and the remaining
+full backlog are not closed by this snapshot.
+
+
+## Durable Task scheduling and worker startup (2026-11-16)
+
+Fresh `windows_atomic_goldfish` found bare leading-dot program resolution and a
+provider sequencing documentation contradiction. Both are corrected; fresh
+`windows_atomic_round2` found no source Blocker/Major. Its stale evidence Nit is
+resolved through a new correction report, preserving earlier source hashes.
+Native process/job/handle limits and long-path behavior remain Windows CI gates;
+the original Wine resource-query failure was not weakened or counted as native
+success. Default-prefix probe state was precisely restored and audited.
+
+Fresh scheduler rounds one and two found actual-source reopening, orphaned owned
+macOS wake recovery and an expired Windows timer causing an idle spin. Actual
+opened-object checks now reach image/raw uploads; command guards cover native
+launch/resume boundaries with documented race limits. Offline mutations reconcile
+only their durable owned wake. Windows timers reset/consume cancellation signals,
+including simultaneous normal/alarm readiness. The checked Unix program handle
+is released after spawn. Fresh `scheduler_round3_goldfish` found no Blocker/Major.
+
+Author fixtures passed 14 scheduler, seven seal/source, one identity and 44
+HTTP/S3 cases (16 opt-ins excluded), provider/Task/workflow compatibility, seven
+real executable groups, private Xvfb captures and upload-before-SIGKILL recovery.
+A separately pinned 300-second Linux idle observation had no additional CPU
+jiffies, context switches or file I/O, with swap/physical memory reported rather
+than claiming zero footprint. Root's two same-production native timer fixtures
+and leading-dot oracle passed supplemental Wine; real native wake/permission/
+resource behavior stays separate. The integrated 786-test proof above includes
+the current source and corrected fixture gating; final exact-head native CI is
+still required.
+
+
+## Explicit native signing tooling (2026-11-16)
+
+Three fresh source reviews audited the optional release path. The first found
+native tool lookup, installer-team comparison and rollback ownership defects;
+the second found nonregular foreign replacement and exited-leader descendant
+cleanup; the third found reader admission outside the POSIX cleanup guard.
+Corrections use protected native tool locations, cleaned environment/private cwd,
+exact trusted installer identity, retained per-link ownership, and owned native
+process families with all exceptional startup covered. Windows uses atomic
+Job/handle association; POSIX retains the unreaped leader through group cleanup.
+The final startup correction is verified author evidence, not relabeled a clean
+additional source-review round.
+
+Seventeen Linux synthetic signing-flow tests pass, plus three native-layout and
+eleven portable regressions. These include real owned Python child lifetime
+faults and fake signature/notary results, not real certificate/account use.
+The Windows ABI path and actual trusted signatures/notarization remain native
+release gates. No keys, certificates, trust settings or keychains were created.
+Public example profiles are illustrative only. See `native-signing.md` and
+`target/native-signing-tests.log` for exact scope.

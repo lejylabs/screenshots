@@ -69,7 +69,7 @@ fn check_connection(connection: &Connection) -> Result<HistoryHealth> {
     let schema_version: u32 =
         connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
     ensure!(
-        (1..=5).contains(&schema_version),
+        (1..=9).contains(&schema_version),
         "Unsupported history schema version"
     );
     let require_object = |name: &str, kind: &str| -> Result<()> {
@@ -94,6 +94,48 @@ fn check_connection(connection: &Connection) -> Result<HistoryHealth> {
         ] {
             require_object(name, "trigger")?;
         }
+    }
+    if schema_version >= 6 {
+        require_object("history_trash", "table")?;
+        require_object("history_trash_time", "index")?;
+        connection.prepare(
+            "SELECT sequence,trash_id,trash_path,trashed_at,payload FROM history_trash LIMIT 0",
+        )?;
+        for name in [
+            "captures_trash_insert",
+            "captures_trash_update",
+            "trash_pending_update",
+            "trash_pending_delete",
+        ] {
+            require_object(name, "trigger")?;
+        }
+    }
+    if schema_version >= 7 {
+        require_object("captures_move_assigned_insert", "trigger")?;
+    }
+    if schema_version >= 8 {
+        for name in [
+            "captures_reservation_name",
+            "captures_file_identity",
+            "trash_file_identity",
+        ] {
+            require_object(name, "index")?;
+        }
+        for name in [
+            "captures_reservation_keys_insert",
+            "captures_reservation_keys_update",
+            "trash_reservation_keys_insert",
+            "trash_reservation_keys_update",
+            "captures_native_reserve_insert",
+            "captures_native_reserve_update",
+        ] {
+            require_object(name, "trigger")?;
+        }
+        connection.prepare("SELECT reservation_name,file_identity FROM captures LIMIT 0")?;
+        connection.prepare("SELECT file_identity FROM history_trash LIMIT 0")?;
+    }
+    if schema_version >= 9 {
+        require_object("captures_unresolved_id", "index")?;
     }
     // Preparing these queries checks columns without reading image paths or uploaded links.
     connection.prepare("SELECT id,file_path,thumbnail_path,mime_type,width,height,file_size,created_at,source FROM captures LIMIT 0")?;
@@ -356,7 +398,7 @@ mod tests {
         assert_eq!(fs::read(&corrupt)?, b"not a SQLite database");
         let source = fixture.database()?;
         let connection = Connection::open(&source)?;
-        connection.pragma_update(None, "user_version", 6)?;
+        connection.pragma_update(None, "user_version", 10)?;
         drop(connection);
         assert!(check_history_database(&source).is_err());
         Ok(())
@@ -373,7 +415,7 @@ mod tests {
         let wal_before = fs::read(sidecar(&source, "-wal"))?;
         let destination = fixture.0.join("backup.sqlite3");
         backup_history_database(&source, &destination, || false)?;
-        assert_eq!(check_history_database(&destination)?.schema_version, 5);
+        assert_eq!(check_history_database(&destination)?.schema_version, 9);
         assert_eq!(fs::read(&source)?, source_before);
         assert_eq!(fs::read(sidecar(&source, "-wal"))?, wal_before);
         let copied = Connection::open_with_flags(&destination, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
@@ -482,7 +524,7 @@ mod tests {
         let destination = alias.join("backup.sqlite3");
         let source_before = fs::read(&source)?;
         let wal_before = fs::read(sidecar(&source, "-wal"))?;
-        assert_eq!(check_history_database(&linked_source)?.schema_version, 5);
+        assert_eq!(check_history_database(&linked_source)?.schema_version, 9);
         backup_history_database(&linked_source, &destination, || false)?;
         let copied = Connection::open_with_flags(&destination, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
         assert_eq!(

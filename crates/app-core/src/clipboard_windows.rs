@@ -37,7 +37,12 @@ pub fn read_clipboard_image() -> Result<image::RgbaImage> {
     decode_payload(&bytes, png)
 }
 
-fn read_payload() -> Result<(Vec<u8>, bool)> {
+pub(crate) fn read_payload() -> Result<(Vec<u8>, bool)> {
+    read_payload_with_budget(&mut |_, _| Ok(()))
+}
+pub(crate) fn read_payload_with_budget(
+    before_copy: &mut dyn FnMut(bool, usize) -> Result<()>,
+) -> Result<(Vec<u8>, bool)> {
     // The clipboard stays open until the bounded payload has been copied; the
     // owner cannot replace/free its HGLOBAL while we inspect and lock it.
     unsafe {
@@ -63,6 +68,7 @@ fn read_payload() -> Result<(Vec<u8>, bool)> {
         ensure!(!handle.is_null(), "Could not read clipboard image");
         let length = GlobalSize(handle);
         validate_payload_size(length, png)?;
+        before_copy(png, length)?;
         let pointer = GlobalLock(handle);
         ensure!(!pointer.is_null(), "Could not access clipboard image");
         let bytes = std::slice::from_raw_parts(pointer.cast::<u8>(), length).to_vec();
@@ -71,7 +77,7 @@ fn read_payload() -> Result<(Vec<u8>, bool)> {
     }
 }
 
-fn decode_payload(bytes: &[u8], png: bool) -> Result<image::RgbaImage> {
+pub(crate) fn decode_payload(bytes: &[u8], png: bool) -> Result<image::RgbaImage> {
     validate_payload_size(bytes.len(), png)?;
     if png {
         let mut reader =

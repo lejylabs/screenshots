@@ -2,38 +2,18 @@
 
 use crate::ocr::{MAX_DIAGNOSTIC_BYTES, MAX_TEXT_BYTES, read_pipe};
 use anyhow::{Context, Result, ensure};
+use app_core::windows_child::{self, Child, Environment, Streams};
 use std::{
     io::Write,
-    os::windows::{
-        io::{AsRawHandle, FromRawHandle, OwnedHandle},
-        process::CommandExt,
-    },
-    process::{Child, Command, Stdio},
+    os::windows::io::{AsHandle, OwnedHandle},
+    process::Command,
     sync::mpsc::{self, Receiver, RecvTimeoutError},
     thread::JoinHandle,
     time::{Duration, Instant},
 };
-use windows_sys::Win32::{
-    Foundation::{ERROR_NO_MORE_FILES, GetLastError, INVALID_HANDLE_VALUE},
-    System::{
-        Diagnostics::ToolHelp::{
-            CreateToolhelp32Snapshot, TH32CS_SNAPTHREAD, THREADENTRY32, Thread32First, Thread32Next,
-        },
-        JobObjects::{
-            AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
-            JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectExtendedLimitInformation,
-            SetInformationJobObject,
-        },
-        Threading::{
-            CREATE_NO_WINDOW, CREATE_SUSPENDED, GetProcessIdOfThread, OpenThread, ResumeThread,
-            THREAD_QUERY_LIMITED_INFORMATION, THREAD_SUSPEND_RESUME,
-        },
-    },
-};
 
 const DEADLINE: Duration = Duration::from_secs(30);
 const CHECK_INTERVAL: Duration = Duration::from_millis(25);
-const MAX_THREAD_ENTRIES: usize = 65_536;
 
 struct Engine {
     child: Child,
@@ -64,92 +44,7 @@ impl Drop for Engine {
 }
 
 pub(crate) fn job_object() -> Result<OwnedHandle> {
-    // Null attributes make the handle non-inheritable; the child must not retain it.
-    let handle = unsafe { CreateJobObjectW(std::ptr::null(), std::ptr::null()) };
-    ensure!(
-        !handle.is_null(),
-        "Could not create child process isolation"
-    );
-    let job = unsafe { OwnedHandle::from_raw_handle(handle) };
-    let mut limits = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
-    limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
-    ensure!(
-        unsafe {
-            SetInformationJobObject(
-                job.as_raw_handle(),
-                JobObjectExtendedLimitInformation,
-                std::ptr::from_ref(&limits).cast(),
-                std::mem::size_of_val(&limits) as u32,
-            )
-        } != 0,
-        "Could not configure child process isolation"
-    );
-    Ok(job)
-}
-
-pub(crate) fn resume_initial_thread(process_id: u32, deadline: Instant) -> Result<()> {
-    // std::process retains only the process handle. Before user code runs, locate
-    // its sole initial thread once; reject ambiguous or oversized snapshots.
-    let handle = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0) };
-    ensure!(
-        handle != INVALID_HANDLE_VALUE,
-        "Could not inspect suspended child process"
-    );
-    let snapshot = unsafe { OwnedHandle::from_raw_handle(handle) };
-    let mut entry = THREADENTRY32 {
-        dwSize: std::mem::size_of::<THREADENTRY32>() as u32,
-        ..Default::default()
-    };
-    let mut present = unsafe { Thread32First(snapshot.as_raw_handle(), &mut entry) } != 0;
-    let mut thread_id = None;
-    let mut count = 0;
-    while present {
-        count += 1;
-        ensure!(
-            count <= MAX_THREAD_ENTRIES && Instant::now() < deadline,
-            "Child thread inspection exceeded its bound"
-        );
-        if entry.th32OwnerProcessID == process_id {
-            ensure!(
-                thread_id.is_none(),
-                "Child process has ambiguous initial threads"
-            );
-            thread_id = Some(entry.th32ThreadID);
-        }
-        entry.dwSize = std::mem::size_of::<THREADENTRY32>() as u32;
-        present = unsafe { Thread32Next(snapshot.as_raw_handle(), &mut entry) } != 0;
-    }
-    ensure!(
-        unsafe { GetLastError() } == ERROR_NO_MORE_FILES,
-        "Could not finish inspecting suspended child process"
-    );
-    let thread_id = thread_id.context("Could not find suspended child process thread")?;
-    let handle = unsafe {
-        OpenThread(
-            THREAD_SUSPEND_RESUME | THREAD_QUERY_LIMITED_INFORMATION,
-            0,
-            thread_id,
-        )
-    };
-    ensure!(
-        !handle.is_null(),
-        "Could not open suspended child process thread"
-    );
-    let thread = unsafe { OwnedHandle::from_raw_handle(handle) };
-    // Revalidate ownership after opening: snapshot IDs can be reused by the OS.
-    ensure!(
-        unsafe { GetProcessIdOfThread(thread.as_raw_handle()) } == process_id,
-        "Suspended Child process thread changed ownership"
-    );
-    ensure!(
-        Instant::now() < deadline,
-        "Child process startup exceeded its deadline"
-    );
-    ensure!(
-        unsafe { ResumeThread(thread.as_raw_handle()) } == 1,
-        "Could not resume isolated child process"
-    );
-    Ok(())
+    windows_child::job(None, None)
 }
 
 enum Message {
@@ -207,32 +102,18 @@ fn await_result(
     }
 }
 
-fn run_command(mut command: Command, input: Vec<u8>, timeout: Duration) -> Result<String> {
+fn run_command(command: Command, input: Vec<u8>, timeout: Duration) -> Result<String> {
     let deadline = Instant::now() + timeout;
     let job = job_object()?;
-    let child = command
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .creation_flags(CREATE_NO_WINDOW | CREATE_SUSPENDED)
-        .spawn()
-        .map_err(|_| anyhow::anyhow!("OCR engine is unavailable; install tesseract and the requested language data separately"))?;
+    let child = windows_child::spawn(
+        &command, job.as_handle(), Streams::PIPED, Environment::Inherit, &[],
+    ).map_err(|_| anyhow::anyhow!("OCR engine is unavailable; install tesseract and the requested language data separately"))?;
     let mut engine = Engine {
         child,
         job: Some(job),
         workers: Vec::with_capacity(3),
         finished: false,
     };
-    // A failed assignment is fatal while the engine is still suspended.
-    ensure!(
-        unsafe {
-            AssignProcessToJobObject(
-                engine.job.as_ref().unwrap().as_raw_handle(),
-                engine.child.as_raw_handle(),
-            )
-        } != 0,
-        "Could not isolate OCR engine; its process was not started"
-    );
     let mut stdin = engine
         .child
         .stdin
@@ -285,7 +166,7 @@ fn run_command(mut command: Command, input: Vec<u8>, timeout: Duration) -> Resul
             })
             .context("Could not start OCR diagnostic worker")?,
     );
-    resume_initial_thread(engine.child.id(), deadline)?;
+    engine.child.resume(deadline)?;
     await_result(&mut engine, messages, deadline)
 }
 
@@ -300,7 +181,12 @@ pub(crate) fn recognize(input: Vec<u8>, language: &str) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::{Read, Write};
+    use std::{
+        io::{Read, Write},
+        os::windows::io::{AsRawHandle, FromRawHandle},
+        process::Stdio,
+    };
+    use windows_sys::Win32::Foundation::GetLastError;
 
     fn fixture(mode: &str) -> Command {
         let mut command = Command::new(std::env::current_exe().unwrap());

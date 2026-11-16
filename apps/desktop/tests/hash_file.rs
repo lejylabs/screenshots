@@ -193,7 +193,8 @@ fn missing_directory_and_oversized_sparse_inputs_fail_without_outputs() {
     fixture.no_user_state();
 }
 
-#[cfg(unix)]
+// APFS rejects invalid UTF-8 names before the application can open them.
+#[cfg(all(unix, not(target_os = "macos")))]
 #[test]
 fn non_utf8_paths_work_and_non_utf8_expectations_fail() {
     use std::{ffi::OsString, os::unix::ffi::OsStringExt as _};

@@ -1,5 +1,11 @@
 # Optional Unix screen recording
 
+Audio follow-up: `record-audio` records explicit native/synthetic sources as
+PCM WAV; Matroska screen recordings also accept `--audio-mode`,
+`--audio-device` and `--audio-channels`. See [audio capture and combined A/V](audio-recording.md)
+for sample-count verification and device/permission limits. The original
+video-only behavior described below remains unchanged when these flags are omitted.
+
 The separate [Windows recorder](recording-windows.md) uses bounded pipe output
 and a Windows Job Object. The Unix process/limit guarantees below describe only
 this Unix backend.
@@ -11,9 +17,15 @@ Record a finite rectangle from a local X11 display with separately installed
 screenshots record x11 capture.mkv --seconds 10 --fps 15 --width 1280 --height 720 --x 0 --y 0
 ```
 
-This is a partial screen-recording capability: Unix, local X11, one video stream,
+The new [macOS native completion](macos-capture-completion.md) adds the separately
+guarded `record avfoundation ... --display ID` mode: a fixed native display
+source supplies bounded raw frames, never an ambiguous FFmpeg video-device name
+or camera index. Its actual SDK/runtime gate is tracked there; X11 evidence
+below does not establish macOS authorization or capture acceptance.
+
+This X11 backend is a partial screen-recording capability: Unix, local X11, one video stream,
 Matroska with FFV1 lossless video or a GIF animation. It does not provide audio,
-macOS native capture, Wayland portals, editor integration
+Wayland portals, editor integration
 or a recording UI. X11 support on a Unix system still depends on the installed
 FFmpeg build, permissions and an available X11 session. The application does not
 install, download or distribute either external executable. The user's installed
@@ -186,7 +198,8 @@ reference-hardware resource acceptance remain open.
 On Linux, each direct encoder/probe child receives a parent-death SIGKILL via
 `prctl`, closing its capture when the invoking process dies unexpectedly. This
 is not a process-tree guarantee for descendants that deliberately escape the
-managed group. Other Unix platforms have no equivalent parent-death setup in
-this implementation: a SIGKILL/crash of the controller can leave the direct
-engine running until its frame count finishes, and removes controller deadlines.
-Graceful SIGINT/SIGTERM still use the documented process-group cleanup.
+managed group. The native macOS recorder now uses an independent parent kqueue lifeline and
+owned process-group lifetime through its finish acknowledgement; see the
+[macOS ownership contract](macos-capture-completion.md). The older generic Unix
+parent-loss observation does not describe that adapter. Graceful termination
+continues to use the documented process-group cleanup.

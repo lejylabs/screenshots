@@ -37,17 +37,43 @@ pub(crate) fn upload(args: &[OsString]) -> Result<()> {
         path.as_os_str().as_encoded_bytes().len() <= 4096,
         "S3 input path exceeds 4096 bytes"
     );
+    let outcome = upload_prepared(&profile, &path)?;
+    print(
+        &outcome,
+        "S3 object was uploaded but its result could not be written; no retry was attempted",
+    )
+}
+
+pub(crate) fn upload_prepared(
+    profile: &app_core::S3Profile,
+    path: &Path,
+) -> Result<serde_json::Value> {
+    upload_prepared_with_cancellation(profile, path, app_core::UploadCancellation::default())
+}
+
+pub(crate) fn upload_prepared_with_cancellation(
+    profile: &app_core::S3Profile,
+    path: &Path,
+    cancel: app_core::UploadCancellation,
+) -> Result<serde_json::Value> {
+    ensure!(
+        !cancel.is_canceled(),
+        "S3 upload canceled before credential lookup"
+    );
     let payload = app_core::read_s3_credentials(&profile.credential_target()?)?;
     let json = payload
         .strip_prefix(PREFIX)
         .context("Stored S3 credentials have an unsupported format")?;
     let credentials = app_core::S3Credentials::from_json(json)?;
     drop(payload);
-    let outcome = app_core::upload_s3_file(&profile, &path, credentials)?;
-    print(
-        &serde_json::json!({"bucket":outcome.bucket,"key":outcome.key,"etag":outcome.etag}),
-        "S3 object was uploaded but its result could not be written; no retry was attempted",
-    )
+    let outcome = app_core::upload_s3_file_with_cancellation(profile, path, credentials, cancel)?;
+    let public = profile.public_url(&outcome.key)?;
+    let mut result =
+        serde_json::json!({"bucket":outcome.bucket,"key":outcome.key,"etag":outcome.etag});
+    if let Some(url) = public {
+        result["url"] = url.into();
+    }
+    Ok(result)
 }
 
 fn credential_payload(bytes: &[u8]) -> Result<Zeroizing<Vec<u8>>> {
