@@ -34,9 +34,11 @@ remains the escape for a stuck OS call. This is not native acceptance.
 ## Native admission
 
 Use the existing XCap backend and `RememberedRegion`/`ExactRegion` snapshot
-validation, including pre/post capture geometry checks. Require 100% scale and
-unrotated display geometry initially: Retina, mixed DPI and rotated outputs need
-separate calibration before this command promises exact pixel coordinates.
+validation, including pre/post capture geometry checks. X11 retains its 100%-scale,
+unrotated policy. Windows uses calibrated physical geometry. macOS explicitly
+admits native pixel geometry with the full UUID/Quartz/filter proof; the modern
+source must independently establish orientation and actual raster dimensions.
+Its legacy source remains unrotated. Native platform acceptance remains separate.
 Windows sets a scoped per-monitor-v2 thread DPI context before enumeration and
 restores it afterward. This adds an existing windows-sys feature, no dependency.
 The inherited metadata preflight also requires the complete display's dimensions

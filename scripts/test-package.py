@@ -22,6 +22,41 @@ smoke_spec.loader.exec_module(smoke_module)
 
 
 class PackagingTests(unittest.TestCase):
+    def test_vendored_accesskit_original_licenses_are_required_and_packaged(self):
+        hashes = {
+            "LICENSE-MIT": "23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3",
+            "LICENSE-APACHE": "62c7a1e35f56406896d7aa7ca52d0cc0d272ac022b5d2796e7d6905db8a3636a",
+        }
+        licenses = []
+        for name, version in [("accesskit_unix", "0.22.1"), ("accesskit_atspi_common", "0.19.1")]:
+            item = {"name": name, "version": version, "license": "MIT OR Apache-2.0",
+                    "manifest_path": str(module.ROOT / "vendor" / name / "Cargo.toml")}
+            paths = module.license_files(item)
+            self.assertEqual({Path(path).name for path in paths}, set(hashes))
+            for path in paths:
+                self.assertEqual(hashlib.sha256(Path(path).read_bytes()).hexdigest(), hashes[Path(path).name])
+            licenses.append({key: item[key] for key in ("name", "version", "license")} | {"license_files": paths})
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            binary = root / "binary"
+            binary.write_bytes(b"synthetic executable")
+            for target in ["x86_64-unknown-linux-gnu", "x86_64-pc-windows-msvc"]:
+                with self.subTest(target=target):
+                    archive = module.package(binary, root / target, "accesskit-test", target, 0, {}, licenses)
+                    opener = zipfile.ZipFile if "windows" in target else tarfile.open
+                    with opener(archive) as stream:
+                        for item in licenses:
+                            for name, digest in hashes.items():
+                                path = f"accesskit-test/licenses/{item['name']}-{item['version']}/{name}"
+                                data = stream.read(path) if "windows" in target else stream.extractfile(path).read()
+                                self.assertEqual(hashlib.sha256(data).hexdigest(), digest)
+            for item in licenses:
+                # A metadata entry alone must not silently ship without its notices.
+                with self.subTest(missing=item["name"]):
+                    absent = {"name": item["name"], "manifest_path": str(root / "Cargo.toml")}
+                    with self.assertRaises(ValueError):
+                        module.license_files(absent)
+
     def test_checksum_failure_never_deletes_published_or_replaced_archive(self):
         for replace in [False, True]:
             with self.subTest(replace=replace), tempfile.TemporaryDirectory() as temporary:

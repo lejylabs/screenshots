@@ -11,6 +11,7 @@ fn source(width: u32, height: u32) -> CapturedImage {
         ])
     });
     CapturedImage {
+        desktop_layout: None,
         display_id: "editor-fixture".into(),
         window_id: None,
         width,

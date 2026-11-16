@@ -865,6 +865,7 @@ mod tests {
             ));
         }
         Ok(app_core::NativeCaptureReply::Frames(vec![CapturedImage {
+            desktop_layout: None,
             display_id: "fixture".into(),
             window_id: None,
             width: 2,

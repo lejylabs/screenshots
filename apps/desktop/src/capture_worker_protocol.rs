@@ -96,7 +96,7 @@ pub(super) fn read_request(input: &mut impl Read) -> Result<NativeCaptureCall> {
     let bytes = metadata(input, length, 65536)?;
     let shape: serde_json::Value = object(&bytes)?;
     let allowed: &[&str] = match shape.get("operation").and_then(|value| value.as_str()) {
-        Some("inventory" | "displays" | "windows") => &["operation"],
+        Some("inventory" | "displays" | "pixel_displays" | "windows") => &["operation"],
         Some("identities") => &["operation", "displays"],
         Some("batch") => &["operation", "requests", "options"],
         Some("focused_window" | "focused_display" | "desktop") => &["operation", "options"],
@@ -232,6 +232,8 @@ enum Meta {
     },
     Frames {
         count: usize,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        desktop_layout: Option<app_core::MacDesktopLayout>,
     },
 }
 #[derive(Serialize, Deserialize)]
@@ -280,6 +282,10 @@ pub(super) fn reply(output: &mut impl Write, reply: NativeCaptureReply) -> Resul
         NativeCaptureReply::Frames(frames) => (
             Meta::Frames {
                 count: frames.len(),
+                desktop_layout: frames
+                    .first()
+                    .and_then(|frame| frame.desktop_layout.as_deref())
+                    .cloned(),
             },
             frames,
         ),
@@ -330,6 +336,7 @@ fn error_code(error: &app_core::CaptureError) -> u8 {
         E::MacAccessibilityPermissionDenied => 14,
         E::MacMicrophonePermissionDenied => 15,
         E::ImageColorPolicy => 16,
+        E::TemplateRebindRequired => 17,
         _ => 0,
     }
 }
@@ -355,6 +362,7 @@ fn error_from_code(code: u8) -> Result<app_core::CaptureError> {
         14 => E::MacAccessibilityPermissionDenied,
         15 => E::MacMicrophonePermissionDenied,
         16 => E::ImageColorPolicy,
+        17 => E::TemplateRebindRequired,
         _ => anyhow::bail!("Unknown native error category"),
     })
 }
@@ -445,6 +453,28 @@ pub(super) fn read_reply_with_eof(
         !matches!(call, NativeCaptureCall::MacScroll { .. }) || scroll.is_some(),
         "Native scrolling reply omitted its summary"
     );
+    let desktop_layout = match &value {
+        Meta::Frames {
+            desktop_layout: Some(layout),
+            count,
+        } => {
+            ensure!(
+                cfg!(target_os = "macos")
+                    && *count == 1
+                    && matches!(call, NativeCaptureCall::Desktop { .. }),
+                "Unexpected native desktop grid"
+            );
+            layout.validate()?;
+            Some(Arc::new(layout.clone()))
+        }
+        _ => None,
+    };
+    ensure!(
+        !cfg!(target_os = "macos")
+            || !matches!(call, NativeCaptureCall::Desktop { .. })
+            || desktop_layout.is_some(),
+        "Native macOS desktop omitted its output grid metadata"
+    );
     let reply = match value {
         Meta::MacVideo { summary } => NativeCaptureReply::MacVideo { summary },
         Meta::Clipboard { snapshot } => {
@@ -476,7 +506,11 @@ pub(super) fn read_reply_with_eof(
         Meta::Displays { values } => NativeCaptureReply::Displays(values),
         Meta::Windows { values } => NativeCaptureReply::Windows(values),
         Meta::Identities { values } => NativeCaptureReply::Identities(values),
-        Meta::Frames { count } | Meta::MacScroll { count, summary: _ } => {
+        Meta::Frames {
+            count,
+            desktop_layout: _,
+        }
+        | Meta::MacScroll { count, summary: _ } => {
             ensure!(
                 (1..=32).contains(&count) && call.frame_count() == Some(count),
                 "Native frame count exceeds its bound or differs from its request"
@@ -506,6 +540,12 @@ pub(super) fn read_reply_with_eof(
                 if let (Some(summary), NativeCaptureCall::MacScroll { request }) = (&scroll, call) {
                     summary.validate(request, frame.width, frame.height)?;
                 }
+                if let Some(layout) = &desktop_layout {
+                    ensure!(
+                        (frame.width, frame.height) == (layout.width, layout.height),
+                        "Desktop frame/grid dimensions disagree"
+                    );
+                }
                 let expected = admit_frame(&mut total, frame.width, frame.height, pixels)?;
                 let mut bytes = Vec::new();
                 bytes.try_reserve_exact(expected as usize)?;
@@ -516,6 +556,7 @@ pub(super) fn read_reply_with_eof(
                 let pixels = image::RgbaImage::from_raw(frame.width, frame.height, bytes)
                     .context("Invalid native pixel backing")?;
                 frames.push(CapturedImage {
+                    desktop_layout: desktop_layout.clone(),
                     display_id: frame.display_id,
                     window_id: frame.window_id,
                     width: frame.width,
@@ -592,6 +633,7 @@ mod tests {
             trim_bottom: 0,
         };
         let image = CapturedImage {
+            desktop_layout: None,
             display_id: "7".into(),
             window_id: Some("42".into()),
             width: 2,
@@ -689,6 +731,7 @@ mod tests {
     }
     fn frame() -> CapturedImage {
         CapturedImage {
+            desktop_layout: None,
             display_id: "fixture".into(),
             window_id: None,
             width: 2,
@@ -809,6 +852,33 @@ mod tests {
             let mut encoded = Vec::new(); packet(&mut encoded, REQUEST, bytes, 0).unwrap(); assert!(read_request(&mut encoded.as_slice()).is_err());
         }
     }
+    fn desktop_frame() -> CapturedImage {
+        let mut shot = frame();
+        shot.display_id = "desktop".into();
+        #[cfg(target_os = "macos")]
+        {
+            let logical = app_core::MacLogicalRect {
+                x: 0.0,
+                y: 0.0,
+                width: 2.0,
+                height: 1.0,
+            };
+            let proof = app_core::MacDisplayProof {
+                id: 1,
+                uuid: "00000000-0000-0000-0000-000000000001".into(),
+                logical,
+                pixel_width: 2,
+                pixel_height: 1,
+                rotation: 0.0,
+            };
+            let coordinates =
+                app_core::MacDisplayCoordinates::from_filter(proof, logical, logical, 1.0).unwrap();
+            shot.desktop_layout = Some(Arc::new(
+                app_core::MacDesktopLayout::new(&[coordinates]).unwrap(),
+            ));
+        }
+        shot
+    }
     #[test]
     fn physical_desktop_protocol_keeps_one_exact_frame_and_rejects_other_sources() {
         let call = NativeCaptureCall::Desktop {
@@ -820,8 +890,8 @@ mod tests {
             read_request(&mut encoded.as_slice()).unwrap(),
             NativeCaptureCall::Desktop { .. }
         ));
-        let mut shot = frame();
-        shot.display_id = "desktop".into();
+        let shot = desktop_frame();
+        let expected_layout = shot.desktop_layout.clone();
         let expected = shot.pixels.clone();
         let mut encoded = Vec::new();
         reply(&mut encoded, NativeCaptureReply::Frames(vec![shot])).unwrap();
@@ -831,6 +901,7 @@ mod tests {
             panic!("not frames");
         };
         assert_eq!(frames[0].pixels, expected);
+        assert_eq!(frames[0].desktop_layout, expected_layout);
         let mut wrong = Vec::new();
         reply(&mut wrong, NativeCaptureReply::Frames(vec![frame()])).unwrap();
         assert!(read_reply(&mut wrong.as_slice(), &call).is_err());
@@ -842,5 +913,79 @@ mod tests {
             packet(&mut packet_bytes, REQUEST, bytes, 0).unwrap();
             assert!(read_request(&mut packet_bytes.as_slice()).is_err());
         }
+    }
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn mac_desktop_protocol_rejects_missing_grid_before_reading_raw_pixels() {
+        let call = NativeCaptureCall::Desktop {
+            options: Default::default(),
+        };
+        let mut shot = desktop_frame();
+        shot.desktop_layout = None;
+        let mut bytes = Vec::new();
+        reply(&mut bytes, NativeCaptureReply::Frames(vec![shot])).unwrap();
+        let error = read_reply(&mut bytes.as_slice(), &call).err().unwrap();
+        assert!(error.to_string().contains("omitted its output grid"));
+    }
+
+    #[test]
+    fn edited_desktop_rasters_drop_grid_metadata_before_region_protocol_roundtrip() {
+        let mut original = desktop_frame();
+        if original.desktop_layout.is_none() {
+            let logical = app_core::MacLogicalRect {
+                x: 0.0,
+                y: 0.0,
+                width: 2.0,
+                height: 1.0,
+            };
+            let proof = app_core::MacDisplayProof {
+                id: 1,
+                uuid: "00000000-0000-0000-0000-000000000001".into(),
+                logical,
+                pixel_width: 2,
+                pixel_height: 1,
+                rotation: 0.0,
+            };
+            let coordinates =
+                app_core::MacDisplayCoordinates::from_filter(proof, logical, logical, 1.0).unwrap();
+            original.desktop_layout = Some(Arc::new(
+                app_core::MacDesktopLayout::new(&[coordinates]).unwrap(),
+            ));
+        }
+        let area = app_core::PixelRegion {
+            x: 0,
+            y: 0,
+            width: 1,
+            height: 1,
+        };
+        let cropped = app_core::crop_snapshot(&original, area).unwrap();
+        let mut document =
+            app_core::editor_document::EditorDocument::from_image(original.clone()).unwrap();
+        document.set_crop(Some(area)).unwrap();
+        let rendered = document.snapshot().render(|| false).unwrap();
+        for frame in [cropped, rendered] {
+            assert!(frame.desktop_layout.is_none());
+            let call = NativeCaptureCall::Batch {
+                requests: vec![app_core::CaptureRequest::Region {
+                    display_id: "desktop".into(),
+                    x: 0,
+                    y: 0,
+                    width: 1,
+                    height: 1,
+                }],
+                options: Default::default(),
+            };
+            let mut bytes = Vec::new();
+            reply(&mut bytes, NativeCaptureReply::Frames(vec![frame])).unwrap();
+            let NativeCaptureReply::Frames(frames) =
+                read_reply(&mut bytes.as_slice(), &call).unwrap()
+            else {
+                panic!("expected frames")
+            };
+            assert_eq!(frames[0].pixels.dimensions(), (1, 1));
+            assert!(frames[0].desktop_layout.is_none());
+        }
+        assert_eq!(original.desktop_layout.as_ref().unwrap().width, 2);
+        assert_eq!(original.pixels.dimensions(), (2, 1));
     }
 }

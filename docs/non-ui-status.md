@@ -4,8 +4,8 @@ Date: 2026-11-16
 Scope: the user's complete major-feature list, with final GPUI redesign and new
 UI controls excluded. The workstation stays on. The full backlog is **open**.
 
-Verification base: branch `feat/non-ui-delivery`, pushed implementation HEAD
-`86dda66`, including the reviewed persistence, logging and managed-color follow-ups.
+Verification base: branch `feat/non-ui-delivery`, pushed `32398b6`, including the
+reviewed persistence, logging, managed-color and portable packaging follow-ups.
 Committed follow-ups include native defaults/templates and process isolation,
 Library lifecycle/reservations, bounded image cancellation, modern SXCU execution,
 shared encoded-input decoding and complete private-runtime/native packaging.
@@ -13,22 +13,28 @@ Atomic Windows worker startup, durable schedules, real in-memory Wayland
 capture and explicit URL image input are also committed. Reviewed Windows physical capture, macOS still/scroll/recording and bounded
 clipboard/Paste/Wayland-drop foundations are committed. The layered editor
 document backend and physical-X11 color/ruler follow-ups are also committed;
-remaining native input/output and physical-coordinate consumers are still open.
+Mac typed point/native-pixel consumers and the derived desktop grid are now
+integrated; their current-source native SDK/hardware gates remain open. Other
+native input/output work is still open.
 Delivered backend paths do not close excluded UI or real native acceptance gates.
 
-The current integrated implementation passed **953 optimized tests**, with 69 explicit
+The current integrated implementation passed **996 optimized tests**, with 69 explicit
 opt-ins excluded across 59 outer suites and zero failures. This includes the
 bounded logger, journaled capture saves and managed-color input with the exact
-same-version moxcms correction. All three source review gates converged:
+same-version moxcms correction, Mac coordinate consumers and structured parser
+mutation verification. The first three source review gates converged:
 logger rounds 6/7, journal rounds 5/6 and managed-color rounds 5/6. Formatting, all-target
-optimized Clippy, default advisories and Windows GNU metadata checks pass.
+optimized Clippy, default advisories and Windows GNU metadata checks pass. Mac
+source rounds 3/4 and structured parser rounds 2/3 are also clean. Current-source
+native SDK/runtime and physical acceptance remain distinct from these checks.
 Earlier 868-test/786-test/Clippy/Windows GNU/advisory totals remain
 historical snapshots. Source reviews and private native fixtures are recorded
 separately in each contract. None establishes physical hardware, reference
 performance or a production release.
 
 Repository write access is restored. Completed implementation commits are pushed
-through `86dda66`; exact-source native CI remains a separate verification gate.
+through the verification base above; exact-source native CI remains a separate
+verification gate.
 No password request or permission change was needed.
 
 CI `8fdbc78` found unformatted snapshot code and a nanosecond-clock temp-name
@@ -43,7 +49,14 @@ remains powered on; no shutdown will be performed.
 
 ## Immediate verification state
 
-- [x] Current integrated Linux checkpoint: 953 passed, zero failed, 69 opt-ins
+- [x] Current Mac-coordinate/parser checkpoint: 996 passed, zero failed,
+  69 opt-ins excluded across 59 outer Cargo suites, with 2,273 source/provenance
+  inputs unchanged during checks. Fourteen actual private CLI parser/ruler
+  requests pass. A 100-sample synthetic compositor copy/resample/allocation
+  report is separate from native capture, SDK, presentation and hardware gates.
+  [Mac coordinates](macos-coordinate-consumers.md),
+  [structured parser verification](structured-parser-fuzz.md).
+- [x] Previous persistence/color/logger checkpoint: 953 passed, zero failed, 69 opt-ins
   excluded across 59 outer Cargo suites. The two new actual CLI save-recovery
   fixtures, 16 private logger fixtures/four headless requests and 14 actual
   managed-color CLI requests pass. Independent LittleCMS 2.19 expectations,
@@ -85,8 +98,12 @@ remains powered on; no shutdown will be performed.
   release/package checks passed; the complete run passed 523 regular tests and
   all doctests, with 53 opt-in cases excluded. The new timing-only opt-in test
   also passed separately. [Contract](saved-png-admission.md).
-- [ ] Exact-head native CI remains an acceptance gate; read the current run
-  separately from historical local evidence above.
+- [ ] Native SDK/private fixtures for exact committed source `32398b6` are
+  scheduled in [run 43946653508](https://github.com/lejylabs/screenshots/actions/runs/43946653508).
+  Its auxiliary snapshot `ab7b99c` changes only the workflow; no held feature
+  files are included. The run was queued when recorded, so it supplies no
+  completed result yet. Physical hardware and permission acceptance remain
+  separate from SDK/private-process checks.
 - [x] Maintained native font/SVG and D-Bus families: active production graph
   passes default `cargo deny check advisories` without ignores. Actual private
   D-Bus AccessKit activation/actions/update/reactivation, SVG/text and Windows
@@ -128,9 +145,11 @@ These are actionable gaps, not unavailable-test excuses. Implement bounded core,
 CLI or native services without adding the excluded UI controls. UI-only workflow
 completion is listed separately.
 
-- [ ] **Capture completion:** complete missing native macOS cursor/policy paths,
-  macOS Retina template/repeat/global-coordinate consumers and non-Windows desktop
-  composition, native topology/lifetime handling,
+- [ ] **Capture completion:** finish remaining native macOS cursor/policy cases
+  and physical topology/lifetime acceptance. Typed Mac Retina template/repeat/
+  global-point consumers and derived desktop composition are implemented;
+  their native SDK and hardware acceptance remains open. Finish remaining
+  non-Windows desktop/platform work,
   and HDR/wide-gamut conversion/capability correctness. Existing strict refusal
   of unsupported layouts does not implement their conversion. Defaults,
   arbitrary Task hotkeys, persistent monitor templates and ordered after-capture
@@ -187,7 +206,9 @@ completion is listed separately.
 - [ ] **Engineering requirements in PLAN:** bounded asynchronous app-data file
   logging with fixed retention and metadata-only records is implemented with
   native parked-writer and callback checks. Five-minute native idle/resource
-  acceptance and structured coordinate/uploader-extraction fuzz harnesses remain.
+  acceptance remain. Structured coordinate/uploader mutation smoke now covers
+  16,618 seed/mutation cases, 24 boundaries and independent exact oracles; a
+  coverage-guided/sanitizer campaign remains separate.
 - [x] **Dependency maintenance:** maintained font/SVG and D-Bus active families
   and focused regression coverage are implemented. Recheck the exact final graph;
   dormant upstream optional-backend lock entries and the default-branch GLib alert
@@ -279,11 +300,11 @@ themes and editor controls are preserved, not redesigned.
   the [delivery request](non-ui-delivery.md#request-and-constraints) and PLAN's
   performance/privacy contract.
 
-Coverage update: the hidden-path sweep inventories **149 Markdown files**
-(87 project and 62 vendor), excluding target and .git. Its snapshot hashes,
+Coverage update: the latest hidden-path sweep inventories **160 Markdown files**
+(94 project and 66 vendor), excluding target and .git. Its snapshot hashes,
 requirement/status extracts and exact per-file reading depth are recorded in the
-local reconciliation report. Full semantic review of historical long documents
-and upstream vendor prose remains partial; inventory/hash coverage does not
+local reconciliation reports. Full semantic review of historical long documents
+and upstream vendor prose is continuing; inventory/hash coverage does not
 claim otherwise. Current code checks include the PLAN performance, phase and
 Definition-of-Done requirements and revealed additional logging/fuzz/resident
 work above. Historical evidence remains dated; this checklist does not declare

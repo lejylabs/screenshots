@@ -5,6 +5,40 @@ use serde::{Deserialize, Serialize};
 
 const PRECISION: f64 = 1.0 / 1024.0;
 
+#[cfg(any(target_os = "macos", test))]
+pub(crate) fn validate_mac_display_inventory(
+    expected: &[MacDisplayProof],
+    backend_ids: &[u32],
+    current: &[MacDisplayProof],
+) -> Result<()> {
+    let stale = || crate::CaptureError::StaleRegion;
+    ensure!(
+        (1..=32).contains(&expected.len())
+            && backend_ids.len() == expected.len()
+            && current.len() == expected.len(),
+        stale()
+    );
+    for (at, proof) in expected.iter().enumerate() {
+        proof.validate()?;
+        ensure!(
+            !expected[..at]
+                .iter()
+                .any(|other| other.id == proof.id || other.uuid == proof.uuid),
+            stale()
+        );
+        ensure!(
+            backend_ids.iter().filter(|id| **id == proof.id).count() == 1,
+            stale()
+        );
+        let mut matching = current.iter().filter(|other| other.id == proof.id);
+        ensure!(
+            matching.next() == Some(proof) && matching.next().is_none(),
+            stale()
+        );
+    }
+    Ok(())
+}
+
 /// The mode proof alone does not establish the orientation of a captured raster.
 /// Modern sources additionally supply their public filter extent and pixel scale.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
@@ -399,6 +433,27 @@ pub(crate) mod tests {
         };
         MacDisplayCoordinates::from_filter(proof.clone(), proof.logical, proof.logical, scale)
             .unwrap()
+    }
+
+    #[test]
+    fn complete_native_inventory_proofs_admit_seventeen_and_thirty_two_without_subsets() {
+        for count in [17, 32] {
+            let proofs = (1..=count)
+                .map(|id| display(id, f64::from(id), 0.0, 1.0, 1.0, 1.0).to_proof())
+                .collect::<Vec<_>>();
+            let ids = proofs.iter().map(|proof| proof.id).collect::<Vec<_>>();
+            validate_mac_display_inventory(&proofs, &ids, &proofs).unwrap();
+            assert!(validate_mac_display_inventory(&proofs, &ids[..16], &proofs).is_err());
+            let mut changed = proofs.clone();
+            changed[0].uuid = "00000000-0000-0000-0000-000000000099".into();
+            assert!(validate_mac_display_inventory(&proofs, &ids, &changed).is_err());
+            assert!(validate_mac_display_inventory(&proofs, &ids, &proofs[..16]).is_err());
+        }
+        let proofs = (1..=33)
+            .map(|id| display(id, f64::from(id), 0.0, 1.0, 1.0, 1.0).to_proof())
+            .collect::<Vec<_>>();
+        let ids = proofs.iter().map(|proof| proof.id).collect::<Vec<_>>();
+        assert!(validate_mac_display_inventory(&proofs, &ids, &proofs).is_err());
     }
 
     #[test]

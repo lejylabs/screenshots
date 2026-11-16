@@ -28,7 +28,11 @@ also capped at 256 MiB. Invalid arguments fail before any native capture.
 ## Native and resource contract
 
 Use the existing XCap full-display batch, then `crop_snapshot` for each output.
-Reject rotated displays, scale other than 100% and the current Wayland path.
+The X11 analysis policy rejects rotated displays and scale other than 100%;
+the current Wayland path remains unsupported. Windows uses calibrated native
+physical pixels. macOS explicitly admits display-local native pixels with the
+full UUID/Quartz/filter proof, including independently established SCK orientation;
+its legacy source retains the unrotated restriction.
 Linux requires X11 with a nonempty UTF-8 DISPLAY and no nonempty WAYLAND_DISPLAY.
 Native X11 origins/dimensions must fit the backend's signed/unsigned 16-bit
 fields. Windows uses the same scoped per-monitor-v2 thread DPI context as
@@ -37,7 +41,7 @@ region analysis. macOS/Windows native acceptance remains open.
 Compare every selected display's position, dimensions, scale and rotation
 before and after the capture batch. Require one result per distinct display,
 correct identity, no window target, matching pixel dimensions/backing length
-and the aggregate source byte cap before any save. On Windows, the backend's
+and the aggregate source byte cap before any save. On Windows and macOS, the backend's
 frame geometry must also agree with the admitted display. These are topology
 race checks, not an atomic capture guarantee.
 

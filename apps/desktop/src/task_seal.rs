@@ -119,15 +119,58 @@ mod tests {
     static NATIVE_FAIL: AtomicBool = AtomicBool::new(false);
     static LAST_FRAME: std::sync::Mutex<Option<std::sync::Weak<image::RgbaImage>>> =
         std::sync::Mutex::new(None);
+    #[cfg(target_os = "macos")]
+    fn synthetic_mac_coordinates() -> app_core::MacDisplayCoordinates {
+        let logical = app_core::MacLogicalRect {
+            x: 0.0,
+            y: 0.0,
+            width: 2.0,
+            height: 1.0,
+        };
+        let proof = app_core::MacDisplayProof {
+            id: 1,
+            uuid: "00000000-0000-0000-0000-000000000001".into(),
+            logical,
+            pixel_width: 2,
+            pixel_height: 1,
+            rotation: 0.0,
+        };
+        app_core::MacDisplayCoordinates::from_filter(proof, logical, logical, 1.0).unwrap()
+    }
+    fn synthetic_display_geometry() -> app_core::DisplayGeometry {
+        app_core::DisplayGeometry {
+            x: 0,
+            y: 0,
+            width: 2,
+            height: 1,
+            scale_factor: 1.0,
+            rotation: 0.0,
+            mac_coordinates: {
+                #[cfg(target_os = "macos")]
+                {
+                    Some(synthetic_mac_coordinates())
+                }
+                #[cfg(not(target_os = "macos"))]
+                {
+                    None
+                }
+            },
+        }
+    }
     fn synthetic_native(
         call: app_core::NativeCaptureCall,
         check: &app_core::NativeCaptureCheck<'_>,
     ) -> std::result::Result<app_core::NativeCaptureReply, app_core::CaptureError> {
         use app_core::{CaptureRequest as Q, NativeCaptureCall as C, NativeCaptureReply as R};
         check()?;
-        if matches!(call, C::Displays) {
+        if matches!(call, C::Displays | C::PixelDisplays) {
             return Ok(R::Displays(vec![app_core::DisplayInfo {
-                id: "fixture-display".into(),
+                mac_coordinates: if matches!(call, C::PixelDisplays) {
+                    synthetic_display_geometry().mac_coordinates
+                } else {
+                    None
+                },
+                id: "1".into(),
                 name: "private synthetic".into(),
                 x: 0,
                 y: 0,
@@ -151,6 +194,8 @@ mod tests {
             C::FocusedWindow { .. } => Some("fixture-window".into()),
             _ => None,
         };
+        let full_display = matches!(call, C::FocusedDisplay { .. })
+            || matches!(&call, C::Batch { requests, .. } if matches!(requests.first(), Some(Q::Display(_))));
         NATIVE_CAPTURES.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         let pixels = Arc::new(image::RgbaImage::from_pixel(
             2,
@@ -159,9 +204,10 @@ mod tests {
         ));
         *LAST_FRAME.lock().unwrap() = Some(Arc::downgrade(&pixels));
         Ok(R::Frames(vec![CapturedImage {
+            desktop_layout: None,
             display_id: match &call {
                 C::Portal { source, .. } => source.identifier().into(),
-                _ => "fixture-display".into(),
+                _ => "1".into(),
             },
             window_id: window,
             width: 2,
@@ -170,8 +216,40 @@ mod tests {
             pixels,
             elapsed_ms: 0,
             source_format: app_core::PixelFormat::Rgba8UnormSrgb,
-            display_geometry: None,
+            display_geometry: full_display.then(synthetic_display_geometry),
         }]))
+    }
+    #[test]
+    fn synthetic_full_display_sources_supply_valid_platform_geometry() {
+        use app_core::{CaptureRequest as Q, NativeCaptureCall as C, NativeCaptureReply as R};
+        for call in [
+            C::Batch {
+                requests: vec![Q::Display("1".into())],
+                options: Default::default(),
+            },
+            C::FocusedDisplay {
+                options: Default::default(),
+            },
+        ] {
+            let reply = synthetic_native(call.clone(), &|| Ok(())).unwrap();
+            call.validate_reply(&reply).unwrap();
+            let R::Frames(mut frames) = reply else {
+                panic!("expected frames")
+            };
+            let geometry = frames[0].display_geometry.unwrap();
+            assert_eq!(
+                geometry.mac_coordinates.is_some(),
+                cfg!(target_os = "macos")
+            );
+            if cfg!(target_os = "macos") {
+                frames[0].display_geometry = None;
+                assert!(call.validate_reply(&R::Frames(frames)).is_err());
+            }
+        }
+        for call in [C::Displays, C::PixelDisplays] {
+            let reply = synthetic_native(call.clone(), &|| Ok(())).unwrap();
+            call.validate_reply(&reply).unwrap();
+        }
     }
     #[test]
     fn native_schedule_sources_fixture() -> Result<()> {
@@ -191,9 +269,9 @@ mod tests {
             serde_json::json!({"type":"primary_display"}),
             serde_json::json!({"type":"active_display"}),
             serde_json::json!({"type":"active_window"}),
-            serde_json::json!({"type":"display","id":"fixture-display"}),
+            serde_json::json!({"type":"display","id":"1"}),
             serde_json::json!({"type":"window","id":"fixture-window"}),
-            serde_json::json!({"type":"region","display":"fixture-display","x":0,"y":0,"width":2,"height":1}),
+            serde_json::json!({"type":"region","display":"1","x":0,"y":0,"width":2,"height":1}),
             serde_json::json!({"type":"template","catalog":catalog,"name":"crop"}),
         ];
         #[cfg(target_os = "linux")]

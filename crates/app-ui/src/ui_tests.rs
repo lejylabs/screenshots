@@ -17,6 +17,7 @@ fn png_save_without_history_keeps_pixels_and_clipboard_status(cx: &mut TestAppCo
         image::Rgba([7, 11, 13, 255]),
     ));
     let shot = CapturedImage {
+        desktop_layout: None,
         display_id: "fixture".into(),
         window_id: None,
         width: 3,
@@ -92,6 +93,7 @@ fn failed_capture_batch_keeps_every_source_and_save_as_retries_all(cx: &mut Test
         .iter()
         .enumerate()
         .map(|(index, pixels)| CapturedImage {
+            desktop_layout: None,
             display_id: format!("fixture-{index}"),
             window_id: None,
             width: 3,
@@ -209,6 +211,7 @@ fn partial_capture_batch_releases_saved_pixels_and_retries_only_unsaved_source(
         .iter()
         .enumerate()
         .map(|(index, pixels)| CapturedImage {
+            desktop_layout: None,
             display_id: format!("fixture-{index}"),
             window_id: None,
             width: 2,
@@ -289,6 +292,7 @@ fn new_capture_session_releases_failed_batch_and_cancels_previous_capture(cx: &m
         .iter()
         .enumerate()
         .map(|(index, pixels)| CapturedImage {
+            desktop_layout: None,
             display_id: format!("fixture-{index}"),
             window_id: None,
             width: 2,
@@ -595,6 +599,7 @@ fn copy_file_path_requires_a_saved_capture_and_reports_worker_failure(cx: &mut T
     handle
         .update(cx, |this, _, cx| {
             this.last_capture = Some(CapturedImage {
+                desktop_layout: None,
                 width: 1,
                 height: 1,
                 pixels: Arc::new(image::RgbaImage::new(1, 1)),
@@ -756,6 +761,7 @@ fn custom_export_dimensions_validate_snapshot_and_release_input(cx: &mut TestApp
             .update(cx, |this, _, _| {
                 this.output_directory = Some(root.clone());
                 this.last_capture = Some(CapturedImage {
+                    desktop_layout: None,
                     width: 5,
                     height: 3,
                     pixels: pixels.clone(),
@@ -871,6 +877,7 @@ fn scaled_save_as_snapshots_size_and_keeps_finalized_source_and_history(cx: &mut
             this.output_directory = Some(root.clone());
             this.history_database = Some(database.clone());
             this.last_capture = Some(CapturedImage {
+                desktop_layout: None,
                 width: 4,
                 height: 4,
                 pixels: pixels.clone(),
@@ -982,6 +989,7 @@ fn automatic_saves_use_custom_names_and_track_the_published_last_path(cx: &mut T
         image::Rgba([12, 34, 56, 255]),
     ));
     let shot = CapturedImage {
+        desktop_layout: None,
         width: 3,
         height: 2,
         pixels: pixels.clone(),
@@ -1153,6 +1161,7 @@ fn save_as_image_formats_keep_current_pixels_and_png_library_unchanged(cx: &mut 
             this.export_format = app_core::ImageExportFormat::WebP;
             this.history_database = Some(database.clone());
             this.last_capture = Some(CapturedImage {
+                desktop_layout: None,
                 width: 3,
                 height: 2,
                 pixels: pixels.clone(),
@@ -1239,9 +1248,49 @@ fn save_as_image_formats_keep_current_pixels_and_png_library_unchanged(cx: &mut 
     std::fs::remove_dir(root).unwrap();
 }
 
+#[cfg(target_os = "macos")]
+fn mac_geometry_fixture(
+    width: u32,
+    height: u32,
+    x: i32,
+    y: i32,
+    scale: f64,
+) -> app_core::MacDisplayCoordinates {
+    let logical = app_core::MacLogicalRect {
+        x: f64::from(x),
+        y: f64::from(y),
+        width: f64::from(width) / scale,
+        height: f64::from(height) / scale,
+    };
+    let proof = app_core::MacDisplayProof {
+        id: u32::MAX,
+        uuid: "00000000-0000-0000-0000-000000000001".into(),
+        logical,
+        pixel_width: width,
+        pixel_height: height,
+        rotation: 0.0,
+    };
+    app_core::MacDisplayCoordinates::from_filter(proof, logical, logical, scale).unwrap()
+}
+
 fn exact_display() -> DisplayInfo {
     DisplayInfo {
-        id: "exact-fixture".into(),
+        mac_coordinates: {
+            #[cfg(target_os = "macos")]
+            {
+                Some(mac_geometry_fixture(320, 200, -320, 0, 1.5))
+            }
+            #[cfg(not(target_os = "macos"))]
+            {
+                None
+            }
+        },
+        id: if cfg!(target_os = "macos") {
+            "4294967295"
+        } else {
+            "exact-fixture"
+        }
+        .into(),
         name: "Fixture display".into(),
         x: -320,
         y: 0,
@@ -1309,7 +1358,14 @@ fn exact_region_fields_are_named_validate_and_release_with_the_page(cx: &mut Tes
         window.press(&shortcut("3"), cx);
         window.render_frame(cx);
         let _ = window.find_by_label("Region width");
-        window.click("exact-region-exact-fixture", cx);
+        window.click(
+            if cfg!(target_os = "macos") {
+                "exact-region-4294967295"
+            } else {
+                "exact-region-exact-fixture"
+            },
+            cx,
+        );
     })
     .unwrap();
     cx.run_until_parked();
@@ -3834,6 +3890,7 @@ fn upload_image_accepts_unsaved_capture_without_writing_library(cx: &mut TestApp
     handle
         .update(cx, |this, _, cx| {
             this.last_capture = Some(CapturedImage {
+                desktop_layout: None,
                 width: 1,
                 height: 1,
                 pixels: Arc::new(image::RgbaImage::new(1, 1)),
@@ -4335,7 +4392,13 @@ fn escape_releases_an_overlay_inside_its_kit_root(cx: &mut TestAppContext) {
     handle
         .update(cx, |state, _, cx| {
             let source = CapturedImage {
-                display_id: "fixture".into(),
+                desktop_layout: None,
+                display_id: if cfg!(target_os = "macos") {
+                    "4294967295"
+                } else {
+                    "fixture"
+                }
+                .into(),
                 window_id: None,
                 width: 4,
                 height: 3,
@@ -4344,6 +4407,16 @@ fn escape_releases_an_overlay_inside_its_kit_root(cx: &mut TestAppContext) {
                 elapsed_ms: 0,
                 source_format: app_core::PixelFormat::Rgba8UnormSrgb,
                 display_geometry: Some(app_core::DisplayGeometry {
+                    mac_coordinates: {
+                        #[cfg(target_os = "macos")]
+                        {
+                            Some(mac_geometry_fixture(4, 3, -4, 0, 1.25))
+                        }
+                        #[cfg(not(target_os = "macos"))]
+                        {
+                            None
+                        }
+                    },
                     x: -4,
                     y: 0,
                     width: 4,
@@ -4662,6 +4735,7 @@ fn same_generation_cancel_after_render_cannot_open_or_finish_an_editor(cx: &mut 
             let token = this.native_capture_cancel.as_ref().unwrap().clone();
             let pixels = image::RgbaImage::from_pixel(2, 1, image::Rgba([11, 23, 37, 128]));
             let source = CapturedImage {
+                desktop_layout: None,
                 display_id: "private synthetic input".into(),
                 window_id: None,
                 width: 2,
@@ -4804,6 +4878,7 @@ fn history_previews_preserve_all_failed_capture_sources(cx: &mut TestAppContext)
         .into_iter()
         .enumerate()
         .map(|(index, red)| CapturedImage {
+            desktop_layout: None,
             display_id: format!("failed-{index}"),
             window_id: None,
             width: 3,

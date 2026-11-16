@@ -886,6 +886,7 @@ mod tests {
     }
     fn source(width: u32, height: u32) -> crate::CapturedImage {
         crate::CapturedImage {
+            desktop_layout: None,
             display_id: "fixture".into(),
             window_id: None,
             width,

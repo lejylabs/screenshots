@@ -245,6 +245,7 @@ pub(super) struct Window {
 pub(super) struct Display {
     filter: Retained<AnyObject>,
     pub proof: crate::MacDisplayProof,
+    pub coordinates: crate::MacDisplayCoordinates,
     pub width: u32,
     pub height: u32,
 }
@@ -283,7 +284,8 @@ impl Display {
             unsafe { msg_send![allocated,initWithDisplay:&*selected,excludingWindows:&*empty] };
         let scale: f32 = unsafe { msg_send![&filter, pointPixelScale] };
         let rect: CGRect = unsafe { msg_send![&filter, contentRect] };
-        let (width, height) = proof.screenshot_dimensions(
+        let coordinates = crate::MacDisplayCoordinates::from_filter(
+            proof.clone(),
             MacLogicalRect {
                 x: frame.origin.x,
                 y: frame.origin.y,
@@ -298,9 +300,11 @@ impl Display {
             },
             f64::from(scale),
         )?;
+        let (width, height) = (coordinates.pixel_width, coordinates.pixel_height);
         Ok(Some(Self {
             filter,
             proof,
+            coordinates,
             width,
             height,
         }))

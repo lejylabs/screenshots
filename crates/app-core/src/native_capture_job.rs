@@ -59,6 +59,7 @@ pub enum NativeCaptureCall {
     },
     Inventory,
     Displays,
+    PixelDisplays,
     Windows,
     Identities {
         displays: Vec<DisplayInfo>,
@@ -110,6 +111,11 @@ pub struct NativeSourceInventory {
 fn invalid() -> CaptureError {
     CaptureError::Backend("Invalid native capture protocol data".into())
 }
+pub(crate) fn template_operation_error(error: anyhow::Error) -> CaptureError {
+    error
+        .downcast::<CaptureError>()
+        .unwrap_or_else(|_| invalid())
+}
 fn id(value: &str) -> bool {
     (1..=64).contains(&value.len())
         && value
@@ -147,6 +153,21 @@ impl NativeCaptureCall {
             return Err(invalid());
         }
         if let Some(geometry) = geometry {
+            if !geometry.valid() {
+                return Err(invalid());
+            }
+            if let Some(mac) = geometry.mac_coordinates {
+                mac.validate_fields(
+                    display,
+                    geometry.x,
+                    geometry.y,
+                    width,
+                    height,
+                    geometry.scale_factor,
+                    geometry.rotation,
+                )
+                .map_err(|_| invalid())?;
+            }
             if window.is_some()
                 || geometry.width != width
                 || geometry.height != height
@@ -174,7 +195,10 @@ impl NativeCaptureCall {
             }
             Self::Batch { requests, .. } => match requests.get(index).ok_or_else(invalid)? {
                 CaptureRequest::Display(id) => {
-                    if display != id || window.is_some() {
+                    if display != id
+                        || window.is_some()
+                        || (cfg!(target_os = "macos") && geometry.is_none())
+                    {
                         return Err(invalid());
                     }
                 }
@@ -216,7 +240,10 @@ impl NativeCaptureCall {
                 }
             }
             Self::FocusedDisplay { .. } => {
-                if index != 0 || window.is_some() {
+                if index != 0
+                    || window.is_some()
+                    || (cfg!(target_os = "macos") && geometry.is_none())
+                {
                     return Err(invalid());
                 }
             }
@@ -270,7 +297,11 @@ impl NativeCaptureCall {
         match self {
             Self::MacScroll { request } => request.validate().map_err(|_| invalid())?,
             Self::MacVideo { request } => request.validate().map_err(|_| invalid())?,
-            Self::Inventory | Self::Displays | Self::Windows | Self::Portal { .. } => {}
+            Self::Inventory
+            | Self::Displays
+            | Self::PixelDisplays
+            | Self::Windows
+            | Self::Portal { .. } => {}
             Self::ImageUrl { source } => source.validate()?,
             Self::ClipboardImage { backend } | Self::ClipboardInspect { backend, .. } => {
                 if !cfg!(target_os = "linux")
@@ -446,6 +477,7 @@ impl NativeCaptureCall {
         let native_pixels = matches!(
             self,
             Self::Batch { .. }
+                | Self::PixelDisplays
                 | Self::FocusedWindow { .. }
                 | Self::FocusedDisplay { .. }
                 | Self::Template { .. }
@@ -503,6 +535,9 @@ impl NativeCaptureCall {
                 windows: backend.list_windows(),
             }),
             Self::Displays => NativeCaptureReply::Displays(backend.list_displays()?),
+            Self::PixelDisplays => {
+                NativeCaptureReply::Displays(backend.list_capture_displays_with_cancel(&|| Ok(()))?)
+            }
             Self::Windows => NativeCaptureReply::Windows(backend.list_windows()?),
             Self::Identities { displays } => NativeCaptureReply::Identities(
                 crate::capture_monitor_identities(displays).map_err(|_| invalid())?,
@@ -530,7 +565,7 @@ impl NativeCaptureCall {
                 NativeCaptureReply::Frames(vec![
                     prepared
                         .capture_inline(std::path::PathBuf::new(), originating_pid, &|| Ok(()))
-                        .map_err(|_| invalid())?,
+                        .map_err(template_operation_error)?,
                 ])
             }
             Self::ClipboardImage { .. } | Self::ClipboardInspect { .. } => {
@@ -592,6 +627,13 @@ impl NativeCaptureCall {
                 Ok(())
             }
             (Self::Displays, NativeCaptureReply::Displays(displays)) => validate_displays(displays),
+            (Self::PixelDisplays, NativeCaptureReply::Displays(displays)) => {
+                validate_displays(displays)?;
+                for display in displays {
+                    crate::validate_display_pixel_coordinates(display)?;
+                }
+                Ok(())
+            }
             (Self::Windows, NativeCaptureReply::Windows(windows)) => {
                 if windows.len() > 1024 {
                     return Err(invalid());
@@ -645,6 +687,11 @@ impl NativeCaptureCall {
                     return Err(invalid());
                 }
                 for (index, frame) in frames.iter().enumerate() {
+                    if frame.desktop_layout.is_some()
+                        != (cfg!(target_os = "macos") && matches!(self, Self::Desktop { .. }))
+                    {
+                        return Err(invalid());
+                    }
                     self.validate_frame_metadata(
                         index,
                         &frame.display_id,
@@ -674,6 +721,8 @@ fn validate_displays(displays: &[DisplayInfo]) -> Result<(), CaptureError> {
             || !display.scale_factor.is_finite()
             || display.scale_factor <= 0.0
             || !display.rotation.is_finite()
+            || (display.mac_coordinates.is_some()
+                && crate::validate_display_pixel_coordinates(display).is_err())
         {
             return Err(invalid());
         }
@@ -703,7 +752,33 @@ fn validate_frames(frames: &[CapturedImage]) -> Result<(), CaptureError> {
         {
             return Err(invalid());
         }
+        if let Some(layout) = &frame.desktop_layout {
+            if !cfg!(target_os = "macos")
+                || frame.display_id != "desktop"
+                || frame.window_id.is_some()
+                || frame.display_geometry.is_some()
+                || (frame.width, frame.height) != (layout.width, layout.height)
+            {
+                return Err(invalid());
+            }
+            layout.validate().map_err(|_| invalid())?;
+        }
         if let Some(geometry) = frame.display_geometry {
+            if !geometry.valid() {
+                return Err(invalid());
+            }
+            if let Some(mac) = geometry.mac_coordinates {
+                mac.validate_fields(
+                    &frame.display_id,
+                    geometry.x,
+                    geometry.y,
+                    frame.width,
+                    frame.height,
+                    geometry.scale_factor,
+                    geometry.rotation,
+                )
+                .map_err(|_| invalid())?;
+            }
             if frame.window_id.is_some()
                 || geometry.width != frame.width
                 || geometry.height != frame.height

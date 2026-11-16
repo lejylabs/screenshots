@@ -1,8 +1,8 @@
 # macOS capture coordinate consumers
 
-Status: bounded design and portable model implementation, 2026-11-16. Shared
-execution-path integration is held until the current frozen verification run
-finishes. This document does not establish native SDK, TCC or hardware acceptance.
+Status: shared execution paths integrated, 2026-11-16. Linux workspace/all-targets
+checking and optimized portable regressions are recorded with the integration
+checkpoint. Current-source macOS SDK, TCC and hardware acceptance remain open.
 
 ## Scope and invariants
 
@@ -18,6 +18,10 @@ reject changed or restored topology. No second pixel rotation is performed.
 metadata can extend existing `DisplayInfo`/`DisplayGeometry` without changing their
 ownership model. Wire fields default to absent and omit absent values; existing
 Windows/Linux metadata retains its current coordinate calibration and wire form.
+The optional proof adds bounded scalar metadata to display descriptions and
+remembered regions. Only a composed desktop retains one shared layout object,
+bounded to 32 proofs/placements; other images keep an absent layout pointer.
+These fields add no pixel representation, image copy, thread or idle work.
 An optional proof is validated against display ID, origin, scale, rotation and
 raster dimensions before use, and rejected on platforms where it is inapplicable.
 Mac arithmetic uses the typed full point rectangle. Legacy integer origin fields
@@ -51,6 +55,21 @@ It performs no-prompt Screen Recording preflight and owns the existing finite
 capture deadline and topology witness. Template binding, region analysis and
 global point sampling use this explicit admission; ordinary listing never
 initializes ScreenCaptureKit or requests permission.
+
+The Mac backend enumerates the complete active inventory with a native total-count
+probe, a fixed 32-ID list and a confirming total-count probe. Zero, more than 32,
+truncated, duplicate or changing inventories fail before source capture. The typed
+capture enumeration independently compares every backend ID against complete
+CoreGraphics UUID/geometry proofs before and after admission, inside the same
+operation topology witness. A stable 17- or 32-display inventory is complete;
+the former XCap 16-entry subset cannot become a successful partial Desktop.
+
+Ambiguous legacy template geometry returns the static typed
+`TemplateRebindRequired` failure through helper execution and private protocol code
+17. The message explicitly requires rebinding and carries no display UUID, path or
+native diagnostic payload. Existing stale-session code 1, permissions 13–15 and
+colour-policy code 16 keep their meanings. Portable private-wire fixtures cover
+legacy Retina rejection and independently proven, UUID-bound exact 1:1 admission.
 
 ## Global tools
 
@@ -113,6 +132,16 @@ admission, raw frame count/aggregate bytes, authenticated transport, parent loss
 and process-family teardown remain required. Metadata is validated before raw
 pixel allocation and cannot weaken the 256 MiB protocol admission.
 
+Derived desktop layout metadata belongs to the original composed raster. Crops,
+annotations, document rendering, orientation changes and recipe-generated rasters
+clear it together with snapshot geometry; they do not carry the old grid onto a
+different image. Immutable source snapshots and the original-orientation fast
+path retain the same pixel/layout references. This adds no image copy. Portable
+regressions use a genuine 400×160 mixed-density composition, then crop to 1×1 and
+exercise same-size edits, resize, rotation, flip, canvas changes and reset. Private
+protocol fixtures carry required platform geometry/layout, while explicit missing
+metadata cases remain failures on macOS.
+
 Portable fixtures vary native mode dimensions, logical point bounds, filter
 extent/scale and actual pixel arrays independently. They cover Retina local/global
 mapping, negative origins, quarter-turn orientation without pixel rotation,
@@ -124,8 +153,59 @@ checks, not evidence of physical capture or native SDK linking.
 Native Intel/ARM SDK checks, signed permission denial/authorization, physical
 Retina/mixed-density rotation, reconnect/sleep/restored topology, native image
 orientation and optimized footprint/latency acceptance remain separate gates.
-The current GitHub permission failure prevents scheduling new macOS SDK CI; a
-Linux portable harness cannot turn that gate green.
+Repository write access is restored. A fresh native SDK snapshot is required
+for these coordinate changes; the earlier ARM/private Windows successes cover
+the preceding persistence/color/logger source. A Linux portable harness cannot
+turn current macOS SDK or physical acceptance green.
+
+### Coordinated verification
+
+Fresh source reviews three and four were clean before registration. The applied
+source passed 31 focused coordinate/inventory/compositor/protocol fixtures,
+37 private worker/protocol/scheduling fixtures with two explicit opt-ins excluded,
+and the original-orientation layout-retention regression. The final combined
+`release-fast` workspace with the structured parser suite passed **996 tests,
+zero failed, 69 explicit opt-ins excluded, 59 outer Cargo suites**. Formatting,
+all-target optimized Clippy, default advisories and all-workspace/all-target
+Windows GNU metadata checks pass. The GNU check establishes type/API compilation,
+not native Windows execution or macOS ABI. All 2,273 guarded source/provenance
+files remained unchanged during those checks. The unrelated unregistered format
+CLI test was excluded from Cargo discovery and restored with its original SHA256.
+Logs and commands are under `target/verification/mac-fuzz-global/`.
+
+Fourteen actual Linux CLI requests additionally check signed ruler calculations,
+malformed/overflow/native-byte coordinates and the platform restriction on
+`--global-points`, with no native capture and unchanged isolated user-state paths.
+Their executable SHA256 is
+`8aab58c309b81c44d315d95cbbaeaed18f823a61a73f2153865c7d6a08a881f9`.
+They do not execute the macOS acceptance branch or inspect a real desktop.
+
+An optimized standalone caller invokes the actual production compositor through
+the exact app-core/image artifacts selected by one Cargo JSON build stream.
+On the Linux Ryzen 7 9800X3D development machine, 100 warmed samples per case
+observed the following worker times for a 5120×1440 output. Physical-control and
+Mac native-copy order alternate; their complete pixels/alpha agree exactly.
+The mixed case verifies every expanded 1× source pixel and every exact 2× source
+pixel before timing. There was no competing Cargo compilation during sampling.
+
+| Pure composition | p50, ms | p95, ms | p99, ms | Maximum, ms |
+| --- | ---: | ---: | ---: | ---: |
+| Existing physical-pixel copy control | 0.781 | 1.088 | 1.357 | 1.607 |
+| Mac derived grid, native-size copy | 0.782 | 1.058 | 1.159 | 1.163 |
+| Mac derived grid, mixed 1×/2× density | 6.264 | 6.485 | 6.849 | 8.208 |
+
+The small copy difference is inconclusive; the mixed case performs additional
+requested nearest-neighbor expansion and has no equal-work baseline here.
+Each measured composition requested 29,491,521 bytes from Rust's global allocator:
+the 29,491,200-byte output capacity plus 321 bytes of transient metadata. Its
+largest single request was the output itself. Sources retain 29,491,200 bytes
+for the native-copy case and 18,432,000 bytes for mixed density, outside those
+operation-allocation counters. These requested-byte counters do not measure
+allocator usable sizes, peak live/private/RSS memory, OS/driver allocations or
+GPU resources. Source, caller/artifact hashes, exact results and machine details
+are in `target/verification/mac-fuzz-global/compositor-proof.json`.
+No native capture, TCC, presentation, idle or reference-hardware gate is closed
+by this synthetic report.
 
 Primary API contracts: Apple's [filter point rectangle](https://developer.apple.com/documentation/screencapturekit/sccontentfilter/contentrect)
 and [point-to-pixel scale](https://developer.apple.com/documentation/screencapturekit/sccontentfilter/pointpixelscale).

@@ -3070,6 +3070,7 @@ impl CaptureWorkspace {
                                 }
                                 .map_err(|e| format!("{e:#}"))?;
                                 CapturedImage {
+                                    desktop_layout: None,
                                     width: pixels.width(),
                                     height: pixels.height(),
                                     pixels: Arc::new(pixels),
@@ -7360,7 +7361,8 @@ mod tests {
                 let checked = async {
                     for profile in [CaptureOutputProfile::SaveOnly, CaptureOutputProfile::CopyOnly, CaptureOutputProfile::SaveAndCopy] {
                         owner.update(cx, |this, cx| {
-                            let shot = CapturedImage { display_id: "fixture".into(), window_id: None, width: 2, height: 2,
+                            let shot = CapturedImage {
+                                desktop_layout: None, display_id: "fixture".into(), window_id: None, width: 2, height: 2,
                                 pixels: Arc::new(image::RgbaImage::from_pixel(2, 2, image::Rgba([91, 42, 17, 255]))),
                                 png_path: directory.join(match profile { CaptureOutputProfile::CopyOnly => "copy-only.png", CaptureOutputProfile::SaveOnly => "save-only.png", _ => "save-and-copy.png" }),
                                 elapsed_ms: 0, source_format: app_core::PixelFormat::Rgba8UnormSrgb, display_geometry: None };
@@ -7390,7 +7392,8 @@ mod tests {
                     let before_edit = unsafe { windows_sys::Win32::System::DataExchange::GetClipboardSequenceNumber() };
                     for region in [false, true] {
                         owner.update(cx, |this, cx| {
-                            let shot = CapturedImage { display_id: u64::from(cx.primary_display().unwrap().id()).to_string(), window_id: None, width: 2, height: 2,
+                            let shot = CapturedImage {
+                                desktop_layout: None, display_id: u64::from(cx.primary_display().unwrap().id()).to_string(), window_id: None, width: 2, height: 2,
                                 pixels: Arc::new(image::RgbaImage::from_pixel(2, 2, image::Rgba([91, 42, 17, 255]))),
                                 png_path: directory.join("annotate-first.png"), elapsed_ms: 0, source_format: app_core::PixelFormat::Rgba8UnormSrgb, display_geometry: None };
                             if region {
@@ -8227,6 +8230,7 @@ mod tests {
                     this.output_directory = Some(output.clone());
                     this.history_database = Some(output.join("history.sqlite3"));
                     this.last_capture = Some(CapturedImage {
+                        desktop_layout: None,
                         display_id: "fixture".into(),
                         window_id: None,
                         width: 4,
@@ -8699,6 +8703,7 @@ try {
             image::Rgba(color)
         });
         let source = CapturedImage {
+            desktop_layout: None,
             display_id: "synthetic-ui".into(),
             window_id: None,
             width: 1280,
@@ -9340,6 +9345,7 @@ try {
                     .update(cx, |this, _, cx| {
                         this.history_database = Some(output.with_extension("sqlite3"));
                         let shot = CapturedImage {
+                            desktop_layout: None,
                             display_id: "test".into(),
                             window_id: None,
                             width: 2,
@@ -9409,6 +9415,7 @@ try {
     #[test]
     fn thumbnail_is_bounded_bgra_without_changing_source_pixels() {
         let source = CapturedImage {
+            desktop_layout: None,
             display_id: "test".into(),
             window_id: None,
             width: 800,
@@ -9458,6 +9465,7 @@ try {
                     .update(cx, |this, _, cx| {
                         this.history_database = Some(output.with_extension("sqlite3"));
                         let shot = CapturedImage {
+                            desktop_layout: None,
                             display_id: "test".into(),
                             window_id: None,
                             width: 2,

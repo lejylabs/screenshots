@@ -70,6 +70,8 @@ pub(crate) fn run(args: &[OsString]) -> Result<()> {
         frame.pixels = Arc::new(recipe.apply(pixels)?);
         frame.width = frame.pixels.width();
         frame.height = frame.pixels.height();
+        frame.display_geometry = None;
+        frame.desktop_layout = None;
     }
     frame.save_image_as(output, app_core::DEFAULT_JPEG_QUALITY, ExportSize::Original)?;
     let mut stdout = std::io::stdout().lock();

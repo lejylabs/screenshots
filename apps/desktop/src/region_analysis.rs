@@ -116,6 +116,9 @@ pub(crate) fn validate_geometry(display: &DisplayInfo, area: PixelRegion, x11: b
                 .is_some_and(|end| end <= display.height),
         "Region is outside the display"
     );
+    if display.mac_coordinates.is_some() {
+        return Ok(());
+    }
     let x = i64::from(display.x) + i64::from(area.x);
     let y = i64::from(display.y) + i64::from(area.y);
     ensure!(
@@ -169,7 +172,6 @@ impl Drop for DpiContext {
 }
 
 fn capture(options: &Options<'_>) -> Result<CapturedImage> {
-    use app_core::CaptureBackend;
     #[cfg(target_os = "linux")]
     require_x11(
         std::env::var_os("DISPLAY").as_deref(),
@@ -180,7 +182,7 @@ fn capture(options: &Options<'_>) -> Result<CapturedImage> {
     let _dpi = DpiContext::enter()?;
     let backend = XcapBackend::new(std::path::PathBuf::new());
     let display = backend
-        .list_displays()?
+        .list_capture_displays_with_cancel(&|| Ok(()))?
         .into_iter()
         .find(|display| display.id == options.display)
         .context("Analysis display not found")?;
@@ -240,6 +242,7 @@ mod tests {
     }
     fn display() -> DisplayInfo {
         DisplayInfo {
+            mac_coordinates: None,
             id: "fixture".into(),
             name: "test".into(),
             x: -100,
@@ -294,7 +297,10 @@ mod tests {
             width: 10,
             height: 10,
         };
-        assert!(validate_geometry(&display(), area, true).is_ok());
+        assert_eq!(
+            validate_geometry(&display(), area, true).is_ok(),
+            !cfg!(target_os = "macos")
+        );
         let mut info = display();
         info.scale_factor = 2.0;
         assert!(validate_geometry(&info, area, true).is_err());
@@ -304,7 +310,10 @@ mod tests {
         info.rotation = 0.0;
         info.x = 32767;
         assert!(validate_geometry(&info, area, true).is_err());
-        assert!(validate_geometry(&info, area, false).is_ok());
+        assert_eq!(
+            validate_geometry(&info, area, false).is_ok(),
+            !cfg!(target_os = "macos")
+        );
         info.x = i32::MAX;
         assert!(validate_geometry(&info, area, false).is_err());
     }

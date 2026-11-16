@@ -11,7 +11,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-const COLOR_USAGE: &str = "Usage: screenshots screen-color DISPLAY X Y [--global] (physical pixels, display-local unless --global)";
+const COLOR_USAGE: &str = "Usage: screenshots screen-color DISPLAY X Y [--global|--global-points] (native pixels; --global-points uses Quartz points on macOS)";
 const RULER_USAGE: &str =
     "Usage: screenshots ruler X1 Y1 X2 Y2 [--dpi X_DPI Y_DPI] (signed physical pixel coordinates)";
 
@@ -20,6 +20,7 @@ struct Sample<'a> {
     x: i32,
     y: i32,
     global: bool,
+    global_points: bool,
 }
 
 fn text(value: &OsString) -> Result<&str> {
@@ -40,7 +41,8 @@ fn coordinate(value: &OsString) -> Result<i32> {
 
 fn sample_options(args: &[OsString]) -> Result<Sample<'_>> {
     ensure!(
-        args.len() == 3 || (args.len() == 4 && args[3] == "--global"),
+        args.len() == 3
+            || (args.len() == 4 && (args[3] == "--global" || args[3] == "--global-points")),
         COLOR_USAGE
     );
     let display = text(&args[0])?;
@@ -54,6 +56,11 @@ fn sample_options(args: &[OsString]) -> Result<Sample<'_>> {
     );
     let x = coordinate(&args[1])?;
     let y = coordinate(&args[2])?;
+    let global_points = args.len() == 4 && args[3] == "--global-points";
+    ensure!(
+        !global_points || cfg!(target_os = "macos"),
+        "--global-points requires macOS Quartz coordinates"
+    );
     let global = args.len() == 4;
     ensure!(global || (x >= 0 && y >= 0), COLOR_USAGE);
     Ok(Sample {
@@ -61,6 +68,7 @@ fn sample_options(args: &[OsString]) -> Result<Sample<'_>> {
         x,
         y,
         global,
+        global_points,
     })
 }
 
@@ -72,8 +80,22 @@ fn sample_request(options: &Sample<'_>, display: Option<&DisplayInfo>) -> Result
             "Color display identity changed"
         );
         app_core::validate_display_pixel_coordinates(display)?;
-        let x = i64::from(options.x) - i64::from(display.x);
-        let y = i64::from(options.y) - i64::from(display.y);
+        let (x, y) = if options.global_points {
+            let mac = display
+                .mac_coordinates
+                .context("Quartz sampling requires native display proof")?;
+            let (x, y) = mac.pixel_at_quartz_point(f64::from(options.x), f64::from(options.y))?;
+            (i64::from(x), i64::from(y))
+        } else {
+            ensure!(
+                display.mac_coordinates.is_none(),
+                "macOS has no OS-global physical pixel plane; use --global-points or display-local native pixels"
+            );
+            (
+                i64::from(options.x) - i64::from(display.x),
+                i64::from(options.y) - i64::from(display.y),
+            )
+        };
         ensure!(
             x >= 0 && y >= 0 && x < i64::from(display.width) && y < i64::from(display.height),
             "Global color coordinate is outside the selected display"
@@ -128,7 +150,7 @@ fn sample(
     check()?;
     Ok(json!({
         "display": options.display, "x": options.x, "y": options.y,
-        "coordinate_space": if options.global { "desktop_physical_pixels" } else { "display_local_physical_pixels" }, "rgba": rgba,
+        "coordinate_space": if options.global_points { "quartz_global_points" } else if options.global { "desktop_physical_pixels" } else { "display_local_physical_pixels" }, "rgba": rgba,
         "hex_rgb": format!("#{:02X}{:02X}{:02X}", rgba[0], rgba[1], rgba[2]),
         "hex_rgba": format!("#{:02X}{:02X}{:02X}{:02X}", rgba[0], rgba[1], rgba[2], rgba[3]),
         "encoding": "capture_backend_rgba8", "cursor": "excluded"
@@ -208,7 +230,7 @@ pub(crate) fn run(args: &[OsString], color: bool) -> Result<()> {
         let backend = XcapBackend::new(PathBuf::new());
         let display = if options.global {
             let mut matches = backend
-                .list_displays_with_cancel(&check)?
+                .list_capture_displays_with_cancel(&check)?
                 .into_iter()
                 .filter(|display| display.id == options.display);
             let display = matches.next().context("Color display is unavailable")?;
@@ -341,9 +363,11 @@ mod tests {
         );
     }
 
+    #[cfg(not(target_os = "macos"))]
     #[test]
     fn global_negative_origins_use_checked_local_pixels_and_exact_geometry() {
         let mut display = DisplayInfo {
+            mac_coordinates: None,
             id: "fixture".into(),
             name: "test".into(),
             x: -1920,
@@ -385,6 +409,7 @@ mod tests {
                 x,
                 y,
                 global: true,
+                global_points: false,
             };
             assert!(sample_request(&options, Some(&display)).is_err());
         }
@@ -395,6 +420,7 @@ mod tests {
             x: i32::MIN,
             y: i32::MIN,
             global: true,
+            global_points: false,
         };
         assert!(sample_request(&options, Some(&display)).is_ok());
         display.x = i32::MAX;
@@ -405,10 +431,69 @@ mod tests {
             x: i32::MAX,
             y: i32::MAX,
             global: true,
+            global_points: false,
         };
         assert!(sample_request(&options, Some(&display)).is_ok());
         display.scale_factor = f32::NAN;
         assert!(sample_request(&options, Some(&display)).is_err());
+    }
+
+    #[test]
+    fn explicit_quartz_units_are_never_silently_treated_as_physical_global_units() {
+        let global = args(&["1", "-1", "2", "--global"]);
+        assert!(!sample_options(&global).unwrap().global_points);
+        let points = args(&["1", "-1", "2", "--global-points"]);
+        assert_eq!(sample_options(&points).is_ok(), cfg!(target_os = "macos"));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn quartz_sampling_uses_native_local_pixels_and_rejects_the_physical_global_option() {
+        let logical = app_core::MacLogicalRect {
+            x: -100.0,
+            y: 20.0,
+            width: 100.0,
+            height: 80.0,
+        };
+        let proof = app_core::MacDisplayProof {
+            id: 1,
+            uuid: "00000000-0000-0000-0000-000000000001".into(),
+            logical,
+            pixel_width: 200,
+            pixel_height: 160,
+            rotation: 0.0,
+        };
+        let mac =
+            app_core::MacDisplayCoordinates::from_filter(proof, logical, logical, 2.0).unwrap();
+        let display = DisplayInfo {
+            id: "1".into(),
+            name: "synthetic".into(),
+            x: -100,
+            y: 20,
+            width: 200,
+            height: 160,
+            scale_factor: 2.0,
+            rotation: 0.0,
+            is_primary: true,
+            mac_coordinates: Some(mac),
+        };
+        let input = args(&["1", "-99", "21", "--global-points"]);
+        let points = sample_options(&input).unwrap();
+        let CaptureRequest::ExactRegion(region) = sample_request(&points, Some(&display)).unwrap()
+        else {
+            panic!("expected exact native region")
+        };
+        assert_eq!(
+            region.area(),
+            app_core::PixelRegion {
+                x: 2,
+                y: 2,
+                width: 1,
+                height: 1
+            }
+        );
+        let input = args(&["1", "-99", "21", "--global"]);
+        assert!(sample_request(&sample_options(&input).unwrap(), Some(&display)).is_err());
     }
 
     #[test]

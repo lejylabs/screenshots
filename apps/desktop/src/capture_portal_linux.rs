@@ -159,6 +159,7 @@ pub(super) fn capture(
         }
     })?;
     Ok(CapturedImage {
+        desktop_layout: None,
         display_id: source.identifier().into(),
         window_id: None,
         width: pixels.width(),

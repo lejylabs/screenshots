@@ -337,6 +337,7 @@ mod tests {
     fn ellipse_outline_keeps_center_and_respects_crop_and_redaction() -> Result<()> {
         let original = image::RgbaImage::from_pixel(48, 40, image::Rgba([80, 120, 200, 17]));
         let source = crate::CapturedImage {
+            desktop_layout: None,
             display_id: "fixture".into(),
             window_id: None,
             width: 48,
@@ -418,6 +419,7 @@ mod tests {
     fn arrow_export_preserves_unpainted_alpha_and_redaction_wins() -> Result<()> {
         let original = image::RgbaImage::from_pixel(64, 32, image::Rgba([80, 120, 200, 17]));
         let source = crate::CapturedImage {
+            desktop_layout: None,
             display_id: "fixture".into(),
             window_id: None,
             width: 64,

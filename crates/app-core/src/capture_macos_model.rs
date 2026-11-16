@@ -171,7 +171,7 @@ impl MacDisplayProof {
         );
         Ok(x)
     }
-    #[cfg(any(target_os = "macos", test))]
+    #[cfg(test)]
     pub(crate) fn screenshot_dimensions(
         &self,
         display_frame: MacLogicalRect,
