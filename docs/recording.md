@@ -198,7 +198,8 @@ reference-hardware resource acceptance remain open.
 On Linux, each direct encoder/probe child receives a parent-death SIGKILL via
 `prctl`, closing its capture when the invoking process dies unexpectedly. This
 is not a process-tree guarantee for descendants that deliberately escape the
-managed group. Other Unix platforms have no equivalent parent-death setup in
-this implementation: a SIGKILL/crash of the controller can leave the direct
-engine running until its frame count finishes, and removes controller deadlines.
-Graceful SIGINT/SIGTERM still use the documented process-group cleanup.
+managed group. The native macOS recorder now uses an independent parent kqueue lifeline and
+owned process-group lifetime through its finish acknowledgement; see the
+[macOS ownership contract](macos-capture-completion.md). The older generic Unix
+parent-loss observation does not describe that adapter. Graceful termination
+continues to use the documented process-group cleanup.

@@ -13,11 +13,17 @@ authenticated IPC and retained clipboard ownership. See their focused contracts.
 The active native graph passes the default advisory policy without ignores;
 dormant optional backends and native acceptance limits are recorded separately.
 
-Current working-tree follow-ups are Library lifecycle/schema8 reservation safety,
-monitor-bound capture defaults/templates and bounded native process execution,
-full SXCU execution through a lazy private runtime, and cooperative raster work.
-Source reviews found real data-safety/authentication/native geometry issues;
-fixes and re-review remain part of delivery, not accepted risks by default.
+Local implementation HEAD `1e24131` commits Library lifecycle/schema9 reservation
+safety, monitor defaults/templates and isolated native work, modern SXCU, bounded
+raster work, schedules, portal/URL input and reviewed platform foundations. The
+new layered editor and physical-X11 color/ruler corrections are under final
+verification. The preceding complete optimized run passed 871 cases with 66
+opt-ins excluded across 62 outer suites; it predates those latest corrections.
+
+The newest commits remain local: GitHub currently denies pushes with HTTP403 and
+reports no repository write permission for the authenticated account. Current
+source-native CI cannot be inferred from older snapshots. Continue local work;
+[current status](non-ui-status.md) separates implementation from acceptance.
 
 An intermediate optimized workspace passed 718 tests with 60 opt-ins excluded;
 subprocess test summaries were counted only once. Nine portable packaging,

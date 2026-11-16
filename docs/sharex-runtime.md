@@ -504,10 +504,9 @@ coverage. Evidence: `target/verification/sharex-prefix-e2e.json` and
 was not a clean convergence report; no further fresh round was invented.
 
 
-Remaining Windows implementation work: the interpreter currently uses a
-suspended std process followed by Job assignment. It cannot run interpreter
-code before assignment, but parent loss in that interval can leave a suspended
-orphan. The same existing launcher pattern occurs in other optional workers.
-The follow-up replaces it with atomic Job association at native process creation
-and retains bounded pipes/handles/limits. This is an implementation gap, not an
-unavailable-account excuse or completed native acceptance.
+The later shared Windows launcher now associates the interpreter's Job Object
+atomically during native process creation, with an explicit inherited-handle
+list. Its one-process/256MiB Job limits are installed before child creation;
+startup fails closed if containment cannot be established. This supersedes the
+older suspended-create/late-assignment gap. Native Windows acceptance still
+requires the exact source and runtime artifact; source compilation is separate.
