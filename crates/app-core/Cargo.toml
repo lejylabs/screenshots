@@ -26,6 +26,8 @@ chrono.workspace = true
 crc32fast = "1.5.0"
 directories.workspace = true
 image.workspace = true
+flate2 = "=1.1.11"
+moxcms = "=0.8.1"
 gif = "=0.14.2"
 hmac = "=0.12.1"
 sha2_10 = { package = "sha2", version = "=0.10.9" }

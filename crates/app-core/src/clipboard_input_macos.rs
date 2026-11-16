@@ -301,5 +301,7 @@ pub(super) fn image(
     drop(session);
     budget.decoding()?;
     check()?;
-    crate::decode_editor_image_bytes(&bytes)
+    crate::decode_editor_image_bytes_with_backing_and_cancel(&bytes, bytes.capacity(), &|| {
+        check().is_err() || Instant::now() >= deadline
+    })
 }

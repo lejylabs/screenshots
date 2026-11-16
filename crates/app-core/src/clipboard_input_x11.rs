@@ -458,6 +458,8 @@ pub(super) fn image(
     drop(session);
     budget.decoding()?;
     check()?;
-    crate::decode_editor_image_bytes(&bytes)
-        .context("Clipboard image is unsupported or exceeds its image bound")
+    crate::decode_editor_image_bytes_with_backing_and_cancel(&bytes, bytes.capacity(), &|| {
+        check().is_err() || Instant::now() >= deadline
+    })
+    .context("Clipboard image is unsupported or exceeds its image bound")
 }

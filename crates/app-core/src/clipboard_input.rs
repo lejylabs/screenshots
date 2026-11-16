@@ -350,10 +350,12 @@ pub(crate) fn image_inline(
     check: &crate::NativeCaptureCheck<'_>,
 ) -> std::result::Result<crate::CapturedImage, crate::CaptureError> {
     let started = Instant::now();
+    check()?;
     let deadline = started + Duration::from_secs(4);
     let mut resource = budget::Budget::enter().map_err(failure)?;
-    let pixels = platform::image(backend, deadline, check, &mut resource).map_err(failure)?;
+    let pixels = platform::image(backend, deadline, check, &mut resource);
     check()?;
+    let pixels = pixels.map_err(failure)?;
     crate::validate_image_size(pixels.width(), pixels.height())?;
     Ok(crate::CapturedImage {
         display_id: "clipboard:image".into(),
@@ -385,8 +387,14 @@ pub(crate) fn inspect_inline(
     check()?;
     Ok(value)
 }
-fn failure(_: anyhow::Error) -> crate::CaptureError {
-    crate::CaptureError::Clipboard
+fn failure(error: anyhow::Error) -> crate::CaptureError {
+    use crate::CaptureError;
+    match error.downcast_ref::<CaptureError>() {
+        Some(CaptureError::ImageColorPolicy) => CaptureError::ImageColorPolicy,
+        Some(CaptureError::NativeCanceled | CaptureError::Canceled) => CaptureError::NativeCanceled,
+        Some(CaptureError::NativeTimeout) => CaptureError::NativeTimeout,
+        _ => CaptureError::Clipboard,
+    }
 }
 
 #[cfg(any(target_os = "windows", test))]
@@ -414,6 +422,23 @@ fn registered_format_label(name: &[u16], count: i32) -> Result<Option<String>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn private_hdr_paste_fixture_preserves_static_color_policy_classification() {
+        let bytes = include_bytes!("../tests/fixtures/color/hdr-pq-cicp.png");
+        let error =
+            crate::decode_editor_image_bytes_with_backing_and_cancel(bytes, bytes.len(), &|| false)
+                .unwrap_err();
+        let error = failure(error);
+        assert!(matches!(error, crate::CaptureError::ImageColorPolicy));
+        assert!(error.to_string().contains("SDR sRGB"));
+        let canceled =
+            crate::decode_editor_image_bytes_with_backing_and_cancel(bytes, bytes.len(), &|| true)
+                .unwrap_err();
+        assert!(matches!(
+            failure(canceled),
+            crate::CaptureError::NativeCanceled
+        ));
+    }
     #[test]
     fn snapshots_are_bounded_private_metadata_and_never_debug_content() -> Result<()> {
         let value = ClipboardSnapshot::Text {

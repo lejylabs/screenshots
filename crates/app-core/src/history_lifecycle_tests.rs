@@ -959,7 +959,7 @@ fn schema_six_migrates_without_losing_rows_and_installs_the_assigned_id_guard() 
         connection
             .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
             .unwrap(),
-        9
+        10
     );
     assert!(connection.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type='trigger' AND name='captures_move_assigned_insert')",[],|row|row.get::<_,bool>(0)).unwrap());
 }

@@ -7,6 +7,16 @@ use std::{
     time::Duration,
 };
 
+#[path = "history_directory.rs"]
+mod directory;
+#[path = "history_save.rs"]
+mod save;
+pub(crate) use directory::ensure_storage_directory;
+pub use save::{
+    CaptureSaveOutcome, PendingCaptureSave, copy_saved_png_with_history, pending_capture_save,
+    recover_capture_save, save_capture_with_history,
+};
+
 #[path = "history_file_ops.rs"]
 mod file_ops;
 pub use file_ops::{
@@ -245,12 +255,14 @@ fn migrations() -> Migrations<'static> {
         BEGIN SELECT RAISE(ABORT,'History file operation reserves the assigned capture ID; recover it first'); END;"),
         M::up(file_ops::RESERVATION_MIGRATION),
         M::up("CREATE INDEX captures_unresolved_id ON captures(id) WHERE file_identity IS NULL;"),
+        M::up(save::MIGRATION),
     ])
 }
 
 fn open(path: &Path) -> Result<Connection> {
-    std::fs::create_dir_all(path.parent().context("Invalid history database path")?)?;
+    ensure_storage_directory(path.parent().context("Invalid history database path")?)?;
     let mut connection = Connection::open(path)?;
+    check_known_schema(&connection)?;
     file_ops::register_reservations(&connection)?;
     connection.busy_timeout(Duration::from_millis(250))?;
     connection.execute_batch(
@@ -276,6 +288,7 @@ pub(crate) fn open_existing(path: &Path) -> Result<Connection> {
         path,
         rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE | rusqlite::OpenFlags::SQLITE_OPEN_NOFOLLOW,
     )?;
+    check_known_schema(&connection)?;
     file_ops::register_reservations(&connection)?;
     connection.busy_timeout(Duration::from_millis(250))?;
     connection.execute_batch(
@@ -283,6 +296,15 @@ pub(crate) fn open_existing(path: &Path) -> Result<Connection> {
     )?;
     migrations().to_latest(&mut connection)?;
     Ok(connection)
+}
+
+fn check_known_schema(connection: &Connection) -> Result<()> {
+    let version: u32 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
+    ensure!(
+        version <= 10,
+        "History schema is newer than this application; no migration or journal-mode change was attempted"
+    );
+    Ok(())
 }
 
 /// Successful upload metadata contains no pixels or full source path.
@@ -1038,7 +1060,7 @@ mod tests {
         let connection = open(&database)?;
         assert_eq!(
             connection.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))?,
-            9
+            10
         );
         assert_eq!(
             connection.query_row("SELECT count(*) FROM captures", [], |row| row

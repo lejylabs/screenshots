@@ -15,6 +15,7 @@ mod cli;
 mod clipboard_command;
 mod desktop_integration;
 mod editor_document;
+mod file_logging;
 mod gif_assembly;
 mod hash_file;
 mod history_audit;
@@ -79,12 +80,7 @@ fn main() {
         Ok(false) => {}
     }
 
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
-        )
-        .init();
+    let _logging = file_logging::init();
 
     let mut args = std::env::args_os().skip(1);
     if args.next().is_some_and(|arg| arg == "--open") {

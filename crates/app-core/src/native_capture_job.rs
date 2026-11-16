@@ -428,7 +428,9 @@ impl NativeCaptureCall {
             let frame = source
                 .download_in_worker(&|| Ok(()))
                 .map_err(|error| match error {
-                    CaptureError::NativeCanceled | CaptureError::Canceled => error,
+                    CaptureError::NativeCanceled
+                    | CaptureError::Canceled
+                    | CaptureError::ImageColorPolicy => error,
                     _ => CaptureError::ImageUrlFailed,
                 })?;
             let reply = NativeCaptureReply::Frames(vec![frame]);

@@ -86,6 +86,7 @@ pub use arrows::ArrowAnnotation;
 pub use filenames::{capture_file_name, validate_capture_name_template};
 mod clipboard;
 mod clipboard_input;
+mod managed_color;
 pub use clipboard_input::{
     ClipboardFileReference, ClipboardInspectKind, ClipboardPathEncoding, ClipboardSnapshot,
     NativeClipboardBackend, capture_clipboard_image_with_cancel, inspect_clipboard_with_cancel,
@@ -155,6 +156,10 @@ mod upload;
 mod upload_credentials;
 pub use history::transfer_history_file;
 pub use history::{
+    CaptureSaveOutcome, PendingCaptureSave, copy_saved_png_with_history, pending_capture_save,
+    recover_capture_save, save_capture_with_history,
+};
+pub use history::{
     HistoryEntry, HistoryFilter, ImportReport, MoveOutcome, MoveRecovery, PendingMove,
     UploadHistoryEntry, capture_history_page, capture_history_page_filtered, history_database_path,
     import_capture_files, lookup_history_entry, move_history_file, pending_history_move,
@@ -190,9 +195,12 @@ pub use upload::{
 };
 
 pub use clipboard::{
-    ImageClipboard, decode_editor_image_bytes, load_editor_image, load_editor_image_with_identity,
-    load_editor_image_with_identity_and_limit,
-    load_editor_image_with_identity_limit_and_dimensions, load_editor_image_with_limit,
+    ImageClipboard, decode_editor_image_bytes, decode_editor_image_bytes_with_backing_and_cancel,
+    decode_editor_image_bytes_with_cancel, load_editor_image, load_editor_image_with_cancel,
+    load_editor_image_with_identity, load_editor_image_with_identity_and_limit,
+    load_editor_image_with_identity_and_limit_with_cancel,
+    load_editor_image_with_identity_limit_and_dimensions,
+    load_editor_image_with_identity_limit_and_dimensions_with_cancel, load_editor_image_with_limit,
     load_png_thumbnail, load_saved_png,
 };
 

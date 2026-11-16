@@ -294,6 +294,11 @@ impl CaptureOutputProfile {
 }
 
 impl CaptureSettings {
+    /// Worker-side, bounded folder creation. Unix commits each new parent entry;
+    /// Windows namespace/power-loss acceptance remains separate.
+    pub fn ensure_output_directory(path: &Path) -> Result<()> {
+        crate::history::ensure_storage_directory(path)
+    }
     pub fn for_directory(output_directory: PathBuf) -> Result<Self> {
         ensure!(
             output_directory.is_absolute(),
@@ -444,7 +449,7 @@ impl CaptureSettings {
         let bytes = serde_json::to_vec_pretty(self)?;
         ensure!(bytes.len() <= 65536, "Settings backup exceeds 64 KiB");
         let parent = path.parent().context("Invalid settings backup path")?;
-        fs::create_dir_all(parent)?;
+        crate::history::ensure_storage_directory(parent)?;
         let mut file = fs::OpenOptions::new()
             .write(true)
             .create_new(true)
@@ -531,7 +536,7 @@ impl CaptureSettings {
             "The selected save folder does not exist"
         );
         let parent = path.parent().context("Invalid settings path")?;
-        fs::create_dir_all(parent)?;
+        crate::history::ensure_storage_directory(parent)?;
         let temporary = parent.join(format!("settings-{}.part", uuid::Uuid::new_v4()));
         let result = (|| -> Result<()> {
             let mut file = fs::OpenOptions::new()

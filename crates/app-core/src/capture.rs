@@ -335,6 +335,10 @@ pub enum CaptureError {
     Clipboard,
     #[error("Remote image transfer or decoding failed")]
     ImageUrlFailed,
+    #[error(
+        "This image uses an unsupported color profile or HDR transfer; convert it to SDR sRGB before importing"
+    )]
+    ImageColorPolicy,
     #[error("Capture permission was denied or the selected portal source was closed")]
     PermissionDenied,
     #[error("Native capture canceled")]
@@ -2708,7 +2712,7 @@ pub(crate) fn write_output_checked(
         .parent()
         .filter(|path| !path.as_os_str().is_empty())
         .unwrap_or_else(|| Path::new("."));
-    fs::create_dir_all(parent)?;
+    crate::history::ensure_storage_directory(parent).map_err(backend_error)?;
     let temporary = parent.join(format!(".screenshots-{}.part", uuid::Uuid::new_v4()));
     let result = (|| {
         let mut file = fs::OpenOptions::new()

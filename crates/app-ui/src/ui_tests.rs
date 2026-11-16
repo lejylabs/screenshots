@@ -3,6 +3,330 @@ use gpui::test::{TestQueryExt, TestWindowExt};
 use gpui::{AppContext, TestAppContext, px, rgb};
 
 #[gpui::test]
+fn png_save_without_history_keeps_pixels_and_clipboard_status(cx: &mut TestAppContext) {
+    let handle = open_workspace(cx);
+    let root = std::env::temp_dir().join(format!(
+        "screenshots-no-history-{}",
+        app_core::capture_file_name("Fixture").unwrap().unwrap()
+    ));
+    std::fs::create_dir(&root).unwrap();
+    let target = root.join("capture.png");
+    let pixels = Arc::new(image::RgbaImage::from_pixel(
+        3,
+        2,
+        image::Rgba([7, 11, 13, 255]),
+    ));
+    let shot = CapturedImage {
+        display_id: "fixture".into(),
+        window_id: None,
+        width: 3,
+        height: 2,
+        pixels: pixels.clone(),
+        png_path: target.clone(),
+        elapsed_ms: 0,
+        source_format: app_core::PixelFormat::Rgba8UnormSrgb,
+        display_geometry: None,
+    };
+    handle
+        .update(cx, |this, _, cx| {
+            this.output_directory = Some(root.clone());
+            this.history_database = None;
+            this.last_capture = Some(shot.clone());
+            this.clipboard_status = "Clipboard: prior completed copy".into();
+            this.output_captures(vec![shot], false, cx);
+        })
+        .unwrap();
+    cx.run_until_parked();
+    handle
+        .update(cx, |this, _, cx| {
+            assert!(!this.saving && !this.quitting);
+            assert!(this.last_saved.is_none());
+            assert!(Arc::ptr_eq(
+                &this.last_capture.as_ref().unwrap().pixels,
+                &pixels
+            ));
+            assert!(this.save_status.contains("History storage is unavailable"));
+            assert_eq!(this.clipboard_status, "Clipboard: prior completed copy");
+            this.save_capture_as(cx);
+        })
+        .unwrap();
+    cx.simulate_new_path_selection(|_| Some(target.clone()));
+    cx.run_until_parked();
+    handle
+        .update(cx, |this, _, _| {
+            assert!(!this.saving && this.last_saved.is_none());
+            assert!(Arc::ptr_eq(
+                &this.last_capture.as_ref().unwrap().pixels,
+                &pixels
+            ));
+            assert!(this.save_status.contains("History storage is unavailable"));
+            assert_eq!(this.clipboard_status, "Clipboard: prior completed copy");
+        })
+        .unwrap();
+    assert_eq!(std::fs::read_dir(&root).unwrap().count(), 0);
+    std::fs::remove_dir(root).unwrap();
+}
+
+#[gpui::test]
+fn failed_capture_batch_keeps_every_source_and_save_as_retries_all(cx: &mut TestAppContext) {
+    let handle = open_workspace(cx);
+    let root = std::env::temp_dir().join(format!(
+        "screenshots-failed-batch-{}",
+        app_core::capture_file_name("Fixture").unwrap().unwrap()
+    ));
+    std::fs::create_dir(&root).unwrap();
+    let pixels = [
+        Arc::new(image::RgbaImage::from_pixel(
+            3,
+            2,
+            image::Rgba([7, 11, 13, 255]),
+        )),
+        Arc::new(image::RgbaImage::from_pixel(
+            3,
+            2,
+            image::Rgba([31, 37, 41, 255]),
+        )),
+    ];
+    let weak = [Arc::downgrade(&pixels[0]), Arc::downgrade(&pixels[1])];
+    let shots: Vec<_> = pixels
+        .iter()
+        .enumerate()
+        .map(|(index, pixels)| CapturedImage {
+            display_id: format!("fixture-{index}"),
+            window_id: None,
+            width: 3,
+            height: 2,
+            pixels: pixels.clone(),
+            png_path: root.join(format!("capture-{index}.png")),
+            elapsed_ms: 0,
+            source_format: app_core::PixelFormat::Rgba8UnormSrgb,
+            display_geometry: None,
+        })
+        .collect();
+    let render = render_thumbnail(shots.last().unwrap());
+    handle
+        .update(cx, |this, _, cx| {
+            this.output_directory = Some(root.clone());
+            this.history_database = None;
+            this.finish_quick_capture(shots, render, CaptureOutputProfile::SaveOnly, cx);
+        })
+        .unwrap();
+    drop(pixels);
+    cx.run_until_parked();
+    handle
+        .update(cx, |this, _, cx| {
+            assert!(!this.saving && !this.copying);
+            assert_eq!(this.failed_capture_saves.len(), 2);
+            assert!(this.failed_capture_saves.capacity() <= 32);
+            let admitted = this
+                .failed_capture_saves
+                .iter()
+                .try_fold(0u64, |total, capture| {
+                    total.checked_add(capture.pixels.as_raw().capacity() as u64)
+                })
+                .unwrap();
+            assert!(admitted <= app_core::MAX_CAPTURE_BYTES);
+            for (capture, weak) in this.failed_capture_saves.iter().zip(&weak) {
+                assert!(Arc::ptr_eq(&capture.pixels, &weak.upgrade().unwrap()));
+            }
+            assert!(this.save_status.contains("2 unsaved screenshot(s)"));
+            assert_eq!(this.clipboard_status, "Clipboard unchanged (Save only)");
+            this.save_capture_as(cx);
+        })
+        .unwrap();
+    assert!(cx.did_prompt_for_new_path());
+    cx.simulate_new_path_selection(|_| None);
+    cx.run_until_parked();
+    handle
+        .update(cx, |this, _, cx| {
+            assert_eq!(this.failed_capture_saves.len(), 2);
+            assert!(weak.iter().all(|source| source.upgrade().is_some()));
+            this.history_database = Some(root.join("history.sqlite3"));
+            this.save_capture_as(cx);
+        })
+        .unwrap();
+    let chosen = root.join("chosen.png");
+    cx.simulate_new_path_selection(|_| Some(chosen.clone()));
+    cx.run_until_parked();
+    handle
+        .update(cx, |this, _, _| {
+            assert!(this.failed_capture_saves.is_empty() && this.last_capture.is_none());
+            assert!(!this.saving && !this.copying);
+            assert_eq!(this.save_status, "Save: 2 PNG(s) saved");
+            assert_eq!(this.last_saved.as_ref(), Some(&chosen));
+            assert_eq!(this.clipboard_status, "Clipboard unchanged (Save only)");
+        })
+        .unwrap();
+    assert!(weak.iter().all(|source| source.upgrade().is_none()));
+    assert_eq!(
+        image::open(root.join("capture-0.png"))
+            .unwrap()
+            .into_rgba8()
+            .get_pixel(0, 0)
+            .0,
+        [7, 11, 13, 255]
+    );
+    assert_eq!(
+        image::open(&chosen).unwrap().into_rgba8().get_pixel(0, 0).0,
+        [31, 37, 41, 255]
+    );
+    assert!(!root.join("capture-1.png").exists());
+    assert_eq!(
+        app_core::capture_history_page(&root.join("history.sqlite3"), None)
+            .unwrap()
+            .len(),
+        2
+    );
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[gpui::test]
+fn partial_capture_batch_releases_saved_pixels_and_retries_only_unsaved_source(
+    cx: &mut TestAppContext,
+) {
+    let handle = open_workspace(cx);
+    let root = std::env::temp_dir().join(format!(
+        "screenshots-partial-batch-{}",
+        app_core::capture_file_name("Fixture").unwrap().unwrap()
+    ));
+    std::fs::create_dir(&root).unwrap();
+    let first = root.join("capture-0.png");
+    std::fs::write(&first, b"existing foreign target").unwrap();
+    let pixels = [
+        Arc::new(image::RgbaImage::from_pixel(
+            2,
+            1,
+            image::Rgba([71, 73, 79, 255]),
+        )),
+        Arc::new(image::RgbaImage::from_pixel(
+            2,
+            1,
+            image::Rgba([83, 89, 97, 255]),
+        )),
+    ];
+    let weak = [Arc::downgrade(&pixels[0]), Arc::downgrade(&pixels[1])];
+    let shots: Vec<_> = pixels
+        .iter()
+        .enumerate()
+        .map(|(index, pixels)| CapturedImage {
+            display_id: format!("fixture-{index}"),
+            window_id: None,
+            width: 2,
+            height: 1,
+            pixels: pixels.clone(),
+            png_path: root.join(format!("capture-{index}.png")),
+            elapsed_ms: 0,
+            source_format: app_core::PixelFormat::Rgba8UnormSrgb,
+            display_geometry: None,
+        })
+        .collect();
+    let render = render_thumbnail(shots.last().unwrap());
+    handle
+        .update(cx, |this, _, cx| {
+            this.output_directory = Some(root.clone());
+            this.history_database = Some(root.join("history.sqlite3"));
+            this.finish_quick_capture(shots, render, CaptureOutputProfile::SaveOnly, cx);
+        })
+        .unwrap();
+    drop(pixels);
+    cx.run_until_parked();
+    handle
+        .update(cx, |this, _, cx| {
+            assert_eq!(this.failed_capture_saves.len(), 1);
+            assert_eq!(
+                this.last_capture.as_ref().unwrap().pixels.get_pixel(0, 0).0,
+                [71, 73, 79, 255]
+            );
+            assert!(weak[0].upgrade().is_some() && weak[1].upgrade().is_none());
+            assert!(this.save_status.contains("1/2 PNG(s) saved"));
+            this.save_capture_as(cx);
+        })
+        .unwrap();
+    let recovered = root.join("recovered.png");
+    cx.simulate_new_path_selection(|_| Some(recovered.clone()));
+    cx.run_until_parked();
+    assert!(weak.iter().all(|source| source.upgrade().is_none()));
+    assert_eq!(std::fs::read(first).unwrap(), b"existing foreign target");
+    assert_eq!(
+        image::open(recovered)
+            .unwrap()
+            .into_rgba8()
+            .get_pixel(0, 0)
+            .0,
+        [71, 73, 79, 255]
+    );
+    assert_eq!(
+        app_core::capture_history_page(&root.join("history.sqlite3"), None)
+            .unwrap()
+            .len(),
+        2
+    );
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[gpui::test]
+fn new_capture_session_releases_failed_batch_and_cancels_previous_capture(cx: &mut TestAppContext) {
+    let handle = open_workspace(cx);
+    let root = std::env::temp_dir().join(format!(
+        "screenshots-retired-batch-{}",
+        app_core::capture_file_name("Fixture").unwrap().unwrap()
+    ));
+    std::fs::create_dir(&root).unwrap();
+    let pixels = [
+        Arc::new(image::RgbaImage::from_pixel(
+            2,
+            1,
+            image::Rgba([43, 47, 53, 255]),
+        )),
+        Arc::new(image::RgbaImage::from_pixel(
+            2,
+            1,
+            image::Rgba([59, 61, 67, 255]),
+        )),
+    ];
+    let weak = [Arc::downgrade(&pixels[0]), Arc::downgrade(&pixels[1])];
+    let shots: Vec<_> = pixels
+        .iter()
+        .enumerate()
+        .map(|(index, pixels)| CapturedImage {
+            display_id: format!("fixture-{index}"),
+            window_id: None,
+            width: 2,
+            height: 1,
+            pixels: pixels.clone(),
+            png_path: root.join(format!("capture-{index}.png")),
+            elapsed_ms: 0,
+            source_format: app_core::PixelFormat::Rgba8UnormSrgb,
+            display_geometry: None,
+        })
+        .collect();
+    let render = render_thumbnail(shots.last().unwrap());
+    handle
+        .update(cx, |this, _, cx| {
+            this.output_directory = Some(root.clone());
+            this.history_database = None;
+            this.finish_quick_capture(shots, render, CaptureOutputProfile::SaveOnly, cx);
+        })
+        .unwrap();
+    drop(pixels);
+    cx.run_until_parked();
+    handle
+        .update(cx, |this, _, cx| {
+            assert_eq!(this.failed_capture_saves.len(), 2);
+            let obsolete = app_core::NativeCaptureCancellation::default();
+            this.native_capture_cancel = Some(obsolete.clone());
+            this.begin_capturing(cx);
+            assert!(obsolete.check().is_err());
+            assert!(this.failed_capture_saves.is_empty() && this.last_capture.is_none());
+            assert!(weak.iter().all(|source| source.upgrade().is_none()));
+            this.finish_capturing(cx);
+        })
+        .unwrap();
+    assert_eq!(std::fs::read_dir(&root).unwrap().count(), 0);
+    std::fs::remove_dir(root).unwrap();
+}
+
+#[gpui::test]
 fn native_capture_tokens_are_operation_owned_and_quit_cancels_the_current_job(
     cx: &mut TestAppContext,
 ) {
@@ -4462,4 +4786,94 @@ fn escape_cancels_native_drop_before_application_image_admission(cx: &mut TestAp
 #[gpui::test]
 fn newer_image_input_finishing_cannot_resurrect_an_old_native_drop(cx: &mut TestAppContext) {
     delayed_native_drop_cancellation(cx, true);
+}
+
+#[gpui::test]
+fn history_previews_preserve_all_failed_capture_sources(cx: &mut TestAppContext) {
+    let handle = open_workspace(cx);
+    let root = std::env::temp_dir().join(format!(
+        "screenshots-unsaved-preview-{}",
+        app_core::capture_file_name("Fixture").unwrap().unwrap()
+    ));
+    std::fs::create_dir(&root).unwrap();
+    let preview = root.join("preview.png");
+    image::RgbaImage::from_pixel(3, 2, image::Rgba([71, 73, 79, 255]))
+        .save(&preview)
+        .unwrap();
+    let shots: Vec<_> = [11, 29]
+        .into_iter()
+        .enumerate()
+        .map(|(index, red)| CapturedImage {
+            display_id: format!("failed-{index}"),
+            window_id: None,
+            width: 3,
+            height: 2,
+            pixels: Arc::new(image::RgbaImage::from_pixel(
+                3,
+                2,
+                image::Rgba([red, 3, 5, 255]),
+            )),
+            png_path: root.join(format!("unsaved-{index}.png")),
+            elapsed_ms: 0,
+            source_format: app_core::PixelFormat::Rgba8UnormSrgb,
+            display_geometry: None,
+        })
+        .collect();
+    let weak: Vec<_> = shots
+        .iter()
+        .map(|shot| Arc::downgrade(&shot.pixels))
+        .collect();
+    handle
+        .update(cx, |this, _, _| {
+            this.last_capture = shots.last().cloned();
+            this.failed_capture_saves = shots;
+            this.history_visible = true;
+            this.history_entries = vec![
+                app_core::HistoryEntry {
+                    id: 1,
+                    path: preview,
+                    width: 3,
+                    height: 2,
+                    created_at: "fixture".into(),
+                },
+                app_core::HistoryEntry {
+                    id: 2,
+                    path: root.join("missing.png"),
+                    width: 3,
+                    height: 2,
+                    created_at: "fixture".into(),
+                },
+            ];
+            this.clipboard_status = "Clipboard: prior completed copy".into();
+            assert!(this.history_thumbs.is_empty());
+        })
+        .unwrap();
+    for id in [1, 2] {
+        handle
+            .update(cx, |this, _, cx| {
+                this.preview_history_image(id, this.history_revision, cx);
+                assert!(this.capturing);
+                assert_eq!(this.failed_capture_saves.len(), 2);
+            })
+            .unwrap();
+        cx.run_until_parked();
+        handle
+            .update(cx, |this, _, _| {
+                assert!(!this.capturing);
+                assert_eq!(this.failed_capture_saves.len(), 2);
+                assert!(weak.iter().all(|source| source.upgrade().is_some()));
+                assert_eq!(this.last_capture.as_ref().unwrap().display_id, "failed-1");
+                assert_eq!(this.clipboard_status, "Clipboard: prior completed copy");
+                if id == 1 {
+                    assert!(this.history_preview.is_some());
+                } else {
+                    assert!(
+                        this.history_preview_status
+                            .starts_with("Preview unavailable:")
+                    );
+                }
+            })
+            .unwrap();
+    }
+    std::fs::remove_dir_all(root).unwrap();
 }
