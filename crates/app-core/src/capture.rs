@@ -2299,6 +2299,8 @@ impl CapturedImage {
         let format = ImageExportFormat::from_path(destination)?;
         format.validate_quality(jpeg_quality)?;
         size.validate()?;
+        let output_size = size.dimensions(self.pixels.width(), self.pixels.height())?;
+        format.validate_output_size(output_size.0, output_size.1)?;
         // Check original transparency before reducing, preserving JPEG admission.
         if size != ExportSize::Original && format == ImageExportFormat::Jpeg {
             for pixel in self.pixels.pixels() {
@@ -2310,7 +2312,7 @@ impl CapturedImage {
                 }
             }
         }
-        if size.dimensions(self.pixels.width(), self.pixels.height())? == self.pixels.dimensions() {
+        if output_size == self.pixels.dimensions() {
             write_image_export_with_cancel(
                 &self.pixels,
                 destination,
@@ -2377,6 +2379,21 @@ impl ImageExportFormat {
             Self::Jpeg => "jpg",
             Self::WebP => "webp",
         }
+    }
+    /// Shared geometric admission for the selected output encoder, without pixels or I/O.
+    pub(crate) fn validate_output_size(self, width: u32, height: u32) -> Result<(), CaptureError> {
+        validate_image_size(width, height)?;
+        // image0.25 JPEG stores u16 axes; locked image-webp0.2 writes 14-bit
+        // lossless dimensions minus one. Native encoders retain their checks.
+        let (maximum, message) = match self {
+            Self::Png => return Ok(()),
+            Self::Jpeg => (u32::from(u16::MAX), "JPEG needs dimensions 1–65535"),
+            Self::WebP => (1 << 14, "Lossless WebP needs dimensions 1–16384"),
+        };
+        if width > maximum || height > maximum {
+            return Err(CaptureError::Backend(message.into()));
+        }
+        Ok(())
     }
     fn validate_quality(self, quality: u8) -> Result<(), CaptureError> {
         if self == Self::Jpeg && !(1..=100).contains(&quality) {
@@ -2488,7 +2505,7 @@ fn write_image_export_with_cancel(
 ) -> Result<(), CaptureError> {
     let mut work = crate::image_cancel::ImageWork::new(cancelled)?;
     use image::ImageEncoder as _;
-    validate_image_size(pixels.width(), pixels.height())?;
+    format.validate_output_size(pixels.width(), pixels.height())?;
     format.validate_quality(jpeg_quality)?;
     if format == ImageExportFormat::Jpeg {
         for pixel in pixels.pixels() {
@@ -2554,12 +2571,14 @@ fn write_scaled_export(
     size: ExportSize,
 ) -> Result<(), CaptureError> {
     format.validate_quality(jpeg_quality)?;
+    let output_size = size.dimensions(pixels.width(), pixels.height())?;
+    format.validate_output_size(output_size.0, output_size.1)?;
     if format == ImageExportFormat::Jpeg && pixels.pixels().any(|pixel| pixel.0[3] != 255) {
         return Err(CaptureError::Backend(
             "JPEG cannot preserve transparency. Choose PNG or WebP.".into(),
         ));
     }
-    if size.dimensions(pixels.width(), pixels.height())? == pixels.dimensions() {
+    if output_size == pixels.dimensions() {
         return write_image_export(pixels, destination, format, jpeg_quality);
     }
     let scaled = crate::resample::downscale_export(pixels, size)?;

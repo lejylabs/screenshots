@@ -14,6 +14,7 @@ mod capture_worker;
 mod cli;
 mod clipboard_command;
 mod desktop_integration;
+mod editor_document;
 mod gif_assembly;
 mod hash_file;
 mod history_audit;

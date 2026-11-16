@@ -5,6 +5,7 @@
 pub mod windows_child;
 
 mod arrows;
+pub mod editor_document;
 mod layers;
 mod pen;
 pub use layers::{DrawAnnotation, HighlightAnnotation};
@@ -190,7 +191,9 @@ pub use upload::{
 
 pub use clipboard::{
     ImageClipboard, decode_editor_image_bytes, load_editor_image, load_editor_image_with_identity,
-    load_editor_image_with_limit, load_png_thumbnail, load_saved_png,
+    load_editor_image_with_identity_and_limit,
+    load_editor_image_with_identity_limit_and_dimensions, load_editor_image_with_limit,
+    load_png_thumbnail, load_saved_png,
 };
 
 #[cfg(target_os = "windows")]

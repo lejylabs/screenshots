@@ -234,6 +234,7 @@ dependencies = [
  "dispatch2",
  "gif",
  "global-hotkey",
+ "harfrust 0.15.0",
  "hmac 0.12.1",
  "image",
  "libc",
@@ -257,6 +258,7 @@ dependencies = [
  "serde_json",
  "sha2 0.10.9",
  "shared",
+ "skrifa 0.49.0",
  "thiserror 2.0.21",
  "tiff",
  "tiny-skia 0.12.0",
@@ -264,7 +266,11 @@ dependencies = [
  "tokio-util",
  "tracing",
  "tray-icon",
+ "unicode-bidi",
+ "unicode-linebreak",
  "unicode-normalization",
+ "unicode-script",
+ "unicode-segmentation",
  "uuid",
  "windows-sys 0.61.2",
  "x11rb",
@@ -3914,8 +3920,6 @@ dependencies = [
 [[package]]
 name = "harfrust"
 version = "0.15.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "865dcc4105d51c323d8fedbb2d75b5e9c8ecddf5613f74c82f851d0afbc97114"
 dependencies = [
  "bitflags 2.13.2",
  "bytemuck",
