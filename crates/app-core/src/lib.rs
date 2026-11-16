@@ -71,6 +71,7 @@ mod s3_upload;
 mod settings;
 mod upload;
 mod upload_credentials;
+pub use history::transfer_history_file;
 pub use history::{
     HistoryEntry, HistoryFilter, ImportReport, MoveOutcome, MoveRecovery, PendingMove,
     UploadHistoryEntry, capture_history_page, capture_history_page_filtered, history_database_path,
@@ -78,6 +79,12 @@ pub use history::{
     record_saved_capture, record_uploaded_png, recover_history_move, relink_history_entry,
     remove_history_entries, remove_history_entry, remove_upload_history_entry,
     search_capture_history, upload_history_page,
+};
+pub use history::{IdentityIndexReport, prime_history_file_identities};
+pub use history::{
+    RetentionPlan, RetentionPolicy, RetentionReport, TrashEntry, TrashPage, apply_retention,
+    plan_retention, purge_history_trash, recover_history_file_operation,
+    remove_missing_history_entries, restore_history_trash, trash_history_file, trash_history_page,
 };
 pub use s3_credentials::{read_s3_credentials, remove_s3_credentials, save_s3_credentials};
 pub use s3_upload::{

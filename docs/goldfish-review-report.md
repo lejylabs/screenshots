@@ -358,3 +358,30 @@ implementation review found no blocking defect and requested a direct opened-
 handle oversize regression in addition to pathname preflight/FIFO tests. This
 was added. The existing header-limit and aggregate-memory caveats remain
 explicit; this slice does not claim all PNG allocations are strictly bounded.
+
+
+## Library lifecycle continuation (2026-11-16)
+
+Fresh `library_lifecycle_goldfish`, `library_lifecycle_round2`,
+`library_lifecycle_round3` and `library_lifecycle_round4` reviewers audited the
+lifecycle implementation. These are separate contexts, not same-reviewer
+follow-ups. The first three rounds found reservation/recovery, pathname-alias
+and indexed-query/cancellation Majors. They caused schema versions 7–9, held-path
+delete durability barriers, staging reservations, conservative alias keys/native
+identity checks and unresolved-only preparation with scoped SQLite VM checks.
+Round four found no Blocker or Major; its stale module-comment Nit is fixed.
+This is one clean source-review round for this slice, not full-plan convergence.
+
+The author separately ran 66 history tests, seven storage tests, ten CLI tests,
+Windows metadata compilation, Clippy and the real Linux fault-interposition
+fixture. The final native fixture report is
+`target/verification/history-round3-native-e2e.json`. The fourth reviewer also
+checked query plans independently with 30,000 already indexed rows; the partial
+unresolved index avoids a full-history scan during ordinary physical operations.
+Read-only source assessment does not establish native Windows/macOS durability,
+power-loss or inaccessible-drive acceptance.
+
+The historical nine-advisory failure above is superseded for the current active
+production graph: default `cargo deny check advisories` passes without ignores
+following the maintained native dependency migration. The default-branch glib
+alert and platform acceptance remain separate gates.

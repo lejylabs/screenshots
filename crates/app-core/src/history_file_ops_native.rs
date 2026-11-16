@@ -1,11 +1,12 @@
 //! Native same-filesystem moves; journal ownership belongs to the caller.
 
 use anyhow::Result;
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
 use anyhow::bail;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use anyhow::{Context, ensure};
 use serde::{Deserialize, Serialize};
+#[cfg(not(target_os = "windows"))]
 use std::path::Path;
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -17,26 +18,107 @@ pub(super) struct FileStamp {
     pub sha256: String,
     pub width: u32,
     pub height: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file_id: Option<[u8; 16]>,
 }
 
-#[cfg(target_os = "linux")]
-mod linux {
-    use super::*;
+#[cfg(test)]
+thread_local! { static FAIL_DELETION_BARRIER: std::cell::Cell<bool> = const { std::cell::Cell::new(false) }; }
+
+#[cfg(test)]
+pub(super) fn set_deletion_barrier_failure_for_test(enabled: bool) {
+    FAIL_DELETION_BARRIER.with(|flag| flag.set(enabled));
+}
+
+#[cfg(test)]
+fn deletion_barrier_checkpoint() -> Result<()> {
+    anyhow::ensure!(
+        !FAIL_DELETION_BARRIER.with(|flag| flag.get()),
+        "Injected deletion parent barrier failure"
+    );
+    Ok(())
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+fn png_contents(file: &mut std::fs::File) -> Result<(std::fs::Metadata, String, u32, u32)> {
+    use anyhow::ensure;
     use sha2_10::{Digest, Sha256};
+    use std::{
+        io::{Read, Seek},
+        time::{Duration, Instant},
+    };
+    const MAX_BYTES: u64 = 272 * 1024 * 1024;
+    let started = Instant::now();
+    let before = file.metadata()?;
+    ensure!(
+        before.is_file() && before.len() >= 33 && before.len() <= MAX_BYTES,
+        "History move source must be a regular PNG no larger than 272 MiB"
+    );
+    file.rewind()?;
+    let mut header = [0u8; 33];
+    file.read_exact(&mut header)?;
+    ensure!(
+        &header[..8] == b"\x89PNG\r\n\x1a\n"
+            && header[8..12] == [0, 0, 0, 13]
+            && &header[12..16] == b"IHDR",
+        "History move source has no valid PNG header"
+    );
+    ensure!(
+        crc32fast::hash(&header[12..29]) == u32::from_be_bytes(header[29..33].try_into().unwrap()),
+        "History move PNG header CRC failed"
+    );
+    let width = u32::from_be_bytes(header[16..20].try_into().unwrap());
+    let height = u32::from_be_bytes(header[20..24].try_into().unwrap());
+    crate::validate_image_size(width, height)?;
+    ensure!(
+        matches!(
+            (header[25], header[24]),
+            (0, 1 | 2 | 4 | 8 | 16) | (2, 8 | 16) | (3, 1 | 2 | 4 | 8) | (4 | 6, 8 | 16)
+        ) && header[26] == 0
+            && header[27] == 0
+            && header[28] <= 1,
+        "History move PNG header is unsupported"
+    );
+    file.rewind()?;
+    let mut hash = Sha256::new();
+    let mut buffer = [0u8; 64 * 1024];
+    let mut remaining = before.len();
+    while remaining > 0 {
+        ensure!(
+            started.elapsed() < Duration::from_secs(30),
+            "History move inspection exceeded 30 seconds"
+        );
+        let length = buffer.len().min(remaining as usize);
+        let count = match file.read(&mut buffer[..length]) {
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            result => result?,
+        };
+        ensure!(count > 0, "History move source changed while reading");
+        hash.update(&buffer[..count]);
+        remaining -= count as u64;
+    }
+    file.rewind()?;
+    Ok((
+        before,
+        hash.finalize().iter().map(|b| format!("{b:02x}")).collect(),
+        width,
+        height,
+    ))
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+mod posix {
+    use super::*;
     use std::{
         ffi::{CString, OsStr},
         fs::{File, Metadata, OpenOptions},
-        io::{Read, Seek},
         os::unix::{
             ffi::OsStrExt,
             fs::{MetadataExt, OpenOptionsExt},
             io::{AsRawFd, FromRawFd},
         },
         path::PathBuf,
-        time::{Duration, Instant},
     };
-
-    const MAX_BYTES: u64 = 272 * 1024 * 1024;
 
     fn check_path(path: &Path) -> Result<()> {
         let text = path.to_str().context("History move path must be UTF-8")?;
@@ -118,68 +200,19 @@ mod linux {
     }
 
     fn stamp(file: &mut File) -> Result<FileStamp> {
-        let started = Instant::now();
-        let before = file.metadata()?;
-        ensure!(
-            before.is_file() && before.len() >= 33 && before.len() <= MAX_BYTES,
-            "History move source must be a regular PNG no larger than 272 MiB"
-        );
-        file.rewind()?;
-        let mut header = [0u8; 33];
-        file.read_exact(&mut header)?;
-        ensure!(
-            &header[..8] == b"\x89PNG\r\n\x1a\n"
-                && header[8..12] == [0, 0, 0, 13]
-                && &header[12..16] == b"IHDR",
-            "History move source has no valid PNG header"
-        );
-        ensure!(
-            crc32fast::hash(&header[12..29])
-                == u32::from_be_bytes(header[29..33].try_into().unwrap()),
-            "History move PNG header CRC failed"
-        );
-        let width = u32::from_be_bytes(header[16..20].try_into().unwrap());
-        let height = u32::from_be_bytes(header[20..24].try_into().unwrap());
-        crate::validate_image_size(width, height)?;
-        ensure!(
-            matches!(
-                (header[25], header[24]),
-                (0, 1 | 2 | 4 | 8 | 16) | (2, 8 | 16) | (3, 1 | 2 | 4 | 8) | (4 | 6, 8 | 16)
-            ) && header[26] == 0
-                && header[27] == 0
-                && header[28] <= 1,
-            "History move PNG header is unsupported"
-        );
-        file.rewind()?;
-        let mut hash = Sha256::new();
-        let mut buffer = [0u8; 64 * 1024];
-        let mut remaining = before.len();
-        while remaining > 0 {
-            ensure!(
-                started.elapsed() < Duration::from_secs(30),
-                "History move inspection exceeded 30 seconds"
-            );
-            let length = buffer.len().min(remaining as usize);
-            let count = match file.read(&mut buffer[..length]) {
-                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
-                result => result?,
-            };
-            ensure!(count > 0, "History move source changed while reading");
-            hash.update(&buffer[..count]);
-            remaining -= count as u64;
-        }
+        let (before, sha256, width, height) = super::png_contents(file)?;
         ensure!(
             same_metadata(&before, &file.metadata()?),
             "History move source changed during inspection"
         );
-        file.rewind()?;
         Ok(FileStamp {
             device: before.dev(),
             inode: before.ino(),
             size: before.len(),
-            sha256: hash.finalize().iter().map(|b| format!("{b:02x}")).collect(),
+            sha256,
             width,
             height,
+            file_id: None,
         })
     }
 
@@ -239,6 +272,7 @@ mod linux {
                 stamp(&mut current)? == self.stamp,
                 "History move source was replaced before rename"
             );
+            #[cfg(target_os = "linux")]
             let renamed = unsafe {
                 libc::renameat2(
                     self.source_parent.as_raw_fd(),
@@ -246,6 +280,16 @@ mod linux {
                     self.destination_parent.as_raw_fd(),
                     self.destination_name.as_ptr(),
                     libc::RENAME_NOREPLACE,
+                )
+            };
+            #[cfg(target_os = "macos")]
+            let renamed = unsafe {
+                libc::renameatx_np(
+                    self.source_parent.as_raw_fd(),
+                    self.source_name.as_ptr(),
+                    self.destination_parent.as_raw_fd(),
+                    self.destination_name.as_ptr(),
+                    libc::RENAME_EXCL,
                 )
             };
             if renamed != 0 {
@@ -314,14 +358,150 @@ mod linux {
         verify_parent(&destination_path, &destination)?;
         Ok(())
     }
+    pub(in super::super) fn remove_expected(path: &Path, expected: &FileStamp) -> Result<()> {
+        let (directory, directory_path, name) = parent(path)?;
+        let mut file = open_at(&directory, &name)?.context("Quarantined trash file disappeared")?;
+        ensure!(
+            stamp(&mut file)? == *expected,
+            "Quarantined trash file changed; preserved"
+        );
+        let mut named =
+            open_at(&directory, &name)?.context("Quarantined trash file disappeared")?;
+        ensure!(
+            stamp(&mut named)? == *expected,
+            "Quarantined trash file was replaced; preserved"
+        );
+        ensure!(
+            unsafe { libc::unlinkat(directory.as_raw_fd(), name.as_ptr(), 0) } == 0,
+            "Could not remove quarantined trash file: {}",
+            std::io::Error::last_os_error()
+        );
+        #[cfg(test)]
+        super::deletion_barrier_checkpoint()?;
+        directory.sync_all()?;
+        verify_parent(&directory_path, &directory)?;
+        Ok(())
+    }
+    pub(in super::super) fn sync_absent(path: &Path) -> Result<()> {
+        let (directory, directory_path, name) = parent(path)?;
+        ensure!(
+            open_at(&directory, &name)?.is_none(),
+            "Deleted history path reappeared before its parent barrier"
+        );
+        #[cfg(test)]
+        super::deletion_barrier_checkpoint()?;
+        directory.sync_all()?;
+        verify_parent(&directory_path, &directory)?;
+        ensure!(
+            open_at(&directory, &name)?.is_none(),
+            "Deleted history path reappeared during its parent barrier"
+        );
+        Ok(())
+    }
+    pub(in super::super) fn copy_to_stage(
+        source: &Path,
+        stage: &Path,
+        expected: &FileStamp,
+        cancelled: &dyn Fn() -> bool,
+    ) -> Result<FileStamp> {
+        use std::io::{Read, Seek, Write};
+        let (source_directory, source_parent, source_name) = parent(source)?;
+        let (directory, directory_path, name) = parent(stage)?;
+        let mut input =
+            open_at(&source_directory, &source_name)?.context("Transfer source disappeared")?;
+        ensure!(
+            stamp(&mut input)? == *expected,
+            "Transfer source changed before copying"
+        );
+        let descriptor = unsafe {
+            libc::openat(
+                directory.as_raw_fd(),
+                name.as_ptr(),
+                libc::O_RDWR
+                    | libc::O_CREAT
+                    | libc::O_EXCL
+                    | libc::O_CLOEXEC
+                    | libc::O_NOFOLLOW
+                    | libc::O_NONBLOCK,
+                0o600,
+            )
+        };
+        ensure!(
+            descriptor >= 0,
+            "Could not reserve transfer staging file: {}",
+            std::io::Error::last_os_error()
+        );
+        let mut output = unsafe { File::from_raw_fd(descriptor) };
+        let owned = output.metadata()?;
+        let result = (|| {
+            let started = std::time::Instant::now();
+            let mut buffer = [0u8; 64 * 1024];
+            let mut remaining = expected.size;
+            input.rewind()?;
+            while remaining > 0 {
+                ensure!(!cancelled(), "Transfer canceled while copying");
+                ensure!(
+                    started.elapsed() < std::time::Duration::from_secs(30),
+                    "Transfer copy exceeded its cooperative deadline"
+                );
+                let count = (remaining as usize).min(buffer.len());
+                input.read_exact(&mut buffer[..count])?;
+                output.write_all(&buffer[..count])?;
+                remaining -= count as u64;
+            }
+            output.sync_all()?;
+            let copied = stamp(&mut output)?;
+            ensure!(
+                copied.size == expected.size
+                    && copied.sha256 == expected.sha256
+                    && copied.width == expected.width
+                    && copied.height == expected.height,
+                "Transfer copy does not match its source"
+            );
+            ensure!(
+                stamp(&mut input)? == *expected,
+                "Transfer source changed while copying"
+            );
+            let mut named = open_at(&source_directory, &source_name)?
+                .context("Transfer source path disappeared")?;
+            ensure!(
+                stamp(&mut named)? == *expected,
+                "Transfer source was replaced while copying"
+            );
+            directory.sync_all()?;
+            verify_parent(&directory_path, &directory)?;
+            verify_parent(&source_parent, &source_directory)?;
+            Ok(copied)
+        })();
+        if result.is_err()
+            && let Ok(Some(named)) = open_at(&directory, &name)
+            && named.metadata().is_ok_and(|metadata| {
+                metadata.dev() == owned.dev() && metadata.ino() == owned.ino()
+            })
+        {
+            unsafe { libc::unlinkat(directory.as_raw_fd(), name.as_ptr(), 0) };
+            let _ = directory.sync_all();
+        }
+        result
+    }
 }
 
-#[cfg(target_os = "linux")]
-pub(super) use linux::{LockedSource, inspect, sync_paths};
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub(super) use posix::{
+    LockedSource, copy_to_stage, inspect, remove_expected, sync_absent, sync_paths,
+};
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(target_os = "windows")]
+#[path = "history_file_ops_windows.rs"]
+mod windows;
+#[cfg(target_os = "windows")]
+pub(super) use windows::{
+    LockedSource, copy_to_stage, inspect, remove_expected, sync_absent, sync_paths,
+};
+
+#[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
 pub(super) struct LockedSource;
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
 impl LockedSource {
     pub(super) fn open(_: &Path, _: &Path) -> Result<Self> {
         bail!("History file moves are supported only on Linux")
@@ -339,16 +519,36 @@ impl LockedSource {
         bail!("History file moves are supported only on Linux")
     }
 }
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
 pub(super) fn inspect(_: &Path) -> Result<Option<FileStamp>> {
     bail!("History file moves are supported only on Linux")
 }
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
 pub(super) fn sync_paths(_: &Path, _: &Path, _: &FileStamp) -> Result<()> {
     bail!("History file moves are supported only on Linux")
 }
+#[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+pub(super) fn remove_expected(_: &Path, _: &FileStamp) -> Result<()> {
+    bail!("History file removal is unavailable on this operating system")
+}
+#[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+pub(super) fn sync_absent(_: &Path) -> Result<()> {
+    bail!("History file deletion barriers are unavailable on this operating system")
+}
+#[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+pub(super) fn copy_to_stage(
+    _: &Path,
+    _: &Path,
+    _: &FileStamp,
+    _: &dyn Fn() -> bool,
+) -> Result<FileStamp> {
+    bail!("History file transfer is unavailable on this operating system")
+}
 
-#[cfg(all(test, target_os = "linux"))]
+#[cfg(all(
+    test,
+    any(target_os = "linux", target_os = "macos", target_os = "windows")
+))]
 mod tests {
     use super::*;
     #[test]
@@ -369,6 +569,7 @@ mod tests {
         opened.rename().unwrap();
         opened.verify_destination().unwrap();
         opened.sync_parents().unwrap();
+        drop(opened);
         assert!(!source.exists());
         assert_eq!(inspect(&destination).unwrap(), Some(before));
         assert_eq!(std::fs::read(&destination).unwrap(), original);
@@ -376,10 +577,13 @@ mod tests {
         std::fs::write(&source, b"preserve").unwrap();
         assert!(LockedSource::open(&destination, &source).is_err());
         assert_eq!(std::fs::read(&source).unwrap(), b"preserve");
-        let link = root.join("link.png");
-        std::os::unix::fs::symlink(&destination, &link).unwrap();
-        assert!(inspect(&link).is_err());
-        assert!(LockedSource::open(&link, &root.join("other.png")).is_err());
+        #[cfg(unix)]
+        {
+            let link = root.join("link.png");
+            std::os::unix::fs::symlink(&destination, &link).unwrap();
+            assert!(inspect(&link).is_err());
+            assert!(LockedSource::open(&link, &root.join("other.png")).is_err());
+        }
         let expected = inspect(&destination).unwrap().unwrap();
         sync_paths(&source, &destination, &expected).unwrap();
         std::fs::remove_dir_all(root).unwrap();
@@ -403,6 +607,7 @@ mod tests {
         assert!(locked.rename().is_err());
         assert_eq!(std::fs::read(&source).unwrap(), original);
         assert_eq!(std::fs::read(&target).unwrap(), b"another writer");
+        drop(locked);
         std::fs::remove_file(&target).unwrap();
         let mut locked = LockedSource::open(&source, &target).unwrap();
         std::fs::rename(&source, root.join("original.png")).unwrap();
@@ -414,6 +619,7 @@ mod tests {
         assert_eq!(std::fs::read(&source).unwrap(), replacement);
         assert!(!target.exists());
         assert!(inspect(&root.join("absent/never.png")).unwrap().is_none());
+        drop(locked);
         std::fs::remove_dir_all(root).unwrap();
     }
 }

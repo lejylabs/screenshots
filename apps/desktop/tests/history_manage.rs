@@ -255,7 +255,7 @@ fn invalid_ids_counts_and_missing_mutation_database_never_create_storage() {
         failure(fixture.run("relink", &database, &[id.into(), "image.png".into()]));
     }
     failure(fixture.run("remove", &database, &[]));
-    failure(fixture.run("remove", &database, &vec![OsString::from("1"); 21]));
+    failure(fixture.run("remove", &database, &vec![OsString::from("1"); 101]));
     failure(fixture.run("import", &database, &[]));
     failure(fixture.run("import", &database, &vec![OsString::from("image.png"); 101]));
     failure(fixture.run("remove", &database, &["1".into()]));

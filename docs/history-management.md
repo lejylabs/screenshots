@@ -1,9 +1,12 @@
 # Explicit history management
 
 Status: headless metadata operations using the existing capture-history APIs.
-The original metadata commands do not change image files. Explicit Linux
+The original metadata commands do not change image files. Explicit
 [journaled file moves](history-file-moves.md) now rename one referenced PNG
 without replacing another file, with pending-operation inspection and recovery.
+The [physical lifecycle](history-lifecycle.md) adds explicit transfer, trash,
+restore, purge and retention. Native Windows/macOS adapters are implemented;
+runtime acceptance remains separate from Linux verification.
 
 ```sh
 screenshots history-manage import DATABASE PNG [PNG...]
@@ -12,6 +15,7 @@ screenshots history-manage relink DATABASE ID PNG
 screenshots history-manage move DATABASE ID NEW.png
 screenshots history-manage pending-move DATABASE
 screenshots history-manage recover-move DATABASE OPERATION finish|cancel
+screenshots history-manage remove-missing DATABASE ID [ID...]
 ```
 
 Import accepts 1–100 PNG paths, resolves relative inputs against the invoking
@@ -25,7 +29,7 @@ input was rejected. A database/transaction error instead fails the command and
 rolls back its metadata changes. Explicit import may create and migrate the
 requested database and its parent directory, even if all inputs are rejected.
 
-Remove accepts 1–20 positive integer IDs and deletes only matching capture
+Remove accepts 1–100 positive IDs selected across pages and deletes only matching capture
 metadata in one transaction. Repeated or missing IDs are harmless and the JSON
 `removed` count is the actual number of rows deleted. No referenced image or
 upload-history entry is removed. Invalid IDs/counts fail before opening storage.
@@ -68,5 +72,6 @@ Actual-executable fixtures check partial imports, repeated references, exact
 relink ID/dimensions, missing/conflicting IDs, atomic metadata removal, malformed
 arguments, absent database handling, bounded reports, unchanged original/new
 files and absent unrelated user-state writes. Optimized results are recorded
-after execution. These operations do not establish retention, physical-file
-deletion, native UI/library or reference-hardware performance acceptance.
+after execution. These original operations do not establish native UI/library or reference-hardware
+acceptance. Explicit retention and physical file operations have their own
+[implementation and verification contract](history-lifecycle.md).

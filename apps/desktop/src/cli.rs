@@ -38,11 +38,19 @@ Headless commands (no desktop UI; outputs and uploads require explicit actions):
   screenshots capture-task region DISPLAY X Y WIDTH HEIGHT OUTPUT [same options]
   screenshots history DATABASE [--before ID] [--search WORDS]
   screenshots history-audit DATABASE [--cursor ID]
-  screenshots history-manage import|remove|relink DATABASE ARGUMENTS...
+  screenshots history-manage import|remove|remove-missing|relink DATABASE ARGUMENTS...
   screenshots history-manage export DATABASE DIRECTORY original|strip-metadata ID...
   screenshots history-manage move DATABASE ID NEW.png
+  screenshots history-manage transfer DATABASE ID NEW.png
+  screenshots history-manage trash DATABASE DIRECTORY ID... (1–100 IDs)
+  screenshots history-manage trash-list DATABASE [CURSOR]
+  screenshots history-manage restore DATABASE TRASH_UUID [NEW.png]
+  screenshots history-manage purge DATABASE TRASH_UUID... (1–100 IDs)
+  screenshots history-manage retention DATABASE POLICY.json preview|apply
+  screenshots history-manage index-identities DATABASE [CURSOR]
   screenshots history-manage pending-move DATABASE
   screenshots history-manage recover-move DATABASE OPERATION finish|cancel
+  screenshots history-manage recover-file DATABASE OPERATION finish|cancel
   screenshots history-query captures|uploads DATABASE [--order newest|oldest]
       [--cursor ID] [--from YYYY-MM-DD] [--through YYYY-MM-DD]
       [--search TEXT] [--source all|captures|imports]

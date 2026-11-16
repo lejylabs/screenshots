@@ -10,8 +10,11 @@ use std::{
 #[path = "history_file_ops.rs"]
 mod file_ops;
 pub use file_ops::{
-    MoveOutcome, MoveRecovery, PendingMove, move_history_file, pending_history_move,
-    recover_history_move,
+    IdentityIndexReport, MoveOutcome, MoveRecovery, PendingMove, RetentionPlan, RetentionPolicy,
+    RetentionReport, TrashEntry, TrashPage, apply_retention, move_history_file,
+    pending_history_move, plan_retention, prime_history_file_identities, purge_history_trash,
+    recover_history_file_operation, recover_history_move, restore_history_trash,
+    transfer_history_file, trash_history_file, trash_history_page,
 };
 
 #[derive(Clone)]
@@ -155,12 +158,38 @@ fn migrations() -> Migrations<'static> {
         CREATE TRIGGER captures_move_delete BEFORE DELETE ON captures
         WHEN EXISTS(SELECT 1 FROM pending_file_move WHERE old.id=capture_id OR old.file_path IN (source_path,destination_path))
         BEGIN SELECT RAISE(ABORT,'History file move is pending; recover it first'); END;"),
+        M::up("CREATE TABLE history_trash (
+            sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+            trash_id TEXT NOT NULL UNIQUE CHECK(length(trash_id)=36),
+            trash_path TEXT NOT NULL UNIQUE CHECK(length(CAST(trash_path AS BLOB))<=4096),
+            trashed_at TEXT NOT NULL CHECK(length(trashed_at)<=64),
+            payload TEXT NOT NULL CHECK(length(CAST(payload AS BLOB))<=16384)
+        );
+        CREATE INDEX history_trash_time ON history_trash(trashed_at,sequence);
+        CREATE TRIGGER captures_trash_insert BEFORE INSERT ON captures
+        WHEN EXISTS(SELECT 1 FROM history_trash WHERE trash_path=new.file_path)
+        BEGIN SELECT RAISE(ABORT,'History trash file is reserved; restore it explicitly'); END;
+        CREATE TRIGGER captures_trash_update BEFORE UPDATE ON captures
+        WHEN EXISTS(SELECT 1 FROM history_trash WHERE trash_path=new.file_path)
+        BEGIN SELECT RAISE(ABORT,'History trash file is reserved; restore it explicitly'); END;
+        CREATE TRIGGER trash_pending_update BEFORE UPDATE ON history_trash
+        WHEN EXISTS(SELECT 1 FROM pending_file_move WHERE json_extract(payload,'$.action.trash_id')=old.trash_id)
+        BEGIN SELECT RAISE(ABORT,'History file operation is pending; recover it first'); END;
+        CREATE TRIGGER trash_pending_delete BEFORE DELETE ON history_trash
+        WHEN EXISTS(SELECT 1 FROM pending_file_move WHERE json_extract(payload,'$.action.trash_id')=old.trash_id)
+        BEGIN SELECT RAISE(ABORT,'History file operation is pending; recover it first'); END;"),
+        M::up("CREATE TRIGGER captures_move_assigned_insert AFTER INSERT ON captures
+        WHEN EXISTS(SELECT 1 FROM pending_file_move WHERE new.id=capture_id OR new.file_path IN (source_path,destination_path))
+        BEGIN SELECT RAISE(ABORT,'History file operation reserves the assigned capture ID; recover it first'); END;"),
+        M::up(file_ops::RESERVATION_MIGRATION),
+        M::up("CREATE INDEX captures_unresolved_id ON captures(id) WHERE file_identity IS NULL;"),
     ])
 }
 
 fn open(path: &Path) -> Result<Connection> {
     std::fs::create_dir_all(path.parent().context("Invalid history database path")?)?;
     let mut connection = Connection::open(path)?;
+    file_ops::register_reservations(&connection)?;
     connection.busy_timeout(Duration::from_millis(250))?;
     connection.execute_batch(
         "PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA cache_size=-512;",
@@ -169,7 +198,7 @@ fn open(path: &Path) -> Result<Connection> {
     Ok(connection)
 }
 
-fn open_existing(path: &Path) -> Result<Connection> {
+pub(crate) fn open_existing(path: &Path) -> Result<Connection> {
     ensure!(
         std::fs::symlink_metadata(path)?.is_file(),
         "History database must be an existing regular file"
@@ -185,6 +214,7 @@ fn open_existing(path: &Path) -> Result<Connection> {
         path,
         rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE | rusqlite::OpenFlags::SQLITE_OPEN_NOFOLLOW,
     )?;
+    file_ops::register_reservations(&connection)?;
     connection.busy_timeout(Duration::from_millis(250))?;
     connection.execute_batch(
         "PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA cache_size=-512;",
@@ -474,11 +504,11 @@ pub fn remove_history_entry(database: &Path, id: i64) -> Result<()> {
     remove_history_entries(database, &[id]).map(|_| ())
 }
 
-/// Atomically remove a displayed page's selected metadata; image files remain untouched.
+/// Atomically remove a bounded selection across pages; image files remain untouched.
 pub fn remove_history_entries(database: &Path, ids: &[i64]) -> Result<usize> {
     ensure!(
-        !ids.is_empty() && ids.len() <= 20,
-        "Select 1 to 20 history entries"
+        !ids.is_empty() && ids.len() <= 100,
+        "Select 1 to 100 history entries"
     );
     ensure!(ids.iter().all(|id| *id > 0), "Invalid history entry ID");
     let mut connection = open_existing(database)?;
@@ -489,6 +519,38 @@ pub fn remove_history_entries(database: &Path, ids: &[i64]) -> Result<usize> {
         for id in ids {
             removed += delete.execute([id])?;
         }
+    }
+    transaction.commit()?;
+    Ok(removed)
+}
+
+/// Explicit reconciliation removes only selected references still absent at the check.
+/// It never opens or deletes image files, and any nonmissing/ambiguous input rolls back.
+pub fn remove_missing_history_entries(database: &Path, ids: &[i64]) -> Result<usize> {
+    ensure!(
+        !ids.is_empty() && ids.len() <= 100 && ids.iter().all(|id| *id > 0),
+        "Choose 1 to 100 positive history IDs"
+    );
+    let mut connection = open_existing(database)?;
+    let transaction =
+        connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    let started = std::time::Instant::now();
+    for id in ids {
+        ensure!(
+            started.elapsed() < Duration::from_secs(5),
+            "Missing-reference reconciliation exceeded its cooperative deadline"
+        );
+        let entry = file_ops::selected_path(&transaction, *id)?;
+        match std::fs::symlink_metadata(entry) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => (),
+            _ => anyhow::bail!(
+                "A selected reference exists or cannot be confirmed missing; all references preserved"
+            ),
+        }
+    }
+    let mut removed = 0;
+    for id in ids {
+        removed += transaction.execute("DELETE FROM captures WHERE id=?1", [id])?;
     }
     transaction.commit()?;
     Ok(removed)
@@ -778,7 +840,7 @@ mod tests {
         let root =
             std::env::temp_dir().join(format!("screenshots-history-bulk-{}", uuid::Uuid::new_v4()));
         let database = root.join("history.sqlite3");
-        for ids in [vec![], vec![1; 21], vec![0], vec![-1]] {
+        for ids in [vec![], vec![1; 101], vec![0], vec![-1]] {
             assert!(remove_history_entries(&database, &ids).is_err());
         }
         assert!(!root.exists());
@@ -880,7 +942,7 @@ mod tests {
         let connection = open(&database)?;
         assert_eq!(
             connection.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))?,
-            5
+            9
         );
         assert_eq!(
             connection.query_row("SELECT count(*) FROM captures", [], |row| row

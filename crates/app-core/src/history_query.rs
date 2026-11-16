@@ -116,7 +116,7 @@ fn open_query(
     connection.execute_batch("PRAGMA cache_size=-512; BEGIN DEFERRED;")?;
     let version: u32 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
     ensure!(
-        (1..=5).contains(&version),
+        (1..=9).contains(&version),
         "Unsupported history schema version"
     );
     let (table, columns) = match kind {
@@ -415,7 +415,7 @@ mod tests {
             let database = root.join("history.sqlite3");
             // Exercise the application's real migrations only while constructing the fixture.
             crate::capture_history_page(&database, None)?;
-            let mut connection = Connection::open(&database)?;
+            let mut connection = crate::history::open_existing(&database)?;
             let transaction = connection.transaction()?;
             {
                 let mut capture = transaction.prepare("INSERT INTO captures(file_path,mime_type,width,height,file_size,created_at,source) VALUES(?1,'image/png',2,3,42,?2,?3)")?;
@@ -504,7 +504,7 @@ mod tests {
                     .collect::<Vec<_>>()
             );
         }
-        let connection = Connection::open(&fixture.database)?;
+        let connection = crate::history::open_existing(&fixture.database)?;
         for (kind, query, expression, index) in [
             (
                 Kind::Captures,
@@ -598,7 +598,7 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(captures(&fixture, &query)?.entries[0].id, 59);
-        let connection = Connection::open(&fixture.database)?;
+        let connection = crate::history::open_existing(&fixture.database)?;
         connection.execute(
             "UPDATE captures SET created_at='2001-01-01T00:00:00Z' WHERE id=60",
             [],
@@ -742,7 +742,7 @@ mod tests {
     #[test]
     fn malformed_selected_metadata_fails_without_truncation() -> Result<()> {
         let fixture = Fixture::new(1)?;
-        let connection = Connection::open(&fixture.database)?;
+        let connection = crate::history::open_existing(&fixture.database)?;
         for value in [
             "x".repeat(4097),
             "relative.png".into(),

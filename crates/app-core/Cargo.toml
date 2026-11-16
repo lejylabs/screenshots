@@ -12,6 +12,7 @@ description = "Application core. No GPUI dependency."
 workspace = true
 
 [dependencies]
+unicode-normalization = "=0.1.26"
 anyhow.workspace = true
 base64.workspace = true
 arboard.workspace = true

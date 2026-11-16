@@ -2,24 +2,31 @@
 
 Author: NewtTheWolf
 Date: 2026-11-15
-Status: implemented and locally verified; Linux-only mutation.
+Status: Linux implementation verified; native macOS/Windows adapters added.
+Native acceptance is tracked separately in [Library lifecycle](history-lifecycle.md).
 
 Add `history-manage move DATABASE ID NEW.png`, `history-manage pending-move
 DATABASE`, and `history-manage recover-move DATABASE OPERATION finish|cancel`.
 Move one referenced PNG on the same filesystem without replacing another file.
 This is an explicit physical-file operation; existing remove stays metadata-only.
-Other operating systems reject move/recovery before any mutation until their
-native rename/durability path is implemented. Pending-journal inspection remains
-portable. No UI or automatic recovery is added.
+macOS uses held POSIX descriptors with `renameatx_np(RENAME_EXCL)`. Windows uses
+128-bit native identities, reparse-point refusal and no-replace write-through
+rename. Their runtime/durability acceptance remains separate from Linux evidence.
+Pending inspection stays portable. No UI or automatic recovery is added.
 
 Move/recovery success prints `operation_id`, `capture_id`, `source_path`,
-`destination_path` and `status` (`moved` or `canceled`). Pending inspection prints
+`destination_path`, `kind` and `status` (`moved` or `canceled`). Pending inspection prints
 `pending: null` or an object with the same ID/path fields and no status. Paths
 are exact UTF-8; inspection reads no image bytes and never migrates or creates
 the database. Older supported schemas without this journal report no pending
 move. Malformed/unsupported journal data fails explicitly.
 
-Schema version 5 records at most one unresolved move per database. Persist the
+Schema version 5 introduced one unresolved move per database. Version 6 extends
+that same journal with the explicit [Library lifecycle](history-lifecycle.md);
+ordinary move/recover-move semantics remain unchanged. Schema 7 also guards
+SQLite-assigned capture IDs after insertion, preserving pending restoration
+reservations. Version 8 adds native alias checks and full staging-path reservation,
+with bounded identity preparation during explicit physical work. Persist the
 operation ID, complete expected capture row, old/new absolute UTF-8 paths and
 opened file identity/size/SHA256 before changing the filesystem. Capture-table
 triggers reserve the pending ID and both paths against ordinary import/relink/
@@ -112,11 +119,12 @@ and databases. `scripts/test-history-move.py` also passed against the release
 binary: it injects a SQLite abort trigger only into its fixture database to
 interrupt finalization after rename, verifies the durable journal, then exercises
 explicit finish and cancel recovery. Exact bytes, inode, row metadata and FTS
-references remain correct. Windows cross-compilation and Clippy passed; mutation remains
-unsupported on Windows/macOS. Whole-workspace and release results are recorded
+references remain correct. At that first Linux delivery, Windows cross-compilation
+and Clippy passed while non-Linux mutation was unavailable. The adapters added
+later and their current checks are recorded in the lifecycle document. Whole-workspace and release results are recorded
 in the delivery log after completion.
 
-The complete optimized workspace run passed 464 regular tests, with 51 opt-in
+That first delivery's complete optimized workspace run passed 464 regular tests, with 51 opt-in
 cases excluded and all doctests passing. Release artifact and recovery script
 checks passed. Native Windows/macOS moves and hostile external-writer guarantees
 remain outside this first implementation.
