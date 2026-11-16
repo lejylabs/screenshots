@@ -601,8 +601,15 @@ fn maintained_object_server_distinguishes_fresh_and_existing_interfaces() {
             .unwrap()
             .unwrap();
         assert_eq!(returned.0, 37);
+        // Observe the service through an independent client, as real
+        // accessibility clients do; don't couple this insertion check to self-RPC.
+        let client = zbus::connection::Builder::address(address.as_str())
+            .method_timeout(WAIT)
+            .build()
+            .await
+            .unwrap();
         let proxy = zbus::Proxy::new(
-            &connection,
+            &client,
             connection.unique_name().unwrap().as_str(),
             "/org/screenshots/test",
             "org.screenshots.MaintainedInsertion",
