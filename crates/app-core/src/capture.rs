@@ -2210,7 +2210,7 @@ fn encode_png_bytes_with_cancel(
                 .map_err(|error| CaptureError::Backend(error.to_string()));
         work.check()?;
         result?;
-        let flushed=writer.flush();
+        let flushed = writer.flush();
         work.check()?;
         flushed?;
     }

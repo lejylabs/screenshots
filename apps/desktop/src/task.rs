@@ -119,12 +119,21 @@ pub(crate) struct PreparedTemplateTask {
     bridge: Option<crate::task_clipboard::Client>,
 }
 impl PreparedTemplateTask {
-    fn read(selected: SelectedTemplate, bridge: Option<crate::task_clipboard::Client>) -> Result<Self> {
-        let profile = selected.template.profile().context("Template has no assigned task profile")?.to_owned();
+    fn read(
+        selected: SelectedTemplate,
+        bridge: Option<crate::task_clipboard::Client>,
+    ) -> Result<Self> {
+        let profile = selected
+            .template
+            .profile()
+            .context("Template has no assigned task profile")?
+            .to_owned();
         let task = Task::read_selected(&profile, Some(selected))?;
         Ok(Self { task, bridge })
     }
-    pub(crate) fn execute(self) -> Result<()> { self.task.execute(self.bridge) }
+    pub(crate) fn execute(self) -> Result<()> {
+        self.task.execute(self.bridge)
+    }
 }
 enum Ready {
     Save(PathBuf, u8),
@@ -218,8 +227,10 @@ impl Task {
             "Clipboard hold must be 0–300000 milliseconds"
         );
         let base = path.parent().context("Task profile has no parent")?;
-        ensure!(selected.is_none() || matches!(profile.source, Source::Template { .. }),
-            "Capture template task must use a template source");
+        ensure!(
+            selected.is_none() || matches!(profile.source, Source::Template { .. }),
+            "Capture template task must use a template source"
+        );
         let mut template = None;
         match &mut profile.source {
             Source::None
@@ -240,8 +251,11 @@ impl Task {
             Source::Template { catalog, name } => {
                 *catalog = resolve(base, catalog)?;
                 if let Some(selected) = selected.take() {
-                    ensure!(*name == selected.name && std::fs::canonicalize(&*catalog)? == selected.catalog,
-                        "Capture template task source must reference this catalog and template");
+                    ensure!(
+                        *name == selected.name
+                            && std::fs::canonicalize(&*catalog)? == selected.catalog,
+                        "Capture template task source must reference this catalog and template"
+                    );
                     *catalog = selected.catalog;
                     template = Some(selected.template);
                 } else {
@@ -750,29 +764,67 @@ fn expand_argument(
 #[cfg(test)]
 mod tests {
     use super::*;
-    fn snapshot_capture(call: app_core::NativeCaptureCall, check: &app_core::NativeCaptureCheck<'_>) -> std::result::Result<app_core::NativeCaptureReply, app_core::CaptureError> {
+    fn snapshot_capture(
+        call: app_core::NativeCaptureCall,
+        check: &app_core::NativeCaptureCheck<'_>,
+    ) -> std::result::Result<app_core::NativeCaptureReply, app_core::CaptureError> {
         check()?;
-        let app_core::NativeCaptureCall::Template { template, options } = call else { return Err(app_core::CaptureError::Backend("Unexpected snapshot fixture call".into())); };
-        if template.width != 2 || template.height != 1 || options.delay_ms != 0
-            || template.monitor != (app_core::CaptureMonitorBinding::Connector { key: "fixture:original".into() }) {
-            return Err(app_core::CaptureError::Backend("A later catalog replaced the admitted snapshot".into()));
+        let app_core::NativeCaptureCall::Template { template, options } = call else {
+            return Err(app_core::CaptureError::Backend(
+                "Unexpected snapshot fixture call".into(),
+            ));
+        };
+        if template.width != 2
+            || template.height != 1
+            || options.delay_ms != 0
+            || template.monitor
+                != (app_core::CaptureMonitorBinding::Connector {
+                    key: "fixture:original".into(),
+                })
+        {
+            return Err(app_core::CaptureError::Backend(
+                "A later catalog replaced the admitted snapshot".into(),
+            ));
         }
-        Ok(app_core::NativeCaptureReply::Frames(vec![CapturedImage { display_id: "fixture".into(), window_id: None,
-            width: 2, height: 1, png_path: PathBuf::new(), pixels: Arc::new(image::RgbaImage::from_pixel(2, 1, image::Rgba([7, 11, 13, 255]))),
-            elapsed_ms: 0, source_format: app_core::PixelFormat::Rgba8UnormSrgb, display_geometry: None }]))
+        Ok(app_core::NativeCaptureReply::Frames(vec![CapturedImage {
+            display_id: "fixture".into(),
+            window_id: None,
+            width: 2,
+            height: 1,
+            png_path: PathBuf::new(),
+            pixels: Arc::new(image::RgbaImage::from_pixel(
+                2,
+                1,
+                image::Rgba([7, 11, 13, 255]),
+            )),
+            elapsed_ms: 0,
+            source_format: app_core::PixelFormat::Rgba8UnormSrgb,
+            display_geometry: None,
+        }]))
     }
     #[test]
     fn template_snapshot_fixture() -> Result<()> {
-        let Some(root) = std::env::var_os("SCREENSHOTS_TEMPLATE_SNAPSHOT_FIXTURE") else { return Ok(()); };
-        let root = PathBuf::from(root); let catalog = root.join("catalog.json"); let profile = root.join("task.json");
-        let original = root.join("original.png"); let injected = root.join("injected.png");
-        std::fs::write(&profile, serde_json::to_vec(&serde_json::json!({"version":1,"source":{"type":"template","catalog":catalog,"name":"crop"},"actions":[{"type":"save","path":original}]}))?)?;
+        let Some(root) = std::env::var_os("SCREENSHOTS_TEMPLATE_SNAPSHOT_FIXTURE") else {
+            return Ok(());
+        };
+        let root = PathBuf::from(root);
+        let catalog = root.join("catalog.json");
+        let profile = root.join("task.json");
+        let original = root.join("original.png");
+        let injected = root.join("injected.png");
+        std::fs::write(
+            &profile,
+            serde_json::to_vec(
+                &serde_json::json!({"version":1,"source":{"type":"template","catalog":catalog,"name":"crop"},"actions":[{"type":"save","path":original}]}),
+            )?,
+        )?;
         let initial = serde_json::json!({"version":1,"templates":[{"name":"crop","monitor":{"kind":"connector","key":"fixture:original"},
             "geometry":{"width":10,"height":8,"scale_factor":1.0,"rotation":0.0},"x":0,"y":0,"width":2,"height":1,"profile":profile}]});
         std::fs::write(&catalog, serde_json::to_vec(&initial)?)?;
         let selected = selected_template(&catalog, "crop")?;
         // Deterministic catalog replacement before Task reading must not replace this binding/options.
-        let mut replacement = initial; replacement["defaults"] = serde_json::json!({"delay_ms":3600000});
+        let mut replacement = initial;
+        replacement["defaults"] = serde_json::json!({"delay_ms":3600000});
         replacement["templates"][0]["width"] = 3.into();
         replacement["templates"][0]["monitor"]["key"] = "fixture:replacement".into();
         std::fs::write(&catalog, serde_json::to_vec(&replacement)?)?;
@@ -780,33 +832,67 @@ mod tests {
         let source = root.join("replacement.png");
         image::RgbaImage::from_pixel(1, 1, image::Rgba([199, 201, 203, 255])).save(&source)?;
         // Deterministic source AND action replacement after validation must never execute.
-        std::fs::write(&profile, serde_json::to_vec(&serde_json::json!({"version":1,"source":{"type":"file","path":source},"actions":[{"type":"save","path":injected}]}))?)?;
+        std::fs::write(
+            &profile,
+            serde_json::to_vec(
+                &serde_json::json!({"version":1,"source":{"type":"file","path":source},"actions":[{"type":"save","path":injected}]}),
+            )?,
+        )?;
         app_core::install_native_capture_executor(snapshot_capture)?;
         admitted.execute()?;
         ensure!(!injected.exists(), "Replaced Task actions ran");
         let pixels = image::open(&original)?.into_rgba8();
-        ensure!(pixels.dimensions() == (2, 1) && pixels.pixels().all(|pixel| pixel.0 == [7, 11, 13, 255]), "Admitted source pixels were replaced");
+        ensure!(
+            pixels.dimensions() == (2, 1)
+                && pixels.pixels().all(|pixel| pixel.0 == [7, 11, 13, 255]),
+            "Admitted source pixels were replaced"
+        );
         Ok(())
     }
     #[test]
     fn assigned_template_executes_one_validated_task_and_initial_catalog_snapshot() -> Result<()> {
-        let root = std::env::temp_dir().join(format!("screenshots-task-snapshot-{}", uuid::Uuid::new_v4()));
+        let root = std::env::temp_dir().join(format!(
+            "screenshots-task-snapshot-{}",
+            uuid::Uuid::new_v4()
+        ));
         std::fs::create_dir(&root)?;
         let mut child = std::process::Command::new(std::env::current_exe()?)
-            .args(["--exact", "task::tests::template_snapshot_fixture", "--nocapture"])
-            .env("SCREENSHOTS_TEMPLATE_SNAPSHOT_FIXTURE", &root).env("DISPLAY", ":snapshot-private").env("XDG_SESSION_TYPE", "x11")
-            .env_remove("WAYLAND_DISPLAY").env_remove(crate::task_clipboard::ENV)
-            .stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::piped()).spawn()?;
+            .args([
+                "--exact",
+                "task::tests::template_snapshot_fixture",
+                "--nocapture",
+            ])
+            .env("SCREENSHOTS_TEMPLATE_SNAPSHOT_FIXTURE", &root)
+            .env("DISPLAY", ":snapshot-private")
+            .env("XDG_SESSION_TYPE", "x11")
+            .env_remove("WAYLAND_DISPLAY")
+            .env_remove(crate::task_clipboard::ENV)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::piped())
+            .spawn()?;
         let until = Instant::now() + Duration::from_secs(5);
         loop {
-            if child.try_wait()?.is_some() { break; }
-            if Instant::now() >= until { let _ = child.kill(); let _ = child.wait(); let _ = std::fs::remove_dir_all(&root); bail!("Selected catalog was reread or snapshot fixture stalled"); }
+            if child.try_wait()?.is_some() {
+                break;
+            }
+            if Instant::now() >= until {
+                let _ = child.kill();
+                let _ = child.wait();
+                let _ = std::fs::remove_dir_all(&root);
+                bail!("Selected catalog was reread or snapshot fixture stalled");
+            }
             std::thread::sleep(Duration::from_millis(5));
         }
         let result = child.wait_with_output()?;
         let cleanup = std::fs::remove_dir_all(&root);
-        ensure!(result.status.success(), "Task/catalog replacement fixture failed: {}", String::from_utf8_lossy(&result.stderr));
-        cleanup?; Ok(())
+        ensure!(
+            result.status.success(),
+            "Task/catalog replacement fixture failed: {}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        cleanup?;
+        Ok(())
     }
     #[test]
     fn command_arguments_expand_once_without_interpreting_replacement_text() {
@@ -896,7 +982,11 @@ pub(crate) fn validate_template_profile(profile: &Path, catalog: &Path, name: &s
 fn selected_template(catalog: &Path, name: &str) -> Result<SelectedTemplate> {
     let catalog = std::fs::canonicalize(catalog)?;
     let template = app_core::PreparedRegionTemplate::read(&catalog, name)?;
-    Ok(SelectedTemplate { catalog, name: name.into(), template })
+    Ok(SelectedTemplate {
+        catalog,
+        name: name.into(),
+        template,
+    })
 }
 pub(crate) fn prepare_template_task(catalog: &Path, name: &str) -> Result<PreparedTemplateTask> {
     // Accept inherited clipboard handles before any later task command can run.
