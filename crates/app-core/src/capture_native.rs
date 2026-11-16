@@ -49,7 +49,7 @@ pub(crate) fn capture_window(window: &xcap::Window, options: &CaptureOptions) ->
         delay_ms: 0,
         ..*options
     };
-    if native == CaptureOptions::default() {
+    if !cfg!(target_os = "macos") && native == CaptureOptions::default() {
         return Ok(window.capture_image()?);
     }
     platform::capture_window(window, &native)

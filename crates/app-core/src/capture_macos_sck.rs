@@ -2,7 +2,7 @@
 //! Dynamic class availability keeps older supported macOS launches intact.
 use crate::capture_macos_ax as native;
 use crate::{CaptureCursor, CaptureOptions, CaptureWindowShadow, MacLogicalRect, MacWindowProof};
-use anyhow::{Context, Result, bail, ensure};
+use anyhow::{Context, Result, ensure};
 use block2::RcBlock;
 use core_foundation::{
     base::{CFRelease, CFRetain},
@@ -229,7 +229,7 @@ fn shareable(until: Instant) -> Result<Retained<AnyObject>> {
     });
     let proxy = class(c"SCShareableContent")?;
     unsafe {
-        let _: () = msg_send![proxy,getShareableContentExcludingDesktopWindows:Bool::YES onScreenWindowsOnly:Bool::YES completionHandler:&*block];
+        let _: () = msg_send![proxy,getShareableContentExcludingDesktopWindows:Bool::YES, onScreenWindowsOnly:Bool::YES, completionHandler:&*block];
     }
     let raw = pending.0.wait(until)?;
     unsafe { Retained::from_raw(raw as *mut AnyObject) }
@@ -348,7 +348,7 @@ impl Window {
             state.publish_image(image, error)
         });
         unsafe {
-            let _: () = msg_send![class(c"SCScreenshotManager")?,captureImageWithFilter:&*self.filter configuration:&*config completionHandler:&*block];
+            let _: () = msg_send![class(c"SCScreenshotManager")?,captureImageWithFilter:&*self.filter, configuration:&*config, completionHandler:&*block];
         }
         Ok(Image(pending.0.wait(until)? as *const c_void))
     }
@@ -370,7 +370,7 @@ impl Window {
             state.publish_object(output, error)
         });
         unsafe {
-            let _: () = msg_send![class(c"SCScreenshotManager")?,captureScreenshotWithFilter:&*self.filter configuration:&*config completionHandler:&*block];
+            let _: () = msg_send![class(c"SCScreenshotManager")?,captureScreenshotWithFilter:&*self.filter, configuration:&*config, completionHandler:&*block];
         }
         let raw = pending.0.wait(until)?;
         let output = unsafe { Retained::<AnyObject>::from_raw(raw as *mut AnyObject) }

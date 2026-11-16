@@ -3,11 +3,11 @@ use crate::{
     MAC_AX_ARRAY_LIMIT, MAC_AX_MESSAGE_MILLIS, MAC_AX_PARENT_LIMIT, MacDisplayProof,
     MacLogicalRect, MacWindowProof, PixelRegion,
 };
-use anyhow::{Context, Result, bail, ensure};
+use anyhow::{Context, Result, ensure};
 use core_foundation::{
     array::{CFArrayGetCount, CFArrayGetTypeID, CFArrayGetValueAtIndex, CFArrayRef},
     base::{CFEqual, CFGetTypeID, CFRelease, CFRetain, CFTypeID, CFTypeRef, TCFType},
-    boolean::{CFBooleanGetTypeID, CFBooleanGetValue},
+    boolean::{CFBoolean, CFBooleanGetTypeID},
     dictionary::{CFDictionaryGetTypeID, CFDictionaryGetValue, CFDictionaryRef},
     number::{
         CFNumberGetTypeID, CFNumberGetValue, CFNumberRef, kCFNumberDoubleType, kCFNumberSInt64Type,
@@ -164,8 +164,7 @@ fn number(value: CFTypeRef) -> Result<f64> {
                 kCFNumberDoubleType,
                 (&mut output as *mut f64).cast(),
             )
-        } != 0
-            && output.is_finite(),
+        } && output.is_finite(),
         "Invalid native macOS number"
     );
     Ok(output)
@@ -183,7 +182,7 @@ fn integer(value: CFTypeRef) -> Result<i64> {
                 kCFNumberSInt64Type,
                 (&mut output as *mut i64).cast(),
             )
-        } != 0,
+        },
         "Invalid native macOS integer"
     );
     Ok(output)
@@ -310,7 +309,7 @@ pub(super) fn windows() -> Result<Vec<MacWindowProof>> {
         let id = u32::try_from(integer(item(dictionary, "kCGWindowNumber")?)?)?;
         let pid = u32::try_from(integer(item(dictionary, "kCGWindowOwnerPID")?)?)?;
         let layer = i32::try_from(integer(item(dictionary, "kCGWindowLayer")?)?)?;
-        if layer != 0 || pid == 0 {
+        if pid == 0 {
             continue;
         }
         let visible = item(dictionary, "kCGWindowIsOnscreen")?;
@@ -337,7 +336,7 @@ pub(super) fn windows() -> Result<Vec<MacWindowProof>> {
             process_start_seconds: seconds,
             process_start_micros: micros,
             bounds: rect.into(),
-            onscreen: unsafe { CFBooleanGetValue(visible.cast()) } != 0,
+            onscreen: bool::from(unsafe { CFBoolean::wrap_under_get_rule(visible.cast()) }),
             layer,
         });
     }
