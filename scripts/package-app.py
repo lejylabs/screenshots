@@ -13,6 +13,7 @@ import json
 import os
 from pathlib import Path
 import plistlib
+import re
 import shutil
 import struct
 import subprocess
@@ -113,13 +114,20 @@ def tar_gzip(directory, output, epoch):
     with output.open("wb") as raw, gzip.GzipFile(fileobj=raw, mode="wb", filename="", mtime=epoch) as zipped:
         with tarfile.open(fileobj=zipped, mode="w") as stream:
             for file in sorted(directory.rglob("*")):
+                if file.is_symlink():
+                    item = stream.gettarinfo(file, file.relative_to(directory).as_posix())
+                    item.uid = item.gid = 0
+                    item.uname = item.gname = ""
+                    item.mtime = epoch
+                    stream.addfile(item)
+                    continue
                 if not file.is_file():
                     continue
                 item = stream.gettarinfo(file, file.relative_to(directory).as_posix())
                 item.uid = item.gid = 0
                 item.uname = item.gname = ""
                 item.mtime = epoch
-                item.mode = 0o755 if file.name == "screenshots" and file.parent.name in ("MacOS", "bin") else 0o644
+                item.mode = 0o755 if file.stat().st_mode & 0o111 else 0o644
                 with file.open("rb") as content:
                     stream.addfile(item, content)
 
@@ -128,19 +136,29 @@ def deb_package(portable, output, info):
     architecture = {"x86_64": "amd64", "aarch64": "arm64"}.get(info["target"].split("-")[0])
     INSTALL.require(architecture is not None, "Unsupported Debian architecture")
     epoch = int(info.get("source_date_epoch", 0))
+    abi = info.get("linux_abi", {}).get("glibc")
+    INSTALL.require(isinstance(abi, str) and re.fullmatch(r"[0-9]+\.[0-9]+(?:\.[0-9]+)?", abi),
+                    "Debian packaging requires the recorded native glibc ABI")
     with tempfile.TemporaryDirectory(prefix=".deb-", dir=output.parent) as temporary:
         temporary = Path(temporary)
         data, control = temporary / "data", temporary / "control"
         (data / "usr/bin").mkdir(parents=True)
+        private = data / "usr/lib/screenshots"
+        private.mkdir(parents=True)
         docs = data / "usr/share/doc/screenshots"
         docs.mkdir(parents=True)
         (data / "usr/share/applications").mkdir(parents=True)
-        shutil.copyfile(portable / "screenshots", data / "usr/bin/screenshots")
-        (data / "usr/bin/screenshots").chmod(0o755)
+        shutil.copyfile(portable / "screenshots", private / "screenshots")
+        (private / "screenshots").chmod(0o755)
+        (data / "usr/bin/screenshots").symlink_to("../lib/screenshots/screenshots")
         for source in portable.iterdir():
             if source.name == "screenshots":
                 continue
-            if source.is_dir():
+            if source.name == "lib":
+                shutil.copytree(source, private / source.name)
+            elif source.name == "BUILD-INFO.json":
+                shutil.copyfile(source, private / source.name)
+            elif source.is_dir():
                 shutil.copytree(source, docs / source.name)
             else:
                 shutil.copyfile(source, docs / source.name)
@@ -150,7 +168,7 @@ def deb_package(portable, output, info):
         (control / "control").write_text(
             f"Package: screenshots\nVersion: {info['version']}\nArchitecture: {architecture}\n"
             "Maintainer: Screenshots contributors <noreply@github.com>\nSection: graphics\nPriority: optional\n"
-            "Depends: libc6, libgcc-s1, libxkbcommon0, libxkbcommon-x11-0, libxcb1, libdbus-1-3, libgbm1, libfontconfig1, libfreetype6\n"
+            f"Depends: libc6 (>= {abi}), libgcc-s1, libstdc++6, libcurl4t64 | libcurl4, libxkbcommon0, libxkbcommon-x11-0, libxcb1, libdbus-1-3, libgbm1, libfontconfig1, libfreetype6, ca-certificates, libssl3t64 | libssl3, zlib1g, libgssapi-krb5-2, libicu72 | libicu74 | libicu76 | libicu78\n"
             "Homepage: https://github.com/lejylabs/screenshots\nDescription: Native screenshot capture and sharing application\n")
         (temporary / "debian-binary").write_bytes(b"2.0\n")
         tar_gzip(control, temporary / "control.tar.gz", epoch)
@@ -224,7 +242,7 @@ def main():
                         item.uid = item.gid = 0
                         item.uname = item.gname = ""
                         item.mtime = epoch
-                        item.mode = 0o755 if file.name == "screenshots" and file.parent.name == "MacOS" else 0o644
+                        item.mode = 0o755 if file.stat().st_mode & 0o111 else 0o644
                         with file.open("rb") as content:
                             stream.addfile(item, content)
             publish_file(archive, args.output / archive.name)

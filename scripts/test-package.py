@@ -22,6 +22,78 @@ smoke_spec.loader.exec_module(smoke_module)
 
 
 class PackagingTests(unittest.TestCase):
+    def test_linux_abi_uses_numeric_symbol_versions_and_requires_metadata(self):
+        def readelf(arguments, **kwargs):
+            kwargs["stdout"].write(b"Name: GLIBC_2.9 Name: GLIBC_2.39 Name: GLIBC_2.3.4")
+        with mock.patch.object(module.subprocess,"run",side_effect=readelf):
+            self.assertEqual(module.linux_abi(Path("owned-binary")),{"glibc":"2.39"})
+        with mock.patch.object(module.subprocess,"run"):
+            with self.assertRaises(ValueError): module.linux_abi(Path("missing-metadata"))
+
+    def test_native_abi_is_measured_from_the_frozen_staged_binary(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root=Path(temporary); binary=root/"input"; binary.write_bytes(b"synthetic frozen executable")
+            def probe(path):
+                self.assertNotEqual(path,binary)
+                self.assertEqual(path.read_bytes(),b"synthetic frozen executable")
+                binary.write_bytes(b"later input replacement")
+                return {"glibc":"2.39"}
+            with mock.patch.object(module,"linux_abi",side_effect=probe):
+                archive=module.package(binary,root/"output","abi-test","x86_64-unknown-linux-gnu",0,{},[],verify_native_abi=True)
+            with tarfile.open(archive) as stream:
+                info=json.loads(stream.extractfile("abi-test/BUILD-INFO.json").read())
+                self.assertEqual(info["linux_abi"],{"glibc":"2.39"})
+                self.assertEqual(stream.extractfile("abi-test/screenshots").read(),b"synthetic frozen executable")
+
+    def test_runtime_members_are_verified_and_executable_modes_survive_the_archive(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            runtime = root / "runtime"
+            runtime.mkdir()
+            payloads = {"screenshots-sxcu": b"synthetic helper", "core.dll": b"synthetic library"}
+            manifest = {"version":1,"protocol":1,"rid":"linux-x64","sdk":"10.0.404","runtime":"10.0.15","entrypoint":"screenshots-sxcu","files":[
+                {"path":name,"bytes":len(data),"sha256":hashlib.sha256(data).hexdigest(),"executable":name=="screenshots-sxcu"} for name,data in payloads.items()]}
+            for name,data in payloads.items(): (runtime / name).write_bytes(data)
+            (runtime / "RUNTIME-MANIFEST.json").write_text(json.dumps(manifest))
+            binary = root / "binary"
+            binary.write_bytes(b"synthetic executable")
+            archive = module.package(binary,root / "output","runtime-test","x86_64-unknown-linux-gnu",0,{},[],runtime)
+            with tarfile.open(archive) as stream:
+                prefix = "runtime-test/lib/screenshots-sxcu/"
+                self.assertEqual(stream.getmember(prefix+"screenshots-sxcu").mode,0o755)
+                self.assertEqual(stream.getmember(prefix+"core.dll").mode,0o644)
+                self.assertEqual(stream.extractfile(prefix+"core.dll").read(),payloads["core.dll"])
+                info = json.loads(stream.extractfile("runtime-test/BUILD-INFO.json").read())
+                self.assertEqual(info["sharex_runtime"]["rid"],"linux-x64")
+                self.assertEqual(info["sharex_runtime"]["manifest_sha256"],hashlib.sha256((runtime / "RUNTIME-MANIFEST.json").read_bytes()).hexdigest())
+            manifest_path = runtime / "RUNTIME-MANIFEST.json"
+            original_manifest = manifest_path.read_bytes()
+            for field,value in [("version",True),("protocol",True),("sdk","unverified"),("runtime",False),("entrypoint","core.dll")]:
+                changed=dict(manifest); changed[field]=value
+                manifest_path.write_text(json.dumps(changed))
+                with self.assertRaises(ValueError): module.runtime_bundle(runtime,root/"invalid-header", "x86_64-unknown-linux-gnu")
+            manifest_path.write_bytes(original_manifest)
+            (runtime / "undeclared-empty").mkdir()
+            with self.assertRaises(ValueError): module.runtime_bundle(runtime,root/"unexpected-directory", "x86_64-unknown-linux-gnu")
+            (runtime / "undeclared-empty").rmdir()
+            (runtime / "undeclared-wide").write_bytes(b"unexpected")
+            with os.scandir(runtime) as entries:
+                unexpected=next(entry for entry in entries if entry.name=="undeclared-wide")
+            class RejectBeforeSecondEntry:
+                def __enter__(self): return self
+                def __exit__(self,*args): pass
+                def __iter__(self):
+                    yield unexpected
+                    raise AssertionError("undeclared directory contents were eagerly materialized")
+            with mock.patch.object(module.os,"scandir",return_value=RejectBeforeSecondEntry()):
+                with self.assertRaises(ValueError): module.runtime_bundle(runtime,root/"wide-rejected","x86_64-unknown-linux-gnu")
+            (runtime / "undeclared-wide").unlink()
+            (runtime / "core.dll").write_bytes(b"altered")
+            with self.assertRaises(ValueError): module.runtime_bundle(runtime,root/"rejected","x86_64-unknown-linux-gnu")
+            (runtime / "core.dll").write_bytes(payloads["core.dll"])
+            (runtime / "unexpected").write_bytes(b"unowned")
+            with self.assertRaises(ValueError): module.runtime_bundle(runtime,root/"unexpected-copy","x86_64-unknown-linux-gnu")
+
     def test_static_mac_native_notices_use_the_matching_target_triplet(self):
         for target, triplet in [("aarch64-apple-darwin", "arm64-osx"), ("x86_64-apple-darwin", "x64-osx")]:
             with self.subTest(target=target), tempfile.TemporaryDirectory() as temporary:
@@ -145,6 +217,8 @@ class PackagingTests(unittest.TestCase):
                 executable = prefix + ("screenshots.exe" if "windows" in target else "screenshots")
                 self.assertEqual(files[executable], binary.read_bytes())
                 self.assertIn(prefix + "licenses/fixture-1/LICENSE-test", files)
+                self.assertIn(b"](DESKTOP-INTEGRATION.md)",files[prefix+"PACKAGING.md"])
+                self.assertIn(prefix+"DESKTOP-INTEGRATION.md",files)
                 self.assertNotIn(str(root).encode(), files[prefix + "licenses/dependencies.json"])
                 info = json.loads(files[prefix + "BUILD-INFO.json"])
                 self.assertEqual(info["binary_sha256"], hashlib.sha256(binary.read_bytes()).hexdigest())
@@ -165,7 +239,7 @@ class PackagingTests(unittest.TestCase):
             root = Path(temporary)
             binary = root / "fixture"
             binary.write_text("#!/bin/sh\nprintf 'screenshots package fixture\\n'\n", encoding="utf-8", newline="\n")
-            archive = module.package(binary, root / "packages", "screenshots-test", "x86_64-unknown-linux-gnu", 1700000000, {}, [])
+            archive = module.package(binary, root / "packages", "screenshots-test", smoke_module.INSTALL.local_target(), 1700000000, {"version":"0.1.0","target":smoke_module.INSTALL.local_target()}, [])
             smoke_module.smoke(archive)
             archive.with_name(archive.name + ".sha256").write_text("invalid checksum\n", encoding="utf-8", newline="\n")
             with self.assertRaises(ValueError):

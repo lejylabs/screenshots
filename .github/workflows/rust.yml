@@ -15,6 +15,11 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   CARGO_BUILD_JOBS: "2"
+  DOTNET_CLI_TELEMETRY_OPTOUT: "1"
+  DOTNET_SKIP_FIRST_TIME_EXPERIENCE: "1"
+  DOTNET_GENERATE_ASPNET_CERTIFICATE: "false"
+  DOTNET_ADD_GLOBAL_TOOLS_TO_PATH: "false"
+  DOTNET_CLI_WORKLOAD_UPDATE_NOTIFY_DISABLE: "true"
 
 jobs:
   build:
@@ -24,18 +29,23 @@ jobs:
         include:
           - os: ubuntu-24.04
             target: x86_64-unknown-linux-gnu
+            rid: linux-x64
             binary: screenshots
           - os: ubuntu-24.04-arm
             target: aarch64-unknown-linux-gnu
+            rid: linux-arm64
             binary: screenshots
           - os: windows-latest
             target: x86_64-pc-windows-msvc
+            rid: win-x64
             binary: screenshots.exe
           - os: macos-15
             target: aarch64-apple-darwin
+            rid: osx-arm64
             binary: screenshots
           - os: macos-15-intel
             target: x86_64-apple-darwin
+            rid: osx-x64
             binary: screenshots
     runs-on: ${{ matrix.os }}
     timeout-minutes: 90
@@ -60,6 +70,9 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+      - uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: "10.0.404"
       - uses: actions/cache/restore@v4
         id: native_cache
         if: runner.os == 'Windows' || runner.os == 'macOS'
@@ -119,6 +132,17 @@ jobs:
       - name: Check formatting
         if: runner.os == 'Linux'
         run: cargo fmt --all -- --check
+      - name: Build and verify the private native SXCU runtime
+        shell: bash
+        run: |
+          python scripts/build-sharex-helper.py --rid ${{ matrix.rid }}
+          python - <<'PY'
+          from pathlib import Path
+          import shutil
+          source = Path('target/sharex-helper/publish/${{ matrix.rid }}')
+          for profile in ['release', 'release-fast']:
+              shutil.copytree(source, Path('target') / profile / 'lib/screenshots-sxcu', dirs_exist_ok=True)
+          PY
       - name: Lint workspace and test paths
         if: runner.os == 'Linux'
         run: cargo clippy --workspace --all-targets --release --locked
@@ -126,6 +150,13 @@ jobs:
         run: cargo build --workspace --release --locked
       - name: Run optimized deterministic tests
         run: cargo test --workspace --profile release-fast --locked
+      - name: Verify owned native Windows window pixels
+        if: runner.os == 'Windows'
+        timeout-minutes: 3
+        run: cargo test --locked --profile release-fast -p screenshots --test capture_window_windows decorated_window_policies_preserve_exact_dwm_frame_and_client_pixels -- --ignored --exact --test-threads=1
+      - name: Verify recoverable Library file operations
+        timeout-minutes: 5
+        run: python scripts/test-history-lifecycle.py --binary target/release/${{ matrix.binary }}
       - name: Verify native dependency discovery metadata
         if: runner.os == 'Linux'
         run: python scripts/test-native-curl-discovery.py

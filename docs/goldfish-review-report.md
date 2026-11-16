@@ -464,3 +464,24 @@ after that recorded remediation to preserve cleanup/privacy and zero default
 idle worker; the 250 ms 4K target is unchanged. Actual process memory, all cases
 and swap qualifications remain in `native-capture-isolation.md`. These component
 measurements do not establish reference-hardware or end-to-end acceptance.
+
+
+## Runtime packaging and encoded-input continuation (2026-11-16)
+
+Fresh `package_import_goldfish` found manual Linux instructions separating the
+executable from its runtime and an unbounded undeclared-file scan. The fixes
+retain full version folders with controlled launchers and stream directory
+entries, rejecting undeclared members immediately. Fresh
+`package_import_round2` found no Blocker or Major. Its packaged documentation
+link Nit is fixed during staging, with an archive assertion for the actual
+uppercase companion file. The shared encoded-input reader preserves opened-file
+extent, format validators, orientation/alpha and 32 MiB/256 MiB admission;
+optional unreadable WebP EXIF retains the documented legacy fallback.
+
+Portable/native-layout/installer fixtures passed 11/3/21. After the source
+review, the actual refreshed intermediate ELF/runtime archive and `.deb` passed
+private extracted execution: help/version, profile inspection and 134 helper
+assertions, with a matching actual glibc floor and unchanged isolated user state.
+Evidence: `target/verification/complete-runtime-package-abi.json`. This is an
+explicit prebuilt intermediate executable, not final native/ABI portability or
+system installation acceptance. No full-plan convergence is claimed.

@@ -100,6 +100,7 @@ rav1e = { path = "vendor/rav1e" }
 
 [profile.release]
 debug = "limited"
+strip = "debuginfo"
 lto = "thin"
 codegen-units = 1
 
@@ -109,5 +110,6 @@ codegen-units = 1
 [profile.release-fast]
 inherits = "release"
 debug = "limited"
+strip = "none"
 lto = false
 codegen-units = 16
