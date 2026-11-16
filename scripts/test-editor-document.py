@@ -185,6 +185,45 @@ def font_budget_fixture(path, subtables):
     path.write_bytes(font)
 
 
+def legacy_kern_fixture(path, count, apple=True, adjustment=-120):
+    def words(values):
+        return b"".join(struct.pack(">H", value & 0xffff) for value in values)
+    def checksum(data):
+        data = bytes(data) + b"\0" * (-len(data) % 4)
+        return sum(struct.unpack(">" + "I" * (len(data) // 4), data)) & 0xffffffff
+    # Existing Fira Mono fixture: A=4,V=115, independently asserted by Rust cmap.
+    body = words([1, 6, 0, 0, 4, 115, adjustment])
+    if apple:
+        kern = struct.pack(">II", 0x10000, count) + (struct.pack(">IHH", 22, 0, 0) + body) * count
+    else:
+        assert count == 1
+        kern = words([0, 1, 0, 20, 1]) + body
+    font = bytearray((ROOT / "vendor/cosmic-text/fonts/FiraMono-Medium.ttf").read_bytes())
+    font += b"\0" * (-len(font) % 4)
+    offset = len(font)
+    font += kern
+    font += b"\0" * (-len(font) % 4)
+    records = []
+    head = None
+    for index in range(struct.unpack_from(">H", font, 4)[0]):
+        record = bytearray(font[12 + index * 16:28 + index * 16])
+        if record[:4] == b"DSIG":
+            record[:4] = b"kern"
+            struct.pack_into(">III", record, 4, checksum(kern), offset, len(kern))
+        elif record[:4] == b"GPOS":
+            record[:4] = b"XPOS"  # activate actual legacy kern in the control
+        elif record[:4] == b"head":
+            head = struct.unpack_from(">I", record, 8)[0] + 8
+        records.append(record)
+    for index, record in enumerate(sorted(records, key=lambda r: r[:4])):
+        font[12 + index * 16:28 + index * 16] = record
+    assert head is not None
+    struct.pack_into(">I", font, head, 0)
+    struct.pack_into(">I", font, head, (0xb1b0afba - checksum(font)) & 0xffffffff)
+    assert checksum(font) == 0xb1b0afba and len(font) < 2 * 1024 * 1024
+    path.write_bytes(font)
+
+
 def check_cancellation(runner, directory):
     if os.name != "posix":
         return {"native_signal_cases": "Unix-only; Windows native CI remains separate"}
@@ -381,7 +420,25 @@ def run(runner, directory):
             error = runner.call("render", source, profile, output, ok=False)
             assert "preprocessing exhausted" in error and not output.exists()
             assert not list(directory.glob(".screenshots-*.part"))
-    return dict(final_output_preflight_before_asset_io=True, real_font_preprocessing_exhaustion_refused=True, all_tool_pixels=True, exact_edit_preset_pixels=True, effect_input_modes=True, source_aliases_refused=True, no_overwrite=True, format_mismatch_before_source=True, inspection_has_no_asset_io_or_text=True, sequential_preflight_before_decode=True, rotated_sheared_bilinear_clone_lens_privacy=rotated, formats=4, source_preserved=True, renders=runner.renders, **check_cancellation(runner, directory))
+    legacy_outputs = {}
+    for kind, apple in [("ot", False), ("apple", True)]:
+        for adjustment in (0, -120):
+            font = directory / f"legacy-{kind}-{adjustment}.ttf"
+            legacy_kern_fixture(font, 1, apple=apple, adjustment=adjustment)
+            profile = write(directory / f"legacy-{kind}-{adjustment}.json", scene(1280, 720, [layer(1, 0, 0, 128, 64, dict(tool="text", text=dict(spans=[dict(text="AV", style=text_style(["legacy"]))])))], fonts=[dict(id="legacy", path=font.name)]))
+            output = directory / f"legacy-{kind}-{adjustment}.png"
+            runner.render(source, profile, output)
+            legacy_outputs[kind, adjustment] = decode(output)
+        assert legacy_outputs[kind, 0] != legacy_outputs[kind, -120], "real legacy kerning must change glyph pixels"
+    assert legacy_outputs["ot", -120] == legacy_outputs["apple", -120]
+    font = directory / "legacy-80000.ttf"
+    legacy_kern_fixture(font, 80_000)
+    profile = write(directory / "legacy-80000.json", scene(1280, 720, [layer(1, 0, 0, 128, 64, dict(tool="text", text=dict(spans=[dict(text="AV", style=text_style(["legacy"]))])))], fonts=[dict(id="legacy", path=font.name)]))
+    output = directory / "legacy-80000.png"
+    error = runner.call("render", source, profile, output, ok=False)
+    assert "legacy kern preprocessing" in error and not output.exists()
+    assert not list(directory.glob(".screenshots-*.part"))
+    return dict(legacy_kern_80000_attack_refused=True, real_ot_apple_kerning_pixels=True, final_output_preflight_before_asset_io=True, real_font_preprocessing_exhaustion_refused=True, all_tool_pixels=True, exact_edit_preset_pixels=True, effect_input_modes=True, source_aliases_refused=True, no_overwrite=True, format_mismatch_before_source=True, inspection_has_no_asset_io_or_text=True, sequential_preflight_before_decode=True, rotated_sheared_bilinear_clone_lens_privacy=rotated, formats=4, source_preserved=True, renders=runner.renders, **check_cancellation(runner, directory))
 
 
 def main():

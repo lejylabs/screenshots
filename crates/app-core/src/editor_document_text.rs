@@ -106,6 +106,15 @@ pub(super) fn admit_font(bytes: &[u8], index: u32) -> Result<FontAdmission> {
                 .all(|value| value.is_finite() && value.abs() <= 32.0),
         "Invalid editor font metrics"
     );
+    // Legacy kern uses a separate AAT cache, outside HarfRust's OT budget.
+    // Its allocation-free native-parser preflight precedes all Shaper creation.
+    let kern_bytes = if tags.contains(b"kern") {
+        harfrust::kern_preprocessing_size(bytes, index)
+            .context("Editor legacy kern preprocessing exceeds its bounded work/cache allowance")?
+            as u64
+    } else {
+        0
+    };
     let axes = font.axes();
     ensure!(
         axes.len() <= 16,
@@ -123,7 +132,9 @@ pub(super) fn admit_font(bytes: &[u8], index: u32) -> Result<FontAdmission> {
     Ok(FontAdmission {
         layout_budget: layout_bytes
             .saturating_mul(256)
-            .clamp(4 * 1024 * 1024, 128 * 1024 * 1024),
+            .clamp(4 * 1024 * 1024, 128 * 1024 * 1024)
+            .checked_add(kern_bytes)
+            .context("Editor font cache extent overflow")?,
         weight,
         italic: !matches!(attributes.style, skrifa::attribute::Style::Normal),
         variable_weight,

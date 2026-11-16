@@ -72,7 +72,7 @@ class SigningTests(unittest.TestCase):
    self.assertNotEqual(result['binary_sha256'],SIGN.digest(binary))
    self.assertEqual(result['binary_sha256_scope'],'admitted executable before enclosing bundle signature')
    signed=[args for args in tools.calls if '--force' in args]
-   self.assertEqual(Path(signed[-1][-1]),app)
+   self.assertEqual(Path(signed[-1][-1]).resolve(),app.resolve())
    helper=[args for args in signed if '--entitlements' in args];self.assertEqual(len(helper),1)
    self.assertEqual(tools.entitlements,[{'com.apple.security.cs.allow-jit':True}])
    self.assertTrue(any('ABCDEFGHIJ' in ' '.join(args) for args in tools.calls if '--verify' in args))
@@ -95,7 +95,7 @@ class SigningTests(unittest.TestCase):
   with tempfile.TemporaryDirectory() as temporary:
    root=Path(temporary);source=root/'unsigned.pkg';source.write_bytes(b'unsigned');destination=root/'signed.pkg';tools=FakeTools()
    self.assertEqual(SIGN.mac_package(source,destination,MAC,'existing-profile',tools),{'signed':True,'notarized':True})
-   self.assertTrue(any(args[:3]==['xcrun','stapler','staple'] and args[-1]==str(destination) for args in tools.calls))
+   self.assertTrue(any(args[:3]==['xcrun','stapler','staple'] and Path(args[-1]).resolve()==destination.resolve() for args in tools.calls))
    self.assertTrue(any(args[:3]==['xcrun','stapler','validate'] for args in tools.calls))
  def test_notary_rejection_does_not_staple_or_publish(self):
   with tempfile.TemporaryDirectory() as temporary:
@@ -132,9 +132,9 @@ class SigningTests(unittest.TestCase):
    self.assertFalse(marker.exists())
  def test_native_runner_uses_protected_path_private_cwd_and_clean_environment(self):
   with tempfile.TemporaryDirectory() as temporary:
-   root=Path(temporary);tool=root/'protected-codesign';tool.write_text('#!'+sys.executable+'\nimport os,json; print(json.dumps({"cwd":os.getcwd(),"path":os.environ["PATH"],"developer":os.environ.get("DEVELOPER_DIR"),"dyld":os.environ.get("DYLD_INSERT_LIBRARIES")}))\n');tool.chmod(0o755)
-   with mock.patch.dict(os.environ,{'PATH':str(root/'lookalikes'),'DEVELOPER_DIR':str(root/'untrusted'),'DYLD_INSERT_LIBRARIES':'must-not-load'}),mock.patch.dict(SIGN.MAC_TOOLS,{'codesign':str(tool)}):
-    result=json.loads(SIGN.Tools().run(['codesign','--verify','file'],capture=True))
+   root=Path(temporary);script=root/'controlled-tool.py';script.write_text('import os,json; print(json.dumps({"cwd":os.getcwd(),"path":os.environ["PATH"],"developer":os.environ.get("DEVELOPER_DIR"),"dyld":os.environ.get("DYLD_INSERT_LIBRARIES")}))\n')
+   with mock.patch.dict(os.environ,{'PATH':str(root/'lookalikes'),'DEVELOPER_DIR':str(root/'untrusted'),'DYLD_INSERT_LIBRARIES':'must-not-load'}),mock.patch.dict(SIGN.MAC_TOOLS,{'codesign':str(Path(sys.executable).resolve())}):
+    result=json.loads(SIGN.Tools().run(['codesign',str(script)],capture=True))
    self.assertNotEqual(result['cwd'],str(ROOT));self.assertNotIn('lookalikes',result['path']);self.assertIsNone(result['developer']);self.assertIsNone(result['dyld'])
  def test_group_rollback_preserves_replaced_checksum_and_artifact(self):
   with tempfile.TemporaryDirectory() as temporary:
@@ -195,5 +195,18 @@ class SigningTests(unittest.TestCase):
   tools=SIGN.Tools();self.assertEqual(tools.run([sys.executable,'-c','print("public")'],capture=True),b'public\n')
   with self.assertRaises(ValueError):tools.run([sys.executable,'-c','print("x"*200000)'],capture=True)
   with self.assertRaises(ValueError):tools.run([sys.executable,'-c','import time; time.sleep(10)'],timeout=.05)
+ @unittest.skipUnless(hasattr(os,'WNOWAIT'),'native nonreaping ABI test needs host wait flags')
+ def test_native_waitid_marker_does_not_reap_the_owned_leader(self):
+  import time
+  child=subprocess.Popen([sys.executable,'-c','pass'])
+  try:
+   until=time.monotonic()+3
+   while not SIGN.native_exit_marker(child.pid,os.WEXITED|os.WNOHANG|os.WNOWAIT):
+    self.assertLess(time.monotonic(),until);time.sleep(.005)
+   self.assertIsNone(child.returncode)
+   self.assertIsNotNone(os.waitid(os.P_PID,child.pid,os.WEXITED|os.WNOHANG|os.WNOWAIT))
+   self.assertEqual(child.wait(timeout=2),0)
+  finally:
+   if child.returncode is None:child.kill();child.wait(timeout=2)
 
 if __name__=='__main__':unittest.main()

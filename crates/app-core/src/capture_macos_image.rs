@@ -12,6 +12,8 @@ use std::{ffi::c_void, ptr};
 #[link(name = "CoreGraphics", kind = "framework")]
 unsafe extern "C" {
     static kCGColorSpaceSRGB: CFStringRef;
+    #[cfg(test)]
+    static kCGColorSpaceDisplayP3: CFStringRef;
     fn CGImageGetWidth(image: *const c_void) -> usize;
     fn CGImageGetHeight(image: *const c_void) -> usize;
     fn CGImageGetBitsPerComponent(image: *const c_void) -> usize;
@@ -22,8 +24,14 @@ unsafe extern "C" {
     fn CGImageGetDataProvider(image: *const c_void) -> *const c_void;
     fn CGImageGetColorSpace(image: *const c_void) -> *const c_void;
     fn CGColorSpaceCopyName(space: *const c_void) -> CFStringRef;
+    fn CGColorSpaceGetModel(space: *const c_void) -> i32;
+    fn CGColorSpaceGetNumberOfComponents(space: *const c_void) -> usize;
+    fn CGColorSpaceCopyICCData(space: *const c_void) -> CFDataRef;
+    fn CGColorSpaceIsHDR(space: *const c_void) -> bool;
     fn CGDataProviderCopyData(provider: *const c_void) -> CFDataRef;
     fn CGColorSpaceCreateWithName(name: CFStringRef) -> *const c_void;
+    #[cfg(test)]
+    fn CGColorSpaceCreateDeviceRGB() -> *const c_void;
     fn CGColorSpaceRelease(space: *const c_void);
     fn CGBitmapContextCreate(
         data: *mut c_void,
@@ -339,6 +347,7 @@ pub(super) unsafe fn opaque_bgra_srgb(
     stride: usize,
     bytes: &[u8],
     source_space: *const c_void,
+    transfer: Option<&str>,
 ) -> Result<Vec<u8>> {
     crate::validate_image_size(width, height)?;
     let row = width as usize * 4;
@@ -356,18 +365,23 @@ pub(super) unsafe fn opaque_bgra_srgb(
             "Display video source is not opaque BGRA8"
         );
     }
-    let fallback = if source_space.is_null() {
-        Some(Space(unsafe {
-            CGColorSpaceCreateWithName(kCGColorSpaceSRGB)
-        }))
-    } else {
-        None
-    };
-    let source_space = fallback.as_ref().map_or(source_space, |space| space.0);
     ensure!(
         !source_space.is_null(),
         "Native source color space is unavailable"
     );
+    ensure!(
+        unsafe { CGColorSpaceGetModel(source_space) } == 1
+            && unsafe { CGColorSpaceGetNumberOfComponents(source_space) } == 3
+            && !unsafe { CGColorSpaceIsHDR(source_space) },
+        "Native source color space is not a defined SDR RGB profile"
+    );
+    let profile = unsafe { CGColorSpaceCopyICCData(source_space) };
+    ensure!(
+        !profile.is_null(),
+        "Native source has no explicit RGB color profile"
+    );
+    let profile = unsafe { CFData::wrap_under_create_rule(profile) };
+    crate::capture_macos_pixels::validate_video_colour(transfer, Some(profile.bytes()))?;
     let provider = Provider(unsafe {
         CGDataProviderCreateWithData(
             ptr::null_mut(),
@@ -538,12 +552,29 @@ mod tests {
             13, 17, 23, 255, 31, 37, 41, 255, 199, 199, 199, 199, 47, 53, 59, 255, 61, 67, 71, 255,
             199, 199, 199, 199,
         ];
-        let output = unsafe { opaque_bgra_srgb(2, 2, 12, &bytes, space.0) }.unwrap();
+        let output = unsafe { opaque_bgra_srgb(2, 2, 12, &bytes, space.0, None) }.unwrap();
         assert_eq!(
             output,
             [
                 13, 17, 23, 255, 31, 37, 41, 255, 47, 53, 59, 255, 61, 67, 71, 255
             ]
         );
+    }
+    #[test]
+    fn native_video_requires_a_profile_and_converts_tagged_display_p3_without_screen_access() {
+        let bytes = [32, 64, 128, 255];
+        for transfer in [None, Some("sRGB"), Some("Linear")] {
+            assert!(unsafe { opaque_bgra_srgb(1, 1, 4, &bytes, ptr::null(), transfer) }.is_err());
+        }
+        let device = Space(unsafe { CGColorSpaceCreateDeviceRGB() });
+        assert!(!device.0.is_null());
+        assert!(unsafe { opaque_bgra_srgb(1, 1, 4, &bytes, device.0, Some("sRGB")) }.is_err());
+        let space = Space(unsafe { CGColorSpaceCreateWithName(kCGColorSpaceDisplayP3) });
+        assert!(!space.0.is_null());
+        let output = unsafe { opaque_bgra_srgb(1, 1, 4, &bytes, space.0, Some("sRGB")) }.unwrap();
+        assert_eq!(output.len(), 4);
+        assert_eq!(output[3], 255);
+        assert!(output[0] < bytes[0] && output[1] < bytes[1] && output[2] > bytes[2]);
+        assert!(unsafe { opaque_bgra_srgb(1, 1, 4, &bytes, space.0, Some("PQ")) }.is_err());
     }
 }

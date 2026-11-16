@@ -421,7 +421,9 @@ fn task_host_absolute_frame_deadline_rejects_trickled_unauthenticated_payloads()
         Err(error)
             if matches!(
                 error.kind(),
-                std::io::ErrorKind::ConnectionReset | std::io::ErrorKind::BrokenPipe
+                std::io::ErrorKind::ConnectionReset
+                    | std::io::ErrorKind::BrokenPipe
+                    | std::io::ErrorKind::ConnectionAborted
             ) => {}
         other => panic!("Slow unauthenticated frame remained open: {other:?}"),
     }

@@ -148,8 +148,9 @@ impl SessionNotifications {
 impl Drop for SessionNotifications {
     fn drop(&mut self) {
         for token in &self.tokens {
+            let observer: &objc2::runtime::AnyObject = token.as_ref();
             unsafe {
-                self.center.removeObserver(token);
+                self.center.removeObserver(observer);
             }
         }
         *self
@@ -270,8 +271,7 @@ define_class!(
                         std::ptr::null_mut(),
                     )
                 };
-                let mut requires_profile = false;
-                if !transfer.is_null() {
+                let transfer = if !transfer.is_null() {
                     ensure!(
                         unsafe { CFGetTypeID(transfer) } == unsafe { CFStringGetTypeID() },
                         "Native transfer metadata is malformed"
@@ -281,20 +281,10 @@ define_class!(
                         transfer.char_len() <= 64,
                         "Native transfer metadata exceeds its bound"
                     );
-                    let transfer = transfer.to_string();
-                    ensure!(
-                        [
-                            "sRGB",
-                            "ITU_R_709_2",
-                            "SMPTE_240M_1995",
-                            "UseGamma",
-                            "Linear"
-                        ]
-                        .contains(&transfer.as_str()),
-                        "HDR/unknown native transfer function is unsupported"
-                    );
-                    requires_profile = transfer != "sRGB";
-                }
+                    Some(transfer.to_string())
+                } else {
+                    None
+                };
                 let bytes = unsafe { std::slice::from_raw_parts(base.cast::<u8>(), length) };
                 let space = unsafe {
                     CVImageBufferGetColorSpace(
@@ -302,8 +292,8 @@ define_class!(
                     )
                 };
                 ensure!(
-                    !requires_profile || !space.is_null(),
-                    "Native transfer function has no color profile"
+                    !space.is_null(),
+                    "Native video has no explicit color space/profile"
                 );
                 let bytes = unsafe {
                     crate::capture_macos_image::opaque_bgra_srgb(
@@ -312,6 +302,7 @@ define_class!(
                         stride,
                         bytes,
                         space,
+                        transfer.as_deref(),
                     )
                 }?;
                 Topology::check()?;

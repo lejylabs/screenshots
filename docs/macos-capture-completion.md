@@ -361,7 +361,7 @@ regressions require the same recorded cause/remediation decision.
 
 Portable geometry/identity/clock/slot models passed six initial optimized tests;
 subsequent packed-pixel, completion and display point/pixel calibration checks
-bring the focused core set to twelve.
+bring the focused core set to thirteen after the profile-admission regression.
 `target/macos-video-worker-final.log` records 40 passing optimized worker/protocol/
 private generated-video tests with two separately invoked cases ignored. They
 include retention of the source leader through encoder/probe flush and parent
@@ -506,3 +506,28 @@ frame in each oracle; it passed. It does not establish that the native gate ran.
 All three changes still require a fresh source recheck and real Mac SDK/native
 permission-free test execution. Native TCC, physical ROI/cursor/AX/AV capture,
 microphone, shadow and full CPU/GPU budgets remain unaccepted on this Linux host.
+
+Round two confirmed those corrections and found one remaining color defect:
+missing source metadata could still select an sRGB fallback. The fallback is
+removed from both the native sample admission and the raw BGRA converter.
+Every frame now requires its real three-component RGB `CGColorSpace`, a copied
+native ICC profile (132 bytes through 4 MiB, exact declared length, RGB/ICC
+signature), and a non-HDR native space. A transfer label, including `sRGB`, is
+never sufficient evidence for primaries/profile. Missing transfer metadata is
+accepted only when the complete native profile supplies the interpretation;
+present HDR/unknown transfer labels are refused. CoreGraphics retains
+responsibility for valid native profile conversion into the explicit sRGB
+destination. No color space is substituted for an untagged frame.
+
+The portable admission test covers no profile with absent/sRGB/linear labels,
+empty/short/oversized/malformed profile metadata, valid RGB metadata and
+HDR/unknown transfers. Actual Mac permission-free bitmap tests additionally
+require null/unprofiled device-space rejection, unchanged tagged sRGB pixels
+and a real tagged Display-P3→sRGB conversion. Only the portable test ran here;
+the native cases require the next actual Mac run. Accepted ICC metadata adds at
+most 4 MiB per active frame and is released before frame handoff, with no cache
+or idle allocation. The native copy call can allocate before its returned size
+is checked; its native/driver cost remains part of the measured resource gate.
+Apple documents [ICC profile copying](https://developer.apple.com/documentation/coregraphics/cgcolorspace/copyiccdata())
+and [native HDR identification](https://developer.apple.com/documentation/coregraphics/cgcolorspace/ishdr());
+both APIs predate the supported macOS12 baseline (10.12 and 10.15 respectively).

@@ -334,7 +334,9 @@ fn render(
                 font_cache.push((identity, bytes.clone()));
                 bytes
             };
+        check(cancelled)?;
         assets.insert_font(&asset.id, bytes, asset.index)?;
+        check(cancelled)?;
     }
     drop(raster_cache);
     drop(font_cache);

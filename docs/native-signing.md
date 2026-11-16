@@ -129,3 +129,17 @@ status after the exception. Windows reader admission is inside its atomic Job
 cleanup scope. The current synthetic suite passes seventeen cases on Linux;
 the POSIX-specific case is explicitly excluded on Windows, not counted as native
 coverage. This correction is author runtime evidence, not a clean extra review.
+
+
+Native CI exposed macOS Python without os.waitid/os.WNOWAIT. The release-tool
+runner now uses libSystem waitid with XNU's documented nonreaping flags on that
+platform; it still kills the owned group while the leader is unreaped, then
+waits. The aligned child-info buffer checks both SIGCHLD and the requested PID.
+The Linux native-ABI regression proves nonreaping observation on its own host;
+Darwin execution remains an exact native CI gate. Synthetic tool/path assertions
+compare resolved paths, and the controlled environment fixture uses a protected
+Python executable plus an explicit private script, so Windows does not depend on
+POSIX shebang execution. Eighteen synthetic fixtures pass locally; no real
+certificate, signer, trust store or notarization was accessed. Primary contracts:
+[XNU wait flags](https://github.com/apple-oss-distributions/xnu/blob/main/bsd/sys/wait.h)
+and [child-info layout](https://github.com/apple-oss-distributions/xnu/blob/main/bsd/sys/signal.h).

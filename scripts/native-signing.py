@@ -10,6 +10,8 @@ import re
 import shutil
 import subprocess
 import tempfile
+import sys
+import errno
 import signal
 import threading
 import time
@@ -89,6 +91,35 @@ def native_environment():
     return environment
 
 
+def native_exit_marker(pid,flags):
+    # Darwin Python omits waitid, but libSystem exposes the public XNU ABI.
+    # siginfo_t starts with int si_signo; aligned512B storage exceeds its104B
+    # Darwin64 size (also accommodates Linux128B for the direct native regression).
+    import ctypes
+    class Info(ctypes.Union):
+        _fields_=[('words',ctypes.c_uint64*64),('signo',ctypes.c_int)]
+    library=ctypes.CDLL(None,use_errno=True)
+    function=library.waitid
+    function.argtypes=[ctypes.c_int,ctypes.c_uint,ctypes.c_void_p,ctypes.c_int]
+    function.restype=ctypes.c_int
+    info=Info()
+    if function(1,pid,ctypes.byref(info),flags)!=0: # P_PID
+        code=ctypes.get_errno()
+        if code==errno.EINTR:return False
+        raise OSError(code,'Native nonreaping child observation failed')
+    pid_offset=12 if sys.platform=='darwin' else 16 if sys.platform.startswith('linux') else None
+    INSTALL.require(pid_offset is not None,'Unsupported native child-info layout')
+    return info.signo==signal.SIGCHLD and ctypes.c_int.from_buffer(info,pid_offset).value==pid
+
+
+def child_exited_unreaped(pid):
+    if hasattr(os,'waitid') and hasattr(os,'WNOWAIT'):
+        result=os.waitid(os.P_PID,pid,os.WEXITED|os.WNOHANG|os.WNOWAIT)
+        return result is not None and result.si_pid==pid
+    INSTALL.require(sys.platform=='darwin','Native signer needs nonreaping child observation')
+    return native_exit_marker(pid,0x04|0x01|0x20) # XNU WEXITED|WNOHANG|WNOWAIT
+
+
 class Tools:
     def run(self,args,timeout=120,capture=False):
         # Explicit release operation, with no signer diagnostics copied into application logs.
@@ -102,7 +133,7 @@ class Tools:
             try:return native.run(args,native_environment() if is_native else dict(os.environ),working.name,timeout,capture)
             finally:working.cleanup()
         if os.name!='nt':
-            INSTALL.require(hasattr(os,'waitid') and hasattr(os,'WNOWAIT'),'Native signer needs nonreaping child observation')
+            INSTALL.require((hasattr(os,'waitid') and hasattr(os,'WNOWAIT')) or sys.platform=='darwin','Native signer needs nonreaping child observation')
         process=subprocess.Popen(args,stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE if capture else subprocess.DEVNULL,stderr=subprocess.DEVNULL,
             start_new_session=os.name!='nt',cwd=working.name,
@@ -127,8 +158,7 @@ class Tools:
             if os.name!='nt':
                 deadline=time.monotonic()+timeout
                 while True:
-                    observed=os.waitid(os.P_PID,process.pid,os.WEXITED|os.WNOHANG|os.WNOWAIT)
-                    if observed is not None and observed.si_pid==process.pid:break
+                    if child_exited_unreaped(process.pid):break
                     if excess.is_set() or time.monotonic()>=deadline:
                         stop()
                         process.wait(timeout=5);reaped=True

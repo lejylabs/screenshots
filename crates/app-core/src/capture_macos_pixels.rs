@@ -2,6 +2,35 @@
 use crate::validate_image_size;
 use anyhow::{Result, ensure};
 
+pub(crate) const MAX_VIDEO_PROFILE_BYTES: usize = 4 * 1024 * 1024;
+
+/// CoreGraphics owns profile validity/conversion; this admits its copied RGB
+/// metadata without inferring primaries from a transfer-function label alone.
+pub(crate) fn validate_video_colour(transfer: Option<&str>, profile: Option<&[u8]>) -> Result<()> {
+    let profile =
+        profile.ok_or_else(|| anyhow::anyhow!("Native video has no explicit RGB color profile"))?;
+    ensure!(
+        (132..=MAX_VIDEO_PROFILE_BYTES).contains(&profile.len())
+            && &profile[16..20] == b"RGB "
+            && &profile[36..40] == b"acsp"
+            && usize::try_from(u32::from_be_bytes(profile[..4].try_into().unwrap()))?
+                == profile.len(),
+        "Native RGB color profile is missing, malformed or exceeds its metadata bound"
+    );
+    ensure!(
+        transfer.is_none_or(|value| [
+            "sRGB",
+            "ITU_R_709_2",
+            "SMPTE_240M_1995",
+            "UseGamma",
+            "Linear"
+        ]
+        .contains(&value)),
+        "HDR/unknown native transfer function is unsupported"
+    );
+    Ok(())
+}
+
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Layout {
     pub width: u32,
@@ -70,6 +99,34 @@ impl Layout {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn video_colour_never_infers_a_profile_from_transfer_or_pixel_format() {
+        for transfer in [None, Some("sRGB"), Some("Linear")] {
+            assert!(validate_video_colour(transfer, None).is_err());
+            assert!(validate_video_colour(transfer, Some(&[])).is_err());
+        }
+        // A metadata fixture tests admission only; native tests use real profiles.
+        let mut profile = vec![0u8; 132];
+        profile[..4].copy_from_slice(&132u32.to_be_bytes());
+        profile[16..20].copy_from_slice(b"RGB ");
+        profile[36..40].copy_from_slice(b"acsp");
+        for transfer in [None, Some("sRGB"), Some("ITU_R_709_2"), Some("Linear")] {
+            validate_video_colour(transfer, Some(&profile)).unwrap();
+        }
+        for transfer in ["", "PQ", "HLG", "SMPTE_ST_2084_PQ", "Unknown"] {
+            assert!(validate_video_colour(Some(transfer), Some(&profile)).is_err());
+        }
+        for changed in [0, 16, 36] {
+            let mut invalid = profile.clone();
+            invalid[changed] ^= 1;
+            assert!(validate_video_colour(None, Some(&invalid)).is_err());
+        }
+        assert!(validate_video_colour(None, Some(&profile[..131])).is_err());
+        let mut excessive = vec![0u8; MAX_VIDEO_PROFILE_BYTES + 1];
+        excessive[..4].copy_from_slice(&((MAX_VIDEO_PROFILE_BYTES + 1) as u32).to_be_bytes());
+        excessive[16..40].copy_from_slice(&profile[16..40]);
+        assert!(validate_video_colour(None, Some(&excessive)).is_err());
+    }
     #[test]
     fn packed_orders_skip_alpha_padding_and_straight_hidden_rgb_are_exact() {
         for order in [0x2000, 0x4000] {

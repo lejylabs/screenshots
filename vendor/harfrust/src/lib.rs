@@ -45,6 +45,8 @@ mod error;
 pub(crate) mod fallback;
 mod feature;
 mod hint;
+mod kern_admission;
+pub use kern_admission::kern_preprocessing_size;
 mod language;
 pub(crate) mod normalize;
 mod once;

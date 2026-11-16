@@ -3,13 +3,16 @@
 import argparse
 import ctypes as c
 import hashlib
+import importlib.util
 import json
 import os
 from pathlib import Path
 import secrets
+import select
 import selectors
 import socket
 import shutil
+import signal
 import struct
 import subprocess
 import tempfile
@@ -21,6 +24,108 @@ import zlib
 def require(value, message):
     if not value:
         raise RuntimeError(message)
+
+
+def event_flood(binary, env, owner, output):
+    # Reuse the finite private-worker observer; it only inspects this CLI family.
+    spec = importlib.util.spec_from_file_location(
+        "clipboard_private_worker_observer", Path(__file__).with_name("test-capture-worker-performance.py"))
+    observer = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(observer)
+    child = subprocess.Popen([binary, "clipboard", "image", str(output)], env=env,
+                             stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    tracked = {}
+    poller = select.poll()
+    maximum = {}
+    limits = []
+    samples = 0
+    started = time.monotonic()
+    released = False
+    try:
+        while child.poll() is None:
+            require(time.monotonic() - started < 8, "Private event-flood operation exceeded its deadline")
+            parents = [child.pid, *tracked]
+            for parent in parents:
+                if parent in tracked:
+                    try:
+                        if observer.identity(parent) != tracked[parent][0]:
+                            continue
+                    except (FileNotFoundError, ProcessLookupError):
+                        continue
+                for pid in observer.children(parent):
+                    if pid in tracked:
+                        continue
+                    try:
+                        # Check lineage and identity around pidfd admission; never
+                        # signal a process through a potentially reused numeric PID.
+                        status = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()
+                        if int(status[1]) != parent:
+                            continue
+                        original = observer.identity(pid)
+                        if original[0] != int(status[19]):
+                            continue
+                        require(len(tracked) < 32, "Private helper-family observation exceeds32 processes")
+                        descriptor = os.pidfd_open(pid)
+                        try:
+                            if observer.identity(pid) != original:
+                                continue
+                            tracked[pid] = (original, descriptor)
+                            poller.register(descriptor, select.POLLIN)
+                            descriptor = None
+                        finally:
+                            if descriptor is not None:
+                                os.close(descriptor)
+                    except (FileNotFoundError, ProcessLookupError):
+                        continue
+            group = {}
+            for pid in [child.pid, *tracked]:
+                memory = observer.process_memory(pid)
+                if memory and (pid == child.pid or memory[0] == tracked[pid][0]):
+                    for name, value in memory[1].items():
+                        group[name] = group.get(name, 0) + value
+            if group:
+                samples += 1
+                for name, value in group.items():
+                    maximum[name] = max(maximum.get(name, 0), value)
+            if owner.flood_started.is_set() and tracked and not released:
+                for pid in tracked:
+                    try:
+                        line = next(line for line in Path(f"/proc/{pid}/limits").read_text().splitlines()
+                                    if line.startswith("Max address space"))
+                        limits.append({"soft_bytes": int(line.split()[3]), "hard_bytes": int(line.split()[4])})
+                    except (FileNotFoundError, ProcessLookupError, ValueError, StopIteration):
+                        pass
+                owner.flood_release.set()
+                released = True
+            time.sleep(.002)  # Finite fixture observer, never a production idle sampler.
+        stdout, stderr = child.communicate(timeout=2)
+        require(child.returncode != 0 and not stdout, "Event flood produced success or output")
+        require(b"private-flood-value" not in stderr, "Event flood leaked clipboard content")
+        require(released and owner.flood_sent == 5000, "Private genuine event flood was not fully emitted")
+        require(not output.exists(), "Event flood published an image")
+        exited = {fd for fd, _ in poller.poll(0)}
+        cleanup_started = time.monotonic()
+        while len(exited) < len(tracked) and time.monotonic() - cleanup_started < 1:
+            exited.update(fd for fd, _ in poller.poll(10))
+        require(len(exited) == len(tracked), "Event flood retained an observed owned helper")
+        return {"genuine_xfixes_notifications_before_targets_reply": owner.flood_sent,
+                "elapsed_ms": (time.monotonic() - started) * 1000,
+                "observed_helper_count": len(tracked), "all_observed_helper_pidfds_exited": True,
+                "memory_samples": samples, "maximum_observed_near_simultaneous_sum_kib": maximum,
+                "observed_helper_address_space_limits": limits, "hardware": observer.hardware(),
+                "caveat": "Finite2ms observer may miss peaks; sequential smaps sums include shared RSS multiple times. These are observations, not upper-bound/private-footprint or reference-hardware acceptance claims."}
+    finally:
+        owner.flood_release.set()
+        if child.poll() is None:
+            child.kill()
+            child.communicate(timeout=5)
+        for _, descriptor in tracked.values():
+            try:
+                signal.pidfd_send_signal(descriptor, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            finally:
+                os.close(descriptor)
 
 
 class SelectionRequest(c.Structure):
@@ -71,6 +176,7 @@ class Owner:
         x.XInternAtom.argtypes, x.XInternAtom.restype = [c.c_void_p, c.c_char_p, c.c_int], c.c_ulong
         x.XSelectInput.argtypes = [c.c_void_p, c.c_ulong, c.c_long]
         x.XSetSelectionOwner.argtypes = [c.c_void_p, c.c_ulong, c.c_ulong, c.c_ulong]
+        x.XGrabServer.argtypes, x.XUngrabServer.argtypes = [c.c_void_p], [c.c_void_p]
         x.XGetSelectionOwner.argtypes, x.XGetSelectionOwner.restype = [c.c_void_p, c.c_ulong], c.c_ulong
         x.XChangeProperty.argtypes = [c.c_void_p, c.c_ulong, c.c_ulong, c.c_ulong, c.c_int, c.c_int, c.c_void_p, c.c_int]
         x.XSendEvent.argtypes = [c.c_void_p, c.c_ulong, c.c_int, c.c_long, c.POINTER(Event)]
@@ -93,6 +199,9 @@ class Owner:
         self.window = x.XCreateSimpleWindow(self.connection, x.XDefaultRootWindow(self.connection), 0, 0, 1, 1, 0, 0, 0)
         self.alternate_window = x.XCreateSimpleWindow(self.connection, x.XDefaultRootWindow(self.connection), 0, 0, 1, 1, 0, 0, 0)
         self.requests = 0
+        self.flood_started = threading.Event()
+        self.flood_release = threading.Event()
+        self.flood_sent = 0
         self.atoms = {name: x.XInternAtom(self.connection, name.encode(), 0) for name in
                       ("CLIPBOARD", "TARGETS", "UTF8_STRING", "text/uri-list", "image/png", "INCR")}
         x.XSetSelectionOwner(self.connection, self.atoms["CLIPBOARD"], self.window, 0)
@@ -104,11 +213,14 @@ class Owner:
         self.thread = threading.Thread(target=self.serve, daemon=True)
         self.thread.start()
 
-    def set(self, payloads, mode="direct", hint=None, chunk=32768, generation_change=None):
+    def set(self, payloads, mode="direct", hint=None, chunk=32768, generation_change=None, flood=0):
         with self.lock:
             self.configuration = {"payloads": {self.atoms[k]: v for k, v in payloads.items()}, "mode": mode,
-                                  "hint": hint, "chunk": chunk, "generation_change": generation_change}
+                                  "hint": hint, "chunk": chunk, "generation_change": generation_change, "flood": flood}
             self.pending.clear()
+            self.flood_started.clear()
+            self.flood_release.clear()
+            self.flood_sent = 0
 
     def property(self, window, atom, kind, data, bits=8):
         if bits == 32:
@@ -139,6 +251,20 @@ class Owner:
                         payloads = config.get("payloads", {})
                         reply_property = prop
                         if request.target == self.atoms["TARGETS"]:
+                            if config.get("flood"):
+                                self.flood_started.set()
+                                require(self.flood_release.wait(timeout=2), "Private flood observer did not release its gate")
+                                # This server belongs exclusively to the fixture. Hold
+                                # other requests until all genuine notifications precede
+                                # the requestor's ordered reply and our TARGETS reply.
+                                self.x.XGrabServer(self.connection)
+                                try:
+                                    for _ in range(config["flood"]):
+                                        self.x.XSetSelectionOwner(self.connection, self.atoms["CLIPBOARD"], self.window, 0)
+                                    self.flood_sent = config["flood"]
+                                finally:
+                                    self.x.XUngrabServer(self.connection)
+                                    self.x.XFlush(self.connection)
                             if config.get("generation_change") in ("same", "aba"):
                                 if config["generation_change"] == "aba":
                                     self.x.XSetSelectionOwner(self.connection, self.atoms["CLIPBOARD"], self.alternate_window, 0)
@@ -283,6 +409,9 @@ def main():
             owner.set({"UTF8_STRING": b"x" * 65536}, mode="incr", generation_change="incr_same")
             run("text", success=False)
             report["checks"].append("XFixes same-owner republish/A-B-A across TARGETS and same-owner INCR republish rejected")
+            owner.set({"image/png": data, "UTF8_STRING": b"private-flood-value"}, flood=5000)
+            report["event_flood_observation"] = event_flood(binary, env, owner, root / "flood-output.png")
+            report["checks"].append("5000 genuine XFixes notifications before TARGETS reply fail without output; observed owned helper pidfds all exit")
         finally:
             if owner:
                 owner.close()

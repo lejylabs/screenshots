@@ -327,3 +327,133 @@ fn exhausted_real_gpos_preprocessing_is_observable_and_refused_before_glyph_outp
     }
     Ok(())
 }
+
+#[path = "../tests/support/editor_kern_fonts.rs"]
+mod legacy_fixtures;
+use legacy_fixtures::{apple_kern, font_with_legacy_kern, kern_words};
+
+fn kern_advance(bytes: Vec<u8>) -> i32 {
+    let face = harfrust::Font::new(bytes, 0).unwrap();
+    let shaper = harfrust::ShaperFont::new(&face);
+    let mut buffer = harfrust::Buffer::new();
+    buffer.push_str("AV");
+    buffer.guess_segment_properties();
+    harfrust::shape(&shaper, &mut buffer, harfrust::ShapeOptions::new()).unwrap();
+    assert!(buffer.allocation_successful() && !shaper.preprocessing_budget_exhausted());
+    buffer
+        .glyph_positions()
+        .iter()
+        .map(|position| position.x_advance)
+        .sum()
+}
+#[test]
+fn legacy_kerning_admission_refuses_real_80k_cache_attack_and_preserves_ot_apple_controls()
+-> Result<()> {
+    let original = include_bytes!("../../../vendor/cosmic-text/fonts/FiraMono-Medium.ttf");
+    let face = FontRef::new(original).unwrap();
+    assert_eq!(
+        [
+            face.charmap().map('A').unwrap().to_u32(),
+            face.charmap().map('V').unwrap().to_u32()
+        ],
+        [4, 115]
+    );
+    let body = kern_words([1, 6, 0, 0, 4, 115, (-120i16) as u16]);
+    let mut ot = kern_words([0, 1, 0, 20, 1]);
+    ot.extend_from_slice(&body);
+    let apple = apple_kern(0, &body, 1);
+    for table in [&ot, &apple] {
+        let font = font_with_legacy_kern(table);
+        let legacy = harfrust::kern_preprocessing_size(&font, 0).unwrap();
+        assert!(legacy > 512 && legacy < 64 * 1024);
+        assert!(admit_font(&font, 0)?.layout_budget >= 4 * 1024 * 1024 + legacy as u64);
+        let mut empty = table.to_vec();
+        let length = empty.len();
+        empty[length - 2..].copy_from_slice(&0u16.to_be_bytes());
+        assert_eq!(
+            kern_advance(font.clone()),
+            kern_advance(font_with_legacy_kern(&empty)) - 120
+        );
+        let mut assets = EditorAssets::new();
+        assets.insert_font("legacy", font.into(), 0)?;
+        let mut text = label("AV");
+        text.spans[0].style.fonts = vec!["legacy".into()];
+        let cancel = || false;
+        let mut work = ImageWork::new(&cancel)?;
+        assert!(
+            prepare(&text, &assets, [128, 64], &mut work)?
+                .pixels()
+                .any(|p| p[3] != 0)
+        );
+    }
+    let attack = font_with_legacy_kern(&apple_kern(0, &body, 80_000));
+    assert!(attack.len() < 2 * 1024 * 1024);
+    assert_eq!(harfrust::kern_preprocessing_size(&attack, 0), None);
+    let error = admit_font(&attack, 0).err().unwrap();
+    assert!(error.to_string().contains("legacy kern preprocessing"));
+    let mut assets = EditorAssets::new();
+    assert!(assets.insert_font("attack", attack.into(), 0).is_err());
+    assert_eq!(
+        assets.font_bytes(),
+        0,
+        "refused fonts never enter the retained asset ledger"
+    );
+    Ok(())
+}
+
+#[test]
+fn all_legacy_formats_and_malformed_progress_receive_bounded_preflight() -> Result<()> {
+    // Valid no-action legacy state table: 4 classes, two rows, one entry.
+    let mut state = kern_words([4, 8, 128, 136, 0, 116]);
+    state.extend(std::iter::repeat_n(1, 116));
+    state.extend_from_slice(&[0; 8]);
+    state.extend(kern_words([128, 0]));
+    // Format2 AV pair: left class offset28; right class0; array at28.
+    let classes = kern_words([2, 16, 22, 28, 4, 1, 28, 115, 1, 0, (-120i16) as u16]);
+    // Format3: one shared class, one kerning value, 116 covered glyphs.
+    let mut compact = kern_words([116]);
+    compact.extend_from_slice(&[1, 1, 1, 0]);
+    compact.extend(kern_words([(-120i16) as u16]));
+    compact.extend(std::iter::repeat_n(0, 233));
+    for (format, body) in [(1, state), (2, classes), (3, compact)] {
+        let font = font_with_legacy_kern(&apple_kern(format, &body, 1));
+        let bound = harfrust::kern_preprocessing_size(&font, 0).unwrap();
+        assert!((512..64 * 1024).contains(&bound));
+        admit_font(&font, 0)?;
+        let advance = kern_advance(font);
+        if format == 2 || format == 3 {
+            assert_eq!(advance, 1080);
+        }
+    }
+    let body = kern_words([1, 6, 0, 0, 4, 115, (-120i16) as u16]);
+    let normal = apple_kern(0, &body, 1);
+    let mut excessive = normal.clone();
+    excessive[4..8].copy_from_slice(&u32::MAX.to_be_bytes());
+    let mut zero = normal.clone();
+    zero[8..12].fill(0);
+    let mut truncated = normal.clone();
+    truncated.truncate(14);
+    let mut unknown = normal.clone();
+    unknown[12..14].copy_from_slice(&255u16.to_be_bytes());
+    for table in [excessive, zero, truncated, unknown] {
+        let font = font_with_legacy_kern(&table);
+        assert_eq!(harfrust::kern_preprocessing_size(&font, 0), None);
+        assert!(admit_font(&font, 0).is_err());
+    }
+    // A tiny, parseable format1 with 65,535 declared columns forces the
+    // actual collect_initial_glyphs loop to visit each class. Sixty-five
+    // subtables stay far below the byte cap but exceed the separate work cap.
+    let mut many_classes = kern_words([65535, 8, 13, 13, 0, 1]);
+    many_classes.push(0);
+    many_classes.extend(kern_words([13, 0]));
+    let one = font_with_legacy_kern(&apple_kern(1, &many_classes, 1));
+    assert!(harfrust::kern_preprocessing_size(&one, 0).is_some());
+    let work_attack = font_with_legacy_kern(&apple_kern(1, &many_classes, 65));
+    assert!(work_attack.len() < 2 * 1024 * 1024);
+    assert_eq!(harfrust::kern_preprocessing_size(&work_attack, 0), None);
+    assert!(admit_font(&work_attack, 0).is_err());
+    // Exact format1 boundary: no classes is refused by the actual state parser.
+    let invalid = font_with_legacy_kern(&apple_kern(1, &kern_words([0, 8, 8, 8]), 1));
+    assert_eq!(harfrust::kern_preprocessing_size(&invalid, 0), None);
+    Ok(())
+}

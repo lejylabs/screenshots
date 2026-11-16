@@ -55,8 +55,14 @@ server selection event plus its selection/event timestamps, and uses ordered
 round trips on that same connection before accepting TARGETS or payload chunks.
 Same-owner assertions and A→B→A ownership changes invalidate the operation; equal
 timestamps do not hide an event. Synthetic XFixes events are rejected. The
-operation owns one requestor window and at most 4096 queued/processed events;
-destroying it ends observation, with no idle watcher. Protocol basis:
+operation owns one requestor window and refuses to process more than 4096 events.
+This is a processed-event refusal, not a queued-event ceiling: blocking x11rb
+replies may buffer an opaque internal event queue before the adapter can drain
+and count it. No 4096-item guarantee is claimed for that dependency queue. Its
+allocations remain inside the existing 96 MiB native VM-growth ceiling and the
+owned helper's five-second hard deadline; cooperative checks do not make a
+blocking reply itself interruptible. Neither global containment is relaxed.
+Destroying the requestor ends observation, with no idle watcher. Protocol basis:
 [XFixes selection tracking](https://xorg.freedesktop.org/archive/current/doc/fixesproto/fixesproto.txt).
 
 macOS native pasteboard APIs can create an opaque data object before its length
@@ -208,6 +214,13 @@ raw/URI drop transport. The remaining X11/Windows/macOS raw/URL payload adapters
 print and file drag-out integration are still implementation work; the overall
 family is not declared complete at this checkpoint.
 
+The next native-integration ledger also includes descriptor-only Wayland GPUI
+startup: the connection may consume `WAYLAND_SOCKET` before graphical-environment
+backend detection, which currently considers only `DISPLAY`/`WAYLAND_DISPLAY`
+and can then select X11. This is separate from the already refused Automatic
+clipboard CLI context. It must be corrected before the entire integration family
+is complete; it is not claimed fixed by the clipboard contract/test correction.
+
 Native acquisition is 96 MiB growth for encoded clipboard formats; Windows DIB
 size is checked first and may raise the copy phase to 256 MiB +64 KiB +16 MiB
 without lowering its existing input ceiling. Decoding then has its separate
@@ -241,8 +254,8 @@ The delivered file boundary is exact:
   action/source dispatch, cancellation/job generation and private fixtures.
 
 The current private X11 CLI proof is
-`target/verification/clipboard-review-fixes-x11.json` (eight groups, executable
-SHA-256 `08677e65ac8de979b59256090fad587f5f4b443c3c6bba7dca9ae53d185f8696`), and
+`target/verification/clipboard-round6-x11.json` (nine groups, executable
+SHA-256 `cd770d5abc37680ae5cbf330fe37fefda803051bf49bfb0bd0d4bb8807005406`), and
 the focused native GPUI Wayland proof is
 `target/verification/clipboard-round4-wayland.json` (test executable SHA-256
 `e9600165097c625268eebce484155a52512751aba80467833a73e20fcbe5472e`). Both use only generated data
@@ -312,3 +325,24 @@ This adds no production queue/thread/timer; the test cancellation hook exists
 only on the test platform. Evidence is under `target/verification/clipboard-round4-*`.
 The source is frozen for fresh fifth review; author checks do not establish
 independent convergence or physical input/presentation acceptance.
+
+The fifth fresh review was clean; the sixth found the queued-versus-processed
+X11 event-count documentation error. The contract now states the adapter's
+4096 processed-event refusal and explicitly describes opaque dependency buffering
+inside the unchanged native VM-growth/hard-deadline containment. No native code,
+compiler or application dependency changed in this correction.
+
+The private authenticated Xvfb fixture sends 5000 genuine same-owner XFixes
+notifications before the TARGETS reply. A finite observer uses the existing
+private-worker helpers, verifies child lineage/identity and keeps owned pidfds;
+the operation fails with no stdout/image publication, and all observed helper
+pidfds signal exit. All nine private executable groups pass. One optimized
+development observation took 11.98 ms, with five sequential process-family
+memory samples (CLI plus one observed helper): maximum sampled summed RSS was
+40804 KiB and PSS 22980 KiB; the helper's sampled address-space soft ceiling was
+195645440 bytes. The 2 ms observer can miss peaks and summed RSS counts shared
+pages repeatedly. These samples are not bounds, reference-hardware acceptance
+or a latency benchmark. Native allocation/deadline limits provide containment
+independently of the samples. Evidence is
+`target/verification/clipboard-round6-x11.json`; this correction is frozen for
+fresh seventh review, without a convergence claim.
