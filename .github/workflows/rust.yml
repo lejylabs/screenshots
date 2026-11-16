@@ -150,6 +150,10 @@ jobs:
         run: cargo build --workspace --release --locked
       - name: Run optimized deterministic tests
         run: cargo test --workspace --profile release-fast --locked
+      - name: Compile owned native Windows window fixture
+        if: runner.os == 'Windows'
+        timeout-minutes: 15
+        run: cargo test --locked --profile release-fast -p screenshots --test capture_window_windows --no-run
       - name: Verify owned native Windows window pixels
         if: runner.os == 'Windows'
         timeout-minutes: 3
