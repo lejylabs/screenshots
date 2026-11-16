@@ -2,6 +2,40 @@ use super::*;
 use gpui::test::{TestQueryExt, TestWindowExt};
 use gpui::{AppContext, TestAppContext, px, rgb};
 
+#[gpui::test]
+fn native_capture_tokens_are_operation_owned_and_quit_cancels_the_current_job(
+    cx: &mut TestAppContext,
+) {
+    let handle = open_workspace(cx);
+    let (old, current, sources) = handle
+        .update(cx, |this, _, cx| {
+            this.begin_capturing();
+            let old = this.native_capture_cancel.as_ref().unwrap().clone();
+            this.finish_capturing(cx);
+            this.begin_capturing();
+            let current = this.native_capture_cancel.as_ref().unwrap().clone();
+            let sources = app_core::NativeCaptureCancellation::default();
+            this.native_sources_cancel = Some(sources.clone());
+            this.refreshing = true;
+            (old, current, sources)
+        })
+        .unwrap();
+    old.cancel();
+    assert!(current.check().is_ok());
+    cx.update(close_application);
+    assert!(current.check().is_err());
+    assert!(sources.check().is_err());
+    handle
+        .update(cx, |this, _, cx| {
+            assert!(this.quitting && this.capturing && this.refreshing);
+            this.finish_capturing(cx);
+            assert!(this.native_capture_cancel.is_none());
+            this.refreshing = false;
+            this.native_sources_cancel = None;
+        })
+        .unwrap();
+}
+
 fn shortcut(key: &str) -> String {
     format!(
         "{}-{key}",

@@ -151,6 +151,8 @@ pub struct CaptureWorkspace {
     editor: Option<WindowHandle<RedactionEditor>>,
     editor_closing: bool,
     backend: XcapBackend,
+    native_capture_cancel: Option<app_core::NativeCaptureCancellation>,
+    native_sources_cancel: Option<app_core::NativeCaptureCancellation>,
     xcap_displays: Vec<DisplayInfo>,
     xcap_windows: Vec<WindowInfo>,
     refreshing: bool,
@@ -609,6 +611,8 @@ impl CaptureWorkspace {
             editor: None,
             editor_closing: false,
             backend,
+            native_capture_cancel: None,
+            native_sources_cancel: None,
             xcap_displays: Vec::new(),
             xcap_windows: Vec::new(),
             refreshing: false,
@@ -1927,16 +1931,35 @@ impl CaptureWorkspace {
             return;
         }
         self.refreshing = true;
+        let cancellation = app_core::NativeCaptureCancellation::default();
+        self.native_sources_cancel = Some(cancellation.clone());
         self.list_status = "Loading displays and windows…".into();
         cx.notify();
-        let backend = self.backend.clone();
+        let backend = self.backend.clone().with_cancellation(cancellation.clone());
         cx.spawn(async move |this, cx| {
-            let (displays, windows) = cx
-                .background_spawn(async move { (backend.list_displays(), backend.list_windows()) })
+            let inventory = cx
+                .background_spawn(async move { backend.list_sources_with_cancel(&|| Ok(())) })
                 .await;
+            let (displays, windows) = match inventory {
+                Ok(inventory) => (inventory.displays, inventory.windows),
+                Err(error) => {
+                    let message = error.to_string();
+                    (
+                        Err(app_core::CaptureError::Backend(message.clone())),
+                        Err(app_core::CaptureError::Backend(message)),
+                    )
+                }
+            };
             this.update(cx, |this, cx| {
                 this.refreshing = false;
+                this.native_sources_cancel = None;
                 if this.quitting {
+                    this.finish_quit_if_idle(cx);
+                    return;
+                }
+                if cancellation.check().is_err() {
+                    this.list_status = "Source refresh canceled".into();
+                    cx.notify();
                     return;
                 }
                 let mut errors = Vec::new();
@@ -1979,6 +2002,9 @@ impl CaptureWorkspace {
     }
 
     fn close_overlays(&mut self, cx: &mut Context<Self>) {
+        if let Some(cancellation) = &self.native_capture_cancel {
+            cancellation.cancel();
+        }
         self.edit_selection = false;
         self.cancel_capture_delay(cx);
         let retire = self.resident && self.preview_active && self.control.is_none();
@@ -2742,6 +2768,7 @@ impl CaptureWorkspace {
         }
         if self.quitting
             && !self.capturing
+            && !self.refreshing
             && !self.copying
             && !self.saving
             && !self.switching_graphics
@@ -2761,6 +2788,7 @@ impl CaptureWorkspace {
             && !self.editor_closing
             && !self.preview_active
             && !self.capturing
+            && !self.refreshing
             && !self.copying
             && !self.saving
             && !self.switching_graphics
@@ -3223,10 +3251,15 @@ impl CaptureWorkspace {
 
     fn begin_capturing(&mut self) {
         self.cancel_history_thumb_job();
+        if let Some(cancellation) = &self.native_sources_cancel {
+            cancellation.cancel();
+        }
+        self.native_capture_cancel = Some(app_core::NativeCaptureCancellation::default());
         self.capturing = true;
     }
 
     fn finish_capturing(&mut self, cx: &mut Context<Self>) {
+        self.native_capture_cancel = None;
         self.capturing = false;
         self.request_history_thumbs(cx);
     }
@@ -6001,7 +6034,12 @@ impl CaptureWorkspace {
         self.capture_status = format!("capturing {} job(s)…", jobs.len());
         cx.notify();
 
-        let backend = self.backend.clone();
+        let cancellation = self
+            .native_capture_cancel
+            .as_ref()
+            .expect("capture admission owns a fresh token")
+            .clone();
+        let backend = self.backend.clone().with_cancellation(cancellation.clone());
         let control = self.control;
         #[cfg(all(test, target_os = "windows"))]
         let probe = cx.try_global::<RegionLatencyProbe>().cloned();
@@ -6088,6 +6126,7 @@ impl CaptureWorkspace {
                         probe.mark("capture_complete");
                     }
                     for shot in captured {
+                        cancellation.check()?;
                         tracing::info!(
                             display_id = %shot.display_id,
                             window_id = ?shot.window_id,
@@ -6112,11 +6151,18 @@ impl CaptureWorkspace {
                     if let Some(probe) = &probe {
                         probe.mark("render_conversion_complete");
                     }
+                    cancellation.check()?;
                     Ok::<_, app_core::CaptureError>((shots, renders))
                 })
                 .await;
 
             this.update(cx, |this, cx| {
+                let result = result.and_then(|value| {
+                    if let Some(cancellation) = &this.native_capture_cancel {
+                        cancellation.check()?;
+                    }
+                    Ok(value)
+                });
                 this.finish_capturing(cx);
                 if this.quitting {
                     this.finish_quit_if_idle(cx);
@@ -6534,13 +6580,20 @@ fn close_application(cx: &mut App) {
         let entity = cx.global::<ResidentController>().0.clone();
         let busy = entity.update(cx, |this, cx| {
             this.cancel_capture_delay(cx);
+            if let Some(cancellation) = &this.native_capture_cancel {
+                cancellation.cancel();
+            }
+            if let Some(cancellation) = &this.native_sources_cancel {
+                cancellation.cancel();
+            }
             this.clear_history_preview(cx);
             this.cancel_history_thumb_job();
             this.cancel_history_export(cx);
             this.cancel_upload(cx);
             this.close_editor(cx);
             this.quitting = true;
-            let busy = this.capturing
+            let busy = this.refreshing
+                || this.capturing
                 || this.copying
                 || this.saving
                 || this.switching_graphics
@@ -6566,12 +6619,19 @@ fn close_application(cx: &mut App) {
             let waiting = control
                 .update(cx, |this, _, cx| {
                     this.cancel_capture_delay(cx);
+                    if let Some(cancellation) = &this.native_capture_cancel {
+                        cancellation.cancel();
+                    }
+                    if let Some(cancellation) = &this.native_sources_cancel {
+                        cancellation.cancel();
+                    }
                     this.clear_history_preview(cx);
                     this.cancel_history_thumb_job();
                     this.cancel_history_export(cx);
                     this.cancel_upload(cx);
                     this.quitting = true;
-                    let busy = this.capturing
+                    let busy = this.refreshing
+                        || this.capturing
                         || this.copying
                         || this.saving
                         || this.settings_saving

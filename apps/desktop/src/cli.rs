@@ -78,6 +78,7 @@ Headless commands (no desktop UI; outputs and uploads require explicit actions):
   screenshots qr-region DISPLAY X Y WIDTH HEIGHT
   screenshots workflow RECIPE INPUT OUTPUT
   screenshots task run|validate PROFILE.json
+  screenshots capture-catalog monitors|validate|bind|add|defaults|capture|run-task|host-config ...
   screenshots task-host validate CONFIG.json
   screenshots task-host serve CONFIG.json ENDPOINT.json
   screenshots task-host trigger ENDPOINT.json PROFILE_ID
@@ -180,6 +181,7 @@ pub fn run(args: Vec<OsString>) -> Result<bool> {
         }
         "workflow" => crate::workflow::run(&args[1..])?,
         "task" => crate::task::run(&args[1..])?,
+        "capture-catalog" => crate::capture_catalog::run(&args[1..])?,
         "task-host" => crate::task_host::run(&args[1..])?,
         "gif" => crate::gif_assembly::run(&args[1..])?,
         "stitch-scroll" => crate::scroll_stitch::run(&args[1..])?,

@@ -436,3 +436,31 @@ is active follow-up implementation work, independent of accounts and signing.
 The modern pinned SXCU contract and explicitly retained older importer subset
 are described in `sharex-runtime.md`; no arbitrary-version parity or full-plan
 completion is claimed.
+
+
+## Native capture and templates continuation (2026-11-16)
+
+The initial fresh isolation review found Unix descendants surviving natural root
+exit, handoff admission theft after enumeration released BUSY, and run-task
+rereading a previously validated Task/catalog. Corrections retain the unreaped
+leader until owned-group signaling finishes, prove remaining live members with
+bounded native inspection and post-registration identity checks, reserve the
+handoff exclusively, and execute one immutable prepared Task/template snapshot.
+Fresh `native_capture_isolation_round2` found no Blocker, Major or Nit. Earlier
+catalog/GDI source reviews also corrected the DWM double-crop/resizing defect;
+real Windows owned-window pixels remain an explicit native CI gate.
+
+Author verification passed 25 worker/protocol tests, 16 Task/capture-task cases,
+four catalog CLI cases, Windows app/test metadata and private native E2E:
+17 CLI calls, 48,259 exact pixels and three rapid native hotkey taps. Final
+private report: `target/verification/capture-worker-private-review-fixes-final.json`.
+This source review does not turn compilation into physical/native acceptance.
+
+Group ownership proof initially increased local latency; getpgid-first bounded
+inspection reduced its syscall work without UID assumptions. Two remediated
+serial repeats measured worker p95 37.234/37.379 ms. The latter inline baseline
+was 24.999 ms: +12.380 ms/+49.522%. The Elephant retains per-operation processes
+after that recorded remediation to preserve cleanup/privacy and zero default
+idle worker; the 250 ms 4K target is unchanged. Actual process memory, all cases
+and swap qualifications remain in `native-capture-isolation.md`. These component
+measurements do not establish reference-hardware or end-to-end acceptance.

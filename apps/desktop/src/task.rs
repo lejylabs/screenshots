@@ -48,6 +48,10 @@ enum Source {
         width: u32,
         height: u32,
     },
+    Template {
+        catalog: PathBuf,
+        name: String,
+    },
 }
 
 #[derive(Deserialize)]
@@ -60,6 +64,13 @@ enum Action {
     },
     Upload {
         profile: PathBuf,
+    },
+    SharexUpload {
+        profile: PathBuf,
+        #[serde(default)]
+        options: Option<PathBuf>,
+        #[serde(default)]
+        kind: Option<app_core::ShareXInputKind>,
     },
     ProviderUpload {
         profile: PathBuf,
@@ -93,13 +104,32 @@ fn label() -> String {
 
 struct Task {
     source: Source,
+    template: Option<app_core::PreparedRegionTemplate>,
     recipe: Option<crate::workflow::Recipe>,
     actions: Vec<Ready>,
     clipboard_hold_ms: u64,
 }
+struct SelectedTemplate {
+    catalog: PathBuf,
+    name: String,
+    template: app_core::PreparedRegionTemplate,
+}
+pub(crate) struct PreparedTemplateTask {
+    task: Task,
+    bridge: Option<crate::task_clipboard::Client>,
+}
+impl PreparedTemplateTask {
+    fn read(selected: SelectedTemplate, bridge: Option<crate::task_clipboard::Client>) -> Result<Self> {
+        let profile = selected.template.profile().context("Template has no assigned task profile")?.to_owned();
+        let task = Task::read_selected(&profile, Some(selected))?;
+        Ok(Self { task, bridge })
+    }
+    pub(crate) fn execute(self) -> Result<()> { self.task.execute(self.bridge) }
+}
 enum Ready {
     Save(PathBuf, u8),
-    Upload(app_core::UploadDestination),
+    Upload(app_core::ClassifiedUploadProfile),
+    Sharex(app_core::ShareXPrepared, app_core::ShareXInputKind),
     ProviderUpload(crate::sharing_provider::PreparedUpload),
     S3Upload(app_core::S3Profile),
     Link(String, String),
@@ -149,6 +179,9 @@ fn output_path(
 
 impl Task {
     fn read(path: &Path) -> Result<Self> {
+        Self::read_selected(path, None)
+    }
+    fn read_selected(path: &Path, mut selected: Option<SelectedTemplate>) -> Result<Self> {
         let path = std::path::absolute(path)?;
         ensure!(
             path.metadata()?.is_file(),
@@ -185,6 +218,9 @@ impl Task {
             "Clipboard hold must be 0–300000 milliseconds"
         );
         let base = path.parent().context("Task profile has no parent")?;
+        ensure!(selected.is_none() || matches!(profile.source, Source::Template { .. }),
+            "Capture template task must use a template source");
+        let mut template = None;
         match &mut profile.source {
             Source::None
             | Source::PrimaryDisplay
@@ -201,6 +237,17 @@ impl Task {
                 !id.is_empty() && id.len() <= 64,
                 "Task capture ID must contain 1–64 bytes"
             ),
+            Source::Template { catalog, name } => {
+                *catalog = resolve(base, catalog)?;
+                if let Some(selected) = selected.take() {
+                    ensure!(*name == selected.name && std::fs::canonicalize(&*catalog)? == selected.catalog,
+                        "Capture template task source must reference this catalog and template");
+                    *catalog = selected.catalog;
+                    template = Some(selected.template);
+                } else {
+                    template = Some(app_core::PreparedRegionTemplate::read(catalog, name)?);
+                }
+            }
             Source::Region {
                 display,
                 x,
@@ -257,13 +304,47 @@ impl Task {
                         has_image || raw_source,
                         "Task upload requires an image or raw file source"
                     );
-                    has_link = true;
                     let profile = resolve(base, &profile)?;
-                    Ready::Upload(if raw_source {
-                        crate::upload_file::load_profile(&profile)?
+                    let prepared = crate::sharex::prepare(
+                        &profile,
+                        if raw_source {
+                            app_core::ShareXInputKind::File
+                        } else {
+                            app_core::ShareXInputKind::Image
+                        },
+                    )?;
+                    has_link = match &prepared {
+                        app_core::ClassifiedUploadProfile::Native(_) => true,
+                        app_core::ClassifiedUploadProfile::ShareX(profile) => {
+                            profile.may_return_link()
+                        }
+                    };
+                    Ready::Upload(prepared)
+                }
+                Action::SharexUpload {
+                    profile,
+                    options,
+                    kind,
+                } => {
+                    let kind = kind.unwrap_or(if has_image {
+                        app_core::ShareXInputKind::Image
                     } else {
-                        crate::cli::load_upload_profile(&profile)?
-                    })
+                        app_core::ShareXInputKind::File
+                    });
+                    ensure!(
+                        raw_source
+                            || (kind == app_core::ShareXInputKind::Image && has_image)
+                            || (kind == app_core::ShareXInputKind::File && has_output),
+                        "Task SXCU input requires an image source or an explicit local artifact"
+                    );
+                    let options = options.map(|p| resolve(base, &p)).transpose()?;
+                    let prepared = app_core::ShareXPrepared::read(
+                        &resolve(base, &profile)?,
+                        kind,
+                        options.as_deref(),
+                    )?;
+                    has_link = prepared.may_return_link();
+                    Ready::Sharex(prepared, kind)
                 }
                 Action::ProviderUpload { profile } => {
                     ensure!(
@@ -361,13 +442,17 @@ impl Task {
         }
         Ok(Self {
             source: profile.source,
+            template,
             recipe,
             actions,
             clipboard_hold_ms: profile.clipboard_hold_ms,
         })
     }
 
-    fn capture(&self) -> Result<Option<CapturedImage>> {
+    fn capture(&self, check: &impl Fn() -> Result<()>) -> Result<Option<CapturedImage>> {
+        check()?;
+        let native_check =
+            || check().map_err(|error| app_core::CaptureError::Backend(error.to_string()));
         if matches!(self.source, Source::None | Source::RawFile { .. }) {
             return Ok(None);
         }
@@ -382,7 +467,7 @@ impl Task {
             Source::None | Source::RawFile { .. } => unreachable!(),
             Source::PrimaryDisplay => {
                 let mut displays = backend
-                    .list_displays()?
+                    .list_displays_with_cancel(&native_check)?
                     .into_iter()
                     .filter(|d| d.is_primary);
                 let display = displays.next().context("Primary display is unavailable")?;
@@ -390,20 +475,55 @@ impl Task {
                     displays.next().is_none(),
                     "Primary display identity is ambiguous"
                 );
-                backend.capture_display(&display.id)?
+                backend
+                    .capture_batch_with_cancel(
+                        vec![app_core::CaptureRequest::Display(display.id)],
+                        &native_check,
+                    )?
+                    .pop()
+                    .context("Primary capture returned no frame")?
             }
-            Source::ActiveDisplay => backend.capture_focused_display()?,
-            Source::ActiveWindow => backend.capture_focused_window()?,
+            Source::ActiveDisplay => backend.capture_focused_display_with_cancel(&native_check)?,
+            Source::ActiveWindow => backend.capture_focused_window_with_cancel(&native_check)?,
+            Source::Template { .. } => self
+                .template
+                .as_ref()
+                .context("Task template was not prepared")?
+                .capture_with_cancel(PathBuf::new(), check)?,
             Source::File { path } => crate::cli::frame(app_core::load_editor_image(path)?),
-            Source::Display { id } => backend.capture_display(id)?,
-            Source::Window { id } => backend.capture_window(id)?,
+            Source::Display { id } => backend
+                .capture_batch_with_cancel(
+                    vec![app_core::CaptureRequest::Display(id.clone())],
+                    &native_check,
+                )?
+                .pop()
+                .context("Display capture returned no frame")?,
+            Source::Window { id } => backend
+                .capture_batch_with_cancel(
+                    vec![app_core::CaptureRequest::Window(id.clone())],
+                    &native_check,
+                )?
+                .pop()
+                .context("Window capture returned no frame")?,
             Source::Region {
                 display,
                 x,
                 y,
                 width,
                 height,
-            } => backend.capture_region(display, *x as i32, *y as i32, *width, *height)?,
+            } => backend
+                .capture_batch_with_cancel(
+                    vec![app_core::CaptureRequest::Region {
+                        display_id: display.clone(),
+                        x: *x as i32,
+                        y: *y as i32,
+                        width: *width,
+                        height: *height,
+                    }],
+                    &native_check,
+                )?
+                .pop()
+                .context("Region capture returned no frame")?,
         }))
     }
 
@@ -425,7 +545,15 @@ impl Task {
         #[cfg(not(unix))]
         let upload_cancel = app_core::UploadCancellation::default();
         let task_deadline = Instant::now() + Duration::from_secs(5400);
-        let mut frame = self.capture()?;
+        let mut frame = self.capture(&|| {
+            #[cfg(unix)]
+            cancel.check(task_deadline)?;
+            ensure!(
+                Instant::now() < task_deadline,
+                "Task exceeded its duration budget"
+            );
+            Ok(())
+        })?;
         let raw_source = match &self.source {
             Source::RawFile { path } => Some(path.clone()),
             _ => None,
@@ -454,27 +582,49 @@ impl Task {
         }
         let mut upload: Option<UploadOutcome> = None;
         let mut last_output: Option<PathBuf> = None;
+        let mut last_saved_image: Option<PathBuf> = None;
         let mut clipboard = app_core::ImageClipboard::default();
         let mut owns_clipboard = false;
         let total = self.actions.len();
         for (index, action) in self.actions.into_iter().enumerate() {
             #[cfg(unix)]
-            cancel.check(task_deadline).with_context(|| format!("Task stopped before action {} of {total}; previous completed outputs and uploads remain", index+1))?;
+            cancel.check(task_deadline).with_context(||format!("Task stopped before action {} after {index} completed actions; previous outputs and uploads remain",index+1))?;
             let outcome = (|| -> Result<serde_json::Value> {
                 Ok(match action {
                     Ready::Save(path, quality) => {
                         let frame = frame.as_ref().context("Save requires an image source")?;
                         let format = frame.save_image_as_with_cancel(&path, quality, app_core::ExportSize::Original, || upload_cancel.is_canceled() || Instant::now() >= task_deadline)?;
+                        last_saved_image = Some(path.clone());
                         last_output = Some(path);
                         serde_json::json!({"action":"save","format":format.extension(),"width":frame.width,"height":frame.height})
                     }
                     Ready::Upload(destination) => {
-                        let result = if let Some(path) = &raw_source { app_core::upload_file(&destination,path,upload_cancel.clone())? }
-                            else {app_core::upload_png_bytes_with_progress(&destination, frame.as_ref().context("Upload requires an image source")?.png_bytes()?, upload_cancel.clone(), None)?};
-                        let result = result.validate_links()?;
-                        let value = serde_json::json!({"action":"upload","url":result.url,"thumbnail":result.thumbnail,"deletion":result.deletion});
-                        upload = Some(result);
+                        let result = if let Some(path) = &raw_source { crate::sharex::upload_file(&destination,path,upload_cancel.clone())? }
+                            else if matches!(&destination,app_core::ClassifiedUploadProfile::ShareX(_)) && last_saved_image.is_some() {crate::sharex::upload_file(&destination,last_saved_image.as_deref().unwrap(),upload_cancel.clone())?}
+                            else {crate::sharex::upload_png(&destination, frame.as_ref().context("Upload requires an image source")?.png_bytes_with_cancel(|| upload_cancel.is_canceled() || Instant::now() >= task_deadline)?, upload_cancel.clone())?};
+                        task_confirm_upload(&result,index,total,|| {
+                            #[cfg(unix)]
+                            cancel.output_phase(true);
+                        })?;
+                        upload = task_upload_link(&result)?;
+                        let mut value = result;
+                        value.as_object_mut().context("Upload result must be an object")?.insert("action".into(),"upload".into());
                         value
+                    }
+                    Ready::Sharex(prepared,kind) => {
+                        let result = if kind==app_core::ShareXInputKind::Image && raw_source.is_none() && last_saved_image.is_none() {
+                            prepared.upload_png_bytes(frame.as_ref().context("SXCU requires finalized image pixels")?.png_bytes_with_cancel(||upload_cancel.is_canceled() || Instant::now()>=task_deadline)?,upload_cancel.clone())?
+                        } else {
+                            let path = if kind==app_core::ShareXInputKind::Image {last_saved_image.as_deref().or(raw_source.as_deref())} else {raw_source.as_deref().or(last_output.as_deref())}.context("SXCU requires a local artifact")?;
+                            prepared.upload_file(path,upload_cancel.clone())?
+                        };
+                        let value = serde_json::to_value(result)?;
+                        task_confirm_upload(&value,index,total,|| {
+                            #[cfg(unix)]
+                            cancel.output_phase(true);
+                        })?;
+                        upload = task_upload_link(&value)?;
+                        serde_json::json!({"action":"sharex_upload","upload":value})
                     }
                     Ready::ProviderUpload(prepared) => {
                         let result = prepared.upload_file_with_cancel(last_output.as_deref().or(raw_source.as_deref()).context("Provider upload requires a local artifact")?, || {
@@ -600,6 +750,64 @@ fn expand_argument(
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn snapshot_capture(call: app_core::NativeCaptureCall, check: &app_core::NativeCaptureCheck<'_>) -> std::result::Result<app_core::NativeCaptureReply, app_core::CaptureError> {
+        check()?;
+        let app_core::NativeCaptureCall::Template { template, options } = call else { return Err(app_core::CaptureError::Backend("Unexpected snapshot fixture call".into())); };
+        if template.width != 2 || template.height != 1 || options.delay_ms != 0
+            || template.monitor != (app_core::CaptureMonitorBinding::Connector { key: "fixture:original".into() }) {
+            return Err(app_core::CaptureError::Backend("A later catalog replaced the admitted snapshot".into()));
+        }
+        Ok(app_core::NativeCaptureReply::Frames(vec![CapturedImage { display_id: "fixture".into(), window_id: None,
+            width: 2, height: 1, png_path: PathBuf::new(), pixels: Arc::new(image::RgbaImage::from_pixel(2, 1, image::Rgba([7, 11, 13, 255]))),
+            elapsed_ms: 0, source_format: app_core::PixelFormat::Rgba8UnormSrgb, display_geometry: None }]))
+    }
+    #[test]
+    fn template_snapshot_fixture() -> Result<()> {
+        let Some(root) = std::env::var_os("SCREENSHOTS_TEMPLATE_SNAPSHOT_FIXTURE") else { return Ok(()); };
+        let root = PathBuf::from(root); let catalog = root.join("catalog.json"); let profile = root.join("task.json");
+        let original = root.join("original.png"); let injected = root.join("injected.png");
+        std::fs::write(&profile, serde_json::to_vec(&serde_json::json!({"version":1,"source":{"type":"template","catalog":catalog,"name":"crop"},"actions":[{"type":"save","path":original}]}))?)?;
+        let initial = serde_json::json!({"version":1,"templates":[{"name":"crop","monitor":{"kind":"connector","key":"fixture:original"},
+            "geometry":{"width":10,"height":8,"scale_factor":1.0,"rotation":0.0},"x":0,"y":0,"width":2,"height":1,"profile":profile}]});
+        std::fs::write(&catalog, serde_json::to_vec(&initial)?)?;
+        let selected = selected_template(&catalog, "crop")?;
+        // Deterministic catalog replacement before Task reading must not replace this binding/options.
+        let mut replacement = initial; replacement["defaults"] = serde_json::json!({"delay_ms":3600000});
+        replacement["templates"][0]["width"] = 3.into();
+        replacement["templates"][0]["monitor"]["key"] = "fixture:replacement".into();
+        std::fs::write(&catalog, serde_json::to_vec(&replacement)?)?;
+        let admitted = PreparedTemplateTask::read(selected, None)?;
+        let source = root.join("replacement.png");
+        image::RgbaImage::from_pixel(1, 1, image::Rgba([199, 201, 203, 255])).save(&source)?;
+        // Deterministic source AND action replacement after validation must never execute.
+        std::fs::write(&profile, serde_json::to_vec(&serde_json::json!({"version":1,"source":{"type":"file","path":source},"actions":[{"type":"save","path":injected}]}))?)?;
+        app_core::install_native_capture_executor(snapshot_capture)?;
+        admitted.execute()?;
+        ensure!(!injected.exists(), "Replaced Task actions ran");
+        let pixels = image::open(&original)?.into_rgba8();
+        ensure!(pixels.dimensions() == (2, 1) && pixels.pixels().all(|pixel| pixel.0 == [7, 11, 13, 255]), "Admitted source pixels were replaced");
+        Ok(())
+    }
+    #[test]
+    fn assigned_template_executes_one_validated_task_and_initial_catalog_snapshot() -> Result<()> {
+        let root = std::env::temp_dir().join(format!("screenshots-task-snapshot-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&root)?;
+        let mut child = std::process::Command::new(std::env::current_exe()?)
+            .args(["--exact", "task::tests::template_snapshot_fixture", "--nocapture"])
+            .env("SCREENSHOTS_TEMPLATE_SNAPSHOT_FIXTURE", &root).env("DISPLAY", ":snapshot-private").env("XDG_SESSION_TYPE", "x11")
+            .env_remove("WAYLAND_DISPLAY").env_remove(crate::task_clipboard::ENV)
+            .stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::piped()).spawn()?;
+        let until = Instant::now() + Duration::from_secs(5);
+        loop {
+            if child.try_wait()?.is_some() { break; }
+            if Instant::now() >= until { let _ = child.kill(); let _ = child.wait(); let _ = std::fs::remove_dir_all(&root); bail!("Selected catalog was reread or snapshot fixture stalled"); }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let result = child.wait_with_output()?;
+        let cleanup = std::fs::remove_dir_all(&root);
+        ensure!(result.status.success(), "Task/catalog replacement fixture failed: {}", String::from_utf8_lossy(&result.stderr));
+        cleanup?; Ok(())
+    }
     #[test]
     fn command_arguments_expand_once_without_interpreting_replacement_text() {
         let url = "https://example.invalid/?token={output}";
@@ -627,6 +835,42 @@ fn result_line(value: serde_json::Value) -> Result<()> {
         .context("Could not write task result")
 }
 
+fn task_upload_link(value: &serde_json::Value) -> Result<Option<UploadOutcome>> {
+    value
+        .get("url")
+        .and_then(serde_json::Value::as_str)
+        .map(|url| {
+            UploadOutcome {
+                url: url.into(),
+                thumbnail: value
+                    .get("thumbnail")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_owned),
+                deletion: value
+                    .get("deletion")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_owned),
+            }
+            .validate_links()
+        })
+        .transpose()
+}
+
+fn task_confirm_upload(
+    value: &serde_json::Value,
+    index: usize,
+    total: usize,
+    before_output: impl FnOnce(),
+) -> Result<()> {
+    if value.get("success").and_then(serde_json::Value::as_bool) == Some(false) {
+        before_output();
+        result_line(
+            serde_json::json!({"type":"action_failed","index":index+1,"total":total,"result":value}),
+        )?;
+    }
+    crate::sharex::confirmed(value)
+}
+
 pub(crate) fn run(args: &[OsString]) -> Result<()> {
     ensure!(
         args.len() == 2 && matches!(args[0].to_str(), Some("run" | "validate")),
@@ -643,4 +887,20 @@ pub(crate) fn run(args: &[OsString]) -> Result<()> {
 
 pub(crate) fn validate_profile(path: &Path) -> Result<()> {
     Task::read(path).map(|_| ())
+}
+
+pub(crate) fn validate_template_profile(profile: &Path, catalog: &Path, name: &str) -> Result<()> {
+    let selected = selected_template(catalog, name)?;
+    Task::read_selected(profile, Some(selected)).map(|_| ())
+}
+fn selected_template(catalog: &Path, name: &str) -> Result<SelectedTemplate> {
+    let catalog = std::fs::canonicalize(catalog)?;
+    let template = app_core::PreparedRegionTemplate::read(&catalog, name)?;
+    Ok(SelectedTemplate { catalog, name: name.into(), template })
+}
+pub(crate) fn prepare_template_task(catalog: &Path, name: &str) -> Result<PreparedTemplateTask> {
+    // Accept inherited clipboard handles before any later task command can run.
+    let bridge = crate::task_clipboard::Client::from_env()?;
+    let selected = selected_template(catalog, name)?;
+    PreparedTemplateTask::read(selected, bridge)
 }

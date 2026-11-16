@@ -13,6 +13,7 @@ use std::{
 
 use crate::ExportSize;
 use image::RgbaImage;
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use xcap::{Monitor, Window};
 
@@ -42,6 +43,13 @@ impl CaptureBudget {
     }
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(
+    tag = "kind",
+    content = "value",
+    rename_all = "snake_case",
+    deny_unknown_fields
+)]
 pub enum CaptureRequest {
     Display(String),
     Window(String),
@@ -91,7 +99,8 @@ pub struct CaptureCapabilities {
     pub capture_region: bool,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DisplayInfo {
     pub id: String,
     pub name: String,
@@ -104,7 +113,8 @@ pub struct DisplayInfo {
     pub is_primary: bool,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DisplayGeometry {
     pub x: i32,
     pub y: i32,
@@ -125,7 +135,8 @@ impl DisplayGeometry {
 }
 
 /// Session metadata only: never retains the source frame or a texture.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RememberedRegion {
     display_id: String,
     geometry: DisplayGeometry,
@@ -133,6 +144,9 @@ pub struct RememberedRegion {
 }
 
 impl RememberedRegion {
+    pub(crate) fn native_parts(&self) -> (&str, DisplayGeometry, crate::PixelRegion) {
+        (&self.display_id, self.geometry, self.area)
+    }
     pub fn from_display(
         display: &DisplayInfo,
         area: crate::PixelRegion,
@@ -208,7 +222,8 @@ impl RememberedRegion {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct WindowInfo {
     pub id: String,
     pub pid: u32,
@@ -221,7 +236,8 @@ pub struct WindowInfo {
     pub is_minimized: bool,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum PixelFormat {
     /// XCap returns `image::RgbaImage` (8-bit RGBA). Color space is not
     /// reported; treat as sRGB until a later spike measures otherwise.
@@ -245,6 +261,14 @@ pub struct CapturedImage {
 
 #[derive(Debug, Error)]
 pub enum CaptureError {
+    #[error("Native capture canceled")]
+    NativeCanceled,
+    #[error("Native capture deadline exceeded")]
+    NativeTimeout,
+    #[error("Another native capture operation is active")]
+    NativeBusy,
+    #[error("Native helper termination is still pending; new native work remains blocked")]
+    NativeCleanupPending,
     #[error("unsupported: {0}")]
     Unsupported(&'static str),
     #[error("display not found: {0}")]
@@ -288,18 +312,43 @@ pub trait CaptureBackend: Send {
 #[derive(Clone)]
 pub struct XcapBackend {
     output_dir: PathBuf,
+    options: crate::CaptureOptions,
+    cancellation: Option<crate::NativeCaptureCancellation>,
+    originating_pid: u32,
 }
 
 impl XcapBackend {
     pub fn capture_focused_window(&self) -> Result<CapturedImage, CaptureError> {
+        self.capture_focused_window_with_cancel(&|| Ok(()))
+    }
+    pub fn capture_focused_window_with_cancel(
+        &self,
+        check: &crate::NativeCaptureCheck<'_>,
+    ) -> Result<CapturedImage, CaptureError> {
+        crate::capture_native::validate_options(&self.options, true).map_err(backend_error)?;
+        let immediate = self.wait_native_delay(check)?;
+        if crate::native_capture_job::executor().is_some() {
+            return immediate
+                .native_frames(
+                    crate::NativeCaptureCall::FocusedWindow {
+                        options: immediate.options,
+                    },
+                    check,
+                )?
+                .pop()
+                .ok_or(CaptureError::EmptyFrame);
+        }
         let window = focused_window()?;
         let process_id = window.pid().map_err(backend_error)?;
         let id = window.id().map_err(backend_error)?.to_string();
-        let frame = self
-            .capture_batch(vec![CaptureRequest::ForegroundWindow {
-                window_id: id,
-                process_id,
-            }])?
+        let frame = immediate
+            .capture_batch_with_cancel(
+                vec![CaptureRequest::ForegroundWindow {
+                    window_id: id,
+                    process_id,
+                }],
+                check,
+            )?
             .pop()
             .ok_or(CaptureError::EmptyFrame)?;
         if window.pid().ok() != Some(process_id) || !window.is_focused().unwrap_or(false) {
@@ -311,6 +360,25 @@ impl XcapBackend {
     }
 
     pub fn capture_focused_display(&self) -> Result<CapturedImage, CaptureError> {
+        self.capture_focused_display_with_cancel(&|| Ok(()))
+    }
+    pub fn capture_focused_display_with_cancel(
+        &self,
+        check: &crate::NativeCaptureCheck<'_>,
+    ) -> Result<CapturedImage, CaptureError> {
+        crate::capture_native::validate_options(&self.options, false).map_err(backend_error)?;
+        let immediate = self.wait_native_delay(check)?;
+        if crate::native_capture_job::executor().is_some() {
+            return immediate
+                .native_frames(
+                    crate::NativeCaptureCall::FocusedDisplay {
+                        options: immediate.options,
+                    },
+                    check,
+                )?
+                .pop()
+                .ok_or(CaptureError::EmptyFrame);
+        }
         let window = focused_window()?;
         let process_id = window.pid().map_err(backend_error)?;
         #[cfg(not(target_os = "linux"))]
@@ -321,7 +389,8 @@ impl XcapBackend {
             let y = i64::from(window.y().map_err(backend_error)?);
             let right = x + i64::from(window.width().map_err(backend_error)?);
             let bottom = y + i64::from(window.height().map_err(backend_error)?);
-            self.list_displays()?
+            immediate
+                .list_displays_with_cancel(check)?
                 .into_iter()
                 .filter(|d| d.scale_factor == 1.0 && d.rotation == 0.0)
                 .map(|d| {
@@ -346,7 +415,10 @@ impl XcapBackend {
                 "foreground window changed before capture",
             ));
         }
-        let frame = self.capture_display(&id)?;
+        let frame = immediate
+            .capture_batch_with_cancel(vec![CaptureRequest::Display(id)], check)?
+            .pop()
+            .ok_or(CaptureError::EmptyFrame)?;
         if window.pid().ok() != Some(process_id) || !window.is_focused().unwrap_or(false) {
             return Err(CaptureError::Unsupported(
                 "foreground window changed during capture",
@@ -357,7 +429,84 @@ impl XcapBackend {
     pub fn new(output_dir: impl Into<PathBuf>) -> Self {
         Self {
             output_dir: output_dir.into(),
+            options: crate::CaptureOptions::default(),
+            cancellation: None,
+            originating_pid: std::process::id(),
         }
+    }
+
+    pub fn with_cancellation(mut self, cancellation: crate::NativeCaptureCancellation) -> Self {
+        self.cancellation = Some(cancellation);
+        self
+    }
+    pub(crate) fn with_originating_process(mut self, pid: u32) -> Self {
+        self.originating_pid = pid;
+        self
+    }
+    fn check_native(&self, extra: &crate::NativeCaptureCheck<'_>) -> Result<(), CaptureError> {
+        if let Some(cancellation) = &self.cancellation {
+            cancellation.check()?;
+        }
+        extra()
+    }
+    fn wait_native_delay(
+        &self,
+        check: &crate::NativeCaptureCheck<'_>,
+    ) -> Result<Self, CaptureError> {
+        self.options.validate().map_err(backend_error)?;
+        let deadline = Instant::now() + std::time::Duration::from_millis(self.options.delay_ms);
+        while let Some(remaining) = deadline.checked_duration_since(Instant::now()) {
+            self.check_native(check)?;
+            std::thread::sleep(remaining.min(std::time::Duration::from_millis(20)));
+        }
+        self.check_native(check)?;
+        let mut immediate = self.clone();
+        immediate.options.delay_ms = 0;
+        Ok(immediate)
+    }
+    pub(crate) fn native_frames(
+        &self,
+        call: crate::NativeCaptureCall,
+        check: &crate::NativeCaptureCheck<'_>,
+    ) -> Result<Vec<CapturedImage>, CaptureError> {
+        call.validate()?;
+        let executor = crate::native_capture_job::executor()
+            .ok_or_else(|| backend_error("Native capture executor unavailable"))?;
+        self.check_native(check)?;
+        let reply = executor(call.clone(), &|| self.check_native(check))?;
+        call.validate_reply(&reply)?;
+        let crate::NativeCaptureReply::Frames(frames) = reply else {
+            return Err(backend_error("Unexpected native capture reply"));
+        };
+        let mut result = Vec::with_capacity(frames.len());
+        for (index, frame) in frames.into_iter().enumerate() {
+            self.check_native(check)?;
+            let pixels = Arc::try_unwrap(frame.pixels)
+                .map_err(|_| backend_error("Native capture pixels were unexpectedly shared"))?;
+            let label = if let Some(window) = &frame.window_id {
+                format!("window-{window}")
+            } else if matches!(&call, crate::NativeCaptureCall::FocusedDisplay { .. })
+                || matches!(&call, crate::NativeCaptureCall::Batch { requests, .. } if matches!(requests.get(index), Some(CaptureRequest::Display(_))))
+            {
+                "display".into()
+            } else {
+                "region".into()
+            };
+            let mut owned = self.frame(&frame.display_id, pixels, frame.elapsed_ms, &label)?;
+            owned.window_id = frame.window_id;
+            owned.display_geometry = frame.display_geometry;
+            owned.source_format = frame.source_format;
+            result.push(owned);
+        }
+        self.check_native(check)?;
+        Ok(result)
+    }
+
+    /// Explicit operation options. Defaults keep the existing native capture path.
+    pub fn with_options(mut self, options: crate::CaptureOptions) -> Result<Self, CaptureError> {
+        options.validate().map_err(backend_error)?;
+        self.options = options;
+        Ok(self)
     }
 
     /// One admission group, with no partial outputs if any request fails.
@@ -365,10 +514,52 @@ impl XcapBackend {
         &self,
         requests: Vec<CaptureRequest>,
     ) -> Result<Vec<CapturedImage>, CaptureError> {
+        self.capture_batch_with_cancel(requests, &|| Ok(()))
+    }
+    pub fn capture_batch_with_cancel(
+        &self,
+        requests: Vec<CaptureRequest>,
+        check: &crate::NativeCaptureCheck<'_>,
+    ) -> Result<Vec<CapturedImage>, CaptureError> {
+        for request in &requests {
+            crate::capture_native::validate_options(
+                &self.options,
+                matches!(
+                    request,
+                    CaptureRequest::Window(_) | CaptureRequest::ForegroundWindow { .. }
+                ),
+            )
+            .map_err(backend_error)?;
+        }
+        let immediate = self.wait_native_delay(check)?;
+        if crate::native_capture_job::executor().is_some() {
+            return immediate.native_frames(
+                crate::NativeCaptureCall::Batch {
+                    requests,
+                    options: immediate.options,
+                },
+                check,
+            );
+        }
+        immediate.capture_batch_inline(requests, check)
+    }
+    fn capture_batch_inline(
+        &self,
+        requests: Vec<CaptureRequest>,
+        check: &crate::NativeCaptureCheck<'_>,
+    ) -> Result<Vec<CapturedImage>, CaptureError> {
+        self.check_native(check)?;
+        #[cfg(target_os = "windows")]
+        let _options_dpi = if self.options != crate::CaptureOptions::default() {
+            Some(crate::capture_native::dpi_scope().map_err(backend_error)?)
+        } else {
+            None
+        };
         let mut budget = CaptureBudget::default();
         let prepared = requests
             .into_iter()
             .map(|request| {
+                self.check_native(check)?;
                 let prepared = self.prepare(request)?;
                 let (width, height) = prepared.dimensions()?;
                 budget.admit(width, height)?;
@@ -379,12 +570,14 @@ impl XcapBackend {
         prepared
             .into_iter()
             .map(|prepared| {
+                self.check_native(check)?;
                 let (width, height) = prepared.dimensions()?;
                 CaptureBudget(actual.0).admit(width, height)?;
                 let started = Instant::now();
                 let mut display_geometry = None;
                 let (display_id, window_id, image, label) = match prepared {
                     PreparedCapture::Display(monitor, id) => {
+                        let cursor_geometry = cursor_geometry(&monitor, &self.options)?;
                         let before = if cfg!(target_os = "windows") {
                             monitor_geometry(&monitor)
                                 .ok()
@@ -392,7 +585,19 @@ impl XcapBackend {
                         } else {
                             None
                         };
-                        let image = monitor.capture_image().map_err(backend_error)?;
+                        let mut image = monitor.capture_image().map_err(backend_error)?;
+                        if let Some(geometry) = cursor_geometry {
+                            crate::capture_native::apply_cursor(
+                                &self.options,
+                                &mut image,
+                                geometry.x,
+                                geometry.y,
+                            )
+                            .map_err(backend_error)?;
+                            if monitor_geometry(&monitor)? != geometry {
+                                return Err(CaptureError::StaleRegion);
+                            }
+                        }
                         display_geometry = before.filter(|geometry| {
                             (geometry.width, geometry.height) == image.dimensions()
                                 && monitor_geometry(&monitor).ok() == Some(*geometry)
@@ -405,18 +610,41 @@ impl XcapBackend {
                         {
                             return Err(CaptureError::WindowNotFound(id));
                         }
-                        let image = window.capture_image().map_err(backend_error)?;
+                        let image = crate::capture_native::capture_window(&window, &self.options)
+                            .map_err(backend_error)?;
+                        if expected_process
+                            .is_some_and(|expected| window.pid().ok() != Some(expected))
+                        {
+                            return Err(CaptureError::WindowNotFound(id));
+                        }
                         (display, Some(id.clone()), image, format!("window-{id}"))
                     }
                     PreparedCapture::Region(monitor, id, x, y, width, height, expected) => {
+                        let cursor_geometry = cursor_geometry(&monitor, &self.options)?;
                         if let Some(expected) = expected {
                             if monitor_geometry(&monitor)? != expected {
                                 return Err(CaptureError::StaleRegion);
                             }
                         }
-                        let image = monitor
+                        let mut image = monitor
                             .capture_region(x, y, width, height)
                             .map_err(backend_error)?;
+                        if let Some(geometry) = cursor_geometry {
+                            let origin_x = i32::try_from(i64::from(geometry.x) + i64::from(x))
+                                .map_err(|_| CaptureError::InvalidRegion)?;
+                            let origin_y = i32::try_from(i64::from(geometry.y) + i64::from(y))
+                                .map_err(|_| CaptureError::InvalidRegion)?;
+                            crate::capture_native::apply_cursor(
+                                &self.options,
+                                &mut image,
+                                origin_x,
+                                origin_y,
+                            )
+                            .map_err(backend_error)?;
+                            if monitor_geometry(&monitor)? != geometry {
+                                return Err(CaptureError::StaleRegion);
+                            }
+                        }
                         if let Some(expected) = expected {
                             if monitor_geometry(&monitor)? != expected
                                 || image.dimensions() != (width, height)
@@ -429,6 +657,7 @@ impl XcapBackend {
                 };
                 // shortcut: XCap allocates before returning; isolate/cap the backend for a hard native allocation bound.
                 actual.admit(image.width(), image.height())?;
+                self.check_native(check)?;
                 let mut shot =
                     self.frame(&display_id, image, started.elapsed().as_millis(), &label)?;
                 shot.window_id = window_id;
@@ -504,7 +733,9 @@ impl XcapBackend {
             .into_iter()
             .find(|window| window.id().is_ok_and(|value| value == numeric_id))
             .ok_or_else(|| CaptureError::WindowNotFound(id.clone()))?;
-        if window.pid().map_err(backend_error)? == std::process::id() {
+        if window.pid().map_err(backend_error)? == std::process::id()
+            || window.pid().map_err(backend_error)? == self.originating_pid
+        {
             return Err(CaptureError::Unsupported(
                 "capturing this application's own window",
             ));
@@ -534,6 +765,77 @@ impl XcapBackend {
             .into_iter()
             .find(|monitor| monitor_id(monitor).is_ok_and(|id| id == display_id))
             .ok_or_else(|| CaptureError::DisplayNotFound(display_id.to_string()))
+    }
+
+    pub fn list_displays_with_cancel(
+        &self,
+        check: &crate::NativeCaptureCheck<'_>,
+    ) -> Result<Vec<DisplayInfo>, CaptureError> {
+        self.check_native(check)?;
+        if let Some(executor) = crate::native_capture_job::executor() {
+            let call = crate::NativeCaptureCall::Displays;
+            let reply = executor(call.clone(), &|| self.check_native(check))?;
+            call.validate_reply(&reply)?;
+            let crate::NativeCaptureReply::Displays(displays) = reply else {
+                return Err(backend_error("Unexpected native display reply"));
+            };
+            self.check_native(check)?;
+            return Ok(displays);
+        }
+        let displays = Monitor::all()
+            .map_err(backend_error)?
+            .iter()
+            .map(display_info)
+            .collect::<Result<Vec<_>, _>>()?;
+        self.check_native(check)?;
+        Ok(displays)
+    }
+    pub fn list_sources_with_cancel(
+        &self,
+        check: &crate::NativeCaptureCheck<'_>,
+    ) -> Result<crate::NativeSourceInventory, CaptureError> {
+        self.check_native(check)?;
+        if let Some(executor) = crate::native_capture_job::executor() {
+            let call = crate::NativeCaptureCall::Inventory;
+            let reply = executor(call.clone(), &|| self.check_native(check))?;
+            call.validate_reply(&reply)?;
+            let crate::NativeCaptureReply::Inventory(inventory) = reply else {
+                return Err(backend_error("Unexpected native inventory reply"));
+            };
+            self.check_native(check)?;
+            return Ok(inventory);
+        }
+        let displays = self.list_displays_with_cancel(check);
+        self.check_native(check)?;
+        let windows = self.list_windows_with_cancel(check);
+        self.check_native(check)?;
+        Ok(crate::NativeSourceInventory { displays, windows })
+    }
+    pub fn list_windows_with_cancel(
+        &self,
+        check: &crate::NativeCaptureCheck<'_>,
+    ) -> Result<Vec<WindowInfo>, CaptureError> {
+        self.check_native(check)?;
+        if !self.capabilities().list_windows {
+            return Err(CaptureError::Unsupported("window listing"));
+        }
+        if let Some(executor) = crate::native_capture_job::executor() {
+            let call = crate::NativeCaptureCall::Windows;
+            let reply = executor(call.clone(), &|| self.check_native(check))?;
+            call.validate_reply(&reply)?;
+            let crate::NativeCaptureReply::Windows(windows) = reply else {
+                return Err(backend_error("Unexpected native window reply"));
+            };
+            self.check_native(check)?;
+            return Ok(windows);
+        }
+        let windows = Window::all()
+            .map_err(backend_error)?
+            .iter()
+            .map(window_info)
+            .collect::<Result<Vec<_>, _>>()?;
+        self.check_native(check)?;
+        Ok(windows)
     }
 
     fn frame(
@@ -602,23 +904,11 @@ impl CaptureBackend for XcapBackend {
     }
 
     fn list_displays(&self) -> Result<Vec<DisplayInfo>, CaptureError> {
-        Monitor::all()
-            .map_err(backend_error)?
-            .iter()
-            .map(display_info)
-            .collect()
+        self.list_displays_with_cancel(&|| Ok(()))
     }
 
     fn list_windows(&self) -> Result<Vec<WindowInfo>, CaptureError> {
-        if !self.capabilities().list_windows {
-            return Err(CaptureError::Unsupported("window listing"));
-        }
-
-        Window::all()
-            .map_err(backend_error)?
-            .iter()
-            .map(window_info)
-            .collect()
+        self.list_windows_with_cancel(&|| Ok(()))
     }
 
     fn capture_display(&self, display_id: &str) -> Result<CapturedImage, CaptureError> {
@@ -667,6 +957,22 @@ fn backend_error(error: impl std::fmt::Display) -> CaptureError {
 
 fn monitor_id(monitor: &Monitor) -> Result<String, CaptureError> {
     Ok(monitor.id().map_err(backend_error)?.to_string())
+}
+
+fn cursor_geometry(
+    monitor: &Monitor,
+    options: &crate::CaptureOptions,
+) -> Result<Option<DisplayGeometry>, CaptureError> {
+    if options.cursor != crate::CaptureCursor::Include {
+        return Ok(None);
+    }
+    let geometry = monitor_geometry(monitor)?;
+    if geometry.scale_factor != 1.0 || geometry.rotation != 0.0 {
+        return Err(CaptureError::Unsupported(
+            "still cursor composition requires unrotated 100% physical-pixel display coordinates",
+        ));
+    }
+    Ok(Some(geometry))
 }
 
 fn monitor_geometry(monitor: &Monitor) -> Result<DisplayGeometry, CaptureError> {
@@ -1904,7 +2210,7 @@ fn encode_png_bytes_with_cancel(
                 .map_err(|error| CaptureError::Backend(error.to_string()));
         work.check()?;
         result?;
-        let flushed = writer.flush();
+        let flushed=writer.flush();
         work.check()?;
         flushed?;
     }

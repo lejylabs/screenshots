@@ -22,6 +22,7 @@ struct Options<'a> {
     destination: &'a Path,
     recipe: Option<crate::workflow::Recipe>,
     delay: Duration,
+    capture: app_core::CaptureOptions,
     jpeg_quality: u8,
     webp_quality: Option<u8>,
     upload: Option<UploadDestination>,
@@ -95,8 +96,34 @@ fn options(args: &[OsString]) -> Result<Options<'_>> {
     let mut quality = None;
     let mut webp_quality = None;
     let mut upload_path = None;
+    let mut capture_options = None;
     for pair in args[positional..].chunks_exact(2) {
         match pair[0].to_str() {
+            Some("--capture-options") => {
+                ensure!(
+                    capture_options.is_none(),
+                    "Use --capture-options or --defaults once"
+                );
+                let value = pair[1]
+                    .to_str()
+                    .context("Capture options must be UTF-8 JSON")?;
+                ensure!(
+                    value.len() <= 4096 && value.trim_start().starts_with('{'),
+                    "Capture options must be one JSON object within 4096 bytes"
+                );
+                capture_options = Some(
+                    serde_json::from_str::<app_core::CaptureOptions>(value)
+                        .context("Invalid capture options")?,
+                );
+            }
+            Some("--defaults") => {
+                ensure!(
+                    capture_options.is_none(),
+                    "Use --capture-options or --defaults once"
+                );
+                capture_options =
+                    Some(app_core::CaptureCatalog::read(Path::new(&pair[1]))?.defaults);
+            }
             Some("--recipe") => {
                 ensure!(recipe_path.is_none(), "Duplicate --recipe option");
                 recipe_path = Some(Path::new(&pair[1]));
@@ -153,11 +180,16 @@ fn options(args: &[OsString]) -> Result<Options<'_>> {
     let upload = upload_path
         .map(crate::cli::load_upload_profile)
         .transpose()?;
+    let mut capture = capture_options.unwrap_or_default();
+    capture.validate_for_capture(matches!(target, Target::Window(_)))?;
+    let delay = delay.unwrap_or(Duration::from_millis(capture.delay_ms));
+    capture.delay_ms = 0;
     Ok(Options {
         target,
         destination,
         recipe,
-        delay: delay.unwrap_or_default(),
+        delay,
+        capture,
         jpeg_quality: quality.unwrap_or(app_core::DEFAULT_JPEG_QUALITY),
         webp_quality,
         upload,
@@ -240,6 +272,7 @@ fn execute_with_upload(
 
 pub fn run(args: &[OsString]) -> Result<()> {
     let options = options(args)?;
+    let capture = options.capture;
     let result = execute(
         options,
         |delay| {
@@ -247,7 +280,7 @@ pub fn run(args: &[OsString]) -> Result<()> {
             Ok(())
         },
         |target| {
-            let backend = XcapBackend::new(std::path::PathBuf::new());
+            let backend = XcapBackend::new(std::path::PathBuf::new()).with_options(capture)?;
             Ok(match target {
                 Target::Display(id) => backend.capture_display(id)?,
                 Target::Window(id) => backend.capture_window(id)?,
@@ -304,6 +337,36 @@ mod tests {
         fn drop(&mut self) {
             let _ = std::fs::remove_dir_all(&self.0);
         }
+    }
+
+    #[test]
+    fn capture_defaults_are_snapshotted_and_explicit_delay_overrides_only_the_saved_delay() {
+        let fixture = Fixture::new();
+        let catalog = fixture.0.join("catalog.json");
+        std::fs::write(
+            &catalog,
+            br#"{"version":1,"defaults":{"delay_ms":3600000,"window_frame":"client"}}"#,
+        )
+        .unwrap();
+        let mut args = fixture.args("final.png", &["--delay-ms", "17", "--defaults"]);
+        args.push(catalog.as_os_str().to_owned());
+        let parsed = options(&args).unwrap();
+        assert_eq!(parsed.delay, Duration::from_millis(17));
+        assert_eq!(parsed.capture.delay_ms, 0);
+        assert_eq!(
+            parsed.capture.window_frame,
+            app_core::CaptureWindowFrame::Client
+        );
+        std::fs::write(&catalog, br#"{"version":1,"defaults":{"delay_ms":2}}"#).unwrap();
+        assert_eq!(parsed.delay, Duration::from_millis(17));
+        assert_eq!(
+            parsed.capture.window_frame,
+            app_core::CaptureWindowFrame::Client
+        );
+        let mut invalid = fixture.args("invalid.png", &["--capture-options", "[]"]);
+        assert!(options(&invalid).is_err());
+        *invalid.last_mut().unwrap() = r#"{"delay_ms":3600001}"#.into();
+        assert!(options(&invalid).is_err());
     }
 
     #[test]

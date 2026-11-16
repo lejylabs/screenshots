@@ -282,6 +282,10 @@ impl Native {
             if self.host.stopping.load(Ordering::SeqCst) {
                 break;
             }
+            // XSync may have consumed socket bytes into Xlib's event queue.
+            if unsafe { XPending(self.display) } > 0 {
+                continue;
+            }
             let mut descriptors = [
                 libc::pollfd {
                     fd: unsafe { XConnectionNumber(self.display) },

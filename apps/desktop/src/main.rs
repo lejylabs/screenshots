@@ -4,9 +4,11 @@ mod autostart;
 mod autostart_macos;
 #[cfg(target_os = "windows")]
 mod autostart_windows;
+mod capture_catalog;
 mod capture_regions;
 mod capture_sequence;
 mod capture_task;
+mod capture_worker;
 mod cli;
 mod desktop_integration;
 mod gif_assembly;
@@ -49,7 +51,20 @@ mod upload_results;
 mod workflow;
 
 fn main() {
-    match cli::run(std::env::args_os().skip(1).collect()) {
+    let arguments: Vec<_> = std::env::args_os().skip(1).collect();
+    match capture_worker::try_child(&arguments) {
+        Ok(true) => return,
+        Ok(false) => {}
+        Err(error) => {
+            eprintln!("screenshots: {error:#}");
+            std::process::exit(1);
+        }
+    }
+    if let Err(error) = capture_worker::install() {
+        eprintln!("screenshots: {error:#}");
+        std::process::exit(1);
+    }
+    match cli::run(arguments) {
         Ok(true) => return,
         Err(error) => {
             eprintln!("screenshots: {error:#}");

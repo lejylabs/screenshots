@@ -6,8 +6,25 @@ mod pen;
 pub use layers::{DrawAnnotation, HighlightAnnotation};
 pub use pen::{MAX_DOCUMENT_PEN_POINTS, MAX_PEN_POINTS, PenAnnotation};
 mod capture;
+mod capture_catalog;
+mod capture_native;
+mod native_capture_job;
+pub use native_capture_job::{
+    NativeCaptureCall, NativeCaptureCancellation, NativeCaptureCheck, NativeCaptureExecutor,
+    NativeCaptureReply, NativeSourceInventory, install_native_capture_executor,
+    validate_native_frames,
+};
+mod capture_options;
 mod image_cancel;
 mod raster_ops;
+pub use capture_catalog::{
+    CaptureCatalog, CaptureMonitorBinding, CaptureMonitorIdentity, CaptureRegionTemplate,
+    CaptureTemplateGeometry, PreparedRegionTemplate, capture_monitor_identities,
+};
+pub use capture_options::{
+    CaptureCursor, CaptureOptions, CaptureWindowFrame, CaptureWindowShadow,
+    CaptureWindowTransparency,
+};
 pub use raster_ops::{
     canvas_rgba_with_cancel, composite_rgba_with_cancel, flip_rgba_with_cancel,
     resize_nearest_rgba_with_cancel, rotate_rgba_with_cancel,
@@ -69,12 +86,12 @@ pub use pixelation::PixelationGrid;
 mod oauth_provider;
 mod sharex;
 mod sharex_process;
-pub use oauth_provider::{OAuthEvent, OAuthOutcome, OAuthProfile};
 pub use sharex::{
     ClassifiedUploadProfile, ShareXEvent, ShareXInputKind, ShareXOutcome, ShareXPrepared,
     classify_upload_profile,
 };
 mod provider_credentials;
+pub use oauth_provider::{OAuthEvent, OAuthOutcome, OAuthProfile};
 mod s3_credentials;
 pub use provider_credentials::{
     read_provider_credentials, remove_provider_credentials, save_provider_credentials,
