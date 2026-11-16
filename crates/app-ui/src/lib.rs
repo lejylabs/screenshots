@@ -6692,10 +6692,10 @@ fn run_image_window(path: Option<PathBuf>, native_services: bool) {
             .ok();
         #[cfg(target_os = "macos")]
         handle
-            .update(cx, |_, _, cx| {
+            .update(cx, |_, window, cx| {
                 *receiver.borrow_mut() = Some((cx.entity(), cx.to_async()));
                 if let Some(path) = early_open.borrow_mut().take() {
-                    cx.defer(move |this, cx| this.queue_open_image(path, cx));
+                    cx.defer_in(window, move |this, _, cx| this.queue_open_image(path, cx));
                 }
             })
             .ok();

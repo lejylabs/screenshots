@@ -34,6 +34,7 @@ fn write_windows_config(dst: &Path) {
 }
 
 fn main() {
+    println!("cargo:rerun-if-env-changed=SCREENSHOTS_REQUIRE_NATIVE_CURL");
     println!("cargo:rerun-if-changed=curl");
     println!(
         "cargo:rustc-check-cfg=cfg(\
@@ -74,6 +75,9 @@ fn main() {
         if windows {
             if try_vcpkg() {
                 return;
+            }
+            if env::var_os("SCREENSHOTS_REQUIRE_NATIVE_CURL").is_some() {
+                panic!("The explicitly required native curl/SFTP installation was not discovered; bundled curl lacks SFTP");
             }
         } else if try_pkg_config() {
             return;

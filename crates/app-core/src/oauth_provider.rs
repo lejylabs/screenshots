@@ -1223,9 +1223,7 @@ mod tests {
             String::from_utf8(valid.clone())
                 .unwrap()
                 .replace("/oauth/callback?", "/other?"),
-            String::from_utf8(valid)
-                .unwrap()
-                .replace("GET ", "POST "),
+            String::from_utf8(valid).unwrap().replace("GET ", "POST "),
         ] {
             assert!(
                 parse_callback(invalid.as_bytes(), "127.0.0.1:1234", "expected", None).is_err()
