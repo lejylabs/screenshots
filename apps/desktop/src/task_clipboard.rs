@@ -463,6 +463,11 @@ pub(crate) struct Prepared {
     child: Vec<std::os::windows::io::OwnedHandle>,
 }
 impl Prepared {
+    #[cfg(target_os = "windows")]
+    pub(crate) fn child_handles(&self) -> Vec<std::os::windows::io::BorrowedHandle<'_>> {
+        use std::os::windows::io::AsHandle;
+        self.child.iter().map(|handle| handle.as_handle()).collect()
+    }
     pub(crate) fn new(command: &mut Command) -> Result<Self> {
         let challenge = uuid::Uuid::new_v4();
         let nonce = *challenge.as_bytes();

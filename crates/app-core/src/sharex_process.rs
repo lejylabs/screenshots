@@ -1,12 +1,16 @@
 //! Trusted operation-scoped interpreter process; no .NET runtime exists in the desktop.
+#[cfg(target_os = "windows")]
+use crate::windows_child::Child;
 use anyhow::{Context, Result, ensure};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use sha2_10::{Digest, Sha256};
+#[cfg(not(target_os = "windows"))]
+use std::process::Child;
 use std::{
     fs::File,
     io::{Read, Write},
     path::{Path, PathBuf},
-    process::{Child, Command, Stdio},
+    process::{Command, Stdio},
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -21,7 +25,7 @@ const INPUT: usize = 4 * 1024 * 1024;
 const OUTPUT: usize = 2 * 1024 * 1024;
 const DIAGNOSTICS: usize = 16 * 1024;
 const TICK: Duration = Duration::from_millis(25);
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct Member {
     path: PathBuf,
@@ -29,7 +33,7 @@ struct Member {
     sha256: String,
     executable: bool,
 }
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct Manifest {
     version: u32,
@@ -167,6 +171,14 @@ fn regular(path: &Path, limit: u64) -> Result<(File, u64)> {
     Ok((file, metadata.len()))
 }
 impl RuntimeBundle {
+    pub(crate) fn config_digest(&self) -> Result<[u8; 32]> {
+        let mut hash = Sha256::new();
+        hash.update(b"screenshots-sxcu-runtime-config-v1\0");
+        hash.update(serde_json::to_vec(&self.manifest)?);
+        // The manifest is retained by the prepared executor; verify() checks its members before use.
+        hash.update(serde_json::to_vec(&self.directory)?);
+        Ok(hash.finalize().into())
+    }
     pub(crate) fn installed() -> Result<Self> {
         let executable =
             std::env::current_exe().context("Could not locate the application private runtime")?;
@@ -629,7 +641,7 @@ fn nonblocking(pipe: &impl std::os::fd::AsRawFd) -> Result<()> {
     Ok(())
 }
 fn send(
-    mut pipe: std::process::ChildStdin,
+    mut pipe: impl Write + Pipe,
     bytes: Zeroizing<Vec<u8>>,
     stop: &AtomicBool,
 ) -> Result<Zeroizing<Vec<u8>>> {
@@ -783,6 +795,9 @@ pub(crate) fn interpret(
                 })?,
         );
     }
+    cancel.check()?;
+    #[cfg(target_os = "windows")]
+    active.job.child.resume(deadline)?;
     let mut completed = 0;
     let mut result = None;
     let mut status = None;

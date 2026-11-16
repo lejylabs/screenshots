@@ -1,8 +1,12 @@
 //! One bounded task child; no process or pipe work exists while idle.
+#[cfg(target_os = "windows")]
+use app_core::windows_child::{self, Child, Environment, Streams};
+#[cfg(not(target_os = "windows"))]
+use std::process::Child;
 use std::{
     io::Read,
     path::Path,
-    process::{Child, Command, Stdio},
+    process::{Command, Stdio},
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -191,18 +195,24 @@ pub(super) fn run(
         Ok(job) => job,
         Err(_) => return failed(),
     };
-    #[cfg(target_os = "windows")]
-    {
-        use std::os::windows::process::CommandExt;
-        command.creation_flags(
-            windows_sys::Win32::System::Threading::CREATE_NO_WINDOW
-                | windows_sys::Win32::System::Threading::CREATE_SUSPENDED,
-        );
-    }
     let Ok(prepared) = crate::task_clipboard::Prepared::new(&mut command) else {
         return failed();
     };
+    #[cfg(not(target_os = "windows"))]
     let Ok(child) = command.spawn() else {
+        return failed();
+    };
+    #[cfg(target_os = "windows")]
+    let Ok(child) = ({
+        use std::os::windows::io::AsHandle;
+        windows_child::spawn(
+            &command,
+            container.as_handle(),
+            Streams::OUTPUT,
+            Environment::Inherit,
+            &prepared.child_handles(),
+        )
+    }) else {
         return failed();
     };
     #[cfg(unix)]
@@ -223,25 +233,12 @@ pub(super) fn run(
         job: Some(container),
     };
     let deadline = Instant::now() + timeout;
-    #[cfg(target_os = "windows")]
-    {
-        use std::os::windows::io::AsRawHandle;
-        if unsafe {
-            windows_sys::Win32::System::JobObjects::AssignProcessToJobObject(
-                job.job.as_ref().unwrap().as_raw_handle(),
-                job.child.as_raw_handle(),
-            )
-        } == 0
-        {
-            return failed();
-        }
-    }
     let mut bridge = match prepared.start(clipboard, cancel.clone()) {
         Ok(bridge) => bridge,
         Err(_) => return failed(),
     };
     #[cfg(target_os = "windows")]
-    if crate::ocr_windows::resume_initial_thread(job.child.id(), deadline).is_err() {
+    if cancel.load(Ordering::Acquire) || job.child.resume(deadline).is_err() {
         return failed();
     }
     let stop = Arc::new(AtomicBool::new(false));

@@ -4,17 +4,21 @@ use crate::record::{
     Options, OutputFormat, audio_sample_probe, verify_audio_samples, verify_probe,
 };
 use anyhow::{Context, Result, ensure};
+use app_core::windows_child::{self, Child, Environment, Streams};
 use std::{
     fs::{File, OpenOptions},
     io::{Read, Write},
     os::windows::{
         ffi::{OsStrExt, OsStringExt},
-        io::{AsRawHandle, FromRawHandle, OwnedHandle},
-        process::CommandExt,
+        io::{AsHandle, AsRawHandle, FromRawHandle, OwnedHandle},
     },
     path::{Path, PathBuf},
-    process::{Child, Command, Stdio},
-    sync::mpsc::{self, Receiver, RecvTimeoutError},
+    process::Command,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+        mpsc::{self, Receiver, RecvTimeoutError},
+    },
     thread::JoinHandle,
     time::{Duration, Instant},
 };
@@ -36,9 +40,8 @@ use windows_sys::Win32::{
         READ_CONTROL,
     },
     System::{
-        JobObjects::AssignProcessToJobObject,
         SystemServices::FILE_PERSISTENT_ACLS,
-        Threading::{CREATE_NO_WINDOW, CREATE_SUSPENDED, GetCurrentProcess, OpenProcessToken},
+        Threading::{GetCurrentProcess, OpenProcessToken},
     },
 };
 
@@ -336,10 +339,12 @@ fn await_engine(
     engine: &mut Engine,
     messages: Receiver<Message>,
     deadline: Instant,
+    cancel: &AtomicBool,
 ) -> Result<Vec<u8>> {
     let mut received = 0;
     let mut output = Vec::new();
     loop {
+        ensure!(!cancel.load(Ordering::Acquire), "Recording engine canceled");
         ensure!(
             Instant::now() < deadline,
             "Recording exceeded its duration plus 10 second deadline"
@@ -380,11 +385,26 @@ fn await_engine(
     }
 }
 
-pub(crate) fn engine(
+pub(crate) fn engine(command: Command, stage: Option<&Path>, deadline: Instant) -> Result<Vec<u8>> {
+    engine_with_cancel(command, stage, deadline, Arc::new(AtomicBool::new(false)))
+}
+
+pub(crate) fn engine_with_cancel(
+    command: Command,
+    stage: Option<&Path>,
+    deadline: Instant,
+    cancel: Arc<AtomicBool>,
+) -> Result<Vec<u8>> {
+    engine_with_identity(command, stage, deadline, cancel, None)
+}
+pub(crate) fn engine_with_identity(
     mut command: Command,
     stage: Option<&Path>,
     deadline: Instant,
+    cancel: Arc<AtomicBool>,
+    identity: Option<&app_core::FileIdentity>,
 ) -> Result<Vec<u8>> {
+    ensure!(!cancel.load(Ordering::Acquire), "Recording engine canceled");
     ensure!(
         Instant::now() < deadline,
         "Recording exceeded its duration plus 10 second deadline"
@@ -393,32 +413,23 @@ pub(crate) fn engine(
         .map(|path| OpenOptions::new().create_new(true).write(true).open(path))
         .transpose()?;
     let job = crate::ocr_windows::job_object().context("Could not isolate recording engine")?;
-    let child = command
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .env_remove("FFREPORT")
-        .creation_flags(CREATE_NO_WINDOW | CREATE_SUSPENDED)
-        .spawn()
-        .map_err(|_| {
-            anyhow::anyhow!(
-                "Recording engine is unavailable; install FFmpeg and ffprobe separately"
-            )
-        })?;
+    command.env_remove("FFREPORT");
+    let child = windows_child::spawn_with_identity(
+        &command,
+        job.as_handle(),
+        Streams::OUTPUT,
+        Environment::Inherit,
+        &[],
+        identity,
+    )
+    .map_err(|_| {
+        anyhow::anyhow!("Recording engine is unavailable; install FFmpeg and ffprobe separately")
+    })?;
     let mut engine = Engine {
         child,
         job: Some(job),
         workers: Vec::with_capacity(2),
     };
-    ensure!(
-        unsafe {
-            AssignProcessToJobObject(
-                engine.job.as_ref().unwrap().as_raw_handle(),
-                engine.child.as_raw_handle(),
-            )
-        } != 0,
-        "Could not isolate recording engine; its process was not started"
-    );
     let stdout = engine
         .child
         .stdout
@@ -461,9 +472,12 @@ pub(crate) fn engine(
                 ));
             })?,
     );
-    crate::ocr_windows::resume_initial_thread(engine.child.id(), deadline)
+    ensure!(!cancel.load(Ordering::Acquire), "Recording engine canceled");
+    engine
+        .child
+        .resume(deadline)
         .context("Could not start isolated recording engine")?;
-    await_engine(&mut engine, messages, deadline)
+    await_engine(&mut engine, messages, deadline, &cancel)
 }
 
 fn encoder(options: &Options<'_>) -> Command {
@@ -841,6 +855,61 @@ mod tests {
             unsafe {
                 CloseHandle(handle);
             }
+        }
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn external_cancel_terminates_an_already_running_owned_family() {
+        let path = std::env::temp_dir().join(format!(
+            "screenshots-record-cancel-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let flag = Arc::new(AtomicBool::new(false));
+        let observed = path.clone();
+        let cancel = flag.clone();
+        let trigger = std::thread::spawn(move || {
+            let until = Instant::now() + Duration::from_secs(5);
+            while !observed.exists() && Instant::now() < until {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            cancel.store(true, Ordering::Release);
+        });
+        let mut command = fixture("descendant");
+        command.env("SCREENSHOTS_RECORD_PID", &path);
+        let started = Instant::now();
+        let error = engine_with_cancel(
+            command,
+            None,
+            Instant::now() + Duration::from_secs(10),
+            flag,
+        )
+        .unwrap_err();
+        trigger.join().unwrap();
+        assert!(error.to_string().contains("canceled"));
+        assert!(started.elapsed() < Duration::from_secs(7));
+        let pid = std::fs::read_to_string(&path)
+            .expect("descendant started before cancellation")
+            .parse()
+            .unwrap();
+        let raw = unsafe {
+            windows_sys::Win32::System::Threading::OpenProcess(
+                windows_sys::Win32::System::Threading::PROCESS_SYNCHRONIZE,
+                0,
+                pid,
+            )
+        };
+        if !raw.is_null() {
+            let process = unsafe { OwnedHandle::from_raw_handle(raw) };
+            assert_eq!(
+                unsafe {
+                    windows_sys::Win32::System::Threading::WaitForSingleObject(
+                        process.as_raw_handle(),
+                        1000,
+                    )
+                },
+                windows_sys::Win32::Foundation::WAIT_OBJECT_0
+            );
         }
         std::fs::remove_file(path).unwrap();
     }

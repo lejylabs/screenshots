@@ -282,18 +282,29 @@ pub(crate) mod unix {
 
     impl Cancellation {
         pub(crate) fn new() -> Result<Self> {
+            Self::create(Arc::new(AtomicBool::new(false)), false)
+        }
+        pub(crate) fn with_flag(flag: Arc<AtomicBool>) -> Result<Self> {
+            Self::create(flag, true)
+        }
+        fn create(flag: Arc<AtomicBool>, scoped: bool) -> Result<Self> {
             let mut result = Self {
-                flag: Arc::new(AtomicBool::new(false)),
+                flag,
                 finished: Arc::new(AtomicBool::new(false)),
-                handlers: Vec::with_capacity(2),
+                handlers: Vec::with_capacity(4),
             };
             for signal in [signal_hook::consts::SIGINT, signal_hook::consts::SIGTERM] {
                 // Keep termination available after cleanup, including blocked result output.
-                signal_hook::flag::register_conditional_shutdown(
+                let shutdown = signal_hook::flag::register_conditional_shutdown(
                     signal,
                     1,
                     result.finished.clone(),
                 )?;
+                // Standalone commands retain termination after cleanup if result output blocks.
+                // Reused scheduled tasks are scoped: retired handlers must not kill a later run.
+                if scoped {
+                    result.handlers.push(shutdown);
+                }
                 result
                     .handlers
                     .push(signal_hook::flag::register(signal, result.flag.clone())?);
@@ -479,7 +490,7 @@ pub(crate) mod unix {
         cancellation: &Cancellation,
         deadline: Instant,
     ) -> Result<Vec<u8>> {
-        engine_owned(command, probe, cancellation, deadline, false)
+        engine_owned(command, probe, cancellation, deadline, false, None)
     }
 
     pub(crate) fn cooperative_engine(
@@ -487,7 +498,19 @@ pub(crate) mod unix {
         cancellation: &Cancellation,
         deadline: Instant,
     ) -> Result<Vec<u8>> {
-        engine_owned(command, true, cancellation, deadline, true)
+        engine_owned(command, true, cancellation, deadline, true, None)
+    }
+
+    pub(crate) fn cooperative_engine_guarded(
+        command: Command,
+        cancellation: &Cancellation,
+        deadline: Instant,
+        identity: Option<&app_core::FileIdentity>,
+    ) -> Result<Vec<u8>> {
+        if identity.is_none() {
+            return cooperative_engine(command, cancellation, deadline);
+        }
+        engine_owned(command, true, cancellation, deadline, true, identity)
     }
 
     fn engine_owned(
@@ -496,6 +519,7 @@ pub(crate) mod unix {
         cancellation: &Cancellation,
         deadline: Instant,
         cooperative: bool,
+        identity: Option<&app_core::FileIdentity>,
     ) -> Result<Vec<u8>> {
         cancellation.check(deadline)?;
         command
@@ -542,11 +566,21 @@ pub(crate) mod unix {
                 Ok(())
             });
         }
+        // Retain the checked script/executable through the native spawn. The OS still
+        // resolves the pathname/shebang; this is not an atomic hostile-user executable pin.
+        let _admitted_program = if let Some(identity) = identity {
+            let (file, _) = app_core::FileIdentity::open(Path::new(command.get_program()))?;
+            identity.verify_file(&file)?;
+            Some(file)
+        } else {
+            None
+        };
         let mut child = command.spawn().map_err(|_| {
             anyhow::anyhow!(
                 "Recording engine is unavailable; install FFmpeg and ffprobe separately"
             )
         })?;
+        drop(_admitted_program);
         let group = match i32::try_from(child.id()) {
             Ok(group) => group,
             Err(_) => {

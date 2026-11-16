@@ -2,14 +2,13 @@
 
 use super::sharing_provider::{self as provider, Process};
 use anyhow::{Context, Result, ensure};
+use app_core::windows_child::{self, Child, Environment, Streams};
 use std::{
     fs::File,
     os::windows::{
         ffi::OsStrExt,
-        io::{AsRawHandle, FromRawHandle, OwnedHandle},
-        process::CommandExt,
+        io::{AsHandle, AsRawHandle, FromRawHandle, OwnedHandle},
     },
-    process::{Child, Stdio},
     time::{Duration, Instant},
 };
 use windows_sys::Win32::{
@@ -25,12 +24,11 @@ use windows_sys::Win32::{
     },
     Storage::FileSystem::{FILE_FLAG_FIRST_PIPE_INSTANCE, PIPE_ACCESS_OUTBOUND, WriteFile},
     System::{
-        JobObjects::AssignProcessToJobObject,
         Pipes::{
             ConnectNamedPipe, CreateNamedPipeW, GetNamedPipeClientProcessId, PIPE_NOWAIT,
             PIPE_READMODE_BYTE, PIPE_REJECT_REMOTE_CLIENTS, PIPE_TYPE_BYTE,
         },
-        Threading::{CREATE_NO_WINDOW, CREATE_SUSPENDED, GetCurrentProcess, OpenProcessToken},
+        Threading::{GetCurrentProcess, OpenProcessToken},
     },
 };
 use zeroize::{Zeroize, Zeroizing};
@@ -264,36 +262,30 @@ pub(super) fn transfer(
             uuid::Uuid::new_v4()
         ),
     );
-    let child = command
-        .arg("--config")
-        .arg(&pipe.name)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .creation_flags(CREATE_NO_WINDOW | CREATE_SUSPENDED)
-        .spawn()
-        .map_err(|_| {
-            anyhow::anyhow!(
-                "Provider engine is unavailable; install curl with the required protocol separately"
-            )
-        })?;
-    let process = Curl {
+    command.arg("--config").arg(&pipe.name);
+    let child = windows_child::spawn(
+        &command,
+        job.as_handle(),
+        Streams::PIPED,
+        Environment::Inherit,
+        &[],
+    )
+    .map_err(|_| {
+        anyhow::anyhow!(
+            "Provider engine is unavailable; install curl with the required protocol separately"
+        )
+    })?;
+    let mut process = Curl {
         child,
         job: Some(job),
         pipe,
         config: configuration,
         sent: 0,
     };
-    ensure!(
-        unsafe {
-            AssignProcessToJobObject(
-                process.job.as_ref().unwrap().as_raw_handle(),
-                process.child.as_raw_handle(),
-            )
-        } != 0,
-        "Could not isolate provider engine before starting it"
-    );
-    crate::ocr_windows::resume_initial_thread(process.child.id(), deadline)
+    check()?;
+    process
+        .child
+        .resume(deadline)
         .context("Could not start isolated provider engine")?;
     provider::execute(process, source, length, deadline, check)
         .context("Provider upload failed; a remote object may remain and no retry was attempted")

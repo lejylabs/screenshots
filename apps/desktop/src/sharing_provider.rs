@@ -1,19 +1,26 @@
 //! Explicit SFTP/FTPS/FTP uploads with scoped secrets and bounded streaming.
 
 use anyhow::{Context, Result, bail, ensure};
+#[cfg(target_os = "windows")]
+use app_core::windows_child::Child;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+#[cfg(not(target_os = "windows"))]
+use std::process::Child;
 use std::{
     ffi::OsString,
     fs::File,
     io::{IsTerminal, Read, Write},
     path::{Path, PathBuf},
-    process::{Child, Command},
+    process::Command,
     sync::mpsc::{self, RecvTimeoutError},
     thread::JoinHandle,
     time::{Duration, Instant},
 };
 use zeroize::{Zeroize, Zeroizing};
+
+#[path = "task_ca.rs"]
+mod ca;
 
 const PREFIX: &[u8] = b"screenshots-provider-v1\0";
 const MAX_FILE: u64 = 64 * 1024 * 1024;
@@ -36,7 +43,7 @@ impl Protocol {
     }
 }
 
-#[derive(Clone, Deserialize)]
+#[derive(Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct Profile {
     version: u32,
@@ -603,7 +610,7 @@ fn verify_result(bytes: &[u8], protocol: Protocol, length: u64) -> Result<()> {
 }
 
 #[derive(Clone)]
-pub(crate) struct PreparedUpload(Profile);
+pub(crate) struct PreparedUpload(Profile, Option<ca::Ca>);
 
 fn checked_credentials(
     target: &str,
@@ -618,7 +625,19 @@ fn checked_credentials(
 
 impl PreparedUpload {
     pub(crate) fn read(path: &Path) -> Result<Self> {
-        Profile::load(path).map(Self)
+        let profile = Profile::load(path)?;
+        let ca = profile.ca_file.as_deref().map(ca::Ca::read).transpose()?;
+        Ok(Self(profile, ca))
+    }
+    pub(crate) fn config_digest(&self) -> Result<[u8; 32]> {
+        let bytes = Zeroizing::new(serde_json::to_vec(&self.0)?);
+        let mut hash = Sha256::new();
+        hash.update(b"screenshots-provider-config-v1\0");
+        hash.update(bytes.as_slice());
+        if let Some(ca) = &self.1 {
+            hash.update(ca.digest());
+        }
+        Ok(hash.finalize().into())
     }
     pub(crate) fn has_public_link(&self) -> bool {
         self.0.public_base.is_some()
@@ -631,9 +650,20 @@ impl PreparedUpload {
         path: &Path,
         check: impl Fn() -> Result<()>,
     ) -> Result<serde_json::Value> {
+        self.upload_file_guarded(path, check, None)
+    }
+    pub(crate) fn upload_file_guarded(
+        &self,
+        path: &Path,
+        check: impl Fn() -> Result<()>,
+        identity: Option<&app_core::FileIdentity>,
+    ) -> Result<serde_json::Value> {
         let profile = &self.0;
         check()?;
         let (file, length) = source(path)?;
+        if let Some(identity) = identity {
+            identity.verify_file(&file)?;
+        }
         check()?;
         let secret = checked_credentials(
             &profile.target(),
@@ -647,10 +677,15 @@ impl PreparedUpload {
         check()?;
         let filename = format!("{}.bin", uuid::Uuid::new_v4().simple());
         let (url, key) = profile.remote(&filename);
+        let staged_ca = self.1.as_ref().map(ca::Ca::stage).transpose()?;
+        let mut transfer_profile = profile.clone();
+        if let Some(staged) = &staged_ca {
+            transfer_profile.ca_file = Some(staged.path.clone());
+        }
         let configuration = if profile.protocol == Protocol::Sftp {
-            native_sftp_config(profile, &credentials, &url, length)?
+            native_sftp_config(&transfer_profile, &credentials, &url, length)?
         } else {
-            config(profile, &credentials, &url)?
+            config(&transfer_profile, &credentials, &url)?
         };
         drop(credentials);
         drop(secret);
