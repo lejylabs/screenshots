@@ -1,4 +1,9 @@
 //! Application core. This crate must not depend on GPUI.
+mod file_identity;
+#[cfg(target_os = "windows")]
+#[doc(hidden)]
+pub mod windows_child;
+pub use file_identity::FileIdentity;
 
 mod arrows;
 mod layers;
