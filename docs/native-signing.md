@@ -189,3 +189,13 @@ corrected with explicit binary fixture output; the production tool runner still
 returns the native bytes unchanged. The corrected current source has not run on
 Darwin/Windows CI: GitHub currently denies pushes for the authenticated account.
 This source-review convergence does not close real signing/notarization gates.
+
+The first resumed Windows private run passed owned topology/physical-mode,
+bitmap/history-alias, atomic Job-limit and sent-message-flood fixtures, plus the
+23 signing-process fixtures (four platform-specific cases skipped). It then
+stopped in native package-layout verification because Windows does not preserve
+POSIX executable bits on synthetic extensionless helper files. The macOS/Debian
+mode-layout fixtures now explicitly require a Unix host; Windows continues to
+run both MSIX XML/Unicode-byte fixtures. This corrects host-specific test scope,
+without treating skipped Unix layouts as Windows passes. The later persistence,
+colour and logger step did not run in that failed job and remains pending.
