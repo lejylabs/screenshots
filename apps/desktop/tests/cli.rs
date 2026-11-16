@@ -219,6 +219,8 @@ fn executable_upload_sends_exact_png_and_reports_remote_failures() {
                     Err(error) => panic!("{error}"),
                 }
             };
+            // BSD accepts inherit O_NONBLOCK from the listener; normalize before buffered reads.
+            socket.set_nonblocking(false).unwrap();
             socket
                 .set_read_timeout(Some(std::time::Duration::from_secs(5)))
                 .unwrap();

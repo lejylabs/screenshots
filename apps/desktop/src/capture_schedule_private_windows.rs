@@ -209,9 +209,13 @@ pub(super) fn validate(file: &File) -> Result<()> {
     Ok(())
 }
 pub(super) fn open(path: &Path, create: bool) -> Result<File> {
-    open_access(path, create, true)
+    open_impl(path, create, true, true)
 }
+/// SQLite's file handles share read/write access, so admission must not request DELETE.
 pub(super) fn open_access(path: &Path, create: bool, writable: bool) -> Result<File> {
+    open_impl(path, create, writable, false)
+}
+fn open_impl(path: &Path, create: bool, writable: bool, delete: bool) -> Result<File> {
     let user = User::current()?;
     let descriptor = Descriptor::new(&user)?;
     let path = path_wide(path)?;
@@ -223,7 +227,10 @@ pub(super) fn open_access(path: &Path, create: bool, writable: bool) -> Result<F
     let raw = unsafe {
         CreateFileW(
             path.as_ptr(),
-            GENERIC_READ | READ_CONTROL | if writable { GENERIC_WRITE | DELETE } else { 0 },
+            GENERIC_READ
+                | READ_CONTROL
+                | if writable { GENERIC_WRITE } else { 0 }
+                | if delete { DELETE } else { 0 },
             FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
             if create {
                 &attributes
@@ -321,4 +328,65 @@ pub(super) fn directory(path: &Path, create: bool) -> Result<()> {
         "Schedule directory must have a current-user-only inheritable DACL; use a new dedicated parent directory"
     );
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn sqlite_opens_verbatim_database_while_private_admission_handle_remains_open() -> Result<()> {
+        let root = std::env::temp_dir().join(format!(
+            "screenshots-private-sqlite-{}",
+            uuid::Uuid::new_v4()
+        ));
+        directory(&root, true)?;
+        let root = root.canonicalize()?;
+        let path = root.join("state.sqlite");
+        // Same verbatim path and same DACL: the delete-capable CA handle reproduces
+        // SQLite's native sharing failure, then read/write admission opens successfully.
+        let delete_capable = open(&path, true)?;
+        let flags =
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE | rusqlite::OpenFlags::SQLITE_OPEN_NOFOLLOW;
+        assert!(rusqlite::Connection::open_with_flags(&path, flags).is_err());
+        drop(delete_capable);
+        let admission = open_access(&path, false, true)?;
+        let db = rusqlite::Connection::open_with_flags(
+            &path,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE | rusqlite::OpenFlags::SQLITE_OPEN_NOFOLLOW,
+        )?;
+        db.execute_batch("CREATE TABLE fixture(value INTEGER); INSERT INTO fixture VALUES(17);")?;
+        validate(&admission)?;
+        assert_eq!(
+            db.query_row("SELECT value FROM fixture", [], |r| r.get::<_, i64>(0))?,
+            17
+        );
+        drop(db);
+        drop(admission);
+        std::fs::remove_dir_all(root)?;
+        Ok(())
+    }
+    #[test]
+    fn operation_owned_ca_file_keeps_handle_delete_access() -> Result<()> {
+        let root =
+            std::env::temp_dir().join(format!("screenshots-private-ca-{}", uuid::Uuid::new_v4()));
+        directory(&root, true)?;
+        let path = root.join("ca.pem");
+        let file = open(&path, true)?;
+        let mut disposition = FILE_DISPOSITION_INFO { DeleteFile: true };
+        ensure!(
+            unsafe {
+                SetFileInformationByHandle(
+                    file.as_raw_handle(),
+                    FileDispositionInfo,
+                    (&mut disposition as *mut FILE_DISPOSITION_INFO).cast(),
+                    std::mem::size_of_val(&disposition) as u32,
+                )
+            } != 0,
+            "Owned CA handle lost delete access"
+        );
+        drop(file);
+        assert!(!path.exists());
+        std::fs::remove_dir_all(root)?;
+        Ok(())
+    }
 }

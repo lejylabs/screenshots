@@ -489,7 +489,21 @@ fn cleanup(job: &SharedJob, force: bool) -> (bool, bool) {
             return (true, success);
         }
         if process.status.is_some() {
-            // Remaining descendants stay owned/quarantined; never spin on an exited root.
+            #[cfg(target_os = "windows")]
+            {
+                // Job accounting may lag a signaled root. Stop any remaining family
+                // through the owned Job, then allow its existing cleanup grace to settle.
+                process.stop();
+                if Instant::now() >= until {
+                    return (false, false);
+                }
+                drop(owned);
+                std::thread::sleep(
+                    Duration::from_millis(2).min(until.saturating_duration_since(Instant::now())),
+                );
+                continue;
+            }
+            #[cfg(not(target_os = "windows"))]
             return (false, false);
         }
         if !forced && Instant::now() >= natural {
