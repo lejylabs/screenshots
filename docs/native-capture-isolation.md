@@ -168,26 +168,22 @@ a recorded cause and remediation decision before merge. Introduce a parked
 persistent worker only if measured need justifies its extra resident memory,
 teardown and post-capture retention cost; it is not a default design assumption.
 
-## Wayland follow-up within this family
+## Explicit Wayland still source
 
-The vendored xcap 0.9.10 Wayland still path still writes/decodes GNOME or portal
-Screenshot PNG files and holds a global D-Bus mutex before trying wlroots.
-Process isolation does not make those disk round trips acceptable.
+The explicit `Portal` native call now uses ScreenCast and the authorized
+OpenPipeWireRemote FD for one bounded in-memory frame. Its 120-second overall
+permission policy is separate from the ordinary 20-second still deadline; the
+frame itself must arrive within 20 seconds after permission. The same inherited
+raw channel and owned process/cancellation cleanup apply. No portal/runtime is
+initialized by normal startup or Task validation.
 
-Plan a genuine single-frame ScreenCast/PipeWire capture source, with explicit OS
-source/permission selection and immediate session teardown after the admitted
-frame. Reuse maintained ashpd/PipeWire packages already in the graph. Negotiate
-supported CPU-readable RGB8 formats, bound dimensions/stride/buffers before
-copying and reject unsupported DMA-only/color formats truthfully. Do not call
-RGB8 capture HDR support. Do not silently substitute an OS-selected monitor for
-an explicitly named existing display ID or claim stable physical identity that
-Wayland does not expose.
-
-This adapter needs its own exact API/permission/coordinate plan before code.
-An explicit portal source may be necessary instead of pretending global window
-enumeration exists. Verify with a private D-Bus portal plus a private PipeWire
-daemon/publisher of generated pixels; no user display/audio/permission store is
-used in tests. Native compositor permission acceptance remains separate.
+The vendored XCap GNOME/Screenshot PNG fallbacks and global D-Bus lock are
+removed; its in-memory wlroots path remains. Named XWayland monitor/region
+requests fail explicitly instead of substituting an OS picker. Native monitor
+bindings, cross-monitor regions and scrolling input remain distinct Wayland
+obligations. See [the implemented portal contract](wayland-still-capture.md)
+for source/serial/color/stride admission, private native evidence and remaining
+compositor permission/hardware gates. This is RGB8, not HDR support.
 
 ## Files and checks
 
@@ -231,8 +227,8 @@ and that a late startup never launches after its deadline. That is controlled
 lifecycle evidence, not an actual kernel-uninterruptible test. Environment
 fixtures verify unneeded credentials and clipboard capabilities are absent.
 The current XCap worker path requires an explicit nonempty X11/XWayland DISPLAY
-on Linux, preventing its upstream default-display fallback. This is not a claim
-that native Wayland still capture is complete.
+on Linux, preventing its upstream default-display fallback. That legacy requirement is distinct from the explicit portal source above; it
+does not prevent the latter from operating without DISPLAY.
 
 `target/verification/capture-worker-private-review-fixes-final.json` records the actual
 optimized executable on private authenticated Xvfb: 48,259 exact RGBA pixels,

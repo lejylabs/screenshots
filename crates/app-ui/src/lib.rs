@@ -151,6 +151,8 @@ pub struct CaptureWorkspace {
     editor: Option<WindowHandle<RedactionEditor>>,
     editor_closing: bool,
     backend: XcapBackend,
+    #[cfg(test)]
+    test_capture_capabilities: Option<app_core::CaptureCapabilities>,
     native_capture_cancel: Option<app_core::NativeCaptureCancellation>,
     native_sources_cancel: Option<app_core::NativeCaptureCancellation>,
     xcap_displays: Vec<DisplayInfo>,
@@ -611,6 +613,8 @@ impl CaptureWorkspace {
             editor: None,
             editor_closing: false,
             backend,
+            #[cfg(test)]
+            test_capture_capabilities: None,
             native_capture_cancel: None,
             native_sources_cancel: None,
             xcap_displays: Vec::new(),
@@ -2577,11 +2581,19 @@ impl CaptureWorkspace {
         );
     }
 
+    fn capture_capabilities(&self) -> app_core::CaptureCapabilities {
+        #[cfg(test)]
+        if let Some(capabilities) = self.test_capture_capabilities {
+            return capabilities;
+        }
+        self.backend.capabilities()
+    }
+
     fn capture_exact_region(&mut self, display: DisplayInfo, cx: &mut Context<Self>) {
         if self.page != ControlPage::Sources
             || self.image_input_busy()
             || self.refreshing
-            || !self.backend.capabilities().capture_region
+            || !self.capture_capabilities().capture_region
         {
             return;
         }

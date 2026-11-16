@@ -5,6 +5,7 @@ mod autostart_macos;
 #[cfg(target_os = "windows")]
 mod autostart_windows;
 mod capture_catalog;
+mod capture_portal;
 mod capture_regions;
 mod capture_sequence;
 mod capture_task;
@@ -18,6 +19,7 @@ mod history_manage;
 mod image_collection;
 mod image_info;
 mod image_tools;
+mod image_url;
 mod metadata_jpeg;
 mod metadata_webp;
 mod oauth_provider;

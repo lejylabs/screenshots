@@ -485,3 +485,30 @@ assertions, with a matching actual glibc floor and unchanged isolated user state
 Evidence: `target/verification/complete-runtime-package-abi.json`. This is an
 explicit prebuilt intermediate executable, not final native/ABI portability or
 system installation acceptance. No full-plan convergence is claimed.
+
+
+## Authorized portal and URL input (2026-11-16)
+
+Fresh `portal_import_goldfish` found no Blocker or Major in authorized-FD
+ScreenCast/PipeWire still capture, strict source/serial/buffer/color validation,
+finite session/process ownership, disk-fallback removal and explicit URL input.
+Its two documentation Nits are fixed: transform/crop/header refusals are stated,
+and URL limits use readable unit spacing.
+
+Private real D-Bus/PipeWire tests cover 19 CLI calls, 40 exact RGBA pixels,
+11 negative modes, actual missing-frame timeout, parent loss and source removal,
+Task crop and named-source refusal. Two 4K generated-source observations retain
+both repeats; latest p95 is 50 ms native frame and 91.327 ms CLI including PNG,
+with process/whole-fixture memory separated. This is not physical compositor or
+reference-hardware acceptance. URL core/executable fixtures cover exact pixels,
+streamed 32 MiB rejection before EOF, cancellation, no redirect/implicit state,
+Task output and preflight before a second GET. User devices/data are untouched.
+
+The complete current integrated optimized workspace passed 786 regular tests,
+62 opt-ins excluded across 57 outer suites. Clippy passed the configured denied
+lints (existing warnings remain), Windows GNU dev app/tests metadata passed, and
+default active-graph advisories passed without ignores. The two host-capability
+UI fixtures are now explicit test fixtures; production capability gating stays
+truthful on Wayland. Evidence: `target/verification/current-integrated-checks.json`.
+Editor/macOS additions, real platform/signing/account gates and the remaining
+full backlog are not closed by this snapshot.

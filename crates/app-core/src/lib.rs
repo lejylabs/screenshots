@@ -1,9 +1,8 @@
 //! Application core. This crate must not depend on GPUI.
-mod file_identity;
+
 #[cfg(target_os = "windows")]
 #[doc(hidden)]
 pub mod windows_child;
-pub use file_identity::FileIdentity;
 
 mod arrows;
 mod layers;
@@ -13,12 +12,16 @@ pub use pen::{MAX_DOCUMENT_PEN_POINTS, MAX_PEN_POINTS, PenAnnotation};
 mod capture;
 mod capture_catalog;
 mod capture_native;
+mod image_url;
 mod native_capture_job;
+mod portal_capture;
+pub use image_url::{ImageUrlSource, MAX_IMAGE_URL_BYTES};
 pub use native_capture_job::{
     NativeCaptureCall, NativeCaptureCancellation, NativeCaptureCheck, NativeCaptureExecutor,
     NativeCaptureReply, NativeSourceInventory, install_native_capture_executor,
     validate_native_frames,
 };
+pub use portal_capture::{PortalCaptureCursor, PortalCaptureSource, capture_portal_with_cancel};
 mod capture_options;
 mod image_cancel;
 mod raster_ops;
@@ -38,6 +41,8 @@ mod desktop_composite;
 pub use desktop_composite::{capture_stitched_desktop, stitch_desktop};
 mod resample;
 pub use resample::{ExportSize, downscale_export, downscale_export_with_cancel};
+mod file_identity;
+pub use file_identity::FileIdentity;
 mod filenames;
 pub use arrows::ArrowAnnotation;
 pub use filenames::{capture_file_name, validate_capture_name_template};

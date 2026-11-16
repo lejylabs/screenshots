@@ -98,6 +98,8 @@ pub(super) fn read_request(input: &mut impl Read) -> Result<NativeCaptureCall> {
         Some("batch") => &["operation", "requests", "options"],
         Some("focused_window" | "focused_display") => &["operation", "options"],
         Some("template") => &["operation", "template", "options"],
+        Some("portal") => &["operation", "source", "cursor"],
+        Some("image_url") => &["operation", "source"],
         _ => anyhow::bail!("Unknown native operation"),
     };
     ensure!(
@@ -114,6 +116,14 @@ pub(super) fn read_request(input: &mut impl Read) -> Result<NativeCaptureCall> {
             .is_none_or(serde_json::Value::is_object),
         "Native options must be an object"
     );
+    if shape.get("operation").and_then(|value| value.as_str()) == Some("image_url") {
+        ensure!(
+            shape
+                .get("source")
+                .is_some_and(serde_json::Value::is_object),
+            "Image URL source must be an object"
+        );
+    }
     if let Some(requests) = shape.get("requests") {
         ensure!(
             requests
@@ -269,6 +279,8 @@ fn error_code(error: &app_core::CaptureError) -> u8 {
         E::Unsupported(_) => 7,
         E::NativeCanceled => 8,
         E::NativeTimeout => 9,
+        E::PermissionDenied => 10,
+        E::ImageUrlFailed => 11,
         _ => 0,
     }
 }
@@ -287,6 +299,8 @@ fn error_from_code(code: u8) -> Result<app_core::CaptureError> {
         7 => E::Unsupported("requested native source or policy"),
         8 => E::NativeCanceled,
         9 => E::NativeTimeout,
+        10 => E::PermissionDenied,
+        11 => E::ImageUrlFailed,
         _ => anyhow::bail!("Unknown native error category"),
     })
 }

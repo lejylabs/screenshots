@@ -102,7 +102,6 @@ features = [
     "async-io",
     "pipewire",
     "screencast",
-    "screenshot",
 ]
 default-features = false
 

@@ -27,7 +27,18 @@ owned-window fixture requires genuine DWM and is an explicit native CI gate;
 Wine is not DWM evidence. See `docs/capture-defaults-templates.md` in the parent
 repository for the feature contract and measured verification state.
 
-The existing non-Windows, video and WGC paths are unchanged. Monitor rendering
+The video and WGC paths are unchanged. Windows monitor rendering
 is unchanged; the shared GDI readback now rejects incomplete scanline returns.
 The only
 manifest feature addition is the existing windows dependency's `Win32_UI_HiDpi`.
+
+## Linux Wayland still-image disk fallback removal
+
+The Linux still path no longer invokes GNOME ScreenshotArea or the portal
+Screenshot interface, stages/deletes PNG files or holds a global D-Bus mutex.
+Its existing in-memory wlroots implementation remains, with positive dimensions
+and a 256-MiB RGBA admission bound. Unused PNG/URI helpers and the ashpd
+`screenshot` feature are removed. Callers must still establish real Wayland
+logical coordinates; the application refuses named XWayland monitor/region
+captures instead of substituting a picker. Its explicit portal source lives in
+the application's bounded ScreenCast/PipeWire worker adapter.

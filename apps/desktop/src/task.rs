@@ -29,6 +29,16 @@ enum Source {
     RawFile {
         path: PathBuf,
     },
+    Portal {
+        source: app_core::PortalCaptureSource,
+        #[serde(default)]
+        cursor: app_core::PortalCaptureCursor,
+    },
+    ImageUrl {
+        url: String,
+        #[serde(default)]
+        allow_http: bool,
+    },
     PrimaryDisplay,
     ActiveDisplay,
     ActiveWindow,
@@ -233,6 +243,13 @@ impl Task {
         );
         let mut template = None;
         match &mut profile.source {
+            Source::ImageUrl { url, allow_http } => {
+                app_core::ImageUrlSource::new(url.clone(), *allow_http)?;
+            }
+            Source::Portal { .. } => ensure!(
+                cfg!(target_os = "linux"),
+                "Portal still capture requires Linux"
+            ),
             Source::None
             | Source::PrimaryDisplay
             | Source::ActiveDisplay
@@ -471,7 +488,7 @@ impl Task {
             return Ok(None);
         }
         #[cfg(target_os = "windows")]
-        let _dpi = if matches!(&self.source, Source::File { .. }) {
+        let _dpi = if matches!(&self.source, Source::File { .. } | Source::ImageUrl { .. }) {
             None
         } else {
             Some(crate::region_analysis::DpiContext::enter()?)
@@ -479,6 +496,13 @@ impl Task {
         let backend = XcapBackend::new(PathBuf::new());
         Ok(Some(match &self.source {
             Source::None | Source::RawFile { .. } => unreachable!(),
+            Source::ImageUrl { url, allow_http } => {
+                app_core::ImageUrlSource::new(url.clone(), *allow_http)?
+                    .capture_with_cancel(&native_check)?
+            }
+            Source::Portal { source, cursor } => {
+                app_core::capture_portal_with_cancel(*source, *cursor, &native_check)?
+            }
             Source::PrimaryDisplay => {
                 let mut displays = backend
                     .list_displays_with_cancel(&native_check)?

@@ -24,6 +24,7 @@ Headless commands (no desktop UI; outputs and uploads require explicit actions):
   screenshots image compare FIRST SECOND OUTPUT.png
   screenshots image split INPUT DIRECTORY --columns N --rows N
   screenshots image info INPUT
+  screenshots image-url URL OUTPUT [--allow-http] [--recipe FILE]
   screenshots image pixel INPUT X Y
   screenshots image metadata INPUT
   screenshots list displays|windows
@@ -79,6 +80,7 @@ Headless commands (no desktop UI; outputs and uploads require explicit actions):
   screenshots workflow RECIPE INPUT OUTPUT
   screenshots task run|validate PROFILE.json
   screenshots capture-catalog monitors|validate|bind|add|defaults|capture|run-task|host-config ...
+  screenshots capture-portal display|window OUTPUT [--cursor exclude|include] [--delay-ms MS] [--recipe FILE]
   screenshots task-host validate CONFIG.json
   screenshots task-host serve CONFIG.json ENDPOINT.json
   screenshots task-host trigger ENDPOINT.json PROFILE_ID
@@ -168,6 +170,7 @@ pub fn run(args: Vec<OsString>) -> Result<bool> {
         "history-audit" => crate::history_audit::run(&args[1..])?,
         "history-manage" => crate::history_manage::run(&args[1..])?,
         "hash-file" => crate::hash_file::run(&args[1..])?,
+        "image-url" => crate::image_url::run(&args[1..])?,
         "history-query" => history_query(&args[1..])?,
         "storage" => storage(&args[1..])?,
         "credentials" => credentials(&args[1..])?,
@@ -182,6 +185,7 @@ pub fn run(args: Vec<OsString>) -> Result<bool> {
         "workflow" => crate::workflow::run(&args[1..])?,
         "task" => crate::task::run(&args[1..])?,
         "capture-catalog" => crate::capture_catalog::run(&args[1..])?,
+        "capture-portal" => crate::capture_portal::run(&args[1..])?,
         "task-host" => crate::task_host::run(&args[1..])?,
         "gif" => crate::gif_assembly::run(&args[1..])?,
         "stitch-scroll" => crate::scroll_stitch::run(&args[1..])?,

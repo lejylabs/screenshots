@@ -1,85 +1,5 @@
-use std::{env::temp_dir, fs, sync::Mutex};
-
-use ashpd::{
-    desktop::screenshot::Screenshot,
-    zbus::{self, Connection},
-};
+use crate::{XCapError, error::XCapResult};
 use image::RgbaImage;
-use scopeguard::defer;
-
-use super::utils::png_to_rgba_image;
-use crate::{
-    error::{XCapError, XCapResult},
-    platform::utils::safe_uri_to_path,
-};
-
-async fn org_gnome_shell_screenshot(
-    conn: &Connection,
-    x: i32,
-    y: i32,
-    width: i32,
-    height: i32,
-) -> XCapResult<RgbaImage> {
-    let proxy = zbus::Proxy::new(
-        conn,
-        "org.gnome.Shell.Screenshot",
-        "/org/gnome/Shell/Screenshot",
-        "org.gnome.Shell.Screenshot",
-    )
-    .await
-    .map_err(|e| XCapError::new(e.to_string()))?;
-
-    let filename = rand::random::<u32>();
-
-    let dirname = temp_dir().join("screenshot");
-    fs::create_dir_all(&dirname)?;
-
-    let mut path = dirname.join(filename.to_string());
-    path.set_extension("png");
-    defer!({
-        let _ = fs::remove_file(&path);
-    });
-
-    let filename = path.to_string_lossy().to_string();
-
-    // https://github.com/vinzenz/gnome-shell/blob/master/data/org.gnome.Shell.Screenshot.xml
-    proxy
-        .call_method("ScreenshotArea", &(x, y, width, height, false, &filename))
-        .await
-        .map_err(|e| XCapError::new(e.to_string()))?;
-
-    let rgba_image = png_to_rgba_image(&filename, 0, 0, width, height)?;
-
-    Ok(rgba_image)
-}
-
-/// https://flatpak.github.io/xdg-desktop-portal/docs/doc-org.freedesktop.portal.Screenshot.html
-async fn org_freedesktop_portal_screenshot(
-    x: i32,
-    y: i32,
-    width: i32,
-    height: i32,
-) -> XCapResult<RgbaImage> {
-    let screenshot_response = Screenshot::request()
-        .interactive(false)
-        .send()
-        .await
-        .map_err(|e| XCapError::new(e.to_string()))?
-        .response()
-        .map_err(|e| XCapError::new(e.to_string()))?;
-
-    let filename = safe_uri_to_path(screenshot_response.uri().as_str())?;
-
-    defer!({
-        let _ = fs::remove_file(&filename);
-    });
-
-    let rgba_image = png_to_rgba_image(&filename, x, y, width, height)?;
-
-    Ok(rgba_image)
-}
-
-static DBUS_LOCK: Mutex<()> = Mutex::new(());
 
 fn wlroots_screenshot(
     x_coordinate: i32,
@@ -109,54 +29,16 @@ fn wlroots_screenshot(
         rgba_image.height(),
         rgba_image.to_rgba8().into_vec(),
     )
-    .expect("Conversion of PNG -> Raw -> PNG does not fail");
+    .ok_or_else(|| XCapError::new("Invalid in-memory Wayland frame extent"))?;
 
     Ok(image)
 }
 
 pub fn wayland_capture(x: i32, y: i32, width: i32, height: i32) -> XCapResult<RgbaImage> {
-    let lock = DBUS_LOCK.lock();
-
-    let res = pollster::block_on(async {
-        let conn = zbus::Connection::session()
-            .await
-            .map_err(|e| XCapError::new(e.to_string()))?;
-        match org_gnome_shell_screenshot(&conn, x, y, width, height).await {
-            Ok(img) => Ok(img),
-            Err(e) => {
-                log::debug!("org_gnome_shell_screenshot failed {e}");
-                org_freedesktop_portal_screenshot(x, y, width, height).await
-            }
-        }
-    })
-    .or_else(|e| {
-        log::debug!("org_freedesktop_portal_screenshot failed {e}");
-        wlroots_screenshot(x, y, width, height)
-    });
-
-    drop(lock);
-
-    res
-}
-#[test]
-fn screnshot_multithreaded() {
-    fn make_screenshots() {
-        let monitors = crate::monitor::Monitor::all().unwrap();
-        for monitor in monitors {
-            monitor.capture_image().unwrap();
-        }
+    if width <= 0 || height <= 0 || (width as u64) * (height as u64) * 4 > 256 * 1024 * 1024 {
+        return Err(XCapError::new("Invalid bounded Wayland region"));
     }
-    // Try making screenshots in paralel. If this times out, then this means that there is a threading issue.
-    const PARALELISM: usize = 10;
-    let handles: Vec<_> = (0..PARALELISM)
-        .map(|_| {
-            std::thread::spawn(|| {
-                make_screenshots();
-            })
-        })
-        .collect();
-    make_screenshots();
-    handles
-        .into_iter()
-        .for_each(|handle| handle.join().unwrap());
+    // Only the native in-memory wlroots path remains. A caller must admit logical
+    // coordinates against its real Wayland outputs; XWayland monitor IDs do not do so.
+    wlroots_screenshot(x, y, width, height)
 }

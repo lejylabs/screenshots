@@ -64,6 +64,13 @@ pub enum NativeCaptureCall {
         template: CaptureRegionTemplate,
         options: CaptureOptions,
     },
+    ImageUrl {
+        source: crate::ImageUrlSource,
+    },
+    Portal {
+        source: crate::PortalCaptureSource,
+        cursor: crate::PortalCaptureCursor,
+    },
 }
 pub enum NativeCaptureReply {
     Inventory(NativeSourceInventory),
@@ -89,9 +96,11 @@ impl NativeCaptureCall {
     pub fn frame_count(&self) -> Option<usize> {
         match self {
             Self::Batch { requests, .. } => Some(requests.len()),
-            Self::FocusedWindow { .. } | Self::FocusedDisplay { .. } | Self::Template { .. } => {
-                Some(1)
-            }
+            Self::FocusedWindow { .. }
+            | Self::FocusedDisplay { .. }
+            | Self::Template { .. }
+            | Self::Portal { .. }
+            | Self::ImageUrl { .. } => Some(1),
             _ => None,
         }
     }
@@ -179,6 +188,20 @@ impl NativeCaptureCall {
                     return Err(invalid());
                 }
             }
+            Self::ImageUrl { .. } => {
+                if index != 0 || display != "image-url" || window.is_some() || geometry.is_some() {
+                    return Err(invalid());
+                }
+            }
+            Self::Portal { source, .. } => {
+                if index != 0
+                    || display != source.identifier()
+                    || window.is_some()
+                    || geometry.is_some()
+                {
+                    return Err(invalid());
+                }
+            }
             _ => return Err(invalid()),
         }
         Ok(())
@@ -191,7 +214,8 @@ impl NativeCaptureCall {
     }
     pub fn validate(&self) -> Result<(), CaptureError> {
         match self {
-            Self::Inventory | Self::Displays | Self::Windows => {}
+            Self::Inventory | Self::Displays | Self::Windows | Self::Portal { .. } => {}
+            Self::ImageUrl { source } => source.validate()?,
             Self::Identities { displays } => {
                 if displays.is_empty() || displays.len() > 32 {
                     return Err(invalid());
@@ -286,6 +310,22 @@ impl NativeCaptureCall {
             return Err(invalid());
         }
         self.validate()?;
+        if let Self::ImageUrl { source } = &self {
+            let frame = source
+                .download_in_worker(&|| Ok(()))
+                .map_err(|error| match error {
+                    CaptureError::NativeCanceled | CaptureError::Canceled => error,
+                    _ => CaptureError::ImageUrlFailed,
+                })?;
+            let reply = NativeCaptureReply::Frames(vec![frame]);
+            self.validate_reply(&reply)?;
+            return Ok(reply);
+        }
+        if matches!(self, Self::Portal { .. }) {
+            return Err(CaptureError::Unsupported(
+                "Portal source requires the desktop native adapter",
+            ));
+        }
         #[cfg(target_os = "linux")]
         {
             let display = std::env::var("DISPLAY").map_err(|_| {
@@ -334,6 +374,10 @@ impl NativeCaptureCall {
                         .map_err(|_| invalid())?,
                 ])
             }
+            Self::ImageUrl { .. } => {
+                unreachable!("URL import was handled before native source enumeration")
+            }
+            Self::Portal { .. } => unreachable!("Portal is handled by the desktop native adapter"),
         };
         self.validate_reply(&reply)?;
         Ok(reply)

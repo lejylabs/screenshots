@@ -12,6 +12,9 @@ use std::{
     thread::JoinHandle,
     time::{Duration, Instant},
 };
+#[cfg(target_os = "linux")]
+#[path = "capture_portal_linux.rs"]
+mod portal;
 #[path = "capture_worker_protocol.rs"]
 mod protocol;
 #[path = "capture_worker_transport.rs"]
@@ -582,11 +585,7 @@ fn execute(
     call: NativeCaptureCall,
     check: &NativeCaptureCheck<'_>,
 ) -> Result<NativeCaptureReply, CaptureError> {
-    let timeout = if call.is_enumeration() {
-        Duration::from_secs(5)
-    } else {
-        Duration::from_secs(20)
-    };
+    let timeout = operation_timeout(&call);
     execute_factory(
         || {
             command()
@@ -596,6 +595,15 @@ fn execute(
         check,
         timeout,
     )
+}
+fn operation_timeout(call: &NativeCaptureCall) -> Duration {
+    if matches!(call, NativeCaptureCall::Portal { .. }) {
+        Duration::from_secs(120)
+    } else if call.is_enumeration() {
+        Duration::from_secs(5)
+    } else {
+        Duration::from_secs(20)
+    }
 }
 #[cfg(test)]
 fn execute_command(
@@ -729,15 +737,17 @@ fn serve() -> Result<()> {
     protocol::expect_handshake(&mut io, protocol::HELLO, &nonce)?;
     protocol::handshake(&mut io, protocol::ACK, &nonce)?;
     let call = protocol::read_request(&mut io)?;
-    io.deadline = Instant::now()
-        + if call.is_enumeration() {
-            Duration::from_secs(5)
-        } else {
-            Duration::from_secs(20)
-        };
+    io.deadline = Instant::now() + operation_timeout(&call);
     #[cfg(target_os = "macos")]
     let lifeline = transport::Lifeline::new(&io.transport)?;
-    let result = call.run_inline(parent);
+    let result = match call {
+        #[cfg(target_os = "linux")]
+        NativeCaptureCall::Portal { source, cursor } => {
+            portal::capture(source, cursor, io.deadline)
+                .map(|frame| NativeCaptureReply::Frames(vec![frame]))
+        }
+        call => call.run_inline(parent),
+    };
     match result {
         Ok(reply) => protocol::reply(&mut io, reply)?,
         Err(error) => protocol::failure(&mut io, &error)?,
@@ -782,6 +792,19 @@ mod tests {
             }],
             options: Default::default(),
         }
+    }
+    #[test]
+    fn explicit_portal_consent_has_a_finite_separate_deadline_policy() {
+        let call = NativeCaptureCall::Portal {
+            source: app_core::PortalCaptureSource::Window,
+            cursor: app_core::PortalCaptureCursor::Exclude,
+        };
+        assert_eq!(operation_timeout(&call), Duration::from_secs(120));
+        assert_eq!(
+            operation_timeout(&NativeCaptureCall::Displays),
+            Duration::from_secs(5)
+        );
+        assert_eq!(operation_timeout(&self::call()), Duration::from_secs(20));
     }
     fn fake_command(mode: &str, marker: Option<&Path>) -> Command {
         let mut command = Command::new(std::env::current_exe().unwrap());

@@ -191,7 +191,7 @@ Core consumers that do not install that executor still run inline and do not
 have native process deadlines. Windows/macOS native execution remains a
 separate acceptance gate.
 Partial JPEG/WebP/PNG save and atomic publication retain the existing exporter
-contract. No complete HDR, native Wayland, Retina/mixed-DPI calibration,
+contract. No complete HDR, named Wayland monitor/region binding, Retina/mixed-DPI calibration,
 cross-monitor selection, persisted scheduler or physical-monitor hotplug gate is
 closed by this slice.
 

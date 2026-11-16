@@ -1,11 +1,5 @@
-use std::{
-    env::{self, var_os},
-    path::{Path, PathBuf},
-};
+use std::env::{self, var_os};
 
-use image::{RgbaImage, open};
-use percent_encoding::percent_decode_str;
-use url::Url;
 use xcb::{
     Connection as XcbConnection, Xid,
     randr::{GetMonitors, MonitorInfoBuf, Output},
@@ -87,37 +81,4 @@ pub fn get_atom(name: &str) -> XCapResult<Atom> {
     }
 
     Ok(atom)
-}
-
-pub(super) fn png_to_rgba_image<T>(
-    filename: T,
-    x: i32,
-    y: i32,
-    width: i32,
-    height: i32,
-) -> XCapResult<RgbaImage>
-where
-    T: AsRef<Path>,
-{
-    let mut dynamic_image = open(filename)?;
-    dynamic_image = dynamic_image.crop(x as u32, y as u32, width as u32, height as u32);
-    Ok(dynamic_image.to_rgba8())
-}
-
-/// uri 转换为 path
-pub(super) fn safe_uri_to_path(uri: &str) -> XCapResult<PathBuf> {
-    let url = Url::parse(uri)?;
-
-    if url.scheme() != "file" {
-        return Err(XCapError::new("Uri scheme is not file"));
-    }
-
-    // 获取已解码的路径
-    let decoded_path = percent_decode_str(url.path())
-        .decode_utf8_lossy()
-        .to_string();
-
-    let path = PathBuf::from(&decoded_path);
-
-    Ok(path)
 }

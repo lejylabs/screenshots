@@ -975,6 +975,9 @@ fn exact_region_fields_are_named_validate_and_release_with_the_page(cx: &mut Tes
     handle
         .update(cx, |this, _, _| {
             this.output_directory = Some(std::env::temp_dir());
+            let mut capabilities = this.backend.capabilities();
+            capabilities.capture_region = true;
+            this.test_capture_capabilities = Some(capabilities);
             this.xcap_displays = vec![exact_display()];
         })
         .unwrap();
@@ -1029,6 +1032,9 @@ fn region_presets_load_without_capture_reject_stale_actions_and_preserve_failed_
     handle
         .update(cx, |this, _, _| {
             this.output_directory = Some(blocker.clone());
+            let mut capabilities = this.backend.capabilities();
+            capabilities.capture_region = true;
+            this.test_capture_capabilities = Some(capabilities);
             this.xcap_displays = vec![exact_display()];
             this.region_presets = vec![preset.clone()];
         })

@@ -261,6 +261,10 @@ pub struct CapturedImage {
 
 #[derive(Debug, Error)]
 pub enum CaptureError {
+    #[error("Remote image transfer or decoding failed")]
+    ImageUrlFailed,
+    #[error("Capture permission was denied or the selected portal source was closed")]
+    PermissionDenied,
     #[error("Native capture canceled")]
     NativeCanceled,
     #[error("Native capture deadline exceeded")]
@@ -521,6 +525,19 @@ impl XcapBackend {
         requests: Vec<CaptureRequest>,
         check: &crate::NativeCaptureCheck<'_>,
     ) -> Result<Vec<CapturedImage>, CaptureError> {
+        #[cfg(target_os = "linux")]
+        if linux_wayland_session()
+            && requests.iter().any(|request| {
+                !matches!(
+                    request,
+                    CaptureRequest::Window(_) | CaptureRequest::ForegroundWindow { .. }
+                )
+            })
+        {
+            return Err(CaptureError::Unsupported(
+                "Named XWayland display/region capture is unavailable; select an explicit capture-portal source",
+            ));
+        }
         for request in &requests {
             crate::capture_native::validate_options(
                 &self.options,
@@ -897,9 +914,27 @@ impl CaptureBackend for XcapBackend {
         CaptureCapabilities {
             list_displays: true,
             list_windows: windows,
-            capture_display: true,
+            capture_display: {
+                #[cfg(target_os = "linux")]
+                {
+                    !linux_wayland_session()
+                }
+                #[cfg(not(target_os = "linux"))]
+                {
+                    true
+                }
+            },
             capture_window: windows,
-            capture_region: true,
+            capture_region: {
+                #[cfg(target_os = "linux")]
+                {
+                    !linux_wayland_session()
+                }
+                #[cfg(not(target_os = "linux"))]
+                {
+                    true
+                }
+            },
         }
     }
 
@@ -941,6 +976,12 @@ impl CaptureBackend for XcapBackend {
             .capture_batch(vec![CaptureRequest::Window(window_id.into())])?
             .remove(0))
     }
+}
+
+#[cfg(target_os = "linux")]
+fn linux_wayland_session() -> bool {
+    std::env::var_os("WAYLAND_DISPLAY").is_some_and(|value| !value.is_empty())
+        || std::env::var_os("XDG_SESSION_TYPE").is_some_and(|value| value == "wayland")
 }
 
 #[cfg(target_os = "linux")]
