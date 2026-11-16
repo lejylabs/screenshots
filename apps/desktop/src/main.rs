@@ -31,6 +31,7 @@ mod region_analysis;
 mod s3;
 mod scroll_capture;
 mod scroll_stitch;
+mod sharex;
 mod sharing_provider;
 #[cfg(unix)]
 mod sharing_provider_unix;

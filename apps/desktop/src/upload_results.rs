@@ -68,6 +68,30 @@ struct Input {
     deletion: Option<String>,
 }
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ShareXResult {
+    success: bool,
+    status: u16,
+    url: Option<String>,
+    thumbnail: Option<String>,
+    deletion: Option<String>,
+    error_message: Option<String>,
+    events: Vec<ShareXEvent>,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ShareXEvent {
+    title: String,
+    text: String,
+}
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum ResultInput {
+    Native(Input),
+    ShareX(ShareXResult),
+}
+
 fn read_result() -> Result<app_core::UploadOutcome> {
     ensure!(
         !std::io::stdin().is_terminal(),
@@ -91,8 +115,34 @@ fn read_result() -> Result<app_core::UploadOutcome> {
             == Some(b'{'),
         "Upload-result JSON must be an object"
     );
-    let input: Input = serde_json::from_slice(&bytes)
+    let input: ResultInput = serde_json::from_slice(&bytes)
         .map_err(|_| anyhow::anyhow!("Invalid upload-result JSON"))?;
+    let input = match input {
+        ResultInput::Native(input) => input,
+        ResultInput::ShareX(input) => {
+            ensure!(
+                input.success
+                    && input.status < 400
+                    && input.events.len() <= 16
+                    && input
+                        .error_message
+                        .as_ref()
+                        .is_none_or(|value| value.len() <= 4096)
+                    && input
+                        .events
+                        .iter()
+                        .all(|event| event.title.len() <= 4096 && event.text.len() <= 4096),
+                "Upload result has no confirmed shareable link"
+            );
+            Input {
+                url: input
+                    .url
+                    .context("Upload result returned no shareable link")?,
+                thumbnail: input.thumbnail,
+                deletion: input.deletion,
+            }
+        }
+    };
     app_core::UploadOutcome {
         url: input.url,
         thumbnail: input.thumbnail,

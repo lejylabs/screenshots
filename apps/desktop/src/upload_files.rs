@@ -42,19 +42,23 @@ pub(crate) fn run(args: &[OsString]) -> Result<()> {
         args[0].as_encoded_bytes().len() <= 4096,
         "Upload profile path exceeds 4096 bytes"
     );
-    let destination = crate::upload_file::load_profile(Path::new(&args[0]))?;
-    ensure!(
-        destination.request_json().is_empty(),
-        "Arbitrary file uploads support multipart POST or binary PUT, not image JSON bodies"
-    );
+    #[cfg(unix)]
+    let cancellation = crate::record::unix::Cancellation::new()?;
+    #[cfg(unix)]
+    let cancel = app_core::UploadCancellation::with_atomic_flag(cancellation.flag());
+    #[cfg(not(unix))]
+    let cancel = app_core::UploadCancellation::default();
+    let destination = crate::sharex::prepare(Path::new(&args[0]), app_core::ShareXInputKind::File)?;
+    if let app_core::ClassifiedUploadProfile::Native(destination) = &destination {
+        ensure!(
+            destination.request_json().is_empty(),
+            "Arbitrary file uploads support multipart POST or binary PUT, not image JSON bodies"
+        );
+    }
     let paths = paths(&args[1..])?;
     let mut output = std::io::stdout().lock();
     for (index, path) in paths.iter().enumerate() {
-        let outcome = match app_core::upload_file(
-            &destination,
-            path,
-            app_core::UploadCancellation::default(),
-        ) {
+        let outcome = match crate::sharex::upload_file(&destination, path, cancel.clone()) {
             Ok(outcome) => outcome,
             Err(_) => bail!(
                 "File {} of {} failed after {} confirmed uploads: upload failed; check the destination and credentials. Prior NDJSON links remain valid; the failing upload may already exist remotely. No retry or later upload was attempted.",
@@ -63,14 +67,21 @@ pub(crate) fn run(args: &[OsString]) -> Result<()> {
                 index
             ),
         };
+        #[cfg(unix)]
+        cancellation.output_phase(true);
+        let mut outcome = outcome;
+        let confirmed = crate::sharex::confirmed(&outcome).is_ok();
+        let object = outcome
+            .as_object_mut()
+            .context("Upload result must be an object")?;
+        object.insert(
+            "type".into(),
+            if confirmed { "uploaded" } else { "failed" }.into(),
+        );
+        object.insert("index".into(), (index + 1).into());
+        object.insert("total".into(), paths.len().into());
         let written = (|| -> Result<()> {
-            serde_json::to_writer(
-                &mut output,
-                &serde_json::json!({
-                    "type":"uploaded","index":index+1,"total":paths.len(),
-                    "url":outcome.url,"thumbnail":outcome.thumbnail,"deletion":outcome.deletion,
-                }),
-            )?;
+            serde_json::to_writer(&mut output, &outcome)?;
             output.write_all(b"\n")?;
             output.flush()?;
             Ok(())
@@ -81,7 +92,17 @@ pub(crate) fn run(args: &[OsString]) -> Result<()> {
             index + 1,
             index
         );
+        ensure!(
+            confirmed,
+            "File {} failed after {} confirmed uploads; the remote object may exist and no later file was attempted",
+            index + 1,
+            index
+        );
+        #[cfg(unix)]
+        cancellation.output_phase(false);
     }
+    #[cfg(unix)]
+    cancellation.output_phase(true);
     let written = (|| -> Result<()> {
         serde_json::to_writer(
             &mut output,

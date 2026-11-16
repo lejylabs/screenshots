@@ -67,7 +67,13 @@ pub use webp_lossy::save_lossy_webp;
 mod selection;
 pub use pixelation::PixelationGrid;
 mod oauth_provider;
+mod sharex;
+mod sharex_process;
 pub use oauth_provider::{OAuthEvent, OAuthOutcome, OAuthProfile};
+pub use sharex::{
+    ClassifiedUploadProfile, ShareXEvent, ShareXInputKind, ShareXOutcome, ShareXPrepared,
+    classify_upload_profile,
+};
 mod provider_credentials;
 mod s3_credentials;
 pub use provider_credentials::{

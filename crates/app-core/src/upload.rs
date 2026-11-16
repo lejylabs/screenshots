@@ -80,7 +80,7 @@ const MAX_XML_PATH: usize = 256;
 const MAX_XML_STEPS: usize = 8;
 const MAX_XML_INDEX: usize = 256;
 const MAX_XML_NODES: u32 = 4096;
-const RESERVED_QUERY_NAMES: &[&str] = &[
+pub(crate) const RESERVED_QUERY_NAMES: &[&str] = &[
     "password",
     "passwd",
     "secret",
@@ -636,8 +636,12 @@ impl UploadDestination {
 
     pub fn load(path: &Path) -> Result<Self> {
         let bytes = read_upload_profile(path, "Upload configuration")?;
+        Self::from_json_snapshot(&bytes)
+    }
+
+    pub(crate) fn from_json_snapshot(bytes: &[u8]) -> Result<Self> {
         let destination: Self =
-            serde_json::from_slice(&bytes).context("Invalid upload configuration")?;
+            serde_json::from_slice(bytes).context("Invalid upload configuration")?;
         destination.validate()?;
         Ok(destination)
     }
@@ -829,8 +833,15 @@ impl UploadDestination {
 
     fn read_sharex(path: &Path, file_upload: bool) -> Result<(Self, Option<String>)> {
         let bytes = read_upload_profile(path, "ShareX profile")?;
+        Self::from_sharex_snapshot(&bytes, file_upload)
+    }
+
+    pub(crate) fn from_sharex_snapshot(
+        bytes: &[u8],
+        file_upload: bool,
+    ) -> Result<(Self, Option<String>)> {
         let profile: ShareXCustomUploader =
-            serde_json::from_slice(&bytes).context("Invalid ShareX profile")?;
+            serde_json::from_slice(bytes).context("Invalid ShareX profile")?;
         profile.into_destination(file_upload)
     }
 
@@ -4211,7 +4222,7 @@ mod tests {
         assert!(
             destination
                 .clone()
-                .with_regex(&"a".repeat(257), None)
+                .with_regex("a".repeat(257), None)
                 .is_err()
         );
         let extras = destination.with_thumbnail(r#"{regex:thumb="(.+)"|1}"#)?;
@@ -4300,7 +4311,7 @@ mod tests {
         assert!(destination.clone().with_xml("/@href").is_err());
         assert!(destination.clone().with_xml("/text()").is_err());
         assert!(destination.clone().with_xml("/a/b/c/d/e/f/g/h/i").is_err());
-        assert!(destination.clone().with_xml(&"/a".repeat(130)).is_err());
+        assert!(destination.clone().with_xml("/a".repeat(130)).is_err());
         assert!(xml_capture("not xml", "/files/url", "result").is_err());
         assert!(xml_capture(
             r#"<!DOCTYPE files [<!ELEMENT files ANY>]><files><url>https://example.invalid/x</url></files>"#,

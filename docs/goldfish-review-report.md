@@ -408,3 +408,31 @@ threshold. Raw evidence: `image-work-budget-comparison.json` and
 Native filesystem/codec/vector internals and reference-hardware presentation
 remain separate gates. Native capture and SXCU Task integration have their own
 reviews; these checks do not establish their acceptance.
+
+
+## SXCU execution continuation (2026-11-16)
+
+Five fresh SXCU source reviews ran with the bundled EGM persona/standard. The
+first four rounds found auth-name/Cookie classification, preflight prompt,
+Task failure events, encoded/raw link and inspection, XML body and frozen
+NameParser inspection defects. Author fixes added independent Rust policy
+checks, bounded shared helper body classification and known-value masking;
+actual transfer, Task and inspection regressions were added for each finding.
+
+The fifth capped review found raw forms beginning with JSON/XML-looking keys
+were skipped after failed syntax sniffing. The Elephant corrected ordinary
+parse-failure fallthrough while preserving successful JSON/XML and hard
+resource/DTD refusals. Correction checks passed 26 optimized Rust/process tests,
+134 helper assertions and 94 real loopback HTTPS requests, including finalized
+pixels, failure events/later-action suppression, anonymous/copy/private-runtime
+and retained old-process install/upgrade behavior. The review cap was reached;
+this is not a clean fresh-review convergence claim. Source record:
+`target/verification/sharex-round5-goldfish.md`; runtime correction record:
+`target/verification/sharex-prefix-e2e.json`.
+
+A separate Windows startup audit found suspended-child-to-Job assignment gaps
+in the interpreter and other optional process workers. Atomic native association
+is active follow-up implementation work, independent of accounts and signing.
+The modern pinned SXCU contract and explicitly retained older importer subset
+are described in `sharex-runtime.md`; no arbitrary-version parity or full-plan
+completion is claimed.
