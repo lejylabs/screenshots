@@ -261,6 +261,14 @@ pub struct CapturedImage {
 
 #[derive(Debug, Error)]
 pub enum CaptureError {
+    #[error("macOS Screen Recording permission is not authorized; no permission request was made")]
+    MacScreenPermissionDenied,
+    #[error("macOS Accessibility permission is not authorized; no permission request was made")]
+    MacAccessibilityPermissionDenied,
+    #[error(
+        "Clipboard read failed, was too large, or became unavailable; Wayland reads require focused application Paste"
+    )]
+    Clipboard,
     #[error("Remote image transfer or decoding failed")]
     ImageUrlFailed,
     #[error("Capture permission was denied or the selected portal source was closed")]

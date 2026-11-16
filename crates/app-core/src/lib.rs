@@ -11,7 +11,26 @@ pub use layers::{DrawAnnotation, HighlightAnnotation};
 pub use pen::{MAX_DOCUMENT_PEN_POINTS, MAX_PEN_POINTS, PenAnnotation};
 mod capture;
 mod capture_catalog;
+mod capture_macos_model;
+#[cfg(any(target_os="macos",test))]
+mod capture_macos_pixels;
+#[cfg(target_os="macos")]
+mod capture_macos_ax;
+#[cfg(target_os="macos")]
+mod capture_macos_sck;
+#[cfg(target_os="macos")]
+mod capture_macos_image;
+#[cfg(target_os="macos")]
+mod capture_macos_scroll;
+#[cfg(target_os="macos")]
+pub use capture_macos_scroll::capture_macos_scroll_with_cancel;
 mod capture_native;
+pub use capture_macos_model::{
+    MAC_AX_ARRAY_LIMIT, MAC_AX_MESSAGE_MILLIS, MAC_AX_PARENT_LIMIT, MAC_VIDEO_DRIFT_SLACK_NS,
+    MAC_VIDEO_GAP_SLACK_NS, MacDisplayProof, MacFrameClock, MacFrameLease, MacFrameSlot,
+    MacLogicalRect, MacMediaTimestamp, MacScrollRequest, MacVideoRequest, MacVideoSummary,
+    MacWindowProof,MacScrollSummary,MacScrollStop,
+};
 mod image_url;
 mod native_capture_job;
 mod portal_capture;
@@ -47,10 +66,15 @@ mod filenames;
 pub use arrows::ArrowAnnotation;
 pub use filenames::{capture_file_name, validate_capture_name_template};
 mod clipboard;
+mod clipboard_input;
+pub use clipboard_input::{
+    ClipboardFileReference, ClipboardInspectKind, ClipboardPathEncoding, ClipboardSnapshot,
+    NativeClipboardBackend, capture_clipboard_image_with_cancel, inspect_clipboard_with_cancel,
+    read_clipboard_image,
+};
 #[cfg(target_os = "windows")]
 mod clipboard_windows;
-#[cfg(target_os = "windows")]
-pub use clipboard_windows::read_clipboard_image;
+
 mod export;
 pub use export::{ExportReport, export_saved_pngs, export_saved_pngs_with_metadata};
 #[cfg(target_os = "windows")]

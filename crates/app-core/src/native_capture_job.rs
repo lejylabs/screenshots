@@ -44,6 +44,16 @@ impl NativeCaptureCancellation {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "operation", rename_all = "snake_case", deny_unknown_fields)]
 pub enum NativeCaptureCall {
+    MacScroll {
+        request: crate::MacScrollRequest,
+    },
+    ClipboardImage {
+        backend: crate::NativeClipboardBackend,
+    },
+    ClipboardInspect {
+        kind: crate::ClipboardInspectKind,
+        backend: crate::NativeClipboardBackend,
+    },
     Inventory,
     Displays,
     Windows,
@@ -73,6 +83,11 @@ pub enum NativeCaptureCall {
     },
 }
 pub enum NativeCaptureReply {
+    MacScroll {
+        image: CapturedImage,
+        summary: crate::MacScrollSummary,
+    },
+    Clipboard(crate::ClipboardSnapshot),
     Inventory(NativeSourceInventory),
     Displays(Vec<DisplayInfo>),
     Windows(Vec<WindowInfo>),
@@ -100,7 +115,9 @@ impl NativeCaptureCall {
             | Self::FocusedDisplay { .. }
             | Self::Template { .. }
             | Self::Portal { .. }
-            | Self::ImageUrl { .. } => Some(1),
+            | Self::ImageUrl { .. }
+            | Self::ClipboardImage { .. }
+            | Self::MacScroll { .. } => Some(1),
             _ => None,
         }
     }
@@ -131,6 +148,15 @@ impl NativeCaptureCall {
             }
         }
         match self {
+            Self::MacScroll { request } => {
+                if index != 0
+                    || window != Some(request.window.to_string().as_str())
+                    || width != request.region.width
+                    || geometry.is_some()
+                {
+                    return Err(invalid());
+                }
+            }
             Self::Batch { requests, .. } => match requests.get(index).ok_or_else(invalid)? {
                 CaptureRequest::Display(id) => {
                     if display != id || window.is_some() {
@@ -188,6 +214,15 @@ impl NativeCaptureCall {
                     return Err(invalid());
                 }
             }
+            Self::ClipboardImage { .. } => {
+                if index != 0
+                    || display != "clipboard:image"
+                    || window.is_some()
+                    || geometry.is_some()
+                {
+                    return Err(invalid());
+                }
+            }
             Self::ImageUrl { .. } => {
                 if index != 0 || display != "image-url" || window.is_some() || geometry.is_some() {
                     return Err(invalid());
@@ -209,13 +244,25 @@ impl NativeCaptureCall {
     pub fn is_enumeration(&self) -> bool {
         matches!(
             self,
-            Self::Inventory | Self::Displays | Self::Windows | Self::Identities { .. }
+            Self::Inventory
+                | Self::Displays
+                | Self::Windows
+                | Self::Identities { .. }
+                | Self::ClipboardInspect { .. }
         )
     }
     pub fn validate(&self) -> Result<(), CaptureError> {
         match self {
+            Self::MacScroll { request } => request.validate().map_err(|_| invalid())?,
             Self::Inventory | Self::Displays | Self::Windows | Self::Portal { .. } => {}
             Self::ImageUrl { source } => source.validate()?,
+            Self::ClipboardImage { backend } | Self::ClipboardInspect { backend, .. } => {
+                if !cfg!(target_os = "linux")
+                    && *backend == crate::NativeClipboardBackend::FocusedX11
+                {
+                    return Err(invalid());
+                }
+            }
             Self::Identities { displays } => {
                 if displays.is_empty() || displays.len() > 32 {
                     return Err(invalid());
@@ -310,6 +357,40 @@ impl NativeCaptureCall {
             return Err(invalid());
         }
         self.validate()?;
+        if let Self::MacScroll { request } = &self {
+            #[cfg(target_os = "macos")]
+            {
+                let (image, summary) =
+                    crate::capture_macos_scroll::run(request.clone(), originating_pid)?;
+                let reply = NativeCaptureReply::MacScroll { image, summary };
+                self.validate_reply(&reply)?;
+                return Ok(reply);
+            }
+            #[cfg(not(target_os = "macos"))]
+            {
+                let _ = request;
+                return Err(CaptureError::Unsupported(
+                    "Native macOS scrolling requires macOS",
+                ));
+            }
+        }
+        if let Self::ClipboardImage { backend } = &self {
+            let reply = NativeCaptureReply::Frames(vec![crate::clipboard_input::image_inline(
+                *backend,
+                &|| Ok(()),
+            )?]);
+            self.validate_reply(&reply)?;
+            return Ok(reply);
+        }
+        if let Self::ClipboardInspect { kind, backend } = &self {
+            let reply = NativeCaptureReply::Clipboard(crate::clipboard_input::inspect_inline(
+                *kind,
+                *backend,
+                &|| Ok(()),
+            )?);
+            self.validate_reply(&reply)?;
+            return Ok(reply);
+        }
         if let Self::ImageUrl { source } = &self {
             let frame = source
                 .download_in_worker(&|| Ok(()))
@@ -374,10 +455,16 @@ impl NativeCaptureCall {
                         .map_err(|_| invalid())?,
                 ])
             }
+            Self::ClipboardImage { .. } | Self::ClipboardInspect { .. } => {
+                unreachable!("Clipboard was handled before capture metadata")
+            }
             Self::ImageUrl { .. } => {
                 unreachable!("URL import was handled before native source enumeration")
             }
             Self::Portal { .. } => unreachable!("Portal is handled by the desktop native adapter"),
+            Self::MacScroll { .. } => {
+                unreachable!("Mac scrolling was handled before native metadata")
+            }
         };
         self.validate_reply(&reply)?;
         Ok(reply)
@@ -385,6 +472,26 @@ impl NativeCaptureCall {
 
     pub fn validate_reply(&self, reply: &NativeCaptureReply) -> Result<(), CaptureError> {
         match (self, reply) {
+            (Self::MacScroll { request }, NativeCaptureReply::MacScroll { image, summary }) => {
+                summary
+                    .validate(request, image.width, image.height)
+                    .map_err(|_| invalid())?;
+                validate_frames(std::slice::from_ref(image))?;
+                self.validate_frame_metadata(
+                    0,
+                    &image.display_id,
+                    image.window_id.as_deref(),
+                    image.width,
+                    image.height,
+                    image.display_geometry,
+                )
+            }
+            (Self::ClipboardInspect { kind, .. }, NativeCaptureReply::Clipboard(value)) => {
+                if *kind != value.kind() {
+                    return Err(invalid());
+                }
+                value.validate().map_err(|_| invalid())
+            }
             (Self::Inventory, NativeCaptureReply::Inventory(inventory)) => {
                 if let Ok(displays) = &inventory.displays {
                     validate_displays(displays)?;
@@ -440,6 +547,9 @@ impl NativeCaptureCall {
                 Ok(())
             }
             (_, NativeCaptureReply::Frames(frames)) => {
+                if matches!(self, Self::MacScroll { .. }) {
+                    return Err(invalid());
+                }
                 validate_frames(frames)?;
                 if self.frame_count() != Some(frames.len()) {
                     return Err(invalid());
