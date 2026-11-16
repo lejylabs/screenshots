@@ -1,7 +1,9 @@
 //! An explicitly selected portal source has no saved physical monitor identity.
-use crate::{
-    CaptureError, CapturedImage, NativeCaptureCheck,
-};
+#[cfg(any(target_os = "linux", test))]
+use crate::NativeCaptureCall;
+#[cfg(target_os = "linux")]
+use crate::NativeCaptureReply;
+use crate::{CaptureError, CapturedImage, NativeCaptureCheck};
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]

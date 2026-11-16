@@ -9319,7 +9319,7 @@ try {
         ));
         std::fs::create_dir(&directory).unwrap();
         let path = directory.join("capture.png");
-        let output = path.clone();
+        let output = path;
         let result = Arc::new(Mutex::new(None));
         let report = result.clone();
         gpui_platform::application()
