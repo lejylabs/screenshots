@@ -303,8 +303,10 @@ def package(binary, output, name, target, epoch, info, licenses, runtime=None, *
         os.link(archive, destination)
         try:
             os.link(staged_checksum, checksum)
-        except BaseException:
-            destination.unlink()
+        except BaseException as error:
+            # A shared-name unlink can delete a concurrent replacement. Keep
+            # any already linked archive for review instead of destructive rollback.
+            error.add_note('Archive publication may be incomplete; the output directory was preserved. Use a new directory before retrying.')
             raise
     return destination
 

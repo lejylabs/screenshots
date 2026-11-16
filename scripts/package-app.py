@@ -106,6 +106,11 @@ def appx_manifest(version, architecture, publisher="CN=Screenshots"):
 '''
 
 
+def write_appx_manifest(directory, version, architecture, publisher="CN=Screenshots"):
+    (directory / "AppxManifest.xml").write_text(
+        appx_manifest(version, architecture, publisher), encoding="utf-8", newline="\n")
+
+
 def sdk_makeappx():
     found = shutil.which("makeappx.exe")
     if found:
@@ -193,21 +198,9 @@ def deb_package(portable, output, info):
                     archive.write(b"\n")
 
 
-def file_id(path):
-    metadata=path.lstat()
-    INSTALL.require(not path.is_symlink() and path.is_file(),"Published member changed type")
-    return metadata.st_dev,metadata.st_ino
-
-
-def remove_owned(path,identity):
-    try:
-        if file_id(path)==identity:path.unlink()
-    except (FileNotFoundError,ValueError):pass
-
-
 def publication_handle(path):
     if os.name!='nt':return path.open('rb')
-    # Keep identity alive while permitting owned-link rollback and private staging cleanup.
+    # Keep identity alive while permitting private staging cleanup.
     import ctypes
     import msvcrt
     kernel=ctypes.WinDLL('kernel32',use_last_error=True)
@@ -223,8 +216,6 @@ def publication_handle(path):
 class Publication:
     def __init__(self,artifact,checksum):
         self.artifact=artifact;self.checksum=checksum
-        self.artifact_id=os.fstat(artifact.fileno()).st_dev,os.fstat(artifact.fileno()).st_ino
-        self.checksum_id=os.fstat(checksum.fileno()).st_dev,os.fstat(checksum.fileno()).st_ino
     def close(self):
         self.artifact.close();self.checksum.close()
     def __del__(self):self.close()
@@ -233,24 +224,21 @@ class Publication:
 def publish_file(source, destination):
     checksum=destination.with_name(destination.name+".sha256")
     admit_destinations([source],destination.parent)
-    # Retained handles prevent inode/file-ID reuse while the group can roll back.
+    # Retain the verified sources until publication settles.
     artifact_handle=publication_handle(source);checksum_handle=None
-    source_id=os.fstat(artifact_handle.fileno()).st_dev,os.fstat(artifact_handle.fileno()).st_ino
     try:
         with tempfile.TemporaryDirectory(prefix='.publish-checksum-',dir=source.parent) as temporary:
             staged=Path(temporary)/'checksum'
-            with staged.open('x') as output:
+            with staged.open('x',encoding='utf-8',newline='\n') as output:
                 output.write(INSTALL.sha(source)+"  "+destination.name+"\n");output.flush();os.fsync(output.fileno())
             checksum_handle=publication_handle(staged)
             os.link(source,destination)
-            try:os.link(staged,checksum)
-            except BaseException:
-                remove_owned(destination,source_id)
-                raise
+            os.link(staged,checksum)
         return Publication(artifact_handle,checksum_handle)
-    except BaseException:
+    except BaseException as error:
         artifact_handle.close()
         if checksum_handle:checksum_handle.close()
+        error.add_note('Publication may be incomplete; output files were preserved for review. Use a new output directory before retrying.')
         raise
 
 
@@ -267,10 +255,10 @@ def publish_all(sources,output):
         for source in sources:
             destination=output/source.name
             receipt=publish_file(source,destination);published.append((destination,receipt))
-    except BaseException:
-        for destination,receipt in reversed(published):
-            remove_owned(destination.with_name(destination.name+".sha256"),receipt.checksum_id)
-            remove_owned(destination,receipt.artifact_id)
+    except BaseException as error:
+        # POSIX has no conditional unlink-by-inode. A stat/unlink rollback can
+        # delete a concurrent foreign replacement; never remove published names.
+        error.add_note('Artifact set publication failed; already created files remain in the selected output directory. No output was removed.')
         raise
     finally:
         for _,receipt in published:receipt.close()
@@ -358,7 +346,7 @@ def main():
             assets.mkdir()
             for filename, side in [("StoreLogo.png", 50), ("Square150.png", 150), ("Square44.png", 44)]:
                 png(assets / filename, side)
-            (portable / "AppxManifest.xml").write_text(appx_manifest(info["version"], "arm64" if info["target"].startswith("aarch64") else "x64", signing["publisher"] if signing else "CN=Screenshots"))
+            write_appx_manifest(portable, info["version"], "arm64" if info["target"].startswith("aarch64") else "x64", signing["publisher"] if signing else "CN=Screenshots")
             package = temporary / (name + ".msix")
             build=["makeappx.exe" if signing else sdk_makeappx(), "pack", "/d", str(portable), "/p", str(package), "/o"]
             if signing:SIGN.Tools().run(build)
