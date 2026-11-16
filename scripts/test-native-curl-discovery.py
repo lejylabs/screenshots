@@ -18,8 +18,8 @@ def main():
     parser.add_argument('--artifacts', type=Path, default=ROOT / 'target/release-fast')
     args = parser.parse_args()
     artifacts = args.artifacts.resolve()
-    libraries = [Path(line) for line in subprocess.check_output(
-        ['rg', '--files', str(artifacts), '-g', '*.rlib'], text=True).splitlines()]
+    # Build output is trusted compiler data; don't require an extra search binary on CI.
+    libraries = list(artifacts.rglob('*.rlib'))
     dependencies = sorted({path.parent for path in libraries})
     with tempfile.TemporaryDirectory(prefix='screenshots-native-curl-') as temporary:
         root = Path(temporary)
