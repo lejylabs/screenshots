@@ -17,8 +17,8 @@ Local implementation HEAD `1e24131` commits Library lifecycle/schema9 reservatio
 safety, monitor defaults/templates and isolated native work, modern SXCU, bounded
 raster work, schedules, portal/URL input and reviewed platform foundations. The
 new layered editor and physical-X11 color/ruler corrections are under final
-verification. The preceding complete optimized run passed 871 cases with 66
-opt-ins excluded across 62 outer suites; it predates those latest corrections.
+verification. The preceding complete optimized run passed 868 cases with 66
+opt-ins excluded across 59 outer suites; it predates those latest corrections.
 
 The newest commits remain local: GitHub currently denies pushes with HTTP403 and
 reports no repository write permission for the authenticated account. Current

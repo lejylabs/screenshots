@@ -15,8 +15,8 @@ backend and scaled-X11 color/ruler follow-ups are under final local verification
 remaining native input/output and physical-coordinate consumers are still open.
 Delivered backend paths do not close excluded UI or real native acceptance gates.
 
-The preceding integrated source passed **871 optimized tests**, with 66 explicit
-opt-ins excluded across 62 outer suites and zero failures. This run predates the
+The preceding integrated source passed **868 optimized tests**, with 66 explicit
+opt-ins excluded across 59 outer suites and zero failures. This run predates the
 latest editor runtime-budget correction and scaled-X11 utility changes; their
 new full run is pending. Earlier 786-test/Clippy/Windows GNU/advisory totals remain
 historical snapshots. Source reviews and private native fixtures are recorded
@@ -149,8 +149,10 @@ completion is listed separately.
   multipart/STS behavior remain explicit provider limits. No blanket arbitrary-
   version SXCU parity is claimed. [Runtime](sharex-runtime.md),
   [providers](sharing-completion.md), [tasks](tasks.md).
-- [ ] **Library/storage:** finish exact native lifecycle/fault acceptance and any
-  richer metadata/OCR/substring search. Cross-page core selection/actions,
+- [ ] **Library/storage:** add a durable save intent and targeted reconciliation
+  for crashes between file publication and history insertion. Move/trash journals
+  do not cover that interval. Finish exact native lifecycle/fault acceptance and
+  any richer metadata/OCR search. Cross-page core selection/actions,
   missing-reference removal, portable move/transfer, journaled trash/restore/
   purge and explicit retention are implemented. Thumbnail prefetch/cache/filter
   controls are UI consumer work, with no speculative idle cache added.
