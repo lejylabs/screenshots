@@ -75,6 +75,7 @@ jobs:
           "VCPKGRS_TRIPLET=x64-windows-static-md" >> $env:GITHUB_ENV
           "SCREENSHOTS_REQUIRE_NATIVE_CURL=1" >> $env:GITHUB_ENV
       - name: Run owned native topology and physical-mode fixtures
-        run: cargo test --locked --profile release-fast -p app-core -j 2 capture_native::platform:: -- --test-threads=1
+        run: |
+          cargo test --locked --profile release-fast -p app-core -j 2 capture_native::platform:: -- --test-threads=1
       - name: Run independent physical-coordinate models
         run: cargo test --locked --profile release-fast -p app-core -j 2 display_pixels -- --test-threads=1

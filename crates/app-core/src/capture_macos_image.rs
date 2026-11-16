@@ -314,3 +314,24 @@ pub(super) unsafe fn decode(image: *const c_void) -> Result<image::RgbaImage> {
     }
     Ok(pixels)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn native_color_context_preserves_bgra_channels_row_order_and_padding_without_screen_access() {
+        let space = Space(unsafe { CGColorSpaceCreateWithName(kCGColorSpaceSRGB) });
+        assert!(!space.0.is_null());
+        let bytes = [
+            13, 17, 23, 255, 31, 37, 41, 255, 199, 199, 199, 199, 47, 53, 59, 255, 61, 67, 71, 255,
+            199, 199, 199, 199,
+        ];
+        let output = unsafe { opaque_bgra_srgb(2, 2, 12, &bytes, space.0) }.unwrap();
+        assert_eq!(
+            output,
+            [
+                13, 17, 23, 255, 31, 37, 41, 255, 47, 53, 59, 255, 61, 67, 71, 255
+            ]
+        );
+    }
+}

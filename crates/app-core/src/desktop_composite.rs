@@ -391,14 +391,24 @@ mod tests {
         let mut before = Vec::new();
         let mut after = Vec::new();
         for sample in 0..105 {
-            let started = std::time::Instant::now();
-            let mut oracle = RgbaImage::new(7680, 2160);
-            image::imageops::replace(&mut oracle, frames[0].pixels.as_ref(), 0, 0);
-            image::imageops::replace(&mut oracle, frames[1].pixels.as_ref(), 3840, 0);
-            let old = started.elapsed().as_micros();
-            let started = std::time::Instant::now();
-            let output = stitch_desktop(&displays, &frames).unwrap();
-            let new = started.elapsed().as_micros();
+            let old_copy = || {
+                let started = std::time::Instant::now();
+                let mut oracle = RgbaImage::new(7680, 2160);
+                image::imageops::replace(&mut oracle, frames[0].pixels.as_ref(), 0, 0);
+                image::imageops::replace(&mut oracle, frames[1].pixels.as_ref(), 3840, 0);
+                (started.elapsed().as_micros(), oracle)
+            };
+            let new_copy = || {
+                let started = std::time::Instant::now();
+                let output = stitch_desktop(&displays, &frames).unwrap();
+                (started.elapsed().as_micros(), output)
+            };
+            let ((old, oracle), (new, output)) = if sample % 2 == 0 {
+                (old_copy(), new_copy())
+            } else {
+                let new = new_copy();
+                (old_copy(), new)
+            };
             assert_eq!(output.pixels.as_ref(), &oracle);
             if sample >= 5 {
                 before.push(old);
@@ -408,7 +418,7 @@ mod tests {
         before.sort_unstable();
         after.sort_unstable();
         eprintln!(
-            "{{\"scope\":\"two4K synthetic already-oriented source rasters; copy+allocation only\",\"samples\":100,\"old_p50_us\":{},\"old_p95_us\":{},\"new_p50_us\":{},\"new_p95_us\":{},\"source_bytes\":{},\"output_bytes\":{}}}",
+            "{{\"scope\":\"two4K synthetic already-oriented source rasters; alternating order; copy+allocation only\",\"samples\":100,\"old_p50_us\":{},\"old_p95_us\":{},\"new_p50_us\":{},\"new_p95_us\":{},\"source_bytes\":{},\"output_bytes\":{}}}",
             before[49],
             before[94],
             after[49],
