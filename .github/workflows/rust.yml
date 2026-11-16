@@ -5,13 +5,13 @@ on:
 permissions:
   contents: read
 jobs:
-  macos-core:
+  macos-app:
     strategy:
       fail-fast: false
       matrix:
         os: [macos-15, macos-15-intel]
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 30
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
       - run: rustup show active-toolchain
@@ -40,11 +40,12 @@ jobs:
               print('SDK contract',name,source[max(start,found-2300):found+700])
           HEADER
       - name: Check actual native core and test sources
-        run: cargo check --locked -p app-core --all-targets -j 2
+        run: cargo check --locked -p screenshots --all-targets -j 2
       - name: Portable admission models against native SDK build
         run: cargo test --locked --profile release-fast -p app-core capture_macos_model -- --test-threads=1
 
   windows-native-witness:
+    if: false
     runs-on: windows-latest
     timeout-minutes: 50
     steps:

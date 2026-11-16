@@ -15,6 +15,9 @@ const META_MAX: usize = 1024 * 1024;
 const CHUNK: usize = 64 * 1024;
 pub(super) const HELLO: u32 = 1;
 pub(super) const ACK: u32 = 2;
+pub(super) const VIDEO_READY: u32 = 8;
+pub(super) const VIDEO_START: u32 = 9;
+pub(super) const VIDEO_FINISH: u32 = 10;
 const REQUEST: u32 = 3;
 const META: u32 = 4;
 const FRAME: u32 = 5;
@@ -96,10 +99,14 @@ pub(super) fn read_request(input: &mut impl Read) -> Result<NativeCaptureCall> {
         Some("inventory" | "displays" | "windows") => &["operation"],
         Some("identities") => &["operation", "displays"],
         Some("batch") => &["operation", "requests", "options"],
-        Some("focused_window" | "focused_display") => &["operation", "options"],
+        Some("focused_window" | "focused_display" | "desktop") => &["operation", "options"],
         Some("template") => &["operation", "template", "options"],
+        Some("mac_scroll") => &["operation", "request"],
+        Some("mac_video") => &["operation", "request"],
         Some("portal") => &["operation", "source", "cursor"],
         Some("image_url") => &["operation", "source"],
+        Some("clipboard_image") => &["operation", "backend"],
+        Some("clipboard_inspect") => &["operation", "kind", "backend"],
         _ => anyhow::bail!("Unknown native operation"),
     };
     ensure!(
@@ -173,12 +180,41 @@ pub(super) fn read_request(input: &mut impl Read) -> Result<NativeCaptureCall> {
         );
     }
     let call: NativeCaptureCall = object(&bytes)?;
+    if matches!(
+        call,
+        NativeCaptureCall::MacScroll { .. } | NativeCaptureCall::MacVideo { .. }
+    ) {
+        let request = shape
+            .get("request")
+            .and_then(serde_json::Value::as_object)
+            .context("Native scroll request must be an object")?;
+        let region = request
+            .get("region")
+            .and_then(serde_json::Value::as_object)
+            .context("Native scroll region must be an object")?;
+        ensure!(
+            region
+                .keys()
+                .all(|key| ["x", "y", "width", "height"].contains(&key.as_str())),
+            "Unknown native scroll region field"
+        );
+    }
     call.validate()?;
     Ok(call)
 }
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 enum Meta {
+    MacVideo {
+        summary: app_core::MacVideoSummary,
+    },
+    MacScroll {
+        count: usize,
+        summary: app_core::MacScrollSummary,
+    },
+    Clipboard {
+        snapshot: app_core::ClipboardSnapshot,
+    },
     Inventory {
         displays: Option<Vec<DisplayInfo>>,
         windows: Option<Vec<WindowInfo>>,
@@ -211,6 +247,14 @@ struct Frame {
 }
 pub(super) fn reply(output: &mut impl Write, reply: NativeCaptureReply) -> Result<()> {
     let (value, frames) = match reply {
+        NativeCaptureReply::MacVideo { summary } => (Meta::MacVideo { summary }, Vec::new()),
+        NativeCaptureReply::MacScroll { image, summary } => {
+            (Meta::MacScroll { count: 1, summary }, vec![image])
+        }
+        NativeCaptureReply::Clipboard(snapshot) => {
+            snapshot.validate()?;
+            (Meta::Clipboard { snapshot }, Vec::new())
+        }
         NativeCaptureReply::Inventory(inventory) => {
             let (displays, display_error) = match inventory.displays {
                 Ok(values) => (Some(values), None),
@@ -281,6 +325,10 @@ fn error_code(error: &app_core::CaptureError) -> u8 {
         E::NativeTimeout => 9,
         E::PermissionDenied => 10,
         E::ImageUrlFailed => 11,
+        E::Clipboard => 12,
+        E::MacScreenPermissionDenied => 13,
+        E::MacAccessibilityPermissionDenied => 14,
+        E::MacMicrophonePermissionDenied => 15,
         _ => 0,
     }
 }
@@ -301,6 +349,10 @@ fn error_from_code(code: u8) -> Result<app_core::CaptureError> {
         9 => E::NativeTimeout,
         10 => E::PermissionDenied,
         11 => E::ImageUrlFailed,
+        12 => E::Clipboard,
+        13 => E::MacScreenPermissionDenied,
+        14 => E::MacAccessibilityPermissionDenied,
+        15 => E::MacMicrophonePermissionDenied,
         _ => anyhow::bail!("Unknown native error category"),
     })
 }
@@ -313,6 +365,13 @@ pub(super) fn failure(output: &mut impl Write, error: &app_core::CaptureError) -
 pub(super) fn read_reply(
     input: &mut impl Read,
     call: &NativeCaptureCall,
+) -> Result<NativeCaptureReply> {
+    read_reply_with_eof(input, call, true)
+}
+pub(super) fn read_reply_with_eof(
+    input: &mut impl Read,
+    call: &NativeCaptureCall,
+    require_eof: bool,
 ) -> Result<NativeCaptureReply> {
     let (kind, length, pixels) = header(input)?;
     if kind == ERROR {
@@ -347,7 +406,49 @@ pub(super) fn read_reply(
         }
     }
     let value: Meta = object(&bytes)?;
+    if matches!(value, Meta::MacVideo { .. }) {
+        ensure!(
+            shape
+                .get("summary")
+                .is_some_and(serde_json::Value::is_object),
+            "Native video summary must be an object"
+        );
+    }
+    if matches!(value, Meta::MacScroll { .. }) {
+        let summary = shape
+            .get("summary")
+            .and_then(serde_json::Value::as_object)
+            .context("Native scroll summary must be an object")?;
+        ensure!(
+            summary
+                .get("vertical_advances")
+                .and_then(serde_json::Value::as_array)
+                .is_some_and(|values| values.len() <= 128),
+            "Invalid native scroll advances"
+        );
+    }
+    let scroll = match &value {
+        Meta::MacScroll { count, summary } => {
+            ensure!(
+                *count == 1
+                    && summary.vertical_advances.len() <= 128
+                    && matches!(call, NativeCaptureCall::MacScroll { .. }),
+                "Unexpected or oversized native scroll summary"
+            );
+            Some(summary.clone())
+        }
+        _ => None,
+    };
+    ensure!(
+        !matches!(call, NativeCaptureCall::MacScroll { .. }) || scroll.is_some(),
+        "Native scrolling reply omitted its summary"
+    );
     let reply = match value {
+        Meta::MacVideo { summary } => NativeCaptureReply::MacVideo { summary },
+        Meta::Clipboard { snapshot } => {
+            snapshot.validate()?;
+            NativeCaptureReply::Clipboard(snapshot)
+        }
         Meta::Inventory {
             displays,
             windows,
@@ -373,7 +474,7 @@ pub(super) fn read_reply(
         Meta::Displays { values } => NativeCaptureReply::Displays(values),
         Meta::Windows { values } => NativeCaptureReply::Windows(values),
         Meta::Identities { values } => NativeCaptureReply::Identities(values),
-        Meta::Frames { count } => {
+        Meta::Frames { count } | Meta::MacScroll { count, summary: _ } => {
             ensure!(
                 (1..=32).contains(&count) && call.frame_count() == Some(count),
                 "Native frame count exceeds its bound or differs from its request"
@@ -400,6 +501,9 @@ pub(super) fn read_reply(
                     frame.height,
                     frame.display_geometry,
                 )?;
+                if let (Some(summary), NativeCaptureCall::MacScroll { request }) = (&scroll, call) {
+                    summary.validate(request, frame.width, frame.height)?;
+                }
                 let expected = admit_frame(&mut total, frame.width, frame.height, pixels)?;
                 let mut bytes = Vec::new();
                 bytes.try_reserve_exact(expected as usize)?;
@@ -421,7 +525,14 @@ pub(super) fn read_reply(
                     display_geometry: frame.display_geometry,
                 });
             }
-            NativeCaptureReply::Frames(frames)
+            if let Some(summary) = scroll {
+                NativeCaptureReply::MacScroll {
+                    image: frames.pop().context("Native scrolling frame missing")?,
+                    summary,
+                }
+            } else {
+                NativeCaptureReply::Frames(frames)
+            }
         }
     };
     let (kind, length, pixels) = header(input)?;
@@ -429,13 +540,19 @@ pub(super) fn read_reply(
         kind == END && length == 0 && pixels == 0,
         "Native reply did not terminate exactly"
     );
+    if require_eof {
+        expect_eof(input)?;
+    }
+    call.validate_reply(&reply)?;
+    Ok(reply)
+}
+pub(super) fn expect_eof(input: &mut impl Read) -> Result<()> {
     let mut extra = [0];
     ensure!(
         input.read(&mut extra)? == 0,
         "Native reply has trailing data"
     );
-    call.validate_reply(&reply)?;
-    Ok(reply)
+    Ok(())
 }
 fn admit_frame(total: &mut u64, width: u32, height: u32, payload: u64) -> Result<u64> {
     app_core::validate_image_size(width, height)?;
@@ -455,6 +572,106 @@ fn admit_frame(total: &mut u64, width: u32, height: u32, payload: u64) -> Result
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn mac_scroll() -> (NativeCaptureCall, NativeCaptureReply) {
+        let request = app_core::MacScrollRequest {
+            window: 42,
+            region: app_core::PixelRegion {
+                x: 0,
+                y: 0,
+                width: 2,
+                height: 4,
+            },
+            steps: 4,
+            wheel: 1,
+            settle_ms: 20,
+            minimum_overlap: 1,
+            tolerance: 0,
+            trim_top: 0,
+            trim_bottom: 0,
+        };
+        let image = CapturedImage {
+            display_id: "7".into(),
+            window_id: Some("42".into()),
+            width: 2,
+            height: 6,
+            png_path: "never-transmit-scroll-output.png".into(),
+            pixels: Arc::new(image::RgbaImage::from_pixel(
+                2,
+                6,
+                image::Rgba([7, 11, 13, 255]),
+            )),
+            elapsed_ms: 1,
+            source_format: PixelFormat::Rgba8UnormSrgb,
+            display_geometry: None,
+        };
+        let summary = app_core::MacScrollSummary {
+            captured_frames: 4,
+            scroll_actions: 3,
+            vertical_advances: vec![2],
+            stop_reason: app_core::MacScrollStop::Unchanged,
+            complete: true,
+        };
+        (
+            NativeCaptureCall::MacScroll { request },
+            NativeCaptureReply::MacScroll { image, summary },
+        )
+    }
+    #[test]
+    fn native_scroll_summary_and_pixels_are_admitted_together_without_output_authority() {
+        let (call, response) = mac_scroll();
+        let mut bytes = Vec::new();
+        reply(&mut bytes, response).unwrap();
+        assert!(
+            !bytes
+                .windows(20)
+                .any(|bytes| bytes == b"never-transmit-scroll")
+        );
+        let response = read_reply(&mut bytes.as_slice(), &call).unwrap();
+        let NativeCaptureReply::MacScroll { image, summary } = response else {
+            panic!("Expected scroll reply")
+        };
+        assert_eq!(image.pixels.get_pixel(0, 0).0, [7, 11, 13, 255]);
+        assert!(summary.complete);
+        assert_eq!(summary.vertical_advances, vec![2]);
+        let (_, response) = mac_scroll();
+        let NativeCaptureReply::MacScroll { image, .. } = response else {
+            unreachable!()
+        };
+        let mut bytes = Vec::new();
+        reply(&mut bytes, NativeCaptureReply::Frames(vec![image])).unwrap();
+        assert!(read_reply(&mut bytes.as_slice(), &call).is_err());
+    }
+    #[test]
+    fn invalid_scroll_summary_identity_and_permission_categories_fail_truthfully() {
+        for mode in 0..3 {
+            let (call, response) = mac_scroll();
+            let NativeCaptureReply::MacScroll {
+                mut image,
+                mut summary,
+            } = response
+            else {
+                unreachable!()
+            };
+            match mode {
+                0 => summary.complete = false,
+                1 => summary.vertical_advances = vec![2; 129],
+                _ => image.window_id = Some("43".into()),
+            };
+            let mut bytes = Vec::new();
+            reply(&mut bytes, NativeCaptureReply::MacScroll { image, summary }).unwrap();
+            assert!(read_reply(&mut bytes.as_slice(), &call).is_err());
+        }
+        for error in [
+            app_core::CaptureError::MacScreenPermissionDenied,
+            app_core::CaptureError::MacAccessibilityPermissionDenied,
+        ] {
+            let mut bytes = Vec::new();
+            failure(&mut bytes, &error).unwrap();
+            let (call, _) = mac_scroll();
+            let result = read_reply(&mut bytes.as_slice(), &call).err().unwrap();
+            assert_eq!(result.to_string(), error.to_string());
+        }
+    }
     fn call() -> NativeCaptureCall {
         NativeCaptureCall::Batch {
             requests: vec![app_core::CaptureRequest::Region {
@@ -587,6 +804,40 @@ mod tests {
             br#"{"operation":"identities","displays":[[]]}"#,
             br#"{"operation":"batch","requests":[{"kind":"region","value":["fixture",0,0,2,1]}],"options":{}}"#] {
             let mut encoded = Vec::new(); packet(&mut encoded, REQUEST, bytes, 0).unwrap(); assert!(read_request(&mut encoded.as_slice()).is_err());
+        }
+    }
+    #[test]
+    fn physical_desktop_protocol_keeps_one_exact_frame_and_rejects_other_sources() {
+        let call = NativeCaptureCall::Desktop {
+            options: Default::default(),
+        };
+        let mut encoded = Vec::new();
+        request(&mut encoded, &call).unwrap();
+        assert!(matches!(
+            read_request(&mut encoded.as_slice()).unwrap(),
+            NativeCaptureCall::Desktop { .. }
+        ));
+        let mut shot = frame();
+        shot.display_id = "desktop".into();
+        let expected = shot.pixels.clone();
+        let mut encoded = Vec::new();
+        reply(&mut encoded, NativeCaptureReply::Frames(vec![shot])).unwrap();
+        let NativeCaptureReply::Frames(frames) =
+            read_reply(&mut encoded.as_slice(), &call).unwrap()
+        else {
+            panic!("not frames");
+        };
+        assert_eq!(frames[0].pixels, expected);
+        let mut wrong = Vec::new();
+        reply(&mut wrong, NativeCaptureReply::Frames(vec![frame()])).unwrap();
+        assert!(read_reply(&mut wrong.as_slice(), &call).is_err());
+        for bytes in [
+            br#"{"operation":"desktop","options":[],"requests":[]}"#.as_slice(),
+            br#"{"operation":"desktop","options":{"delay_ms":1}}"#,
+        ] {
+            let mut packet_bytes = Vec::new();
+            packet(&mut packet_bytes, REQUEST, bytes, 0).unwrap();
+            assert!(read_request(&mut packet_bytes.as_slice()).is_err());
         }
     }
 }

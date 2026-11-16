@@ -289,11 +289,22 @@ mod platform;
 #[path = "clipboard_input_macos.rs"]
 mod platform;
 
+fn admit_backend_context(
+    backend: NativeClipboardBackend,
+) -> std::result::Result<(), crate::CaptureError> {
+    #[cfg(target_os = "linux")]
+    if backend == NativeClipboardBackend::Automatic && crate::linux_wayland_session() {
+        return Err(crate::CaptureError::Clipboard);
+    }
+    let _ = backend;
+    Ok(())
+}
 pub fn capture_clipboard_image_with_cancel(
     backend: NativeClipboardBackend,
     check: &crate::NativeCaptureCheck<'_>,
 ) -> std::result::Result<crate::CapturedImage, crate::CaptureError> {
     check()?;
+    admit_backend_context(backend)?;
     let call = crate::NativeCaptureCall::ClipboardImage { backend };
     let executor = crate::native_capture_job::executor().ok_or(
         crate::CaptureError::Unsupported("Clipboard import requires the isolated desktop executor"),
@@ -318,6 +329,7 @@ pub fn inspect_clipboard_with_cancel(
     check: &crate::NativeCaptureCheck<'_>,
 ) -> std::result::Result<ClipboardSnapshot, crate::CaptureError> {
     check()?;
+    admit_backend_context(backend)?;
     let call = crate::NativeCaptureCall::ClipboardInspect { kind, backend };
     let executor =
         crate::native_capture_job::executor().ok_or(crate::CaptureError::Unsupported(

@@ -389,6 +389,47 @@ fn execute(options: &Options<'_>) -> Result<serde_json::Value> {
 
 pub(crate) fn run(args: &[OsString]) -> Result<()> {
     let options = options(args)?;
+    #[cfg(target_os = "macos")]
+    {
+        let start = Instant::now();
+        let cancel = Cancellation::new()?;
+        cancel.settle(start, options.delay)?;
+        let request = app_core::MacScrollRequest {
+            window: options.window,
+            region: options.region,
+            steps: options.steps,
+            wheel: options.wheel,
+            settle_ms: options.settle.as_millis() as u32,
+            minimum_overlap: options.matcher.minimum_overlap,
+            tolerance: options.matcher.tolerance,
+            trim_top: options.matcher.trim_top,
+            trim_bottom: options.matcher.trim_bottom,
+        };
+        let (frame, summary) = app_core::capture_macos_scroll_with_cancel(request, &|| {
+            if cancel.canceled() {
+                return Err(app_core::CaptureError::NativeCanceled);
+            }
+            if start.elapsed() >= Duration::from_secs(120) {
+                return Err(app_core::CaptureError::NativeTimeout);
+            }
+            Ok(())
+        })?;
+        cancel.check(start)?;
+        frame.save_image_as_with_cancel(
+            options.destination,
+            app_core::DEFAULT_JPEG_QUALITY,
+            app_core::ExportSize::Original,
+            || cancel.canceled() || start.elapsed() >= Duration::from_secs(120),
+        )?;
+        let result = serde_json::json!({"format":"png","width":frame.width,"height":frame.height,"captured_frames":summary.captured_frames,
+            "scroll_actions":summary.scroll_actions,"appended_frames":summary.vertical_advances.len(),"vertical_advances":summary.vertical_advances,
+            "tolerance":options.matcher.tolerance,"trim_top":options.matcher.trim_top,"trim_bottom":options.matcher.trim_bottom,"stop_reason":summary.stop_reason,"complete":summary.complete});
+        let mut stdout = std::io::stdout().lock();
+        writeln!(stdout, "{result}")
+            .and_then(|_| stdout.flush())
+            .context("Scrolling image was saved but its result could not be written")?;
+        return Ok(());
+    }
     #[cfg(any(target_os = "linux", target_os = "windows"))]
     {
         let result = execute(&options)?;
@@ -397,7 +438,7 @@ pub(crate) fn run(args: &[OsString]) -> Result<()> {
             .and_then(|_| stdout.flush())
             .context("Scrolling image was saved but its result could not be written")
     }
-    #[cfg(not(any(target_os = "linux", target_os = "windows")))]
+    #[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
     {
         let _ = options;
         bail!("Native scrolling capture is not available on this platform")

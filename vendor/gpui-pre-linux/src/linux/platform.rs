@@ -18,11 +18,9 @@ use std::{
 use anyhow::ensure;
 use anyhow::{Context as _, anyhow};
 #[cfg(any(feature = "wayland", feature = "x11"))]
-use ashpd::{
-    desktop::{
-        Request,
-        inhibit::{InhibitFlags, InhibitOptions, InhibitProxy},
-    },
+use ashpd::desktop::{
+    Request,
+    inhibit::{InhibitFlags, InhibitOptions, InhibitProxy},
 };
 use calloop::{EventLoop, LoopHandle, LoopSignal, channel::Sender};
 use futures::channel::oneshot;
@@ -1172,6 +1170,16 @@ impl Platform for LinuxPlatform {
         self.connection.borrow().read_from_clipboard()
     }
 
+    fn cancel_image_clipboard_read(&self) {
+        self.connection.borrow().cancel_image_clipboard_read()
+    }
+
+    fn read_image_from_clipboard_async(
+        &self,
+    ) -> Option<Task<Result<gpui::Image, gpui::ClipboardReadError>>> {
+        self.connection.borrow().read_image_from_clipboard_async()
+    }
+
     fn add_recent_document(&self, _path: &Path) {}
 }
 
@@ -1319,39 +1327,86 @@ pub(super) fn get_xkb_compose_state(cx: &xkb::Context) -> Option<xkb::compose::S
 #[cfg(any(feature = "wayland", feature = "x11"))]
 pub(super) const PIPE_READ_TIMEOUT: Duration = Duration::from_secs(4);
 
-#[cfg(any(feature = "wayland", feature = "x11"))]
+#[cfg(all(test, any(feature = "wayland", feature = "x11")))]
 pub(super) fn read_fd_with_timeout(
-    mut fd: filedescriptor::FileDescriptor,
+    fd: filedescriptor::FileDescriptor,
     timeout: Duration,
 ) -> Result<Vec<u8>> {
+    read_fd_bounded(fd, timeout, 32 * 1024 * 1024, None)
+}
+
+#[cfg(any(feature = "wayland", feature = "x11"))]
+pub(super) fn read_fd_bounded(
+    mut fd: filedescriptor::FileDescriptor,
+    timeout: Duration,
+    max: usize,
+    cancel: Option<std::os::unix::net::UnixStream>,
+) -> Result<Vec<u8>> {
+    use gpui::ClipboardReadError;
     fd.set_non_blocking(true)?;
+    let deadline = std::time::Instant::now()
+        .checked_add(timeout)
+        .ok_or_else(|| anyhow!("Invalid clipboard deadline"))?;
     let mut buffer = Vec::new();
     let mut chunk = [0u8; 8192];
     loop {
-        let mut poll_fds = [filedescriptor::pollfd {
-            fd: fd.as_raw_fd(),
-            events: filedescriptor::POLLIN,
-            revents: 0,
-        }];
-        let ready = match filedescriptor::poll(&mut poll_fds, Some(timeout)) {
-            Ok(ready) => ready,
-            Err(filedescriptor::Error::Poll(err))
-                if err.kind() == std::io::ErrorKind::Interrupted =>
-            {
+        let now = std::time::Instant::now();
+        if now >= deadline {
+            return Err(ClipboardReadError::TimedOut.into());
+        }
+        let mut fds = [
+            filedescriptor::pollfd {
+                fd: fd.as_raw_fd(),
+                events: filedescriptor::POLLIN,
+                revents: 0,
+            },
+            filedescriptor::pollfd {
+                fd: cancel.as_ref().map_or(-1, AsRawFd::as_raw_fd),
+                events: filedescriptor::POLLIN,
+                revents: 0,
+            },
+        ];
+        let ready = match filedescriptor::poll(
+            &mut fds,
+            Some(
+                deadline
+                    .saturating_duration_since(now)
+                    .saturating_add(Duration::from_millis(1)),
+            ),
+        ) {
+            Ok(n) => n,
+            Err(filedescriptor::Error::Poll(e)) if e.kind() == std::io::ErrorKind::Interrupted => {
                 continue;
             }
-            Err(err) => return Err(err.into()),
+            Err(e) => return Err(e.into()),
         };
         if ready == 0 {
-            anyhow::bail!("timed out waiting for data on pipe after {timeout:?}");
+            return Err(ClipboardReadError::TimedOut.into());
         }
-        match fd.read(&mut chunk) {
+        if fds[1].revents != 0 {
+            return Err(ClipboardReadError::Canceled.into());
+        }
+        if std::time::Instant::now() >= deadline {
+            return Err(ClipboardReadError::TimedOut.into());
+        }
+        let admitted = max
+            .saturating_sub(buffer.len())
+            .saturating_add(1)
+            .min(chunk.len());
+        match fd.read(&mut chunk[..admitted]) {
             Ok(0) => return Ok(buffer),
-            Ok(len) => buffer.extend_from_slice(&chunk[..len]),
-            Err(err)
-                if err.kind() == std::io::ErrorKind::WouldBlock
-                    || err.kind() == std::io::ErrorKind::Interrupted => {}
-            Err(err) => return Err(err.into()),
+            Ok(n) => {
+                if n > max.saturating_sub(buffer.len()) {
+                    return Err(ClipboardReadError::TooLarge.into());
+                }
+                buffer.extend_from_slice(&chunk[..n]);
+            }
+            Err(e)
+                if matches!(
+                    e.kind(),
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::Interrupted
+                ) => {}
+            Err(e) => return Err(e.into()),
         }
     }
 }
@@ -1977,7 +2032,7 @@ mod tests {
         }
 
         #[test]
-        fn slow_writer_resets_deadline_between_chunks() {
+        fn slow_writer_cannot_reset_the_absolute_deadline() {
             let pipe = filedescriptor::Pipe::new().unwrap();
             let chunks = 12;
             let gap = Duration::from_millis(40);
@@ -1988,15 +2043,59 @@ mod tests {
                 move || {
                     for _ in 0..chunks {
                         std::thread::sleep(gap);
-                        write.write_all(&[b'x'; 1000]).unwrap();
+                        if write.write_all(&[b'x'; 1000]).is_err() {
+                            break;
+                        }
                     }
                 }
             });
-            // The total transfer (~480ms) exceeds the timeout; this only
-            // passes because the timeout is re-armed per chunk.
-            let bytes = read_fd_with_timeout(pipe.read, timeout).unwrap();
+            // Progress cannot turn the finite operation into an unbounded transfer.
+            let started = Instant::now();
+            let error = read_fd_with_timeout(pipe.read, timeout).unwrap_err();
+            assert!(error.to_string().contains("timed out"));
+            assert!(started.elapsed() < timeout * 2);
             writer.join().unwrap();
-            assert_eq!(bytes, vec![b'x'; 1000 * chunks]);
+        }
+
+        #[test]
+        fn rejects_the_first_byte_beyond_limit_and_keeps_exact_boundary() {
+            for length in [128, 129] {
+                let mut pipe = filedescriptor::Pipe::new().unwrap();
+                pipe.write.write_all(&vec![b'x'; length]).unwrap();
+                drop(pipe.write);
+                let result =
+                    super::super::read_fd_bounded(pipe.read, Duration::from_secs(1), 128, None);
+                if length == 128 {
+                    assert_eq!(result.unwrap().len(), 128);
+                } else {
+                    assert!(matches!(
+                        result
+                            .unwrap_err()
+                            .downcast::<gpui::ClipboardReadError>()
+                            .unwrap(),
+                        gpui::ClipboardReadError::TooLarge
+                    ));
+                }
+            }
+        }
+        #[test]
+        fn native_cancel_descriptor_wakes_a_stalled_reader() {
+            let pipe = filedescriptor::Pipe::new().unwrap();
+            let _writer = pipe.write;
+            let (read, mut write) = std::os::unix::net::UnixStream::pair().unwrap();
+            let reader = std::thread::spawn(move || {
+                super::super::read_fd_bounded(pipe.read, Duration::from_secs(4), 128, Some(read))
+            });
+            std::thread::sleep(Duration::from_millis(20));
+            write.write_all(&[1]).unwrap();
+            let result = reader.join().unwrap();
+            assert!(matches!(
+                result
+                    .unwrap_err()
+                    .downcast::<gpui::ClipboardReadError>()
+                    .unwrap(),
+                gpui::ClipboardReadError::Canceled
+            ));
         }
 
         #[test]

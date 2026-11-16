@@ -430,6 +430,21 @@ impl NativeCaptureCall {
                 "Portal source requires the desktop native adapter",
             ));
         }
+        #[cfg(target_os = "macos")]
+        if matches!(
+            self,
+            Self::Batch { .. }
+                | Self::FocusedWindow { .. }
+                | Self::FocusedDisplay { .. }
+                | Self::Template { .. }
+                | Self::Desktop { .. }
+        ) {
+            crate::capture_macos_ax::screen_permission().map_err(|error| {
+                error
+                    .downcast::<CaptureError>()
+                    .unwrap_or_else(|_| CaptureError::MacScreenPermissionDenied)
+            })?;
+        }
         #[cfg(target_os = "linux")]
         {
             let display = std::env::var("DISPLAY").map_err(|_| {

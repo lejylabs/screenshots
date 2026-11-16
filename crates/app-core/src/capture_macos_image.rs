@@ -1,7 +1,7 @@
 //! Bounded native CGImage→straight sRGB RGBA. No file/PNG handoff.
 use crate::capture_macos_ax::{Point, Rect, Size};
 use crate::{CaptureCursor, CaptureOptions, CaptureWindowShadow, MacWindowProof};
-use anyhow::{Result, ensure};
+use anyhow::{Context, Result, ensure};
 use core_foundation::{
     base::TCFType,
     data::{CFData, CFDataRef},
@@ -63,6 +63,59 @@ unsafe extern "C" {
         window: u32,
         image_options: u32,
     ) -> *const c_void;
+    fn CGDisplayCreateImage(display: u32) -> *const c_void;
+}
+pub(super) fn display(
+    id: u32,
+    region: Option<crate::PixelRegion>,
+    options: &CaptureOptions,
+) -> Result<image::RgbaImage> {
+    crate::capture_macos_ax::screen_permission()?;
+    let until = Instant::now() + Duration::from_secs(20);
+    let proof = crate::capture_macos_ax::displays()?
+        .into_iter()
+        .find(|display| display.id == id)
+        .context("Native display is unavailable")?;
+    if let Some(region) = region {
+        proof.screen_input_crop(region)?;
+    }
+    let mut legacy = false;
+    let mut pixels = if let Some(source) = crate::capture_macos_sck::Display::new(id, until)? {
+        ensure!(
+            source.proof == proof,
+            "Display identity changed before capture"
+        );
+        let image = source.capture(options, until)?;
+        unsafe { decode(image.0) }?
+    } else {
+        legacy = true;
+        let image = crate::capture_macos_sck::Image(unsafe { CGDisplayCreateImage(id) });
+        ensure!(!image.0.is_null(), "Native display image is unavailable");
+        unsafe { decode(image.0) }?
+    };
+    ensure!(
+        pixels.dimensions() == (proof.pixel_width, proof.pixel_height),
+        "Native display pixel extent changed"
+    );
+    if legacy && options.cursor == CaptureCursor::Include {
+        crate::capture_macos_cursor::compose(&mut pixels, proof.logical, proof.unrotated_scale()?)?;
+    }
+    let current = crate::capture_macos_ax::displays()?
+        .into_iter()
+        .find(|display| display.id == id)
+        .context("Native display disappeared")?;
+    ensure!(
+        current == proof,
+        "Native display UUID/geometry changed during capture"
+    );
+    if let Some(region) = region {
+        Ok(
+            image::imageops::crop_imm(&pixels, region.x, region.y, region.width, region.height)
+                .to_image(),
+        )
+    } else {
+        Ok(pixels)
+    }
 }
 pub(super) fn legacy_window(
     proof: MacWindowProof,
@@ -70,8 +123,9 @@ pub(super) fn legacy_window(
 ) -> Result<image::RgbaImage> {
     crate::capture_macos_ax::screen_permission()?;
     ensure!(
-        options.cursor != CaptureCursor::Include,
-        "This macOS version needs its native compositor cursor API for inclusion"
+        options.cursor != CaptureCursor::Include
+            || options.window_shadow != CaptureWindowShadow::Include,
+        "Legacy shadow extent has no public cursor origin; exclude shadows or use native compositor capture"
     );
     proof.verify_unchanged(crate::capture_macos_ax::window(proof.id)?)?;
     let flags = 8 | if options.window_shadow == CaptureWindowShadow::Include {
@@ -85,7 +139,25 @@ pub(super) fn legacy_window(
         "Native legacy window capture is unavailable; check supported macOS API/Screen Recording permission"
     );
     let image = crate::capture_macos_sck::Image(raw);
-    let pixels = unsafe { decode(image.0) }?;
+    let mut pixels = unsafe { decode(image.0) }?;
+    if options.cursor == CaptureCursor::Include {
+        let mut displays = crate::capture_macos_ax::displays()?
+            .into_iter()
+            .filter(|display| display.logical.contains(proof.bounds));
+        let display = displays
+            .next()
+            .context("Legacy cursor window must fit a native display")?;
+        ensure!(
+            displays.next().is_none(),
+            "Legacy cursor display binding is ambiguous"
+        );
+        let scale = display.unrotated_scale()?;
+        ensure!(
+            proof.bounds.pixel_size(scale)? == pixels.dimensions(),
+            "Legacy cursor/window pixel geometry is ambiguous"
+        );
+        crate::capture_macos_cursor::compose(&mut pixels, proof.bounds, scale)?;
+    }
     proof.verify_unchanged(crate::capture_macos_ax::window(proof.id)?)?;
     Ok(pixels)
 }
@@ -119,6 +191,61 @@ impl Drop for Provider {
     }
 }
 extern "C" fn no_release(_: *mut c_void, _: *const c_void, _: usize) {}
+pub(super) unsafe fn cursor_pixels(
+    image: *const c_void,
+    width: u32,
+    height: u32,
+) -> Result<image::RgbaImage> {
+    ensure!(
+        !image.is_null() && (1..=1024).contains(&width) && (1..=1024).contains(&height),
+        "Native cursor size is unavailable/oversized"
+    );
+    let source_width = unsafe { CGImageGetWidth(image) };
+    let source_height = unsafe { CGImageGetHeight(image) };
+    let source_stride = unsafe { CGImageGetBytesPerRow(image) };
+    ensure!(
+        (1..=1024).contains(&source_width)
+            && (1..=1024).contains(&source_height)
+            && source_stride
+                .checked_mul(source_height)
+                .is_some_and(|bytes| bytes <= 4 * 1024 * 1024),
+        "Native cursor backing exceeds its budget"
+    );
+    let space = Space(unsafe { CGColorSpaceCreateWithName(kCGColorSpaceSRGB) });
+    ensure!(!space.0.is_null(), "Native cursor color space unavailable");
+    let mut pixels = image::RgbaImage::new(width, height);
+    let bytes: &mut [u8] = pixels.as_mut();
+    let context = Context(unsafe {
+        CGBitmapContextCreate(
+            bytes.as_mut_ptr().cast(),
+            width as usize,
+            height as usize,
+            8,
+            width as usize * 4,
+            space.0,
+            0x4000 | 1,
+        )
+    });
+    ensure!(
+        !context.0.is_null(),
+        "Cannot allocate bounded native cursor context"
+    );
+    unsafe {
+        CGContextDrawImage(
+            context.0,
+            Rect {
+                origin: Point { x: 0.0, y: 0.0 },
+                size: Size {
+                    width: f64::from(width),
+                    height: f64::from(height),
+                },
+            },
+            image,
+        )
+    };
+    drop(context);
+    Ok(pixels)
+}
 /// The source is a locked, opaque BGRA CV buffer; one destination copy performs
 /// public native SDR color management before the raw encoder receives it.
 pub(super) unsafe fn opaque_bgra_srgb(

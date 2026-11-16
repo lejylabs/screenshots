@@ -99,10 +99,13 @@ pub(crate) fn require_x11(
 }
 
 pub(crate) fn validate_geometry(display: &DisplayInfo, area: PixelRegion, x11: bool) -> Result<()> {
-    ensure!(
-        display.scale_factor == 1.0 && display.rotation == 0.0,
-        "Region analysis currently requires an unrotated display at 100% scale"
-    );
+    if x11 {
+        ensure!(
+            display.scale_factor == 1.0 && display.rotation == 0.0,
+            "X11 region analysis requires an unrotated display at 100% scale"
+        );
+    }
+    app_core::validate_display_pixel_coordinates(display)?;
     ensure!(
         area.x
             .checked_add(area.width)

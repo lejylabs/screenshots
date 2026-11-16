@@ -5,14 +5,19 @@
 pub mod windows_child;
 
 mod arrows;
+pub mod editor_document;
 mod layers;
 mod pen;
 pub use layers::{DrawAnnotation, HighlightAnnotation};
 pub use pen::{MAX_DOCUMENT_PEN_POINTS, MAX_PEN_POINTS, PenAnnotation};
 mod capture;
+#[cfg(target_os = "linux")]
+pub use capture::{linux_wayland_markers, linux_wayland_session};
 mod capture_catalog;
 #[cfg(target_os = "macos")]
 mod capture_macos_ax;
+#[cfg(target_os = "macos")]
+mod capture_macos_cursor;
 #[cfg(target_os = "macos")]
 mod capture_macos_image;
 #[cfg(target_os = "macos")]

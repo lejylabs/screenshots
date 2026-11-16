@@ -62,8 +62,9 @@ enum EditorImage {
     Captured(CapturedImage),
     SavedPng(PathBuf),
     File(PathBuf),
-    #[cfg(target_os = "windows")]
-    Clipboard,
+    Clipboard(app_core::NativeClipboardBackend),
+    Encoded(Arc<Vec<u8>>),
+    Url(app_core::ImageUrlSource),
 }
 
 #[derive(Clone, Copy)]
@@ -243,6 +244,7 @@ pub struct CaptureWorkspace {
     last_saved: Option<PathBuf>,
     last_render: Option<Arc<gpui::RenderImage>>,
     capturing: bool,
+    capture_generation: u64,
     capture_delay: Option<gpui::Task<()>>,
     capture_delay_seconds: u8,
     capture_delay_input: Option<gpui::Entity<gpui::component::input::InputState>>,
@@ -568,8 +570,11 @@ impl CaptureWorkspace {
                 OpenImage,
                 Some("CaptureWorkspace"),
             ),
-            #[cfg(target_os = "windows")]
-            KeyBinding::new("ctrl-shift-v", PasteImage, Some("CaptureWorkspace")),
+            KeyBinding::new(
+                if mac { "cmd-shift-v" } else { "ctrl-shift-v" },
+                PasteImage,
+                Some("CaptureWorkspace"),
+            ),
             KeyBinding::new(
                 if mac { "cmd-1" } else { "ctrl-1" },
                 ShowRecent,
@@ -714,6 +719,7 @@ impl CaptureWorkspace {
             last_saved: None,
             last_render: None,
             capturing: false,
+            capture_generation: 0,
             capture_delay: None,
             capture_delay_seconds: 3,
             capture_delay_input: None,
@@ -2006,6 +2012,7 @@ impl CaptureWorkspace {
     }
 
     fn close_overlays(&mut self, cx: &mut Context<Self>) {
+        cx.cancel_image_clipboard_read();
         if let Some(cancellation) = &self.native_capture_cancel {
             cancellation.cancel();
         }
@@ -2869,13 +2876,24 @@ impl CaptureWorkspace {
     }
 
     fn paste_image(&mut self, cx: &mut Context<Self>) {
-        #[cfg(target_os = "windows")]
-        if !self.image_input_busy() {
-            self.show_page(ControlPage::Captures, cx);
-            self.open_redaction_source(EditorImage::Clipboard, cx);
+        if self.image_input_busy() {
+            return;
         }
-        #[cfg(not(target_os = "windows"))]
-        let _ = cx;
+        self.show_page(ControlPage::Captures, cx);
+        let read = cx.read_image_from_clipboard_async();
+        #[cfg(target_os = "linux")]
+        let backend = if read.is_none()
+            && cx
+                .graphical_environment()
+                .is_some_and(|environment| environment.x11_display.is_some())
+        {
+            app_core::NativeClipboardBackend::FocusedX11
+        } else {
+            app_core::NativeClipboardBackend::Automatic
+        };
+        #[cfg(not(target_os = "linux"))]
+        let backend = app_core::NativeClipboardBackend::Automatic;
+        self.open_redaction_source_with_read(EditorImage::Clipboard(backend), read, cx);
     }
 
     fn open_image(&mut self, cx: &mut Context<Self>) {
@@ -2935,7 +2953,52 @@ impl CaptureWorkspace {
         self.open_redaction_source(EditorImage::File(path.clone()), cx);
     }
 
+    fn open_dropped_encoded(&mut self, data: &gpui::ExternalImageDrop, cx: &mut Context<Self>) {
+        if self.image_input_busy() {
+            return;
+        }
+        let Some(bytes) = data
+            .bytes
+            .as_ref()
+            .filter(|bytes| !bytes.is_empty() && bytes.len() <= 32 * 1024 * 1024)
+        else {
+            self.capture_status = "Dropped image is missing or exceeds32 MiB.".into();
+            cx.notify();
+            return;
+        };
+        self.show_page(ControlPage::Captures, cx);
+        self.open_redaction_source(EditorImage::Encoded(bytes.clone()), cx);
+    }
+    fn open_dropped_url(&mut self, data: &gpui::ExternalUrlDrop, cx: &mut Context<Self>) {
+        if self.image_input_busy() {
+            return;
+        }
+        if data.url.is_empty() || data.url.len() > 4096 {
+            self.capture_status = "Drop one supported HTTP(S) image URL.".into();
+            cx.notify();
+            return;
+        }
+        match app_core::ImageUrlSource::new(data.url.to_string(), data.url.starts_with("http://")) {
+            Ok(source) => {
+                self.show_page(ControlPage::Captures, cx);
+                self.open_redaction_source(EditorImage::Url(source), cx);
+            }
+            Err(_) => {
+                self.capture_status = "Drop one supported HTTP(S) image URL.".into();
+                cx.notify();
+            }
+        }
+    }
+
     fn open_redaction_source(&mut self, source: EditorImage, cx: &mut Context<Self>) {
+        self.open_redaction_source_with_read(source, None, cx)
+    }
+    fn open_redaction_source_with_read(
+        &mut self,
+        source: EditorImage,
+        read: Option<gpui::Task<Result<gpui::Image, gpui::ClipboardReadError>>>,
+        cx: &mut Context<Self>,
+    ) {
         if self.image_input_busy() {
             return;
         }
@@ -2943,57 +3006,111 @@ impl CaptureWorkspace {
             return;
         };
         self.begin_capturing();
+        let generation = self.capture_generation;
+        let cancellation = self
+            .native_capture_cancel
+            .clone()
+            .expect("Image admission owns cancellation");
+        let delivery_cancel = cancellation.clone();
         self.capture_status = "Opening image editor…".into();
         cx.spawn(async move |this, cx| {
-            let result = cx
-                .background_spawn(async move {
-                    let mut source = match source {
-                        EditorImage::Captured(source) => source,
-                        file => {
-                            let pixels = match file {
-                                EditorImage::SavedPng(path) => app_core::load_saved_png(&path),
-                                EditorImage::File(path) => app_core::load_editor_image(&path),
-                                #[cfg(target_os = "windows")]
-                                EditorImage::Clipboard => app_core::read_clipboard_image(),
-                                EditorImage::Captured(_) => unreachable!(),
+            let source = if let Some(read) = read {
+                read.await
+                    .map(|image| EditorImage::Encoded(Arc::new(image.bytes)))
+                    .map_err(|error| error.to_string())
+            } else {
+                Ok(source)
+            };
+            let result = match source {
+                Err(error) => Err(error),
+                Ok(source) => {
+                    cx.background_spawn(async move {
+                        cancellation.check().map_err(|e| e.to_string())?;
+                        let mut source = match source {
+                            EditorImage::Captured(source) => source,
+                            EditorImage::Url(source) => source
+                                .capture_with_cancel(&|| cancellation.check())
+                                .map_err(|e| format!("{e:#}"))?,
+                            EditorImage::Clipboard(backend) => {
+                                app_core::capture_clipboard_image_with_cancel(backend, &|| {
+                                    cancellation.check()
+                                })
+                                .map_err(|e| format!("{e:#}"))?
                             }
-                            .map_err(|e| format!("{e:#}"))?;
-                            CapturedImage {
-                                width: pixels.width(),
-                                height: pixels.height(),
-                                pixels: Arc::new(pixels),
-                                display_id: "saved-image".into(),
-                                window_id: None,
-                                png_path: directory.join("source.png"),
-                                elapsed_ms: 0,
-                                source_format: app_core::PixelFormat::Rgba8UnormSrgb,
-                                display_geometry: None,
+                            file => {
+                                let pixels = match file {
+                                    EditorImage::SavedPng(path) => app_core::load_saved_png(&path),
+                                    EditorImage::File(path) => app_core::load_editor_image(&path),
+                                    EditorImage::Encoded(bytes) => {
+                                        app_core::decode_editor_image_bytes(&bytes)
+                                    }
+                                    EditorImage::Clipboard(_) | EditorImage::Url(_) => {
+                                        unreachable!()
+                                    }
+                                    EditorImage::Captured(_) => unreachable!(),
+                                }
+                                .map_err(|e| format!("{e:#}"))?;
+                                CapturedImage {
+                                    width: pixels.width(),
+                                    height: pixels.height(),
+                                    pixels: Arc::new(pixels),
+                                    display_id: "saved-image".into(),
+                                    window_id: None,
+                                    png_path: directory.join("source.png"),
+                                    elapsed_ms: 0,
+                                    source_format: app_core::PixelFormat::Rgba8UnormSrgb,
+                                    display_geometry: None,
+                                }
                             }
-                        }
-                    };
-                    source.png_path = directory.join("source.png");
-                    let render = render_frame(&source);
-                    Ok::<_, String>((source, render))
-                })
-                .await;
+                        };
+                        cancellation.check().map_err(|e| e.to_string())?;
+                        source.png_path = directory.join("source.png");
+                        let render = render_frame(&source);
+                        Ok::<_, String>((source, render))
+                    })
+                    .await
+                }
+            };
             this.update(cx, |this, cx| {
-                this.finish_capturing(cx);
-                if this.quitting {
-                    this.finish_quit_if_idle(cx);
-                    return;
-                }
-                match result {
-                    Ok((source, render)) => this.show_prepared_editor(source, render, false, cx),
-                    Err(error) => {
-                        this.capture_status = format!("Could not load image: {error}");
-                        this.history_action_status = this.capture_status.clone();
-                    }
-                }
-                cx.notify();
+                this.deliver_image_input(generation, &delivery_cancel, result, cx);
             })
             .ok();
         })
         .detach();
+        cx.notify();
+    }
+
+    fn deliver_image_input(
+        &mut self,
+        generation: u64,
+        cancellation: &app_core::NativeCaptureCancellation,
+        result: Result<(CapturedImage, Arc<gpui::RenderImage>), String>,
+        cx: &mut Context<Self>,
+    ) {
+        if self.capture_generation != generation {
+            return;
+        }
+        // Keep the operation token alive through foreground delivery; render preparation
+        // can complete just before Escape/Quit cancels this same generation.
+        let canceled = cancellation.check().is_err();
+        self.finish_capturing(cx);
+        if self.quitting {
+            self.finish_quit_if_idle(cx);
+            return;
+        }
+        if canceled {
+            self.capture_status = "Image opening canceled.".into();
+            self.history_action_status = self.capture_status.clone();
+            cx.notify();
+            return;
+        }
+        match result {
+            Ok((source, render)) => self.show_prepared_editor(source, render, false, cx),
+            Err(error) => {
+                self.capture_status = format!("Could not load image: {error}");
+                self.history_action_status = self.capture_status.clone();
+            }
+        }
         cx.notify();
     }
 
@@ -3262,6 +3379,7 @@ impl CaptureWorkspace {
     }
 
     fn begin_capturing(&mut self) {
+        self.capture_generation = self.capture_generation.wrapping_add(1);
         self.cancel_history_thumb_job();
         if let Some(cancellation) = &self.native_sources_cancel {
             cancellation.cancel();
@@ -6588,6 +6706,7 @@ fn overlay_options(
 }
 
 fn close_application(cx: &mut App) {
+    cx.cancel_image_clipboard_read();
     if cx.has_global::<ResidentController>() {
         let entity = cx.global::<ResidentController>().0.clone();
         let busy = entity.update(cx, |this, cx| {
@@ -9379,5 +9498,187 @@ try {
             assert!(options.focus);
             assert!(matches!(options.kind, WindowKind::PopUp));
         }
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod private_wayland_clipboard_fixture {
+    use super::*;
+    #[test]
+    #[ignore = "requires an owned private Wayland compositor and synthetic producer; never uses the user clipboard"]
+    fn focused_wayland_paste_uses_native_offer_and_existing_editor() {
+        use std::os::unix::fs::{FileTypeExt, MetadataExt};
+        unsafe extern "C" {
+            fn geteuid() -> u32;
+        }
+        let root = PathBuf::from(
+            std::env::var_os("SCREENSHOTS_PRIVATE_WAYLAND_CLIPBOARD")
+                .expect("Private fixture root required"),
+        )
+        .canonicalize()
+        .unwrap();
+        assert!(
+            root.file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with("screenshots-private-wayland-")
+        );
+        let metadata = root.metadata().unwrap();
+        assert_eq!(metadata.uid(), unsafe { geteuid() });
+        assert_eq!(metadata.mode() & 0o077, 0);
+        let runtime = PathBuf::from(std::env::var_os("XDG_RUNTIME_DIR").unwrap())
+            .canonicalize()
+            .unwrap();
+        assert_eq!(runtime, root.join("runtime"));
+        assert!(std::env::var_os("DISPLAY").is_none());
+        let display = std::env::var_os("WAYLAND_DISPLAY").unwrap();
+        let display = PathBuf::from(display);
+        assert_eq!(display.components().count(), 1);
+        assert!(
+            runtime
+                .join(display)
+                .symlink_metadata()
+                .unwrap()
+                .file_type()
+                .is_socket()
+        );
+        let output = root.join("output");
+        std::fs::create_dir_all(&output).unwrap();
+        let result = Arc::new(Mutex::new(None::<Result<(), String>>));
+        let report = result.clone();
+        let platform = gpui_platform::current_platform(false);
+        let fonts = caption::CaptionFonts(platform.text_system());
+        gpui::Application::with_platform(platform)
+            .with_assets(assets::AppAssets)
+            .run(move |cx| {
+                cx.set_quit_mode(gpui::QuitMode::Explicit);
+                cx.set_global(fonts);
+                redaction_editor::bind_keys(cx);
+                let directory = output.clone();
+                let handle = cx
+                    .open_kit_window(
+                        WindowOptions {
+                            window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
+                                None,
+                                size(px(1060.0), px(760.0)),
+                                cx,
+                            ))),
+                            ..app_window_options("screenshots")
+                        },
+                        move |window, cx| {
+                            let controller = cx.new(|cx| CaptureWorkspace::new(window, cx));
+                            controller.update(cx, |this, _| {
+                                this.output_directory = Some(directory);
+                                this.settings_loading = false;
+                                this.history_database = None;
+                            });
+                            let focus = controller.read(cx).focus_handle.clone();
+                            window.focus(&focus, cx);
+                            controller
+                        },
+                    )
+                    .expect("Private native control window");
+                let controller = handle.update(cx, |_, _, cx| cx.entity().clone()).unwrap();
+                cx.set_global(ResidentController(controller.clone()));
+                let owner = controller.downgrade();
+                let directory = output.clone();
+                cx.spawn(async move |cx| {
+                    let checked = async {
+                        let started = std::time::Instant::now();
+                        loop {
+                            cx.background_executor()
+                                .timer(std::time::Duration::from_millis(20))
+                                .await;
+                            let control = owner
+                                .update(cx, |this, _| this.control)
+                                .map_err(|e| e.to_string())?;
+                            if let Some(control) = control {
+                                let active = control
+                                    .update(cx, |_, window, _| window.is_window_active())
+                                    .map_err(|e| e.to_string())?;
+                                if active
+                                    && owner
+                                        .update(cx, |this, _| !this.image_input_busy())
+                                        .map_err(|e| e.to_string())?
+                                {
+                                    break;
+                                }
+                            }
+                            if started.elapsed() > std::time::Duration::from_secs(8) {
+                                let state = owner
+                                    .update(cx, |this, _| {
+                                        format!(
+                                            "control={} graphics={} switching={} busy={} status={}",
+                                            this.control.is_some(),
+                                            this.graphics,
+                                            this.switching_graphics,
+                                            this.image_input_busy(),
+                                            this.capture_status
+                                        )
+                                    })
+                                    .map_err(|e| e.to_string())?;
+                                return Err(format!(
+                                    "Private Wayland focus/window timed out: {state}"
+                                ));
+                            }
+                        }
+                        owner
+                            .update(cx, |this, cx| {
+                                this.settings_loading = false;
+                                this.output_directory = Some(directory.clone());
+                                this.paste_image(cx);
+                            })
+                            .map_err(|e| e.to_string())?;
+                        let started = std::time::Instant::now();
+                        loop {
+                            cx.background_executor()
+                                .timer(std::time::Duration::from_millis(20))
+                                .await;
+                            let state = owner
+                                .update(cx, |this, _| {
+                                    (this.capturing, this.editor, this.capture_status.clone())
+                                })
+                                .map_err(|e| e.to_string())?;
+                            if let Some(editor) = state.1 {
+                                editor
+                                    .update(cx, |editor, _, _| {
+                                        assert_eq!(editor.source.pixels.dimensions(), (2, 1));
+                                        assert_eq!(
+                                            editor.source.pixels.as_raw(),
+                                            &[11, 23, 37, 0, 43, 59, 71, 128]
+                                        );
+                                    })
+                                    .map_err(|e| e.to_string())?;
+                                break;
+                            }
+                            if !state.0 {
+                                return Err(format!("Private Wayland paste failed: {}", state.2));
+                            }
+                            if started.elapsed() > std::time::Duration::from_secs(8) {
+                                return Err("Private Wayland paste timed out".into());
+                            }
+                        }
+                        owner
+                            .update(cx, |this, _| {
+                                assert!(this.last_capture.is_none() && this.last_saved.is_none());
+                                assert_eq!(this.clipboard_status, "No capture yet");
+                            })
+                            .map_err(|e| e.to_string())?;
+                        assert_eq!(std::fs::read_dir(&directory).unwrap().count(), 0);
+                        Ok(())
+                    }
+                    .await;
+                    *report.lock().unwrap() = Some(checked);
+                    cx.update(|cx| cx.quit());
+                })
+                .detach();
+                cx.activate(true);
+            });
+        result
+            .lock()
+            .unwrap()
+            .take()
+            .expect("Private native fixture did not complete")
+            .unwrap();
     }
 }

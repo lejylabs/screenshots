@@ -5947,6 +5947,44 @@ impl Window {
                         modifiers: Modifiers::default(),
                     })
                 }
+                FileDropEvent::ImageEntered { position, image } => {
+                    self.mouse_position = position;
+                    if cx
+                        .active_drag
+                        .as_ref()
+                        .is_none_or(|drag| drag.value.is::<crate::ExternalImageDrop>())
+                    {
+                        cx.active_drag = Some(AnyDrag {
+                            value: Arc::new(image.clone()),
+                            view: cx.new(|_| image).into(),
+                            cursor_offset: position,
+                            cursor_style: None,
+                            external_payload_source: None,
+                        });
+                    }
+                    PlatformInput::MouseMove(MouseMoveEvent {
+                        position,
+                        pressed_button: Some(MouseButton::Left),
+                        modifiers: Modifiers::default(),
+                    })
+                }
+                FileDropEvent::UrlEntered { position, url } => {
+                    self.mouse_position = position;
+                    if cx.active_drag.is_none() {
+                        cx.active_drag = Some(AnyDrag {
+                            value: Arc::new(url.clone()),
+                            view: cx.new(|_| url).into(),
+                            cursor_offset: position,
+                            cursor_style: None,
+                            external_payload_source: None,
+                        });
+                    }
+                    PlatformInput::MouseMove(MouseMoveEvent {
+                        position,
+                        pressed_button: Some(MouseButton::Left),
+                        modifiers: Modifiers::default(),
+                    })
+                }
                 FileDropEvent::Pending { position } => {
                     self.mouse_position = position;
                     PlatformInput::MouseMove(MouseMoveEvent {

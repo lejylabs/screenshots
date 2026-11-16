@@ -1,15 +1,21 @@
 use std::{
     cell::{RefCell, RefMut},
     hash::Hash,
+    io::Write,
     os::{
         fd::{AsRawFd, BorrowedFd, FromRawFd as _, RawFd},
         unix::net::UnixStream,
     },
     path::PathBuf,
     rc::{Rc, Weak},
+    sync::{Arc, atomic::AtomicBool},
     time::{Duration, Instant},
 };
 
+#[path = "drop_metadata.rs"]
+mod drop_metadata;
+#[path = "incoming_drop.rs"]
+mod incoming_drop;
 use anyhow::Context as _;
 use ashpd::WindowIdentifier;
 use calloop::{
@@ -22,6 +28,7 @@ use collections::HashMap;
 use filedescriptor::Pipe;
 use gpui_util::ResultExt as _;
 use http_client::Url;
+#[cfg(test)]
 use smallvec::SmallVec;
 use wayland_backend::client::ObjectId;
 use wayland_backend::protocol::WEnum;
@@ -91,7 +98,7 @@ use crate::linux::{
     DOUBLE_CLICK_INTERVAL, LinuxCommon, LinuxKeyboardLayout, PIPE_READ_TIMEOUT, SCROLL_LINES,
     capslock_from_xkb, cursor_style_to_icon_names, get_xkb_compose_state, is_within_click_distance,
     keystroke_from_xkb, keystroke_underlying_dead_key, modifiers_from_xkb, new_xkb_context,
-    open_uri_internal, read_fd_with_timeout, reveal_path_internal,
+    open_uri_internal, reveal_path_internal,
     wayland::{
         clipboard::{Clipboard, DataOffer, FILE_LIST_MIME_TYPE, TEXT_MIME_TYPES},
         cursor::Cursor,
@@ -426,16 +433,33 @@ struct DragState<DataOffer = wl_data_offer::WlDataOffer, Window = WaylandWindowS
     window: Option<Window>,
     position: Point<Pixels>,
     uri_read_generation: u64,
+    drop_pending: bool,
+    data_ready: bool,
+    copy_allowed: bool,
+    image_format: Option<gpui::ImageFormat>,
+    read_cancel: Option<UnixStream>,
+    read_active: Arc<AtomicBool>,
 }
 
-impl<DataOffer, Window> DragState<DataOffer, Window> {
+impl<DataOffer: FileDragDataOffer + Clone, Window: Clone> DragState<DataOffer, Window> {
     fn begin_uri_read(&mut self) -> u64 {
         self.invalidate_uri_read();
+        if let Some(offer) = self.data_offer.take() {
+            offer.destroy();
+        }
+        self.window = None;
+        self.drop_pending = false;
+        self.data_ready = false;
+        self.image_format = None;
+        self.copy_allowed = false;
         self.uri_read_generation
     }
 
     fn invalidate_uri_read(&mut self) {
         self.uri_read_generation = self.uri_read_generation.wrapping_add(1);
+        if let Some(mut cancel) = self.read_cancel.take() {
+            let _ = cancel.write(&[1]);
+        }
     }
 
     fn is_uri_read_current(&self, generation: u64) -> bool {
@@ -450,11 +474,15 @@ trait FileDragDataOffer {
 
 impl FileDragDataOffer for wl_data_offer::WlDataOffer {
     fn finish(&self) {
-        wl_data_offer::WlDataOffer::finish(self);
+        if self.is_alive() && self.version() >= 3 {
+            wl_data_offer::WlDataOffer::finish(self);
+        }
     }
 
     fn destroy(&self) {
-        wl_data_offer::WlDataOffer::destroy(self);
+        if self.is_alive() {
+            wl_data_offer::WlDataOffer::destroy(self);
+        }
     }
 }
 
@@ -464,23 +492,36 @@ where
     Window: Clone,
 {
     fn handle_leave(&mut self) -> Option<(Window, PlatformInput)> {
+        if self.drop_pending {
+            return None;
+        }
         self.invalidate_uri_read();
-        let window = self.window.clone()?;
-        let data_offer = self.data_offer.clone()?;
-        data_offer.destroy();
-        self.data_offer = None;
-        self.window = None;
-        Some((window, PlatformInput::FileDrop(FileDropEvent::Exited {})))
+        if let Some(offer) = self.data_offer.take() {
+            offer.destroy();
+        }
+        self.data_ready = false;
+        self.image_format = None;
+        self.window
+            .take()
+            .map(|window| (window, PlatformInput::FileDrop(FileDropEvent::Exited {})))
     }
-
     fn handle_drop(&mut self) -> Option<(Window, PlatformInput)> {
+        self.drop_pending = true;
+        if !self.data_ready {
+            return None;
+        }
+        if !self.copy_allowed {
+            self.drop_pending = false;
+            return self.handle_leave();
+        }
         self.invalidate_uri_read();
-        let window = self.window.clone()?;
-        let data_offer = self.data_offer.clone()?;
-        data_offer.finish();
-        data_offer.destroy();
-        self.data_offer = None;
-        self.window = None;
+        let window = self.window.take()?;
+        let offer = self.data_offer.take()?;
+        offer.finish();
+        offer.destroy();
+        self.drop_pending = false;
+        self.data_ready = false;
+        self.image_format = None;
         Some((
             window,
             PlatformInput::FileDrop(FileDropEvent::Submit {
@@ -489,6 +530,7 @@ where
         ))
     }
 
+    #[cfg(test)]
     fn complete_uri_read(
         &mut self,
         generation: u64,
@@ -497,18 +539,40 @@ where
         position: Point<Pixels>,
         paths: gpui::ExternalPaths,
     ) -> Option<(Window, PlatformInput)> {
+        self.copy_allowed = true;
+        self.complete_data_read(
+            generation,
+            data_offer,
+            window,
+            position,
+            PlatformInput::FileDrop(FileDropEvent::Entered { position, paths }),
+        )
+    }
+    fn complete_data_read(
+        &mut self,
+        generation: u64,
+        data_offer: DataOffer,
+        window: Window,
+        _position: Point<Pixels>,
+        mut input: PlatformInput,
+    ) -> Option<(Window, PlatformInput)> {
         if !self.is_uri_read_current(generation) {
             data_offer.destroy();
             return None;
         }
-
+        self.read_cancel.take();
         self.data_offer = Some(data_offer);
         self.window = Some(window.clone());
-        self.position = position;
-        Some((
-            window,
-            PlatformInput::FileDrop(FileDropEvent::Entered { position, paths }),
-        ))
+        match &mut input {
+            PlatformInput::FileDrop(
+                FileDropEvent::Entered { position, .. }
+                | FileDropEvent::ImageEntered { position, .. }
+                | FileDropEvent::UrlEntered { position, .. },
+            ) => *position = self.position,
+            _ => return None,
+        }
+        self.data_ready = true;
+        Some((window, input))
     }
 }
 
@@ -806,6 +870,15 @@ impl WaylandClientStatePtr {
         let client = self.get_client();
         let mut state = client.borrow_mut();
         let closed_window = state.windows.remove(surface_id).unwrap();
+        if state
+            .drag
+            .window
+            .as_ref()
+            .is_some_and(|window| window.ptr_eq(&closed_window))
+        {
+            state.drag.drop_pending = false;
+            state.drag.handle_leave();
+        }
         if let Some(window) = state.mouse_focused_window.take()
             && !window.ptr_eq(&closed_window)
         {
@@ -815,6 +888,9 @@ impl WaylandClientStatePtr {
             && !window.ptr_eq(&closed_window)
         {
             state.keyboard_focused_window = Some(window);
+        }
+        if state.keyboard_focused_window.is_none() {
+            state.clipboard.cancel_image_read();
         }
         if let Some(window) = state.cursor_hidden_window.take()
             && !window.ptr_eq(&closed_window)
@@ -1095,6 +1171,12 @@ impl WaylandConnection {
                 window: None,
                 position: Point::default(),
                 uri_read_generation: 0,
+                drop_pending: false,
+                data_ready: false,
+                copy_allowed: false,
+                image_format: None,
+                read_cancel: None,
+                read_active: Arc::new(AtomicBool::new(false)),
             },
             external_drag: None,
             click: ClickState {
@@ -1491,6 +1573,45 @@ impl WaylandConnection {
 
     pub(crate) fn read_from_clipboard(&self) -> Option<gpui::ClipboardItem> {
         self.0.borrow_mut().clipboard.read()
+    }
+
+    pub(crate) fn cancel_image_clipboard_read(&self) {
+        self.0.borrow_mut().clipboard.cancel_image_read();
+    }
+
+    pub(crate) fn read_image_from_clipboard_async(
+        &self,
+    ) -> gpui::Task<Result<gpui::Image, gpui::ClipboardReadError>> {
+        let mut state = self.0.borrow_mut();
+        if state.keyboard_focused_window.is_none() {
+            return gpui::Task::ready(Err(gpui::ClipboardReadError::Unavailable));
+        }
+        let read = match state.clipboard.begin_image_read() {
+            Ok(read) => read,
+            Err(error) => return gpui::Task::ready(Err(error)),
+        };
+        let id = read.id;
+        let background = state.common.borrow().background_executor.clone();
+        let foreground = state.common.borrow().foreground_executor.clone();
+        drop(state);
+        let read = background.spawn(async move { read.execute() });
+        let owner = Rc::downgrade(&self.0);
+        foreground.spawn(async move {
+            let result = read.await;
+            let Some(owner) = owner.upgrade() else {
+                return Err(gpui::ClipboardReadError::Canceled);
+            };
+            let Ok(mut owner) = owner.try_borrow_mut() else {
+                return Err(gpui::ClipboardReadError::Canceled);
+            };
+            let current = owner.keyboard_focused_window.is_some()
+                && owner.clipboard.is_image_read_current(id);
+            owner.clipboard.finish_image_read(id);
+            if !current {
+                return Err(gpui::ClipboardReadError::Canceled);
+            }
+            result
+        })
     }
 
     pub(crate) fn active_window(&self) -> Option<AnyWindowHandle> {
@@ -2106,6 +2227,7 @@ impl Dispatch<wl_keyboard::WlKeyboard, ()> for WaylandClientStatePtr {
             wl_keyboard::Event::Leave { surface, .. } => {
                 let keyboard_focused_window = get_window(&mut state, &surface.id());
                 state.keyboard_focused_window = None;
+                state.clipboard.cancel_image_read();
                 state.enter_token.take();
                 // Prevent keyboard events from repeating after opening e.g. a file chooser and closing it quickly
                 state.repeat.current_id += 1;
@@ -2879,7 +3001,7 @@ impl Dispatch<wl_data_device::WlDataDevice, ()> for WaylandClientStatePtr {
         _: &wl_data_device::WlDataDevice,
         event: wl_data_device::Event,
         _: &(),
-        _: &Connection,
+        connection: &Connection,
         _: &QueueHandle<Self>,
     ) {
         let client = this.get_client();
@@ -2916,80 +3038,24 @@ impl Dispatch<wl_data_device::WlDataDevice, ()> for WaylandClientStatePtr {
                 id: data_offer,
             } => {
                 state.serial_tracker.update(SerialKind::DataDevice, serial);
-                if let Some(data_offer) = data_offer {
-                    let Some(drag_window) = get_window(&mut state, &surface.id()) else {
-                        return;
-                    };
-                    let uri_read_generation = state.drag.begin_uri_read();
-
-                    const ACTIONS: DndAction = DndAction::Copy;
-                    data_offer.set_actions(ACTIONS, ACTIONS);
-
-                    let pipe = Pipe::new().unwrap();
-                    data_offer.receive(FILE_LIST_MIME_TYPE.to_string(), unsafe {
-                        BorrowedFd::borrow_raw(pipe.write.as_raw_fd())
-                    });
-                    let fd = pipe.read;
-                    drop(pipe.write);
-
-                    let read_task = state.common.borrow().background_executor.spawn(async {
-                        let buffer = read_fd_with_timeout(fd, PIPE_READ_TIMEOUT)?;
-                        let text = String::from_utf8(buffer)?;
-                        anyhow::Ok(text)
-                    });
-
-                    let this = this.clone();
-                    state
-                        .common
-                        .borrow()
-                        .foreground_executor
-                        .clone()
-                        .spawn(async move {
-                            let file_list = match read_task.await {
-                                Ok(list) => list,
-                                Err(err) => {
-                                    log::error!("error reading drag and drop pipe: {err:?}");
-                                    return;
-                                }
-                            };
-
-                            let paths: SmallVec<[_; 2]> = file_list
-                                .lines()
-                                .filter_map(|path| Url::parse(path).log_err())
-                                .filter_map(|url| match url.to_file_path() {
-                                    Ok(url) => Some(url),
-                                    Err(()) => {
-                                        log::error!("Failed turn {url:?} into a file path");
-                                        None
-                                    }
-                                })
-                                .collect();
-                            let position = Point::new(x.into(), y.into());
-
-                            // Prevent dropping text from other programs.
-                            if paths.is_empty() {
-                                data_offer.destroy();
-                                return;
-                            }
-                            let Some(client) = this.0.upgrade() else {
-                                data_offer.destroy();
-                                return;
-                            };
-                            let mut state = client.borrow_mut();
-                            let input = state.drag.complete_uri_read(
-                                uri_read_generation,
-                                data_offer,
-                                drag_window,
-                                position,
-                                gpui::ExternalPaths(paths),
-                            );
-
-                            drop(state);
-                            if let Some((drag_window, input)) = input {
-                                drag_window.handle_input(input);
-                            }
-                        })
-                        .detach();
+                let Some(offer) = data_offer else {
+                    return;
+                };
+                let Some(window) = get_window(&mut state, &surface.id()) else {
+                    FileDragDataOffer::destroy(&offer);
+                    return;
+                };
+                let events = this.begin_incoming_drop(
+                    &mut state,
+                    offer,
+                    window,
+                    Point::new(x.into(), y.into()),
+                    serial,
+                    connection,
+                );
+                drop(state);
+                for (window, input) in events {
+                    window.handle_input(input);
                 }
             }
             wl_data_device::Event::Motion { x, y, .. } => {
@@ -2997,7 +3063,9 @@ impl Dispatch<wl_data_device::WlDataDevice, ()> for WaylandClientStatePtr {
                     return;
                 };
                 let position = Point::new(x.into(), y.into());
-                state.drag.position = position;
+                if !state.drag.drop_pending {
+                    state.drag.position = position;
+                }
 
                 let input = PlatformInput::FileDrop(FileDropEvent::Pending { position });
                 drop(state);
@@ -3011,7 +3079,14 @@ impl Dispatch<wl_data_device::WlDataDevice, ()> for WaylandClientStatePtr {
                 }
             }
             wl_data_device::Event::Drop => {
-                let input = state.drag.handle_drop();
+                let input = if !state.drag.copy_allowed {
+                    state.drag.drop_pending = false;
+                    state.drag.handle_leave()
+                } else if state.drag.image_format.is_some() {
+                    this.receive_incoming_image(&mut state, connection)
+                } else {
+                    state.drag.handle_drop()
+                };
                 drop(state);
                 if let Some((drag_window, input)) = input {
                     drag_window.handle_input(input);
@@ -3038,14 +3113,17 @@ impl Dispatch<wl_data_offer::WlDataOffer, ()> for WaylandClientStatePtr {
         let client = this.get_client();
         let mut state = client.borrow_mut();
 
-        if let wl_data_offer::Event::Offer { mime_type } = event {
-            // Drag and drop
-            if mime_type == FILE_LIST_MIME_TYPE {
-                let serial = state.serial_tracker.get(SerialKind::DataDevice);
-                let mime_type = mime_type.clone();
-                data_offer.accept(serial.as_raw(), Some(mime_type));
+        if let wl_data_offer::Event::Action { dnd_action } = &event {
+            if state
+                .drag
+                .data_offer
+                .as_ref()
+                .is_some_and(|offer| offer.id() == data_offer.id())
+            {
+                state.drag.copy_allowed = *dnd_action == WEnum::Value(DndAction::Copy);
             }
-
+        }
+        if let wl_data_offer::Event::Offer { mime_type } = event {
             // Clipboard
             if let Some(offer) = state
                 .data_offers
@@ -3296,6 +3374,12 @@ mod tests {
             window: None,
             position: Point::default(),
             uri_read_generation: 0,
+            drop_pending: false,
+            data_ready: false,
+            copy_allowed: true,
+            image_format: None,
+            read_cancel: None,
+            read_active: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -3343,25 +3427,26 @@ mod tests {
     }
 
     #[test]
-    fn drop_then_leave_discards_pending_drag_uri_read() {
+    fn drop_then_leave_finishes_the_accepted_pending_uri_read() {
         let mut drag = drag_state();
-        let data_offer = FakeDataOffer::new("A");
+        let offer = FakeDataOffer::new("A");
         let generation = drag.begin_uri_read();
-        let mut entered_windows = Vec::new();
-
-        record_entered(drag.handle_drop(), &mut entered_windows);
-        assert_ne!(drag.uri_read_generation, generation);
-        record_entered(drag.handle_leave(), &mut entered_windows);
+        let mut entered = Vec::new();
+        assert!(drag.handle_drop().is_none());
+        assert_eq!(drag.uri_read_generation, generation);
+        assert!(drag.handle_leave().is_none());
         record_entered(
-            complete_drag_uri_read(&mut drag, generation, data_offer.clone(), "window A"),
-            &mut entered_windows,
+            complete_drag_uri_read(&mut drag, generation, offer.clone(), "window A"),
+            &mut entered,
         );
-
-        assert!(entered_windows.is_empty());
-        assert!(!data_offer.finished.get());
-        assert!(data_offer.destroyed.get());
-        assert!(drag.data_offer.is_none());
-        assert!(drag.window.is_none());
+        assert_eq!(entered, ["window A"]);
+        let (_, input) = drag.handle_drop().unwrap();
+        assert!(matches!(
+            input,
+            PlatformInput::FileDrop(FileDropEvent::Submit { .. })
+        ));
+        assert!(offer.finished.get() && offer.destroyed.get());
+        assert!(drag.window.is_none() && drag.data_offer.is_none());
     }
 
     #[test]

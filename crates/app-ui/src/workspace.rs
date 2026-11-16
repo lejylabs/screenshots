@@ -289,11 +289,13 @@ impl Render for CaptureWorkspace {
             .size_full()
             .bg(colors.background)
             .text_color(colors.foreground)
-            .can_drop(move |value, _, cx| value.is::<gpui::ExternalPaths>()
+            .can_drop(move |value, _, cx| (value.is::<gpui::ExternalPaths>()||value.is::<gpui::ExternalImageDrop>()||value.is::<gpui::ExternalUrlDrop>())
                 && drop_owner.upgrade().is_some_and(|owner| !owner.read(cx).image_input_busy()))
             .on_drop(cx.listener(|this, paths: &gpui::ExternalPaths, _, cx| {
                 this.open_dropped_image(paths.paths(), cx);
             }))
+            .on_drop(cx.listener(|this,data:&gpui::ExternalImageDrop,_,cx|this.open_dropped_encoded(data,cx)))
+            .on_drop(cx.listener(|this,data:&gpui::ExternalUrlDrop,_,cx|this.open_dropped_url(data,cx)))
             .on_action(cx.listener(|this, _: &OpenProbeOverlays, _, cx| {
                 this.open_overlays(OverlayMode::Probe, cx)
             }))
@@ -361,11 +363,11 @@ impl Render for CaptureWorkspace {
                         cx.listener(|this, _, _, cx| this.apply_capture_delay(cx))))))
                 .child(capture_button(cx, "open-image", "Open image…", unavailable || self.preview_active,
                     cx.listener(|this, _, _, cx| this.open_image(cx))))
-                .when(cfg!(target_os = "windows"), |view| view.child(capture_button(cx,
-                    "paste-image", "Paste image (Ctrl+Shift+V)", unavailable || self.preview_active,
-                    cx.listener(|this, _, _, cx| this.paste_image(cx)))))
+                .child(capture_button(cx,
+                    "paste-image", if cfg!(target_os="macos") {"Paste image (Cmd+Shift+V)"}else{"Paste image (Ctrl+Shift+V)"}, unavailable || self.preview_active,
+                    cx.listener(|this, _, _, cx| this.paste_image(cx))))
                 .child(div().text_sm().text_color(colors.muted_foreground)
-                    .child("Drop one PNG, JPEG or WebP image into this window to edit a copy."))
+                    .child("Drop one image file, encoded image, or image URL to edit a copy."))
                 .when(self.capture_status != "Ready", |view| view.child(div().text_sm().child(self.capture_status.clone())))
             .when(theme.classic && self.last_capture.is_none() && self.last_saved.is_none(), |view| view.child(classic_capture_home(cx)))
             .when(theme.workbench && self.last_capture.is_none() && self.last_saved.is_none(), |view| view.child(

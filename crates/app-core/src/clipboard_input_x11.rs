@@ -1,127 +1,43 @@
-//! Isolated X11 CLIPBOARD transfer. Finite properties/INCR chunks, no ownership or manager thread.
+//! Isolated X11 CLIPBOARD transfer with XFixes generation observation.
 use super::*;
 use anyhow::{Context, bail};
 use std::{
-    ffi::{CString, c_char, c_int, c_long, c_ulong, c_void},
-    os::unix::ffi::OsStrExt,
+    collections::VecDeque,
+    os::{fd::AsRawFd, unix::ffi::OsStrExt},
 };
-type Display = c_void;
-type Window = c_ulong;
-type Atom = c_ulong;
-#[repr(C)]
-struct SelectionEvent {
-    kind: c_int,
-    serial: c_ulong,
-    send_event: c_int,
-    display: *mut Display,
-    requestor: Window,
-    selection: Atom,
-    target: Atom,
-    property: Atom,
-    time: c_ulong,
-}
-#[repr(C)]
-struct PropertyEvent {
-    kind: c_int,
-    serial: c_ulong,
-    send_event: c_int,
-    display: *mut Display,
-    window: Window,
-    atom: Atom,
-    time: c_ulong,
-    state: c_int,
-}
-#[repr(C)]
-union Event {
-    kind: c_int,
-    selection: std::mem::ManuallyDrop<SelectionEvent>,
-    property: std::mem::ManuallyDrop<PropertyEvent>,
-    pad: [c_long; 24],
-}
-#[link(name = "X11")]
-unsafe extern "C" {
-    fn XOpenDisplay(name: *const c_char) -> *mut Display;
-    fn XCloseDisplay(display: *mut Display) -> c_int;
-    fn XDefaultRootWindow(display: *mut Display) -> Window;
-    fn XCreateSimpleWindow(
-        display: *mut Display,
-        parent: Window,
-        x: c_int,
-        y: c_int,
-        w: u32,
-        h: u32,
-        border: u32,
-        color: c_ulong,
-        background: c_ulong,
-    ) -> Window;
-    fn XDestroyWindow(display: *mut Display, window: Window) -> c_int;
-    fn XSelectInput(display: *mut Display, window: Window, mask: c_long) -> c_int;
-    fn XInternAtom(display: *mut Display, name: *const c_char, only_if_exists: c_int) -> Atom;
-    fn XGetSelectionOwner(display: *mut Display, selection: Atom) -> Window;
-    fn XConvertSelection(
-        display: *mut Display,
-        selection: Atom,
-        target: Atom,
-        property: Atom,
-        window: Window,
-        time: c_ulong,
-    ) -> c_int;
-    fn XFlush(display: *mut Display) -> c_int;
-    fn XEventsQueued(display: *mut Display, mode: c_int) -> c_int;
-    fn XNextEvent(display: *mut Display, event: *mut Event) -> c_int;
-    fn XConnectionNumber(display: *mut Display) -> c_int;
-    fn XGetWindowProperty(
-        display: *mut Display,
-        window: Window,
-        property: Atom,
-        offset: c_long,
-        length: c_long,
-        delete: c_int,
-        requested: Atom,
-        actual: *mut Atom,
-        format: *mut c_int,
-        count: *mut c_ulong,
-        after: *mut c_ulong,
-        data: *mut *mut u8,
-    ) -> c_int;
-    fn XDeleteProperty(display: *mut Display, window: Window, property: Atom) -> c_int;
-    fn XFree(value: *mut c_void) -> c_int;
-    fn XGetAtomName(display: *mut Display, atom: Atom) -> *mut c_char;
-}
-struct Property {
-    kind: Atom,
-    format: c_int,
-    count: usize,
-    after: usize,
-    data: *mut u8,
-}
-impl Drop for Property {
-    fn drop(&mut self) {
-        if !self.data.is_null() {
-            unsafe {
-                XFree(self.data.cast());
-            }
-        }
-    }
-}
+use x11rb::{
+    COPY_DEPTH_FROM_PARENT, COPY_FROM_PARENT, CURRENT_TIME, NONE,
+    connection::Connection,
+    protocol::{
+        Event,
+        xfixes::{ConnectionExt as _, SelectionEventMask},
+        xproto::{
+            Atom, AtomEnum, ConnectionExt as _, CreateWindowAux, EventMask, GetPropertyReply,
+            Property, Window, WindowClass,
+        },
+    },
+    rust_connection::RustConnection,
+};
+
 struct Session {
-    display: *mut Display,
+    connection: RustConnection,
     window: Window,
     selection: Atom,
     property: Atom,
     targets: Atom,
     incr: Atom,
     owner: Window,
+    generation: u64,
+    baseline: u64,
+    selection_timestamp: Option<u32>,
+    event_timestamp: Option<u32>,
     deadline: Instant,
     events: usize,
+    pending: VecDeque<Event>,
 }
 impl Session {
     fn new(backend: NativeClipboardBackend, deadline: Instant) -> Result<Self> {
-        if backend == NativeClipboardBackend::Automatic
-            && (std::env::var_os("WAYLAND_DISPLAY").is_some()
-                || std::env::var("XDG_SESSION_TYPE")
-                    .is_ok_and(|v| v.eq_ignore_ascii_case("wayland")))
-        {
+        if backend == NativeClipboardBackend::Automatic && crate::linux_wayland_session() {
             bail!(
                 "Wayland clipboard requires focused application Paste; no ambient clipboard fallback was attempted"
             );
@@ -136,72 +52,142 @@ impl Session {
                 && bytes[1..].iter().all(|b| b.is_ascii_digit() || *b == b'.'),
             "X11 clipboard requires a local numeric display"
         );
-        let name = CString::new(bytes)?;
-        let display = unsafe { XOpenDisplay(name.as_ptr()) };
-        ensure!(!display.is_null(), "Could not connect to X11 clipboard");
-        let window = unsafe {
-            XCreateSimpleWindow(display, XDefaultRootWindow(display), 0, 0, 1, 1, 0, 0, 0)
-        };
+        let display = display
+            .to_str()
+            .ok_or_else(|| anyhow::anyhow!("Invalid X11 display"))?;
+        let (connection, screen) = x11rb::connect(Some(display))?;
+        let window = connection.generate_id()?;
+        connection
+            .create_window(
+                COPY_DEPTH_FROM_PARENT,
+                window,
+                connection.setup().roots[screen].root,
+                0,
+                0,
+                1,
+                1,
+                0,
+                WindowClass::INPUT_OUTPUT,
+                COPY_FROM_PARENT,
+                &CreateWindowAux::new().event_mask(EventMask::PROPERTY_CHANGE),
+            )?
+            .check()?;
         let mut session = Self {
-            display,
+            connection,
             window,
             selection: 0,
             property: 0,
             targets: 0,
             incr: 0,
             owner: 0,
+            generation: 0,
+            baseline: 0,
+            selection_timestamp: None,
+            event_timestamp: None,
             deadline,
             events: 0,
+            pending: VecDeque::new(),
         };
-        ensure!(window != 0, "Could not create clipboard requestor");
-        unsafe {
-            XSelectInput(display, window, 1 << 22);
-        }
         session.selection = session.atom("CLIPBOARD")?;
         session.property = session.atom("_SCREENSHOTS_CLIP_INPUT")?;
         session.targets = session.atom("TARGETS")?;
         session.incr = session.atom("INCR")?;
-        session.owner = unsafe { XGetSelectionOwner(display, session.selection) };
+        // Subscribe before the baseline/TARGETS. No owner-XID-only fallback is safe:
+        // every subsequent assertion counts, including equal timestamps and A->B->A.
+        let version = session.connection.xfixes_query_version(5, 0)?.reply()?;
+        ensure!(
+            version.major_version >= 1,
+            "XFixes selection generations unavailable"
+        );
+        session
+            .connection
+            .xfixes_select_selection_input(
+                window,
+                session.selection,
+                SelectionEventMask::SET_SELECTION_OWNER
+                    | SelectionEventMask::SELECTION_WINDOW_DESTROY
+                    | SelectionEventMask::SELECTION_CLIENT_CLOSE,
+            )?
+            .check()?;
+        session.owner = session
+            .connection
+            .get_selection_owner(session.selection)?
+            .reply()?
+            .owner;
+        session.drain_events()?;
+        session.baseline = session.generation;
+        // A second ordered round trip closes bootstrap races before any TARGETS read.
+        session.check(&|| Ok(()))?;
         Ok(session)
     }
     fn atom(&self, name: &str) -> Result<Atom> {
-        let name = CString::new(name)?;
-        let atom = unsafe { XInternAtom(self.display, name.as_ptr(), 0) };
-        ensure!(atom != 0, "Could not prepare clipboard atom");
-        Ok(atom)
+        Ok(self
+            .connection
+            .intern_atom(false, name.as_bytes())?
+            .reply()?
+            .atom)
     }
-    fn check(&self, check: &crate::NativeCaptureCheck<'_>) -> Result<()> {
+    fn observe(&mut self, event: Event) -> Result<()> {
+        ensure!(self.events < 4096, "Clipboard event bound exceeded");
+        self.events += 1;
+        if let Event::XfixesSelectionNotify(ref update) = event {
+            if update.window == self.window && update.selection == self.selection {
+                ensure!(
+                    update.response_type & 0x80 == 0,
+                    "Synthetic selection generation event refused"
+                );
+                self.generation = self
+                    .generation
+                    .checked_add(1)
+                    .ok_or_else(|| anyhow::anyhow!("Clipboard generation overflow"))?;
+                self.selection_timestamp = Some(update.selection_timestamp);
+                self.event_timestamp = Some(update.timestamp);
+                return Ok(());
+            }
+        }
+        self.pending.push_back(event);
+        Ok(())
+    }
+    fn drain_events(&mut self) -> Result<()> {
+        while let Some(event) = self.connection.poll_for_event()? {
+            self.observe(event)?;
+        }
+        Ok(())
+    }
+    fn check(&mut self, check: &crate::NativeCaptureCheck<'_>) -> Result<()> {
         check()?;
         ensure!(
             Instant::now() < self.deadline,
             "Clipboard transfer deadline exceeded"
         );
+        // Replies and XFixes notifications are ordered on this same connection. A
+        // round-trip barrier queues all prior generation events before checking them.
+        let owner = self
+            .connection
+            .get_selection_owner(self.selection)?
+            .reply()?
+            .owner;
+        self.drain_events()?;
         ensure!(
-            unsafe { XGetSelectionOwner(self.display, self.selection) } == self.owner,
-            "Clipboard owner changed during transfer"
+            owner == self.owner && self.generation == self.baseline,
+            "Clipboard selection generation changed during transfer"
         );
         Ok(())
     }
     fn event(&mut self, check: &crate::NativeCaptureCheck<'_>) -> Result<Event> {
         loop {
             self.check(check)?;
-            ensure!(self.events < 4096, "Clipboard event bound exceeded");
-            let queued = unsafe { XEventsQueued(self.display, 0) };
-            if queued > 0 {
-                let mut event = Event { pad: [0; 24] };
-                unsafe {
-                    XNextEvent(self.display, &mut event);
-                }
-                self.events += 1;
+            if let Some(event) = self.pending.pop_front() {
                 return Ok(event);
             }
-            let remaining = self.deadline.saturating_duration_since(Instant::now());
-            let millis = remaining
+            let millis = self
+                .deadline
+                .saturating_duration_since(Instant::now())
                 .as_millis()
                 .saturating_add(1)
                 .min(i32::MAX as u128) as i32;
             let mut fd = libc::pollfd {
-                fd: unsafe { XConnectionNumber(self.display) },
+                fd: self.connection.stream().as_raw_fd(),
                 events: libc::POLLIN,
                 revents: 0,
             };
@@ -217,85 +203,50 @@ impl Session {
                 ready > 0 && fd.revents & (libc::POLLHUP | libc::POLLERR | libc::POLLNVAL) == 0,
                 "Clipboard transfer timed out or disconnected"
             );
-            // Read only after native readiness, then consume one finite X event.
-            let mut event = Event { pad: [0; 24] };
-            unsafe {
-                XNextEvent(self.display, &mut event);
-            }
-            self.events += 1;
-            return Ok(event);
+            self.drain_events()?;
         }
     }
-    fn property(&self, max: usize) -> Result<Property> {
+    fn property(&self, max: usize) -> Result<GetPropertyReply> {
         self.property_at(0, max)
     }
-    fn property_at(&self, offset: usize, max: usize) -> Result<Property> {
-        let (mut kind, mut format, mut count, mut after, mut data) =
-            (0, 0, 0, 0, std::ptr::null_mut());
-        let result = unsafe {
-            XGetWindowProperty(
-                self.display,
+    fn property_at(&self, offset: usize, max: usize) -> Result<GetPropertyReply> {
+        let value = self
+            .connection
+            .get_property(
+                false,
                 self.window,
                 self.property,
-                offset as c_long,
-                (max.div_ceil(4)) as c_long,
-                0,
-                0,
-                &mut kind,
-                &mut format,
-                &mut count,
-                &mut after,
-                &mut data,
-            )
-        };
-        let value = Property {
-            kind,
-            format,
-            count: usize::try_from(count)?,
-            after: usize::try_from(after)?,
-            data,
-        };
-        ensure!(result == 0, "Could not read clipboard property");
-        let native_bytes = value
-            .count
-            .checked_mul(match format {
-                8 => 1,
-                16 => 2,
-                32 => std::mem::size_of::<c_ulong>(),
-                _ => 0,
-            })
-            .ok_or_else(|| anyhow::anyhow!("Clipboard property size overflow"))?;
+                AtomEnum::ANY,
+                u32::try_from(offset)?,
+                u32::try_from(max.div_ceil(4))?,
+            )?
+            .reply()?;
         ensure!(
-            value.count == 0 || (!value.data.is_null() && native_bytes <= max.max(8) * 2),
+            value.value.len() <= max.saturating_add(3).max(8),
             "Invalid clipboard property extent"
         );
         Ok(value)
     }
-    fn delete(&self) {
-        unsafe {
-            XDeleteProperty(self.display, self.window, self.property);
-            XFlush(self.display);
-        }
+    fn delete(&self) -> Result<()> {
+        self.connection
+            .delete_property(self.window, self.property)?;
+        self.connection.flush()?;
+        Ok(())
     }
     fn begin(&mut self, target: Atom, check: &crate::NativeCaptureCheck<'_>) -> Result<()> {
         self.check(check)?;
-        ensure!(self.owner != 0, "Clipboard has no owner");
-        self.delete();
-        unsafe {
-            XConvertSelection(
-                self.display,
-                self.selection,
-                target,
-                self.property,
-                self.window,
-                0,
-            );
-            XFlush(self.display);
-        }
+        ensure!(self.owner != NONE, "Clipboard has no owner");
+        self.delete()?;
+        self.connection.convert_selection(
+            self.window,
+            self.selection,
+            target,
+            self.property,
+            CURRENT_TIME,
+        )?;
+        self.connection.flush()?;
         loop {
-            let event = self.event(check)?;
-            if unsafe { event.kind } == 31 {
-                let event = unsafe { &event.selection };
+            if let Event::SelectionNotify(event) = self.event(check)? {
                 if event.requestor == self.window
                     && event.selection == self.selection
                     && event.target == target
@@ -310,46 +261,33 @@ impl Session {
         }
     }
     fn targets(&mut self, check: &crate::NativeCaptureCheck<'_>) -> Result<Vec<Atom>> {
-        if self.owner == 0 {
+        if self.owner == NONE {
             return Ok(Vec::new());
         }
         self.begin(self.targets, check)?;
         let value = self.property(CLIPBOARD_FORMATS * 4)?;
         ensure!(
-            value.kind == 4
+            value.type_ == u32::from(AtomEnum::ATOM)
                 && value.format == 32
-                && value.count <= CLIPBOARD_FORMATS
-                && value.after == 0,
+                && value.value_len as usize <= CLIPBOARD_FORMATS
+                && value.bytes_after == 0,
             "Clipboard format offer exceeds its bound or is invalid"
         );
-        let result = if value.count == 0 {
-            Vec::new()
-        } else {
-            unsafe { std::slice::from_raw_parts(value.data.cast::<c_ulong>(), value.count) }
-                .to_vec()
-        };
-        self.delete();
+        let result = value
+            .value32()
+            .ok_or_else(|| anyhow::anyhow!("Invalid clipboard target type"))?
+            .collect();
+        self.delete()?;
         self.check(check)?;
         Ok(result)
     }
     fn name(&self, atom: Atom) -> Result<String> {
-        let raw = unsafe { XGetAtomName(self.display, atom) };
-        ensure!(!raw.is_null(), "Could not inspect clipboard format");
-        let result = (|| {
-            let length = unsafe { libc::strnlen(raw, CLIPBOARD_FORMAT_BYTES + 1) };
-            ensure!(
-                length <= CLIPBOARD_FORMAT_BYTES,
-                "Clipboard format label exceeds128 bytes"
-            );
-            let bytes = unsafe { std::slice::from_raw_parts(raw.cast::<u8>(), length) };
-            let name = std::str::from_utf8(bytes)?.to_owned();
-            ensure!(!name.is_empty(), "Empty clipboard format label");
-            Ok(name)
-        })();
-        unsafe {
-            XFree(raw.cast());
-        }
-        result
+        let bytes = self.connection.get_atom_name(atom)?.reply()?.name;
+        ensure!(
+            !bytes.is_empty() && bytes.len() <= CLIPBOARD_FORMAT_BYTES,
+            "Clipboard format label exceeds128 bytes"
+        );
+        Ok(String::from_utf8(bytes)?)
     }
     fn choose(&self, targets: &[Atom], names: &[&str]) -> Result<Atom> {
         for name in names {
@@ -358,7 +296,7 @@ impl Session {
                 return Ok(atom);
             }
         }
-        bail!("Clipboard does not provide a supported requested format")
+        bail!("Clipboard does not provide the requested supported format")
     }
     fn bytes(
         &mut self,
@@ -368,24 +306,18 @@ impl Session {
     ) -> Result<Vec<u8>> {
         self.begin(target, check)?;
         let initial = self.property(max.min(64 * 1024))?;
-        if initial.kind != self.incr {
+        if initial.type_ != self.incr {
+            let total = initial
+                .value
+                .len()
+                .checked_add(initial.bytes_after as usize)
+                .ok_or_else(|| anyhow::anyhow!("Clipboard size overflow"))?;
             ensure!(
-                initial.format == 8
-                    && initial
-                        .count
-                        .checked_add(initial.after)
-                        .is_some_and(|total| total <= max),
+                initial.format == 8 && total <= max,
                 "Clipboard offer exceeds its bound"
             );
-            let total = initial.count + initial.after;
-            let expected_kind = initial.kind;
-            let mut bytes = Vec::with_capacity(total.min(64 * 1024));
-            if initial.count != 0 {
-                bytes.extend_from_slice(unsafe {
-                    std::slice::from_raw_parts(initial.data, initial.count)
-                });
-            }
-            drop(initial);
+            let expected = initial.type_;
+            let mut bytes = initial.value;
             while bytes.len() < total {
                 self.check(check)?;
                 ensure!(
@@ -395,77 +327,66 @@ impl Session {
                 let part =
                     self.property_at(bytes.len() / 4, (total - bytes.len()).min(64 * 1024))?;
                 ensure!(
-                    part.kind == expected_kind
+                    part.type_ == expected
                         && part.format == 8
-                        && part.count > 0
-                        && part.count.checked_add(part.after) == Some(total - bytes.len()),
+                        && !part.value.is_empty()
+                        && part.value.len().checked_add(part.bytes_after as usize)
+                            == Some(total - bytes.len()),
                     "Clipboard property changed during transfer"
                 );
-                bytes.extend_from_slice(unsafe {
-                    std::slice::from_raw_parts(part.data, part.count)
-                });
+                bytes.extend_from_slice(&part.value);
             }
-            self.delete();
+            self.delete()?;
             self.check(check)?;
             return Ok(bytes);
         }
         ensure!(
-            initial.format == 32
-                && initial.count == 1
-                && initial.after == 0
-                && !initial.data.is_null(),
+            initial.format == 32 && initial.value_len == 1 && initial.bytes_after == 0,
             "Invalid clipboard INCR offer"
         );
-        let hint = unsafe { *initial.data.cast::<c_ulong>() };
+        let hint = initial
+            .value32()
+            .and_then(|mut values| values.next())
+            .ok_or_else(|| anyhow::anyhow!("Invalid clipboard INCR hint"))?;
         ensure!(
-            hint as u64 <= max as u64,
+            hint as usize <= max,
             "Clipboard INCR offer exceeds its bound"
         );
-        drop(initial);
-        self.delete();
+        self.delete()?;
         let mut output = Vec::new();
         loop {
-            let event = self.event(check)?;
-            if unsafe { event.kind } != 28 {
-                continue;
+            if let Event::PropertyNotify(event) = self.event(check)? {
+                if event.window != self.window
+                    || event.atom != self.property
+                    || event.state != Property::NEW_VALUE
+                {
+                    continue;
+                }
+                let remaining = max.saturating_sub(output.len());
+                let chunk = self.property(remaining.min(64 * 1024).saturating_add(1))?;
+                ensure!(
+                    chunk.format == 8
+                        && chunk.type_ != self.incr
+                        && chunk.bytes_after == 0
+                        && chunk.value.len() <= remaining
+                        && chunk.value.len() <= 64 * 1024,
+                    "Clipboard INCR chunk or cumulative offer exceeds its bound"
+                );
+                if chunk.value.is_empty() {
+                    self.delete()?;
+                    self.check(check)?;
+                    return Ok(output);
+                }
+                output.extend_from_slice(&chunk.value);
+                self.delete()?;
             }
-            let event = unsafe { &event.property };
-            if event.window != self.window || event.atom != self.property || event.state != 0 {
-                continue;
-            }
-            let remaining = max.saturating_sub(output.len());
-            let chunk = self.property(remaining.min(64 * 1024).saturating_add(1))?;
-            ensure!(
-                chunk.format == 8
-                    && chunk.kind != self.incr
-                    && chunk.after == 0
-                    && chunk.count <= remaining
-                    && chunk.count <= 64 * 1024,
-                "Clipboard INCR chunk or cumulative offer exceeds its bound"
-            );
-            if chunk.count == 0 {
-                self.delete();
-                self.check(check)?;
-                return Ok(output);
-            }
-            ensure!(!chunk.data.is_null(), "Invalid clipboard chunk");
-            output
-                .extend_from_slice(unsafe { std::slice::from_raw_parts(chunk.data, chunk.count) });
-            drop(chunk);
-            self.delete();
         }
     }
 }
 impl Drop for Session {
     fn drop(&mut self) {
-        if !self.display.is_null() {
-            unsafe {
-                if self.window != 0 {
-                    XDestroyWindow(self.display, self.window);
-                }
-                XCloseDisplay(self.display);
-            }
-        }
+        let _ = self.connection.destroy_window(self.window);
+        let _ = self.connection.flush();
     }
 }
 pub(super) fn inspect(
@@ -477,7 +398,7 @@ pub(super) fn inspect(
 ) -> Result<ClipboardSnapshot> {
     let mut session = Session::new(backend, deadline)?;
     let targets = session.targets(check)?;
-    let snapshot = match kind {
+    let value = match kind {
         ClipboardInspectKind::Formats => {
             let mut formats = Vec::with_capacity(targets.len());
             for atom in targets {
@@ -496,9 +417,8 @@ pub(super) fn inspect(
                     "text/plain",
                 ],
             )?;
-            let bytes = session.bytes(atom, CLIPBOARD_TEXT_BYTES, check)?;
             ClipboardSnapshot::Text {
-                text: String::from_utf8(bytes)?,
+                text: String::from_utf8(session.bytes(atom, CLIPBOARD_TEXT_BYTES, check)?)?,
             }
         }
         ClipboardInspectKind::Files => {
@@ -506,8 +426,9 @@ pub(super) fn inspect(
             uri_files(&session.bytes(atom, CLIPBOARD_FILES_BYTES, check)?)?
         }
     };
-    snapshot.validate()?;
-    Ok(snapshot)
+    session.check(check)?;
+    value.validate()?;
+    Ok(value)
 }
 pub(super) fn image(
     backend: NativeClipboardBackend,

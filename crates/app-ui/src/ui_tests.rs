@@ -1119,9 +1119,8 @@ fn open_image_cancel_and_invalid_input_release_admission(cx: &mut TestAppContext
             assert!(this.capturing);
         })
         .unwrap();
-    #[cfg(target_os = "windows")]
     cx.update_window(handle.into(), |_, window, cx| {
-        window.press("ctrl-shift-v", cx);
+        window.press(&shortcut("shift-v"), cx);
     })
     .unwrap();
     cx.update(|cx| {
@@ -4108,4 +4107,222 @@ fn library_checkbox_keeps_controlled_selection_and_disabled_state(cx: &mut TestA
     })
     .unwrap();
     cx.update(|cx| assert_eq!(handle.read(cx).unwrap().history_selected, vec![42]));
+}
+
+fn synthetic_clipboard_image() -> gpui::Image {
+    let source = image::RgbaImage::from_raw(2, 1, vec![11, 23, 37, 0, 43, 59, 71, 128]).unwrap();
+    let mut bytes = std::io::Cursor::new(Vec::new());
+    source
+        .write_to(&mut bytes, image::ImageFormat::Png)
+        .unwrap();
+    gpui::Image {
+        format: gpui::ImageFormat::Png,
+        bytes: bytes.into_inner(),
+        id: 19,
+    }
+}
+
+#[gpui::test]
+fn bounded_clipboard_offer_opens_existing_editor_without_clipboard_or_disk_output(
+    cx: &mut TestAppContext,
+) {
+    let handle = open_workspace(cx);
+    let root = std::env::temp_dir().join(format!(
+        "screenshots-ui-offer-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir(&root).unwrap();
+    handle
+        .update(cx, |this, _, cx| {
+            this.output_directory = Some(root.clone());
+            this.open_redaction_source_with_read(
+                EditorImage::Clipboard(app_core::NativeClipboardBackend::Automatic),
+                Some(gpui::Task::ready(Ok(synthetic_clipboard_image()))),
+                cx,
+            );
+            assert!(this.capturing);
+            let generation = this.capture_generation;
+            this.paste_image(cx);
+            assert_eq!(this.capture_generation, generation);
+        })
+        .unwrap();
+    cx.run_until_parked();
+    cx.update(|cx| {
+        let state = handle.read(cx).unwrap();
+        assert!(!state.capturing);
+        assert!(state.last_capture.is_none() && state.last_saved.is_none());
+        assert_eq!(state.clipboard_status, "No capture yet");
+        let editor = state.editor.unwrap().read(cx).unwrap();
+        assert_eq!(
+            editor.source.pixels.as_raw(),
+            &[11, 23, 37, 0, 43, 59, 71, 128]
+        );
+    });
+    assert_eq!(std::fs::read_dir(&root).unwrap().count(), 0);
+    std::fs::remove_dir(root).unwrap();
+}
+
+#[gpui::test]
+fn clipboard_offer_failures_release_the_same_input_admission(cx: &mut TestAppContext) {
+    let handle = open_workspace(cx);
+    for error in [
+        gpui::ClipboardReadError::TooLarge,
+        gpui::ClipboardReadError::TimedOut,
+        gpui::ClipboardReadError::Canceled,
+    ] {
+        handle
+            .update(cx, |this, _, cx| {
+                this.output_directory = Some(std::env::temp_dir());
+                this.open_redaction_source_with_read(
+                    EditorImage::Clipboard(app_core::NativeClipboardBackend::Automatic),
+                    Some(gpui::Task::ready(Err(error))),
+                    cx,
+                );
+                assert!(this.capturing);
+            })
+            .unwrap();
+        cx.run_until_parked();
+        cx.update(|cx| {
+            let state = handle.read(cx).unwrap();
+            assert!(!state.capturing && state.editor.is_none());
+            assert!(state.capture_status.starts_with("Could not load image:"));
+            assert!(state.last_capture.is_none() && state.last_saved.is_none());
+        });
+    }
+}
+
+#[gpui::test]
+fn stale_clipboard_offer_cannot_finish_a_later_input_or_open_an_editor(cx: &mut TestAppContext) {
+    let handle = open_workspace(cx);
+    let executor = cx.background_executor.clone();
+    let timer = executor.clone();
+    let read = executor.spawn(async move {
+        timer.timer(std::time::Duration::from_secs(1)).await;
+        Ok(synthetic_clipboard_image())
+    });
+    handle
+        .update(cx, |this, _, cx| {
+            this.output_directory = Some(std::env::temp_dir());
+            this.open_redaction_source_with_read(
+                EditorImage::Clipboard(app_core::NativeClipboardBackend::Automatic),
+                Some(read),
+                cx,
+            );
+        })
+        .unwrap();
+    cx.run_until_parked();
+    let current = handle
+        .update(cx, |this, _, cx| {
+            this.native_capture_cancel.as_ref().unwrap().cancel();
+            this.finish_capturing(cx);
+            this.begin_capturing();
+            this.native_capture_cancel.as_ref().unwrap().clone()
+        })
+        .unwrap();
+    cx.executor()
+        .advance_clock(std::time::Duration::from_secs(1));
+    cx.run_until_parked();
+    handle
+        .update(cx, |this, _, cx| {
+            assert!(this.capturing && this.editor.is_none());
+            assert!(current.check().is_ok());
+            this.finish_capturing(cx);
+        })
+        .unwrap();
+}
+
+#[gpui::test]
+fn native_encoded_drop_negotiates_without_decode_then_opens_exact_pixels(cx: &mut TestAppContext) {
+    use gpui::InputEvent as _;
+    let handle = open_workspace(cx);
+    let root = std::env::temp_dir().join(format!(
+        "screenshots-ui-raw-drop-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir(&root).unwrap();
+    handle
+        .update(cx, |this, _, _| this.output_directory = Some(root.clone()))
+        .unwrap();
+    let bytes = Arc::new(synthetic_clipboard_image().bytes);
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.dispatch_event(
+            gpui::FileDropEvent::ImageEntered {
+                position: point(px(600.), px(350.)),
+                image: gpui::ExternalImageDrop {
+                    format: gpui::ImageFormat::Png,
+                    bytes: None,
+                },
+            }
+            .to_platform_input(),
+            cx,
+        );
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update(|cx| {
+        let state = handle.read(cx).unwrap();
+        assert!(!state.capturing && state.editor.is_none());
+    });
+    cx.update_window(handle.into(), |_, window, cx| {
+        let position = point(px(600.), px(350.));
+        for event in [
+            gpui::FileDropEvent::ImageEntered {
+                position,
+                image: gpui::ExternalImageDrop {
+                    format: gpui::ImageFormat::Png,
+                    bytes: Some(bytes.clone()),
+                },
+            },
+            gpui::FileDropEvent::Submit { position },
+            gpui::FileDropEvent::Ended,
+        ] {
+            window.dispatch_event(event.to_platform_input(), cx);
+        }
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update(|cx| {
+        let state = handle.read(cx).unwrap();
+        assert!(
+            !state.capturing && state.editor.is_some(),
+            "{}",
+            state.capture_status
+        );
+        assert!(state.last_capture.is_none() && state.last_saved.is_none());
+        let editor = state.editor.unwrap().read(cx).unwrap();
+        assert_eq!(
+            editor.source.pixels.as_raw(),
+            &[11, 23, 37, 0, 43, 59, 71, 128]
+        );
+    });
+    assert_eq!(Arc::strong_count(&bytes), 1);
+    assert_eq!(std::fs::read_dir(&root).unwrap().count(), 0);
+    std::fs::remove_dir(root).unwrap();
+}
+
+#[gpui::test]
+fn native_url_drop_rejects_unbounded_or_unsupported_references_before_a_worker(
+    cx: &mut TestAppContext,
+) {
+    let handle = open_workspace(cx);
+    handle
+        .update(cx, |this, _, cx| {
+            this.output_directory = Some(std::env::temp_dir());
+            for url in [
+                Arc::<str>::from("data:image/png,invalid"),
+                Arc::from("https://example.invalid/".to_owned() + &"x".repeat(4096)),
+            ] {
+                this.open_dropped_url(&gpui::ExternalUrlDrop { url }, cx);
+                assert!(!this.capturing && this.editor.is_none());
+                assert!(this.capture_status.starts_with("Drop one supported"));
+            }
+        })
+        .unwrap();
 }

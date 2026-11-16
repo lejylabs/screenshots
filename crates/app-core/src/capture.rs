@@ -77,10 +77,20 @@ enum PreparedCapture {
 impl PreparedCapture {
     fn dimensions(&self) -> Result<(u32, u32), CaptureError> {
         match self {
-            Self::Display(monitor, _) => Ok((
-                monitor.width().map_err(backend_error)?,
-                monitor.height().map_err(backend_error)?,
-            )),
+            Self::Display(monitor, _) => {
+                #[cfg(target_os = "macos")]
+                {
+                    return crate::capture_native::mac_display_dimensions(monitor)
+                        .map_err(backend_error);
+                }
+                #[cfg(not(target_os = "macos"))]
+                {
+                    Ok((
+                        monitor.width().map_err(backend_error)?,
+                        monitor.height().map_err(backend_error)?,
+                    ))
+                }
+            }
             Self::Window(window, _, _, _) => Ok((
                 window.width().map_err(backend_error)?,
                 window.height().map_err(backend_error)?,
@@ -650,7 +660,9 @@ impl XcapBackend {
                         } else {
                             None
                         };
-                        let mut image = monitor.capture_image().map_err(backend_error)?;
+                        let mut image =
+                            crate::capture_native::capture_display(&monitor, &self.options)
+                                .map_err(backend_error)?;
                         if let Some(geometry) = cursor_geometry {
                             crate::capture_native::apply_cursor(
                                 &self.options,
@@ -695,9 +707,17 @@ impl XcapBackend {
                                 return Err(CaptureError::StaleRegion);
                             }
                         }
-                        let mut image = monitor
-                            .capture_region(x, y, width, height)
-                            .map_err(backend_error)?;
+                        let mut image = crate::capture_native::capture_region(
+                            &monitor,
+                            crate::PixelRegion {
+                                x,
+                                y,
+                                width,
+                                height,
+                            },
+                            &self.options,
+                        )
+                        .map_err(backend_error)?;
                         if let Some(geometry) = cursor_geometry {
                             let origin_x = i32::try_from(i64::from(geometry.x) + i64::from(x))
                                 .map_err(|_| CaptureError::InvalidRegion)?;
@@ -769,8 +789,15 @@ impl XcapBackend {
                 let monitor = self.find_monitor(&display_id)?;
                 let x = u32::try_from(x).map_err(|_| CaptureError::InvalidRegion)?;
                 let y = u32::try_from(y).map_err(|_| CaptureError::InvalidRegion)?;
-                let display_width = monitor.width().map_err(backend_error)?;
-                let display_height = monitor.height().map_err(backend_error)?;
+                #[cfg(target_os = "macos")]
+                let (display_width, display_height) =
+                    crate::capture_native::mac_display_dimensions(&monitor)
+                        .map_err(backend_error)?;
+                #[cfg(not(target_os = "macos"))]
+                let (display_width, display_height) = (
+                    monitor.width().map_err(backend_error)?,
+                    monitor.height().map_err(backend_error)?,
+                );
                 if width == 0
                     || height == 0
                     || x.checked_add(width).is_none_or(|end| end > display_width)
@@ -1046,9 +1073,26 @@ impl CaptureBackend for XcapBackend {
 }
 
 #[cfg(target_os = "linux")]
-fn linux_wayland_session() -> bool {
-    std::env::var_os("WAYLAND_DISPLAY").is_some_and(|value| !value.is_empty())
-        || std::env::var_os("XDG_SESSION_TYPE").is_some_and(|value| value == "wayland")
+#[doc(hidden)]
+pub fn linux_wayland_markers(
+    display: Option<&std::ffi::OsStr>,
+    socket: Option<&std::ffi::OsStr>,
+    session: Option<&std::ffi::OsStr>,
+) -> bool {
+    socket.is_some()
+        || display.is_some_and(|value| !value.is_empty())
+        || session
+            .and_then(std::ffi::OsStr::to_str)
+            .is_some_and(|value| value.eq_ignore_ascii_case("wayland"))
+}
+#[cfg(target_os = "linux")]
+#[doc(hidden)]
+pub fn linux_wayland_session() -> bool {
+    linux_wayland_markers(
+        std::env::var_os("WAYLAND_DISPLAY").as_deref(),
+        std::env::var_os("WAYLAND_SOCKET").as_deref(),
+        std::env::var_os("XDG_SESSION_TYPE").as_deref(),
+    )
 }
 
 #[cfg(target_os = "linux")]
@@ -1071,6 +1115,9 @@ fn cursor_geometry(
     monitor: &Monitor,
     options: &crate::CaptureOptions,
 ) -> Result<Option<DisplayGeometry>, CaptureError> {
+    if cfg!(target_os = "macos") {
+        return Ok(None);
+    }
     if options.cursor != crate::CaptureCursor::Include {
         return Ok(None);
     }

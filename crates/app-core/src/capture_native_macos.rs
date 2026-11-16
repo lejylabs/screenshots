@@ -48,17 +48,34 @@ pub(super) fn validate_options(options: &CaptureOptions, window: bool) -> Result
     if window {
         super::validate_native_window_policy(options, false, true, true, true)?;
     }
-    ensure!(
-        window || options.cursor != CaptureCursor::Include,
-        "Native macOS display cursor source is not yet wired"
-    );
     Ok(())
+}
+pub(super) fn display_dimensions(monitor: &xcap::Monitor) -> Result<(u32, u32)> {
+    let id = monitor.id()?;
+    let display = crate::capture_macos_ax::displays()?
+        .into_iter()
+        .find(|display| display.id == id)
+        .context("Native display dimensions unavailable")?;
+    Ok((display.pixel_width, display.pixel_height))
+}
+pub(super) fn capture_display(
+    monitor: &xcap::Monitor,
+    options: &CaptureOptions,
+) -> Result<RgbaImage> {
+    crate::capture_macos_image::display(monitor.id()?, None, options)
+}
+pub(super) fn capture_region(
+    monitor: &xcap::Monitor,
+    region: crate::PixelRegion,
+    options: &CaptureOptions,
+) -> Result<RgbaImage> {
+    crate::capture_macos_image::display(monitor.id()?, Some(region), options)
 }
 pub(super) fn validate_template_session() -> Result<()> {
     Ok(())
 }
 pub(super) fn apply_cursor(_: &mut RgbaImage, _: i32, _: i32) -> Result<()> {
-    bail!("Native macOS still cursor composition is not implemented")
+    bail!("macOS cursor must be embedded by its admitted native source, not composed a second time")
 }
 pub(super) fn capture_window(window: &xcap::Window, options: &CaptureOptions) -> Result<RgbaImage> {
     validate_options(options, true)?;

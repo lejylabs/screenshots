@@ -9,6 +9,8 @@ Desktop: screenshots [--show]
 Open image: screenshots --open FILE
 Headless commands (no desktop UI; outputs and uploads require explicit actions):
   screenshots --help | --version
+  screenshots clipboard inspect|text|files|image-info
+  screenshots clipboard image NEW.png
   screenshots autostart status|enable|disable
   screenshots desktop associations status|enable|disable
   screenshots desktop notify TITLE BODY
@@ -175,7 +177,9 @@ pub fn run(args: Vec<OsString>) -> Result<bool> {
         "history-audit" => crate::history_audit::run(&args[1..])?,
         "history-manage" => crate::history_manage::run(&args[1..])?,
         "hash-file" => crate::hash_file::run(&args[1..])?,
+        "clipboard" => crate::clipboard_command::run(&args[1..])?,
         "image-url" => crate::image_url::run(&args[1..])?,
+        "editor-document" => crate::editor_document::run(&args[1..])?,
         "history-query" => history_query(&args[1..])?,
         "storage" => storage(&args[1..])?,
         "credentials" => credentials(&args[1..])?,

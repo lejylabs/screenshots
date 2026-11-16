@@ -22,6 +22,9 @@ mod transport;
 #[cfg(unix)]
 #[path = "capture_worker_unix.rs"]
 mod unix;
+#[cfg(unix)]
+#[path = "capture_worker_video.rs"]
+pub(crate) mod video;
 #[cfg(target_os = "windows")]
 #[path = "capture_worker_windows.rs"]
 mod windows;
@@ -114,6 +117,11 @@ fn admit(
     }
 }
 type SharedJob = Arc<Mutex<Option<Job>>>;
+enum Operation {
+    Still,
+    #[cfg(unix)]
+    Video(video::Plan),
+}
 struct Pending {
     thread: JoinHandle<()>,
     job: SharedJob,
@@ -323,7 +331,48 @@ fn command() -> Result<Command> {
     command.env_remove(crate::task_clipboard::ENV);
     Ok(command)
 }
+#[cfg(target_os = "linux")]
+fn command_wayland_context(command: &Command) -> bool {
+    let value = |name: &str| {
+        command
+            .get_envs()
+            .find(|(key, _)| *key == std::ffi::OsStr::new(name))
+            .map(|(_, value)| value.map(std::ffi::OsStr::to_owned))
+            .unwrap_or_else(|| std::env::var_os(name))
+    };
+    app_core::linux_wayland_markers(
+        value("WAYLAND_DISPLAY").as_deref(),
+        value("WAYLAND_SOCKET").as_deref(),
+        value("XDG_SESSION_TYPE").as_deref(),
+    )
+}
+#[cfg(target_os = "linux")]
+fn admit_original_context(command: &Command, call: &NativeCaptureCall) -> Result<(), CaptureError> {
+    if matches!(
+        call,
+        NativeCaptureCall::ClipboardImage {
+            backend: app_core::NativeClipboardBackend::Automatic
+        } | NativeCaptureCall::ClipboardInspect {
+            backend: app_core::NativeClipboardBackend::Automatic,
+            ..
+        }
+    ) && command_wayland_context(command)
+    {
+        return Err(CaptureError::Clipboard);
+    }
+    Ok(())
+}
 fn private_environment(command: &mut Command) {
+    #[cfg(target_os = "linux")]
+    let wayland_context = command_wayland_context(command);
+    #[cfg(target_os = "linux")]
+    let socket_descriptor = command
+        .get_envs()
+        .find(|(key, _)| *key == std::ffi::OsStr::new("WAYLAND_SOCKET"))
+        .map(|(_, value)| value.map(std::ffi::OsStr::to_owned))
+        .unwrap_or_else(|| std::env::var_os("WAYLAND_SOCKET"))
+        .and_then(|v| v.to_str().and_then(|v| v.parse::<i32>().ok()))
+        .filter(|fd| *fd >= 3);
     let overrides = command
         .get_envs()
         .map(|(key, value)| (key.to_owned(), value.map(std::ffi::OsStr::to_owned)))
@@ -401,6 +450,33 @@ fn private_environment(command: &mut Command) {
         }
     }
     command.env_remove(crate::task_clipboard::ENV);
+    #[cfg(target_os = "linux")]
+    {
+        // Freeze authority classification before removing an inherited descriptor name.
+        if wayland_context {
+            command.env("XDG_SESSION_TYPE", "wayland");
+        }
+        command.env_remove("WAYLAND_SOCKET");
+        if let Some(fd) = socket_descriptor {
+            use std::os::unix::process::CommandExt;
+            unsafe {
+                command.pre_exec(move || {
+                    let flags = libc::fcntl(fd, libc::F_GETFD);
+                    if flags < 0 {
+                        let error = std::io::Error::last_os_error();
+                        if error.raw_os_error() == Some(libc::EBADF) {
+                            return Ok(());
+                        }
+                        return Err(error);
+                    }
+                    if libc::fcntl(fd, libc::F_SETFD, flags | libc::FD_CLOEXEC) < 0 {
+                        return Err(std::io::Error::last_os_error());
+                    }
+                    Ok(())
+                });
+            }
+        }
+    }
 }
 fn launch(command: &mut Command, prepared: &transport::Prepared) -> Result<Job> {
     #[cfg(unix)]
@@ -528,6 +604,7 @@ fn coordinate(
     deadline: Instant,
     cancel: Arc<AtomicBool>,
     owned: SharedJob,
+    mut operation: Operation,
 ) -> Result<NativeCaptureReply, CaptureError> {
     let error = |_: anyhow::Error| {
         CaptureError::Backend("Native capture helper failed or returned invalid data".into())
@@ -542,23 +619,37 @@ fn coordinate(
         }
     };
     check()?;
+    #[cfg(target_os = "linux")]
+    admit_original_context(&command, &call)?;
     private_environment(&mut command);
     let prepared = transport::Prepared::new(&mut command).map_err(error)?;
+    #[cfg(unix)]
+    if let Operation::Video(plan) = &mut operation {
+        plan.prepare(&mut command, &prepared.nonce).map_err(error)?;
+    }
     check()?;
     let job = launch(&mut command, &prepared).map_err(error)?;
     *lock(&owned) = Some(job);
+    #[cfg(unix)]
+    if let Operation::Video(plan) = &mut operation {
+        plan.after_launch();
+    }
     let (transport, nonce) = prepared.parent();
     let mut io = transport::ActiveIo {
         transport,
         deadline,
         check: &check,
     };
-    let result = (|| -> Result<NativeCaptureReply> {
-        protocol::handshake(&mut io, protocol::HELLO, &nonce)?;
-        protocol::expect_handshake(&mut io, protocol::ACK, &nonce)?;
-        protocol::request(&mut io, &call)?;
-        protocol::read_reply(&mut io, &call)
-    })();
+    let result = match operation {
+        #[cfg(unix)]
+        Operation::Video(plan) => plan.exchange(&mut io, &nonce, &owned, cancel.clone(), deadline),
+        Operation::Still => (|| -> Result<NativeCaptureReply> {
+            protocol::handshake(&mut io, protocol::HELLO, &nonce)?;
+            protocol::expect_handshake(&mut io, protocol::ACK, &nonce)?;
+            protocol::request(&mut io, &call)?;
+            protocol::read_reply(&mut io, &call)
+        })(),
+    };
     drop(io);
     let mut result = match result {
         Ok(reply) => Ok(reply),
@@ -599,6 +690,11 @@ fn execute(
     call: NativeCaptureCall,
     check: &NativeCaptureCheck<'_>,
 ) -> Result<NativeCaptureReply, CaptureError> {
+    if matches!(call, NativeCaptureCall::MacVideo { .. }) {
+        return Err(CaptureError::Unsupported(
+            "Native video requires its owned streaming plan",
+        ));
+    }
     let timeout = operation_timeout(&call);
     execute_factory(
         || {
@@ -611,7 +707,18 @@ fn execute(
     )
 }
 fn operation_timeout(call: &NativeCaptureCall) -> Duration {
-    if matches!(call, NativeCaptureCall::Portal { .. }) {
+    if let NativeCaptureCall::MacVideo { request } = call {
+        return Duration::from_secs(u64::from(request.seconds) + 10);
+    }
+    if matches!(
+        call,
+        NativeCaptureCall::ClipboardImage { .. } | NativeCaptureCall::ClipboardInspect { .. }
+    ) {
+        Duration::from_secs(5)
+    } else if matches!(
+        call,
+        NativeCaptureCall::Portal { .. } | NativeCaptureCall::MacScroll { .. }
+    ) {
         Duration::from_secs(120)
     } else if call.is_enumeration() {
         Duration::from_secs(5)
@@ -634,6 +741,15 @@ fn execute_factory(
     check: &NativeCaptureCheck<'_>,
     timeout: Duration,
 ) -> Result<NativeCaptureReply, CaptureError> {
+    execute_operation(factory, call, check, timeout, Operation::Still)
+}
+fn execute_operation(
+    factory: impl FnOnce() -> Result<Command, CaptureError> + Send + 'static,
+    call: NativeCaptureCall,
+    check: &NativeCaptureCheck<'_>,
+    timeout: Duration,
+    operation: Operation,
+) -> Result<NativeCaptureReply, CaptureError> {
     check()?;
     call.validate()?;
     let deadline = Instant::now() + timeout;
@@ -647,8 +763,16 @@ fn execute_factory(
         .name("native-capture-job".into())
         .stack_size(256 * 1024)
         .spawn(move || {
-            let result = factory()
-                .and_then(|command| coordinate(command, call, deadline, worker_cancel, worker_job));
+            let result = factory().and_then(|command| {
+                coordinate(
+                    command,
+                    call,
+                    deadline,
+                    worker_cancel,
+                    worker_job,
+                    operation,
+                )
+            });
             let _ = sender.send(result);
         })
         .map_err(|_| CaptureError::Backend("Cannot start native capture coordinator".into()))?;
@@ -754,6 +878,10 @@ fn serve() -> Result<()> {
     io.deadline = Instant::now() + operation_timeout(&call);
     #[cfg(target_os = "macos")]
     let lifeline = transport::Lifeline::new(&io.transport)?;
+    #[cfg(target_os = "macos")]
+    if let NativeCaptureCall::MacVideo { request } = call {
+        return video::serve(request, &mut io, &nonce, parent);
+    }
     let result = match call {
         #[cfg(target_os = "linux")]
         NativeCaptureCall::Portal { source, cursor } => {
@@ -838,6 +966,260 @@ mod tests {
         }
         command
     }
+    #[cfg(unix)]
+    fn video_plan(marker: PathBuf) -> video::Plan {
+        let request = app_core::MacVideoRequest {
+            display: 7,
+            region: app_core::PixelRegion {
+                x: 0,
+                y: 0,
+                width: 2,
+                height: 2,
+            },
+            seconds: 1,
+            fps: 3,
+            cursor: false,
+            microphone: false,
+        };
+        video::Plan::new(request,Box::new(move|group,input,flag,deadline,ready|{
+            let result=(||->Result<()>{
+                let cancellation=crate::record::unix::Cancellation::with_flag(flag)?;
+                let mut encoder=Command::new("python3");encoder.args(["-c","import os,sys,pathlib; p=pathlib.Path(sys.argv[1]); p.with_suffix('.peer').write_text(str(os.getpid())); data=sys.stdin.buffer.read(); assert os.getpgrp()==int(sys.argv[2]); assert data==b''.join(bytes(p)*4 for p in [(0,0,255,255),(0,255,0,255),(255,0,0,255)]); p.write_bytes(data)"])
+                    .arg(&marker).arg(group.to_string());
+                crate::record::unix::borrowed_group_engine(encoder,false,&cancellation,deadline,None,crate::record::unix::BorrowedGroup{group,stdin:Some(input),ready:Some(ready)})?;
+                let mut probe=Command::new("python3");probe.args(["-c","import os,sys,time,pathlib; p=pathlib.Path(sys.argv[2]); p.with_suffix('.probe').write_text(str(os.getpid())); assert os.getpgrp()==int(sys.argv[1]); os.kill(int(sys.argv[1]),0); time.sleep(30 if p.with_suffix('.hold-probe').exists() else .1); os.kill(int(sys.argv[1]),0); print('{}')"]).arg(group.to_string()).arg(&marker);
+                crate::record::unix::borrowed_group_engine(probe,true,&cancellation,deadline,None,crate::record::unix::BorrowedGroup{group,stdin:None,ready:None})?;Ok(())
+            })();result.map_err(|_|CaptureError::Backend("Private encoder/probe failed".into()))
+        })).unwrap()
+    }
+    #[cfg(unix)]
+    #[test]
+    fn finite_video_preserves_its_source_group_through_encoder_and_probe_flush() {
+        let _serial = lock(&SERIAL);
+        settle();
+        let folder = Folder::new();
+        let output = folder.0.join("raw");
+        let plan = video_plan(output.clone());
+        let call = NativeCaptureCall::MacVideo {
+            request: plan.request,
+        };
+        let reply = execute_operation(
+            || Ok(fake_command("video", None)),
+            call,
+            &|| Ok(()),
+            Duration::from_secs(5),
+            Operation::Video(plan),
+        )
+        .unwrap();
+        let NativeCaptureReply::MacVideo { summary } = reply else {
+            panic!("Wrong native video summary")
+        };
+        assert_eq!(summary.frames, 3);
+        assert_eq!(std::fs::read(output).unwrap().len(), 48);
+        assert!(!BUSY.load(Ordering::Acquire));
+    }
+    #[cfg(unix)]
+    #[test]
+    fn truncated_or_stalled_video_cannot_publish_or_leave_a_replacement_job() {
+        let _serial = lock(&SERIAL);
+        settle();
+        let folder = Folder::new();
+        for mode in ["video_truncated", "video_hang"] {
+            let output = folder.0.join(mode);
+            let plan = video_plan(output.clone());
+            let call = NativeCaptureCall::MacVideo {
+                request: plan.request,
+            };
+            let result = execute_operation(
+                move || Ok(fake_command(mode, None)),
+                call,
+                &|| Ok(()),
+                Duration::from_millis(350),
+                Operation::Video(plan),
+            );
+            assert!(result.is_err());
+            settle();
+            assert!(!output.exists());
+            assert!(!BUSY.load(Ordering::Acquire));
+        }
+    }
+    #[cfg(unix)]
+    #[test]
+    #[ignore = "explicit optional installed FFmpeg raw-video/GIF/audio pipeline; generated data only"]
+    fn owned_video_pipeline_roundtrips_real_codecs_and_exact_synthetic_audio() -> Result<()> {
+        use crate::record::{Options, OutputFormat};
+        let _serial = lock(&SERIAL);
+        settle();
+        let folder = Folder::new();
+        for (name, format, audio) in [
+            ("silent.mkv", OutputFormat::Matroska, false),
+            ("audio.mkv", OutputFormat::Matroska, true),
+            ("animation.gif", OutputFormat::Gif, false),
+        ] {
+            let output = folder.0.join(name);
+            let stage = output.clone();
+            let request = app_core::MacVideoRequest {
+                display: 7,
+                region: app_core::PixelRegion {
+                    x: 0,
+                    y: 0,
+                    width: 2,
+                    height: 2,
+                },
+                seconds: 1,
+                fps: 3,
+                cursor: false,
+                microphone: false,
+            };
+            let plan = video::Plan::new(
+                request,
+                Box::new(move |group, input, flag, deadline, ready| {
+                    let result = (|| -> Result<()> {
+                        let cancellation = crate::record::unix::Cancellation::with_flag(flag)?;
+                        let audio = if audio {
+                            Some(crate::audio_record::AudioInput::new("test", None, Some(1))?)
+                        } else {
+                            None
+                        };
+                        let options = Options {
+                            mode: "test",
+                            destination: &stage,
+                            seconds: 1,
+                            fps: 3,
+                            width: 2,
+                            height: 2,
+                            x: 0,
+                            y: 0,
+                            format,
+                            cursor: None,
+                            display: None,
+                            audio,
+                        };
+                        crate::record::unix::borrowed_group_engine(
+                            crate::record::unix::raw_encoder(&options, &stage),
+                            false,
+                            &cancellation,
+                            deadline,
+                            None,
+                            crate::record::unix::BorrowedGroup {
+                                group,
+                                stdin: Some(input),
+                                ready: Some(ready),
+                            },
+                        )?;
+                        let mut probe = Command::new("ffprobe");
+                        probe.args(["-v","error","-protocol_whitelist","file","-f",format.container(),"-count_frames","-show_entries","stream=codec_name,codec_type,width,height,avg_frame_rate,nb_read_frames,duration,sample_rate,channels,bits_per_sample:format=format_name","-of","json","-i"]).arg(&stage);
+                        let bytes = crate::record::unix::borrowed_group_engine(
+                            probe,
+                            true,
+                            &cancellation,
+                            deadline,
+                            None,
+                            crate::record::unix::BorrowedGroup {
+                                group,
+                                stdin: None,
+                                ready: None,
+                            },
+                        )?;
+                        crate::record::verify_probe(&bytes, &options)?;
+                        if audio.is_some() {
+                            let bytes = crate::record::unix::borrowed_group_engine(
+                                crate::record::audio_sample_probe(&stage, false),
+                                true,
+                                &cancellation,
+                                deadline,
+                                None,
+                                crate::record::unix::BorrowedGroup {
+                                    group,
+                                    stdin: None,
+                                    ready: None,
+                                },
+                            )?;
+                            crate::record::verify_audio_samples(&bytes, 1)?;
+                        }
+                        Ok(())
+                    })();
+                    result.map_err(|_| {
+                        CaptureError::Backend("Private generated codec verification failed".into())
+                    })
+                }),
+            )?;
+            let call = NativeCaptureCall::MacVideo { request };
+            execute_operation(
+                || Ok(fake_command("video", None)),
+                call,
+                &|| Ok(()),
+                Duration::from_secs(8),
+                Operation::Video(plan),
+            )?;
+            let mut decode = Command::new("ffmpeg");
+            decode
+                .args([
+                    "-v",
+                    "error",
+                    "-protocol_whitelist",
+                    "file,pipe",
+                    "-f",
+                    format.container(),
+                    "-i",
+                ])
+                .arg(&output)
+                .args([
+                    "-map",
+                    "0:v:0",
+                    "-pix_fmt",
+                    "bgra",
+                    "-f",
+                    "rawvideo",
+                    "-fps_mode",
+                    "passthrough",
+                    "pipe:1",
+                ]);
+            let cancellation = crate::record::unix::Cancellation::new()?;
+            let bytes = crate::record::unix::engine(
+                decode,
+                true,
+                &cancellation,
+                Instant::now() + Duration::from_secs(5),
+            )?;
+            let mut expected = [[0u8, 0, 255, 255], [0, 255, 0, 255], [255, 0, 0, 255]]
+                .into_iter()
+                .flat_map(|pixel| pixel.repeat(4))
+                .collect::<Vec<_>>();
+            if format == OutputFormat::Gif {
+                // GIF is intentionally RGB8/quantized. Independently read its
+                // global palette and require the nearest declared palette color.
+                let gif = std::fs::read(&output)?;
+                ensure!(
+                    gif.len() >= 13 && gif[10] & 128 != 0,
+                    "Generated GIF has no global palette"
+                );
+                let count = 1usize << ((gif[10] & 7) + 1);
+                let palette = gif
+                    .get(13..13 + count * 3)
+                    .context("Generated GIF palette is truncated")?;
+                for pixel in expected.chunks_exact_mut(4) {
+                    let nearest = palette
+                        .chunks_exact(3)
+                        .min_by_key(|color| {
+                            let dr = i32::from(color[0]) - i32::from(pixel[2]);
+                            let dg = i32::from(color[1]) - i32::from(pixel[1]);
+                            let db = i32::from(color[2]) - i32::from(pixel[0]);
+                            dr * dr + dg * dg + db * db
+                        })
+                        .unwrap();
+                    pixel[..3].copy_from_slice(&[nearest[2], nearest[1], nearest[0]]);
+                }
+            }
+            ensure!(
+                bytes == expected,
+                "Actual {name} codec changed generated test pixels ({} bytes, expected {})",
+                bytes.len(),
+                expected.len()
+            );
+        }
+        Ok(())
+    }
     fn frame() -> app_core::CapturedImage {
         app_core::CapturedImage {
             display_id: "fixture".into(),
@@ -881,7 +1263,7 @@ mod tests {
         let Ok(mode) = std::env::var(MODE) else {
             return Ok(());
         };
-        let (transport, nonce, _) = transport::Transport::inherited()?;
+        let (transport, nonce, parent) = transport::Transport::inherited()?;
         let mut io = transport::ActiveIo {
             transport,
             deadline: Instant::now() + Duration::from_secs(10),
@@ -889,11 +1271,15 @@ mod tests {
         };
         protocol::expect_handshake(&mut io, protocol::HELLO, &nonce)?;
         protocol::handshake(&mut io, protocol::ACK, &nonce)?;
-        let _call = protocol::read_request(&mut io)?;
+        let fixture_call = protocol::read_request(&mut io)?;
         #[cfg(target_os = "macos")]
         let _lifeline = transport::Lifeline::new(&io.transport)?;
         if let Some(marker) = std::env::var_os(MARKER) {
             std::fs::write(marker, std::process::id().to_string())?;
+        }
+        #[cfg(unix)]
+        if let NativeCaptureCall::MacVideo { request } = fixture_call {
+            return video::fixture(request, &mut io, &nonce, parent, &mode);
         }
         match mode.as_str() {
             "hang" => loop {
@@ -1503,6 +1889,35 @@ mod tests {
         let marker = std::env::var_os(MARKER).context("Missing owned PID marker")?;
         let mode =
             std::env::var("SCREENSHOTS_CAPTURE_OWNER_MODE").unwrap_or_else(|_| "hang".into());
+        #[cfg(unix)]
+        if mode == "video_owner_encode" || mode == "video_owner_probe" {
+            let output = Path::new(&marker).with_extension("raw");
+            if mode == "video_owner_probe" {
+                std::fs::write(output.with_extension("hold-probe"), b"private probe pause")?;
+            }
+            let plan = video_plan(output);
+            let call = NativeCaptureCall::MacVideo {
+                request: plan.request,
+            };
+            let marker = PathBuf::from(marker);
+            let _ = execute_operation(
+                move || {
+                    Ok(fake_command(
+                        if mode == "video_owner_encode" {
+                            "video_hang"
+                        } else {
+                            "video"
+                        },
+                        Some(&marker),
+                    ))
+                },
+                call,
+                &|| Ok(()),
+                Duration::from_secs(20),
+                Operation::Video(plan),
+            );
+            return Ok(());
+        }
         let _ = execute_command(
             fake_command(&mode, Some(Path::new(&marker))),
             call(),
@@ -1593,6 +2008,62 @@ mod tests {
         while process_live(pid) {
             assert!(Instant::now() < until, "Native child escaped its parent");
             std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+    #[cfg(unix)]
+    #[test]
+    fn video_parent_loss_stops_source_encoder_and_probe_without_a_global_pid_signal() {
+        let _serial = lock(&SERIAL);
+        settle();
+        let folder = Folder::new();
+        for (mode, extension) in [
+            ("video_owner_encode", "peer"),
+            ("video_owner_probe", "probe"),
+        ] {
+            let marker = folder.0.join(mode);
+            let peer_marker = marker.with_extension(extension);
+            let mut owner = Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "capture_worker::tests::owner_fixture",
+                    "--nocapture",
+                ])
+                .env("SCREENSHOTS_CAPTURE_OWNER_FIXTURE", "1")
+                .env("SCREENSHOTS_CAPTURE_OWNER_MODE", mode)
+                .env(MARKER, &marker)
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .unwrap();
+            let until = Instant::now() + Duration::from_secs(5);
+            let mut read_pid = |path: &Path| loop {
+                if let Ok(pid) = std::fs::read_to_string(path)
+                    .unwrap_or_default()
+                    .parse::<i32>()
+                {
+                    break pid;
+                }
+                if Instant::now() >= until {
+                    let _ = owner.kill();
+                    let _ = owner.wait();
+                    panic!("Video owned fixture did not start");
+                }
+                std::thread::sleep(Duration::from_millis(5));
+            };
+            let source = read_pid(&marker);
+            let peer = read_pid(&peer_marker);
+            assert!(process_live(source) && process_live(peer));
+            owner.kill().unwrap();
+            owner.wait().unwrap();
+            let until = Instant::now() + Duration::from_secs(5);
+            while process_live(source) || process_live(peer) {
+                assert!(
+                    Instant::now() < until,
+                    "Owned video family survived parent loss"
+                );
+                std::thread::sleep(Duration::from_millis(5));
+            }
         }
     }
     #[cfg(unix)]

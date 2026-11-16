@@ -5,7 +5,7 @@ use std::{
     path::Path,
 };
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct FileIdentity(Vec<u8>);
+pub struct FileIdentity(Vec<u8>, Vec<u8>);
 impl FileIdentity {
     pub fn open(path: &Path) -> Result<(File, Self)> {
         let mut options = OpenOptions::new();
@@ -26,6 +26,7 @@ impl FileIdentity {
             "Prepared input/program must remain a regular file"
         );
         let mut bytes = Vec::with_capacity(96);
+        let mut object = Vec::with_capacity(24);
         bytes.extend_from_slice(&metadata.len().to_le_bytes());
         let modified = match metadata.modified()?.duration_since(std::time::UNIX_EPOCH) {
             Ok(d) => d.as_nanos() as i128,
@@ -35,6 +36,8 @@ impl FileIdentity {
         #[cfg(unix)]
         {
             use std::os::unix::fs::MetadataExt;
+            object.extend_from_slice(&metadata.dev().to_le_bytes());
+            object.extend_from_slice(&metadata.ino().to_le_bytes());
             for n in [
                 metadata.dev(),
                 metadata.ino(),
@@ -78,14 +81,22 @@ impl FileIdentity {
             );
             bytes.extend_from_slice(&id.VolumeSerialNumber.to_le_bytes());
             bytes.extend_from_slice(&id.FileId.Identifier);
+            object.extend_from_slice(&id.VolumeSerialNumber.to_le_bytes());
+            object.extend_from_slice(&id.FileId.Identifier);
             bytes.extend_from_slice(&basic.CreationTime.to_le_bytes());
             bytes.extend_from_slice(&basic.ChangeTime.to_le_bytes());
             bytes.extend_from_slice(&basic.FileAttributes.to_le_bytes());
         }
-        Ok(Self(bytes))
+        Ok(Self(bytes, object))
     }
     pub fn bytes(&self) -> &[u8] {
         &self.0
+    }
+    /// Stable native object identity, independently of timestamps/length/attributes.
+    /// Keep an original handle open while comparing so an object ID cannot be reused.
+    /// Full equality and verify_file still pin the complete admitted version.
+    pub fn same_object(&self, other: &Self) -> bool {
+        !self.1.is_empty() && self.1 == other.1
     }
     pub fn verify_file(&self, file: &File) -> Result<()> {
         ensure!(
@@ -120,6 +131,40 @@ mod tests {
         std::io::Read::read_to_string(&mut &file, &mut original)?;
         assert_eq!(original, "original");
         drop(file);
+        std::fs::remove_dir_all(root)?;
+        Ok(())
+    }
+    #[test]
+    fn hardlink_is_same_object_after_version_change_but_replacement_is_not() -> Result<()> {
+        use std::io::Write;
+        let root =
+            std::env::temp_dir().join(format!("screenshots-object-id-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&root)?;
+        let path = root.join("source");
+        let alias = root.join("alias");
+        std::fs::write(&path, b"original")?;
+        let (source, admitted) = FileIdentity::open(&path)?;
+        admitted.verify_file(&source)?;
+        // The consumer can observe exactly this interleaving after its source
+        // version check but before opening a new hardlink asset. Changing length
+        // makes the version difference deterministic on coarse timestamp filesystems.
+        std::fs::hard_link(&path, &alias)?;
+        OpenOptions::new()
+            .append(true)
+            .open(&alias)?
+            .write_all(b"-changed")?;
+        let (asset, current) = FileIdentity::open(&alias)?;
+        assert_ne!(admitted, current);
+        assert!(admitted.same_object(&current));
+        assert!(current.same_object(&admitted));
+        assert!(admitted.verify_file(&asset).is_err());
+        std::fs::remove_file(&path)?;
+        std::fs::write(&path, b"replacement")?;
+        let (replacement, other) = FileIdentity::open(&path)?;
+        assert!(!admitted.same_object(&other));
+        drop(replacement);
+        drop(asset);
+        drop(source);
         std::fs::remove_dir_all(root)?;
         Ok(())
     }

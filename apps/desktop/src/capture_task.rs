@@ -848,6 +848,7 @@ mod tests {
                 }
             };
             assert!(saved_path.is_file(), "upload must follow local publication");
+            socket.set_nonblocking(false).unwrap();
             socket
                 .set_read_timeout(Some(Duration::from_secs(5)))
                 .unwrap();

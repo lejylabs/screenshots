@@ -57,6 +57,7 @@ x11rb = { version = "=0.13.2", default-features = false, features = ["randr", "x
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "=0.6.5"
+objc2-app-kit = { version = "=0.3.2", default-features = false, features = ["std", "NSCursor", "NSImage", "NSImageRep", "NSGraphicsContext", "objc2-core-graphics"] }
 block2 = "=0.6.2"
 dispatch2 = "=0.3.1"
 objc2-foundation = { version = "=0.3.2", default-features = false, features = ["std", "NSObject", "NSString", "NSArray", "NSDictionary", "NSBundle", "NSError", "NSObjCRuntime", "NSValue"] }

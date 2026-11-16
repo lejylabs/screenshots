@@ -62,6 +62,39 @@ pub(crate) fn capture_window(window: &xcap::Window, options: &CaptureOptions) ->
     }
     platform::capture_window(window, &native)
 }
+#[cfg(target_os = "macos")]
+pub(crate) fn mac_display_dimensions(monitor: &xcap::Monitor) -> Result<(u32, u32)> {
+    platform::display_dimensions(monitor)
+}
+pub(crate) fn capture_display(
+    monitor: &xcap::Monitor,
+    options: &CaptureOptions,
+) -> Result<RgbaImage> {
+    #[cfg(target_os = "macos")]
+    {
+        platform::capture_display(monitor, options)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = options;
+        Ok(monitor.capture_image()?)
+    }
+}
+pub(crate) fn capture_region(
+    monitor: &xcap::Monitor,
+    region: crate::PixelRegion,
+    options: &CaptureOptions,
+) -> Result<RgbaImage> {
+    #[cfg(target_os = "macos")]
+    {
+        platform::capture_region(monitor, region, options)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = options;
+        Ok(monitor.capture_region(region.x, region.y, region.width, region.height)?)
+    }
+}
 
 pub(crate) fn apply_cursor(
     options: &CaptureOptions,

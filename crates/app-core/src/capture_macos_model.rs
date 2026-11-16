@@ -638,7 +638,7 @@ mod tests {
             MacScrollSummary {
                 captured_frames: 2,
                 scroll_actions: 1,
-                ..summary.clone()
+                ..summary
             }
             .validate(&request, 2, 6)
             .is_err()

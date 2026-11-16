@@ -155,7 +155,10 @@ fn import_reports_added_existing_and_individual_failures_without_changing_files(
     assert_eq!(result["failures"].as_array().unwrap().len(), 2);
     let entries = app_core::capture_history_page(&database, None).unwrap();
     assert_eq!(entries.len(), 1);
-    assert_eq!(entries[0].path, std::fs::canonicalize(&image).unwrap());
+    assert_eq!(
+        entries[0].path.canonicalize().unwrap(),
+        image.canonicalize().unwrap()
+    );
     let again = success(fixture.run("import", &database, &[image.clone().into()]));
     assert_eq!(again["added"], 0);
     assert_eq!(again["existing"], 1);

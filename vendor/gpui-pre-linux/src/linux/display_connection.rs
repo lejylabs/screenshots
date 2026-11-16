@@ -190,6 +190,24 @@ impl DisplayConnection {
         dispatch!(self, connection => connection.read_from_clipboard(), headless => None)
     }
 
+    pub(crate) fn cancel_image_clipboard_read(&self) {
+        match self {
+            #[cfg(feature = "wayland")]
+            Self::Wayland(connection) => connection.cancel_image_clipboard_read(),
+            _ => {}
+        }
+    }
+
+    pub(crate) fn read_image_from_clipboard_async(
+        &self,
+    ) -> Option<gpui::Task<gpui::Result<gpui::Image, gpui::ClipboardReadError>>> {
+        match self {
+            #[cfg(feature = "wayland")]
+            Self::Wayland(connection) => Some(connection.read_image_from_clipboard_async()),
+            _ => None,
+        }
+    }
+
     #[cfg(any(feature = "wayland", feature = "x11"))]
     pub(crate) fn window_identifier(
         &self,

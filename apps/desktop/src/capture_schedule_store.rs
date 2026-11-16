@@ -44,11 +44,19 @@ pub(super) struct Wake {
 }
 pub(super) struct Store {
     connection: Connection,
-    _lock: Option<File>,
+    _lock: Option<ScheduleLock>,
     origin: Instant,
     deadline: Arc<AtomicU64>,
     canceled: Arc<AtomicBool>,
     observe_cancel: Arc<AtomicBool>,
+}
+struct ScheduleLock(File);
+impl Drop for ScheduleLock {
+    fn drop(&mut self) {
+        // A concurrent fork may retain this open description until exec; closing
+        // the owner's descriptor alone would keep flock held during that window.
+        let _ = self.0.unlock();
+    }
 }
 fn safe_file(file: &File, max: u64) -> Result<()> {
     let m = file.metadata()?;
@@ -152,7 +160,7 @@ impl Store {
                     "Schedule database is busy; stop its service before editing or resolving"
                 )
             })?;
-            Some(file)
+            Some(ScheduleLock(file))
         } else {
             None
         };
@@ -531,6 +539,23 @@ mod tests {
         assert_eq!(Store::open(&p, false, false)?.list()?.len(), 1);
         drop(s);
         Store::open(&p, true, false)?;
+        std::fs::remove_dir_all(root)?;
+        Ok(())
+    }
+    #[cfg(unix)]
+    #[test]
+    fn owner_teardown_unlocks_even_while_a_fork_equivalent_descriptor_survives() -> Result<()> {
+        let root = root();
+        let path = root.join("state.sqlite");
+        let state = Store::open(&path, true, true)?;
+        let inherited = state._lock.as_ref().unwrap().0.try_clone()?;
+        assert!(Store::open(&path, true, false).is_err());
+        drop(state);
+        let next_owner = Store::open(&path, true, false)?;
+        drop(inherited);
+        assert!(Store::open(&path, true, false).is_err());
+        drop(next_owner);
+        Store::open(&path, true, false)?;
         std::fs::remove_dir_all(root)?;
         Ok(())
     }

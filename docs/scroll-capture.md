@@ -1,5 +1,11 @@
 # Live scrolling capture
 
+The [macOS native completion](macos-capture-completion.md) adds a separate
+owned-helper runner with retained, explicitly bound public AX window/scrollbar
+objects. It reuses this assembler/result contract; the X11/Windows evidence
+below does not count as macOS permission, focus, pixel or native delivery
+acceptance. No global wheel fallback is used.
+
 Author: NewtTheWolf
 Date: 2026-11-15
 Status: implemented for Windows and local X11; core/CLI tests and private-Xvfb

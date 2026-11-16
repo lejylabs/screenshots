@@ -2,16 +2,23 @@ use std::{
     fs::File,
     io::{ErrorKind, Write},
     os::fd::{AsRawFd, BorrowedFd, OwnedFd},
+    os::unix::net::UnixStream,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
 };
 
 use calloop::{LoopHandle, PostAction};
 use filedescriptor::Pipe;
 use strum::IntoEnumIterator;
-use wayland_client::{Connection, protocol::wl_data_offer::WlDataOffer};
+use wayland_client::{Connection, Proxy, protocol::wl_data_offer::WlDataOffer};
 use wayland_protocols::wp::primary_selection::zv1::client::zwp_primary_selection_offer_v1::ZwpPrimarySelectionOfferV1;
 
-use crate::linux::platform::{PIPE_READ_TIMEOUT, read_fd_with_timeout};
-use gpui::{ClipboardEntry, ClipboardItem, Image, ImageFormat, hash};
+use crate::linux::platform::{PIPE_READ_TIMEOUT, read_fd_bounded};
+use gpui::{ClipboardEntry, ClipboardItem, ClipboardReadError, Image, ImageFormat, hash};
+#[path = "clipboard_image_read.rs"]
+mod image_read;
 
 /// Text mime types that we'll offer to other programs.
 pub(crate) const TEXT_MIME_TYPES: [&str; 3] =
@@ -27,27 +34,39 @@ pub(crate) struct Clipboard {
     self_mime: String,
 
     // Internal clipboard
-    contents: Option<ClipboardItem>,
-    primary_contents: Option<ClipboardItem>,
+    contents: Option<Arc<ClipboardItem>>,
+    primary_contents: Option<Arc<ClipboardItem>>,
 
     // External clipboard
     cached_read: Option<ClipboardItem>,
     current_offer: Option<DataOffer<WlDataOffer>>,
     cached_primary_read: Option<ClipboardItem>,
     current_primary_offer: Option<DataOffer<ZwpPrimarySelectionOfferV1>>,
+    image_pending: Option<image_read::Pending>,
+    image_active: Arc<AtomicBool>,
+    image_id: u64,
 }
 
 pub(crate) trait ReceiveData {
+    fn alive(&self) -> bool {
+        true
+    }
     fn receive_data(&self, mime_type: String, fd: BorrowedFd<'_>);
 }
 
 impl ReceiveData for WlDataOffer {
+    fn alive(&self) -> bool {
+        self.is_alive()
+    }
     fn receive_data(&self, mime_type: String, fd: BorrowedFd<'_>) {
         self.receive(mime_type, fd);
     }
 }
 
 impl ReceiveData for ZwpPrimarySelectionOfferV1 {
+    fn alive(&self) -> bool {
+        self.is_alive()
+    }
     fn receive_data(&self, mime_type: String, fd: BorrowedFd<'_>) {
         self.receive(mime_type, fd);
     }
@@ -58,6 +77,7 @@ impl ReceiveData for ZwpPrimarySelectionOfferV1 {
 pub(crate) struct DataOffer<T: ReceiveData> {
     pub inner: T,
     mime_types: Vec<String>,
+    overflow: bool,
 }
 
 impl<T: ReceiveData> DataOffer<T> {
@@ -65,28 +85,59 @@ impl<T: ReceiveData> DataOffer<T> {
         Self {
             inner: offer,
             mime_types: Vec::new(),
+            overflow: false,
         }
     }
 
     pub fn add_mime_type(&mut self, mime_type: String) {
-        self.mime_types.push(mime_type)
+        if self.mime_types.len() >= 256 || mime_type.is_empty() || mime_type.len() > 128 {
+            self.overflow = true;
+            return;
+        }
+        if !self.mime_types.contains(&mime_type) {
+            self.mime_types.push(mime_type);
+        }
     }
 
+    pub(crate) fn dnd_has_mime(&self, mime: &str) -> bool {
+        !self.overflow && self.has_mime_type(mime)
+    }
+    pub(crate) fn dnd_image_format(&self) -> Option<ImageFormat> {
+        if self.overflow {
+            return None;
+        }
+        [
+            ImageFormat::Png,
+            ImageFormat::Jpeg,
+            ImageFormat::Webp,
+            ImageFormat::Bmp,
+            ImageFormat::Tiff,
+        ]
+        .into_iter()
+        .find(|format| self.has_mime_type(format.mime_type()))
+    }
     fn has_mime_type(&self, mime_type: &str) -> bool {
         self.mime_types.iter().any(|t| t == mime_type)
     }
 
     fn read_bytes(&self, connection: &Connection, mime_type: &str) -> Option<Vec<u8>> {
-        let pipe = Pipe::new().unwrap();
+        if self.overflow || !self.inner.alive() {
+            return None;
+        }
+        let pipe = Pipe::new().ok()?;
         self.inner.receive_data(mime_type.to_string(), unsafe {
             BorrowedFd::borrow_raw(pipe.write.as_raw_fd())
         });
         let fd = pipe.read;
         drop(pipe.write);
 
-        connection.flush().unwrap();
-
-        match read_fd_with_timeout(fd, PIPE_READ_TIMEOUT) {
+        connection.flush().ok()?;
+        let maximum = if mime_type.starts_with("image/") {
+            image_read::IMAGE_BYTES
+        } else {
+            64 * 1024
+        };
+        match read_fd_bounded(fd, PIPE_READ_TIMEOUT, maximum, None) {
             Ok(bytes) => Some(bytes),
             Err(err) => {
                 log::error!("error reading clipboard pipe: {err:?}");
@@ -149,18 +200,22 @@ impl Clipboard {
             current_offer: None,
             cached_primary_read: None,
             current_primary_offer: None,
+            image_pending: None,
+            image_active: Arc::new(AtomicBool::new(false)),
+            image_id: 0,
         }
     }
 
     pub fn set(&mut self, item: ClipboardItem) {
-        self.contents = Some(item);
+        self.contents = Some(Arc::new(item));
     }
 
     pub fn set_primary(&mut self, item: ClipboardItem) {
-        self.primary_contents = Some(item);
+        self.primary_contents = Some(Arc::new(item));
     }
 
     pub fn set_offer(&mut self, data_offer: Option<DataOffer<WlDataOffer>>) {
+        self.cancel_image_read();
         self.cached_read = None;
         self.current_offer = data_offer;
     }
@@ -197,14 +252,20 @@ impl Clipboard {
         }
 
         if offer.has_mime_type(&self.self_mime) {
-            return self.contents.clone();
+            return self.contents.as_ref().map(|item| (**item).clone());
         }
 
         let item = offer
             .read_text(&self.connection)
             .or_else(|| offer.read_image(&self.connection))?;
 
-        self.cached_read = Some(item.clone());
+        if item
+            .entries
+            .iter()
+            .all(|entry| matches!(entry, ClipboardEntry::String(_)))
+        {
+            self.cached_read = Some(item.clone());
+        }
         Some(item)
     }
 
@@ -215,15 +276,124 @@ impl Clipboard {
         }
 
         if offer.has_mime_type(&self.self_mime) {
-            return self.primary_contents.clone();
+            return self.primary_contents.as_ref().map(|item| (**item).clone());
         }
 
         let item = offer
             .read_text(&self.connection)
             .or_else(|| offer.read_image(&self.connection))?;
 
-        self.cached_primary_read = Some(item.clone());
+        if item
+            .entries
+            .iter()
+            .all(|entry| matches!(entry, ClipboardEntry::String(_)))
+        {
+            self.cached_primary_read = Some(item.clone());
+        }
         Some(item)
+    }
+
+    pub(super) fn cancel_image_read(&mut self) {
+        if let Some(mut pending) = self.image_pending.take() {
+            pending.cancel();
+        }
+    }
+    pub(super) fn is_image_read_current(&self, id: u64) -> bool {
+        self.current_offer
+            .as_ref()
+            .is_some_and(|offer| offer.inner.alive())
+            && self
+                .image_pending
+                .as_ref()
+                .is_some_and(|pending| pending.id == id)
+    }
+    pub(super) fn finish_image_read(&mut self, id: u64) {
+        if self
+            .image_pending
+            .as_ref()
+            .is_some_and(|pending| pending.id == id)
+        {
+            self.image_pending.take();
+        }
+    }
+    pub(super) fn begin_image_read(&mut self) -> Result<image_read::Read, ClipboardReadError> {
+        if self
+            .image_active
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            return Err(ClipboardReadError::Busy);
+        }
+        let lease = image_read::Lease(self.image_active.clone());
+        let offer = self
+            .current_offer
+            .as_ref()
+            .ok_or(ClipboardReadError::Unavailable)?;
+        if offer.overflow {
+            return Err(ClipboardReadError::TooLarge);
+        }
+        if !offer.inner.alive() {
+            return Err(ClipboardReadError::Unavailable);
+        }
+        self.image_id = self
+            .image_id
+            .checked_add(1)
+            .ok_or(ClipboardReadError::Unavailable)?;
+        let id = self.image_id;
+        if offer.has_mime_type(&self.self_mime) {
+            let item = self
+                .contents
+                .clone()
+                .ok_or(ClipboardReadError::UnsupportedContent)?;
+            self.image_pending = Some(image_read::Pending { id, cancel: None });
+            return Ok(image_read::Read {
+                id,
+                input: image_read::Input::Owned(item),
+                lease,
+            });
+        }
+        let format = [
+            ImageFormat::Png,
+            ImageFormat::Jpeg,
+            ImageFormat::Webp,
+            ImageFormat::Bmp,
+            ImageFormat::Tiff,
+        ]
+        .into_iter()
+        .find(|format| offer.has_mime_type(format.mime_type()))
+        .ok_or(ClipboardReadError::UnsupportedContent)?;
+        let pipe = Pipe::new().map_err(|_| ClipboardReadError::Unavailable)?;
+        let (cancel_read, cancel_write) =
+            UnixStream::pair().map_err(|_| ClipboardReadError::Unavailable)?;
+        cancel_write
+            .set_nonblocking(true)
+            .map_err(|_| ClipboardReadError::Unavailable)?;
+        offer
+            .inner
+            .receive_data(format.mime_type().to_string(), unsafe {
+                BorrowedFd::borrow_raw(pipe.write.as_raw_fd())
+            });
+        drop(pipe.write);
+        // Connection flushing is nonblocking; pending output remains with the native event loop.
+        if let Err(error) = self.connection.flush() {
+            if !matches!(error,wayland_client::backend::WaylandError::Io(error) if error.kind()==ErrorKind::WouldBlock)
+            {
+                return Err(ClipboardReadError::Unavailable);
+            }
+        }
+        self.image_pending = Some(image_read::Pending {
+            id,
+            cancel: Some(cancel_write),
+        });
+        Ok(image_read::Read {
+            id,
+            input: image_read::Input::Pipe {
+                fd: pipe.read,
+                cancel: cancel_read,
+                format,
+            },
+            lease,
+        })
     }
 
     pub fn send_bytes(&self, fd: OwnedFd, bytes: Vec<u8>) {
@@ -253,5 +423,32 @@ impl Clipboard {
                 },
             )
             .unwrap();
+    }
+}
+
+#[cfg(test)]
+mod bounded_offer_tests {
+    use super::*;
+    #[derive(Clone, Debug)]
+    struct NoRead;
+    impl ReceiveData for NoRead {
+        fn receive_data(&self, _: String, _: BorrowedFd<'_>) {
+            panic!("Metadata-only admission requested clipboard bytes");
+        }
+    }
+    #[test]
+    fn offers_bound_count_and_label_before_retention() {
+        let mut offer = DataOffer::new(NoRead);
+        for index in 0..256 {
+            offer.add_mime_type(format!("application/private-{index}"));
+        }
+        assert_eq!(offer.mime_types.len(), 256);
+        assert!(!offer.overflow);
+        offer.add_mime_type("one-too-many".into());
+        assert!(offer.overflow);
+        assert_eq!(offer.mime_types.len(), 256);
+        let mut offer = DataOffer::new(NoRead);
+        offer.add_mime_type("x".repeat(129));
+        assert!(offer.overflow && offer.mime_types.is_empty());
     }
 }
