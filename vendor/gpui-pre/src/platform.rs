@@ -598,6 +598,19 @@ pub trait Platform: 'static {
         Task::ready(Ok(self.read_from_clipboard()))
     }
 
+    /// A focused native offer read, when this platform requires event-thread admission.
+    /// Returns bounded encoded image data; callers decode on their image worker.
+    /// `None` means the application must use its own isolated native clipboard reader.
+    fn read_image_from_clipboard_async(&self) -> Option<Task<Result<Image, ClipboardReadError>>> {
+        None
+    }
+
+    /// Cancels only this platform's active explicit image-offer transfer.
+    fn cancel_image_clipboard_read(&self) {}
+
+    /// Invalidates pending incoming native drops without dispatching reentrant input.
+    fn cancel_pending_native_drop(&self) {}
+
     #[cfg(any(target_os = "linux", target_os = "freebsd"))]
     fn read_from_primary(&self) -> Option<ClipboardItem>;
     #[cfg(any(target_os = "linux", target_os = "freebsd"))]
@@ -3120,6 +3133,14 @@ pub enum ClipboardReadError {
     /// The clipboard contents could not be converted into a
     /// [`ClipboardItem`].
     UnsupportedContent,
+    /// One operation already owns the bounded native transfer slot.
+    Busy,
+    /// Native encoded bytes exceeded the operation's admission ceiling.
+    TooLarge,
+    /// The single absolute transfer deadline elapsed.
+    TimedOut,
+    /// Focus, offer, or caller ownership ended before completion.
+    Canceled,
 }
 
 impl std::fmt::Display for ClipboardReadError {
@@ -3132,6 +3153,10 @@ impl std::fmt::Display for ClipboardReadError {
             Self::UnsupportedContent => {
                 formatter.write_str("the clipboard contents are unsupported")
             }
+            Self::Busy => formatter.write_str("another clipboard transfer is active"),
+            Self::TooLarge => formatter.write_str("clipboard data exceeds its transfer limit"),
+            Self::TimedOut => formatter.write_str("clipboard transfer timed out"),
+            Self::Canceled => formatter.write_str("clipboard transfer was canceled"),
         }
     }
 }

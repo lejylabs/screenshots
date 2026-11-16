@@ -10,8 +10,42 @@ mod pen;
 pub use layers::{DrawAnnotation, HighlightAnnotation};
 pub use pen::{MAX_DOCUMENT_PEN_POINTS, MAX_PEN_POINTS, PenAnnotation};
 mod capture;
+#[cfg(target_os = "linux")]
+pub use capture::{linux_wayland_markers, linux_wayland_session};
 mod capture_catalog;
+#[cfg(target_os = "macos")]
+mod capture_macos_ax;
+#[cfg(target_os = "macos")]
+mod capture_macos_cursor;
+#[cfg(target_os = "macos")]
+mod capture_macos_image;
+#[cfg(target_os = "macos")]
+mod capture_macos_loop;
+mod capture_macos_model;
+#[cfg(any(target_os = "macos", test))]
+mod capture_macos_pixels;
+#[cfg(target_os = "macos")]
+mod capture_macos_sck;
+#[cfg(target_os = "macos")]
+mod capture_macos_video;
+#[cfg(any(target_os = "windows", test))]
+mod display_pixels;
+#[cfg(target_os = "macos")]
+#[doc(hidden)]
+pub use capture_macos_video::{
+    preflight_macos_video_source_in_worker, run_macos_video_source_in_worker,
+};
+#[cfg(target_os = "macos")]
+mod capture_macos_scroll;
+#[cfg(target_os = "macos")]
+pub use capture_macos_scroll::capture_macos_scroll_with_cancel;
 mod capture_native;
+pub use capture_macos_model::{
+    MAC_AX_ARRAY_LIMIT, MAC_AX_MESSAGE_MILLIS, MAC_AX_PARENT_LIMIT, MAC_VIDEO_DRIFT_SLACK_NS,
+    MAC_VIDEO_GAP_SLACK_NS, MacDisplayProof, MacFrameClock, MacFrameLease, MacFrameSlot,
+    MacLogicalRect, MacMediaTimestamp, MacScrollRequest, MacScrollStop, MacScrollSummary,
+    MacVideoRequest, MacVideoSummary, MacWindowProof,
+};
 mod image_url;
 mod native_capture_job;
 mod portal_capture;
@@ -38,7 +72,10 @@ pub use raster_ops::{
     resize_nearest_rgba_with_cancel, rotate_rgba_with_cancel,
 };
 mod desktop_composite;
-pub use desktop_composite::{capture_stitched_desktop, stitch_desktop};
+pub use desktop_composite::{
+    capture_stitched_desktop, capture_stitched_desktop_with_cancel, stitch_desktop,
+    stitch_desktop_with_cancel,
+};
 mod resample;
 pub use resample::{ExportSize, downscale_export, downscale_export_with_cancel};
 mod file_identity;
@@ -47,10 +84,15 @@ mod filenames;
 pub use arrows::ArrowAnnotation;
 pub use filenames::{capture_file_name, validate_capture_name_template};
 mod clipboard;
+mod clipboard_input;
+pub use clipboard_input::{
+    ClipboardFileReference, ClipboardInspectKind, ClipboardPathEncoding, ClipboardSnapshot,
+    NativeClipboardBackend, capture_clipboard_image_with_cancel, inspect_clipboard_with_cancel,
+    read_clipboard_image,
+};
 #[cfg(target_os = "windows")]
 mod clipboard_windows;
-#[cfg(target_os = "windows")]
-pub use clipboard_windows::read_clipboard_image;
+
 mod export;
 pub use export::{ExportReport, export_saved_pngs, export_saved_pngs_with_metadata};
 #[cfg(target_os = "windows")]
@@ -177,7 +219,8 @@ pub use capture::{
     CaptureBackend, CaptureCapabilities, CaptureError, CaptureRequest, CapturedImage,
     DisplayGeometry, DisplayInfo, ImageExportFormat, MAX_CAPTURE_BYTES, PixelFormat,
     RememberedRegion, WindowInfo, XcapBackend, capture_output_dir, export_saved_png,
-    export_saved_png_as, png_without_metadata, save_png_bytes, validate_image_size,
+    export_saved_png_as, png_without_metadata, save_png_bytes, validate_display_pixel_coordinates,
+    validate_image_size,
 };
 
 pub fn version() -> &'static str {

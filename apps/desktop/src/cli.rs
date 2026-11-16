@@ -9,6 +9,8 @@ Desktop: screenshots [--show]
 Open image: screenshots --open FILE
 Headless commands (no desktop UI; outputs and uploads require explicit actions):
   screenshots --help | --version
+  screenshots clipboard inspect|text|files|image-info
+  screenshots clipboard image NEW.png
   screenshots autostart status|enable|disable
   screenshots desktop associations status|enable|disable
   screenshots desktop notify TITLE BODY
@@ -93,8 +95,8 @@ Headless commands (no desktop UI; outputs and uploads require explicit actions):
   screenshots gif OUTPUT.gif --delay-ms N INPUT INPUT... (2–16 images)
   screenshots stitch-scroll OUTPUT MIN_OVERLAP INPUT INPUT [INPUT...]
   screenshots scroll-capture WINDOW OUTPUT.png --region X Y WIDTH HEIGHT [--steps N] [--wheel N] [--settle-ms N] [--delay-ms N] [--min-overlap N] [--tolerance N] [--trim-top N] [--trim-bottom N]
-  screenshots record x11|gdigrab|test OUTPUT.mkv|OUTPUT.gif --seconds N --fps N --width N --height N
-      [--x X --y Y] [--cursor show|hide]
+  screenshots record x11|gdigrab|avfoundation|test OUTPUT.mkv|OUTPUT.gif --seconds N --fps N --width N --height N
+      [--x X --y Y] [--cursor show|hide] [--display ID] (display is required only for macOS avfoundation video)
       [--audio-mode test|pulse|alsa|dshow|avfoundation --audio-device NAME --audio-channels 1|2] (MKV only)
   screenshots record-audio test|pulse|alsa|dshow|avfoundation OUTPUT.wav --seconds N [--device NAME] [--channels 1|2]
 
@@ -175,6 +177,7 @@ pub fn run(args: Vec<OsString>) -> Result<bool> {
         "history-audit" => crate::history_audit::run(&args[1..])?,
         "history-manage" => crate::history_manage::run(&args[1..])?,
         "hash-file" => crate::hash_file::run(&args[1..])?,
+        "clipboard" => crate::clipboard_command::run(&args[1..])?,
         "image-url" => crate::image_url::run(&args[1..])?,
         "history-query" => history_query(&args[1..])?,
         "storage" => storage(&args[1..])?,

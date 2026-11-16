@@ -44,6 +44,19 @@ impl NativeCaptureCancellation {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "operation", rename_all = "snake_case", deny_unknown_fields)]
 pub enum NativeCaptureCall {
+    MacScroll {
+        request: crate::MacScrollRequest,
+    },
+    MacVideo {
+        request: crate::MacVideoRequest,
+    },
+    ClipboardImage {
+        backend: crate::NativeClipboardBackend,
+    },
+    ClipboardInspect {
+        kind: crate::ClipboardInspectKind,
+        backend: crate::NativeClipboardBackend,
+    },
     Inventory,
     Displays,
     Windows,
@@ -52,6 +65,9 @@ pub enum NativeCaptureCall {
     },
     Batch {
         requests: Vec<CaptureRequest>,
+        options: CaptureOptions,
+    },
+    Desktop {
         options: CaptureOptions,
     },
     FocusedWindow {
@@ -73,6 +89,14 @@ pub enum NativeCaptureCall {
     },
 }
 pub enum NativeCaptureReply {
+    MacScroll {
+        image: CapturedImage,
+        summary: crate::MacScrollSummary,
+    },
+    MacVideo {
+        summary: crate::MacVideoSummary,
+    },
+    Clipboard(crate::ClipboardSnapshot),
     Inventory(NativeSourceInventory),
     Displays(Vec<DisplayInfo>),
     Windows(Vec<WindowInfo>),
@@ -97,10 +121,13 @@ impl NativeCaptureCall {
         match self {
             Self::Batch { requests, .. } => Some(requests.len()),
             Self::FocusedWindow { .. }
+            | Self::Desktop { .. }
             | Self::FocusedDisplay { .. }
             | Self::Template { .. }
             | Self::Portal { .. }
-            | Self::ImageUrl { .. } => Some(1),
+            | Self::ImageUrl { .. }
+            | Self::ClipboardImage { .. }
+            | Self::MacScroll { .. } => Some(1),
             _ => None,
         }
     }
@@ -131,6 +158,20 @@ impl NativeCaptureCall {
             }
         }
         match self {
+            Self::Desktop { .. } => {
+                if index != 0 || display != "desktop" || window.is_some() || geometry.is_some() {
+                    return Err(invalid());
+                }
+            }
+            Self::MacScroll { request } => {
+                if index != 0
+                    || window != Some(request.window.to_string().as_str())
+                    || width != request.region.width
+                    || geometry.is_some()
+                {
+                    return Err(invalid());
+                }
+            }
             Self::Batch { requests, .. } => match requests.get(index).ok_or_else(invalid)? {
                 CaptureRequest::Display(id) => {
                     if display != id || window.is_some() {
@@ -188,6 +229,15 @@ impl NativeCaptureCall {
                     return Err(invalid());
                 }
             }
+            Self::ClipboardImage { .. } => {
+                if index != 0
+                    || display != "clipboard:image"
+                    || window.is_some()
+                    || geometry.is_some()
+                {
+                    return Err(invalid());
+                }
+            }
             Self::ImageUrl { .. } => {
                 if index != 0 || display != "image-url" || window.is_some() || geometry.is_some() {
                     return Err(invalid());
@@ -209,13 +259,26 @@ impl NativeCaptureCall {
     pub fn is_enumeration(&self) -> bool {
         matches!(
             self,
-            Self::Inventory | Self::Displays | Self::Windows | Self::Identities { .. }
+            Self::Inventory
+                | Self::Displays
+                | Self::Windows
+                | Self::Identities { .. }
+                | Self::ClipboardInspect { .. }
         )
     }
     pub fn validate(&self) -> Result<(), CaptureError> {
         match self {
+            Self::MacScroll { request } => request.validate().map_err(|_| invalid())?,
+            Self::MacVideo { request } => request.validate().map_err(|_| invalid())?,
             Self::Inventory | Self::Displays | Self::Windows | Self::Portal { .. } => {}
             Self::ImageUrl { source } => source.validate()?,
+            Self::ClipboardImage { backend } | Self::ClipboardInspect { backend, .. } => {
+                if !cfg!(target_os = "linux")
+                    && *backend == crate::NativeClipboardBackend::FocusedX11
+                {
+                    return Err(invalid());
+                }
+            }
             Self::Identities { displays } => {
                 if displays.is_empty() || displays.len() > 32 {
                     return Err(invalid());
@@ -285,7 +348,9 @@ impl NativeCaptureCall {
                     }
                 }
             }
-            Self::FocusedWindow { options } | Self::FocusedDisplay { options } => {
+            Self::FocusedWindow { options }
+            | Self::FocusedDisplay { options }
+            | Self::Desktop { options } => {
                 options.validate().map_err(|_| invalid())?;
                 if options.delay_ms != 0 {
                     return Err(invalid());
@@ -306,10 +371,59 @@ impl NativeCaptureCall {
 
     /// Private worker entry: the executable must handle this before installing its executor.
     pub fn run_inline(self, originating_pid: u32) -> Result<NativeCaptureReply, CaptureError> {
+        #[cfg(target_os = "macos")]
+        {
+            objc2::rc::autoreleasepool(|_| self.run_inline_unpooled(originating_pid))
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            self.run_inline_unpooled(originating_pid)
+        }
+    }
+    fn run_inline_unpooled(self, originating_pid: u32) -> Result<NativeCaptureReply, CaptureError> {
         if executor().is_some() || originating_pid == 0 {
             return Err(invalid());
         }
         self.validate()?;
+        if matches!(self, Self::MacVideo { .. }) {
+            return Err(CaptureError::Unsupported(
+                "Mac video requires the owned streaming controller and raw sink",
+            ));
+        }
+        if let Self::MacScroll { request } = &self {
+            #[cfg(target_os = "macos")]
+            {
+                let (image, summary) =
+                    crate::capture_macos_scroll::run(request.clone(), originating_pid)?;
+                let reply = NativeCaptureReply::MacScroll { image, summary };
+                self.validate_reply(&reply)?;
+                return Ok(reply);
+            }
+            #[cfg(not(target_os = "macos"))]
+            {
+                let _ = request;
+                return Err(CaptureError::Unsupported(
+                    "Native macOS scrolling requires macOS",
+                ));
+            }
+        }
+        if let Self::ClipboardImage { backend } = &self {
+            let reply = NativeCaptureReply::Frames(vec![crate::clipboard_input::image_inline(
+                *backend,
+                &|| Ok(()),
+            )?]);
+            self.validate_reply(&reply)?;
+            return Ok(reply);
+        }
+        if let Self::ClipboardInspect { kind, backend } = &self {
+            let reply = NativeCaptureReply::Clipboard(crate::clipboard_input::inspect_inline(
+                *kind,
+                *backend,
+                &|| Ok(()),
+            )?);
+            self.validate_reply(&reply)?;
+            return Ok(reply);
+        }
         if let Self::ImageUrl { source } = &self {
             let frame = source
                 .download_in_worker(&|| Ok(()))
@@ -326,6 +440,40 @@ impl NativeCaptureCall {
                 "Portal source requires the desktop native adapter",
             ));
         }
+        #[cfg(target_os = "macos")]
+        let native_pixels = matches!(
+            self,
+            Self::Batch { .. }
+                | Self::FocusedWindow { .. }
+                | Self::FocusedDisplay { .. }
+                | Self::Template { .. }
+                | Self::Desktop { .. }
+        );
+        #[cfg(target_os = "macos")]
+        if native_pixels {
+            crate::capture_macos_ax::screen_permission().map_err(|error| {
+                error
+                    .downcast::<CaptureError>()
+                    .unwrap_or_else(|_| CaptureError::MacScreenPermissionDenied)
+            })?;
+        }
+        #[cfg(target_os = "macos")]
+        let native_events = if native_pixels {
+            Some(crate::capture_macos_loop::EventLoop::new().map_err(|_| {
+                CaptureError::Backend("Native capture event loop unavailable".into())
+            })?)
+        } else {
+            None
+        };
+        #[cfg(target_os = "macos")]
+        let native_topology = native_events
+            .as_ref()
+            .map(|events| {
+                crate::capture_macos_loop::Topology::new(events.wake()).map_err(|_| {
+                    CaptureError::Backend("Native topology observer unavailable".into())
+                })
+            })
+            .transpose()?;
         #[cfg(target_os = "linux")]
         {
             let display = std::env::var("DISPLAY").map_err(|_| {
@@ -342,6 +490,9 @@ impl NativeCaptureCall {
                 ));
             }
         }
+        #[cfg(target_os = "windows")]
+        let topology = crate::capture_native::topology_guard()
+            .map_err(|error| CaptureError::Backend(error.to_string()))?;
         let backend =
             XcapBackend::new(std::path::PathBuf::new()).with_originating_process(originating_pid);
         let reply = match &self {
@@ -359,6 +510,12 @@ impl NativeCaptureCall {
                     .with_options(*options)?
                     .capture_batch(requests.clone())?,
             ),
+            Self::Desktop { options } => NativeCaptureReply::Frames(vec![
+                crate::desktop_composite::capture_stitched_desktop_in_worker(
+                    &backend.with_options(*options)?,
+                    &|| Ok(()),
+                )?,
+            ]),
             Self::FocusedWindow { options } => NativeCaptureReply::Frames(vec![
                 backend.with_options(*options)?.capture_focused_window()?,
             ]),
@@ -374,17 +531,55 @@ impl NativeCaptureCall {
                         .map_err(|_| invalid())?,
                 ])
             }
+            Self::ClipboardImage { .. } | Self::ClipboardInspect { .. } => {
+                unreachable!("Clipboard was handled before capture metadata")
+            }
             Self::ImageUrl { .. } => {
                 unreachable!("URL import was handled before native source enumeration")
             }
             Self::Portal { .. } => unreachable!("Portal is handled by the desktop native adapter"),
+            Self::MacScroll { .. } => {
+                unreachable!("Mac scrolling was handled before native metadata")
+            }
+            Self::MacVideo { .. } => unreachable!("Mac video requires the streaming controller"),
         };
+        #[cfg(target_os = "windows")]
+        topology
+            .check()
+            .map_err(|error| CaptureError::Backend(error.to_string()))?;
+        #[cfg(target_os = "macos")]
+        if native_topology.is_some() {
+            crate::capture_macos_loop::Topology::check().map_err(|_| CaptureError::StaleRegion)?;
+        }
         self.validate_reply(&reply)?;
         Ok(reply)
     }
 
     pub fn validate_reply(&self, reply: &NativeCaptureReply) -> Result<(), CaptureError> {
         match (self, reply) {
+            (Self::MacVideo { request }, NativeCaptureReply::MacVideo { summary }) => {
+                summary.validate(*request).map_err(|_| invalid())
+            }
+            (Self::MacScroll { request }, NativeCaptureReply::MacScroll { image, summary }) => {
+                summary
+                    .validate(request, image.width, image.height)
+                    .map_err(|_| invalid())?;
+                validate_frames(std::slice::from_ref(image))?;
+                self.validate_frame_metadata(
+                    0,
+                    &image.display_id,
+                    image.window_id.as_deref(),
+                    image.width,
+                    image.height,
+                    image.display_geometry,
+                )
+            }
+            (Self::ClipboardInspect { kind, .. }, NativeCaptureReply::Clipboard(value)) => {
+                if *kind != value.kind() {
+                    return Err(invalid());
+                }
+                value.validate().map_err(|_| invalid())
+            }
             (Self::Inventory, NativeCaptureReply::Inventory(inventory)) => {
                 if let Ok(displays) = &inventory.displays {
                     validate_displays(displays)?;
@@ -440,6 +635,9 @@ impl NativeCaptureCall {
                 Ok(())
             }
             (_, NativeCaptureReply::Frames(frames)) => {
+                if matches!(self, Self::MacScroll { .. }) {
+                    return Err(invalid());
+                }
                 validate_frames(frames)?;
                 if self.frame_count() != Some(frames.len()) {
                     return Err(invalid());

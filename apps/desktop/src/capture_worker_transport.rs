@@ -473,53 +473,91 @@ impl Write for ActiveIo<'_> {
 
 #[cfg(target_os = "macos")]
 pub(super) struct Lifeline {
-    done: std::sync::Arc<std::sync::atomic::AtomicBool>,
-    control: std::os::unix::net::UnixStream,
+    queue: std::os::fd::OwnedFd,
     thread: Option<std::thread::JoinHandle<()>>,
 }
 #[cfg(target_os = "macos")]
 impl Lifeline {
-    pub fn new(transport: &Transport) -> Result<Self> {
-        use std::sync::{
-            Arc,
-            atomic::{AtomicBool, Ordering},
-        };
-        let done = Arc::new(AtomicBool::new(false));
-        let check = done.clone();
-        let control = transport.stream.try_clone()?;
-        let mut reader = transport.stream.try_clone()?;
+    pub fn new(parent: u32) -> Result<Self> {
+        use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+        ensure!(
+            parent > 1 && unsafe { libc::getppid() } == parent as i32,
+            "Native parent is unavailable"
+        );
+        let descriptor = unsafe { libc::kqueue() };
+        ensure!(descriptor >= 0, "Cannot observe native parent exit");
+        let queue = unsafe { OwnedFd::from_raw_fd(descriptor) };
+        ensure!(
+            unsafe { libc::fcntl(queue.as_raw_fd(), libc::F_SETFD, libc::FD_CLOEXEC) } == 0,
+            "Cannot protect native parent observer"
+        );
+        let changes = [
+            libc::kevent {
+                ident: parent as usize,
+                filter: libc::EVFILT_PROC,
+                flags: libc::EV_ADD | libc::EV_ONESHOT,
+                fflags: libc::NOTE_EXIT,
+                data: 0,
+                udata: std::ptr::null_mut(),
+            },
+            libc::kevent {
+                ident: 1,
+                filter: libc::EVFILT_USER,
+                flags: libc::EV_ADD | libc::EV_CLEAR,
+                fflags: 0,
+                data: 0,
+                udata: std::ptr::null_mut(),
+            },
+        ];
+        ensure!(
+            unsafe {
+                libc::kevent(
+                    descriptor,
+                    changes.as_ptr(),
+                    changes.len() as i32,
+                    std::ptr::null_mut(),
+                    0,
+                    std::ptr::null(),
+                )
+            } == 0
+                && unsafe { libc::getppid() } == parent as i32,
+            "Native parent changed during observer registration"
+        );
         let thread = std::thread::Builder::new()
             .name("capture-parent-lifeline".into())
             .stack_size(128 * 1024)
             .spawn(move || {
-                use std::os::fd::AsRawFd;
                 loop {
-                    let mut event = libc::pollfd {
-                        fd: reader.as_raw_fd(),
-                        events: libc::POLLIN,
-                        revents: 0,
+                    let mut event: libc::kevent = unsafe { std::mem::zeroed() };
+                    let ready = unsafe {
+                        libc::kevent(
+                            descriptor,
+                            std::ptr::null(),
+                            0,
+                            &mut event,
+                            1,
+                            std::ptr::null(),
+                        )
                     };
-                    let ready = unsafe { libc::poll(&mut event, 1, -1) };
                     if ready < 0
                         && std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted
                     {
                         continue;
                     }
-                    let mut byte = [0];
-                    if let Err(error) = reader.read(&mut byte) {
-                        if error.kind() == std::io::ErrorKind::WouldBlock {
-                            continue;
-                        }
+                    if ready == 1
+                        && event.filter == libc::EVFILT_USER
+                        && event.ident == 1
+                        && event.flags & libc::EV_ERROR == 0
+                    {
+                        return;
                     }
-                    break;
-                }
-                if !check.load(Ordering::Acquire) {
+                    // No protocol descriptor is observed or consumed. A kernel
+                    // parent-exit event (or observer failure) ends this owned group.
                     super::unix::terminate_own_group();
                 }
             })?;
         Ok(Self {
-            done,
-            control,
+            queue,
             thread: Some(thread),
         })
     }
@@ -527,8 +565,33 @@ impl Lifeline {
 #[cfg(target_os = "macos")]
 impl Drop for Lifeline {
     fn drop(&mut self) {
-        self.done.store(true, std::sync::atomic::Ordering::Release);
-        let _ = self.control.shutdown(std::net::Shutdown::Read);
+        use std::os::fd::AsRawFd;
+        let cancel = libc::kevent {
+            ident: 1,
+            filter: libc::EVFILT_USER,
+            flags: 0,
+            fflags: libc::NOTE_TRIGGER,
+            data: 0,
+            udata: std::ptr::null_mut(),
+        };
+        loop {
+            let result = unsafe {
+                libc::kevent(
+                    self.queue.as_raw_fd(),
+                    &cancel,
+                    1,
+                    std::ptr::null_mut(),
+                    0,
+                    std::ptr::null(),
+                )
+            };
+            if result == 0 {
+                break;
+            }
+            if std::io::Error::last_os_error().kind() != std::io::ErrorKind::Interrupted {
+                super::unix::terminate_own_group();
+            }
+        }
         if let Some(thread) = self.thread.take() {
             let _ = thread.join();
         }

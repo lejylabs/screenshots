@@ -142,24 +142,27 @@ Template never executes catalog profile metadata recursively.
 
 | Policy | Linux X11 | Windows | macOS |
 | --- | --- | --- | --- |
-| Still cursor | XFixes premultiplied ARGB, clipped by native hotspot | Snapshot icon; premultiplied alpha or native AND/XOR mask semantics | Explicitly unsupported |
+| Still cursor | XFixes premultiplied ARGB, clipped by native hotspot | Snapshot icon; premultiplied alpha or native AND/XOR mask semantics | Native compositor cursor on 14+; checked public system-cursor fallback on older API paths; native acceptance pending |
 | Window frame | Native/client drawable; decorated inclusion unsupported | Native/included DWM frame; client crop uses physical native client bounds | Native/included window; client-only unsupported |
-| Shadow | Native/exclude client drawable; inclusion unsupported | Native/exclude DWM frame; inclusion unsupported | Native/include or native framing-effects exclusion |
+| Shadow | Native/exclude client drawable; inclusion unsupported | Native/exclude DWM frame; inclusion unsupported | Exclusion/native frame; unclipped inclusion requires content-sized 26+ screenshot or supported legacy API, never guessed padding |
 | Transparency | Native legacy behavior or explicit opaque background; preserve unsupported | Opaque GDI RGB8 or explicit opaque background; preserve unsupported | Explicit RGBA8/sRGB alpha preservation or opaque background |
 | Monitor identity | Connector + validated EDID SHA-256; connector-only requires explicit choice | Active DisplayConfig target device path | ColorSync display UUID |
 
 Linux cursor/template operations require an X11 session and one X screen, which
 may contain multiple RandR outputs. Native display/region cursor composition and
 template capture currently require unrotated 100% physical-pixel coordinates.
-Mirrored/ambiguous Windows identity mappings fail. Native macOS options reject
-unrecognized component order, unnamed/non-sRGB color spaces, float/high-bit data
-and unsupported alpha formats, rather than relabeling those pixels as sRGB.
-The default omitted policies preserve the existing XCap path; this does not
-correct its broader HDR/color limitations.
+Mirrored/ambiguous Windows identity mappings fail. The guarded macOS route covers
+default and explicit policies, requests/produces SDR sRGB8 and validates native
+stride/alpha/component metadata. Tagged SDR profiles can use public native color
+conversion; float/high-bit/HDR support is not inferred from that conversion.
+See [macOS native completion](macos-capture-completion.md) for current SDK/runtime
+evidence and version-dependent policy limits. Existing Linux/Windows omitted
+policy behavior is unchanged by that Mac route.
 
-The macOS shadow exclusion uses Apple's
+The legacy macOS shadow exclusion uses Apple's
 [boundsIgnoreFraming](https://developer.apple.com/documentation/coregraphics/cgwindowimageoption/boundsignoreframing)
-option for native framing effects, rather than a synthetic shadow crop. Native
+option for native framing effects; modern native capture uses the corresponding
+public ScreenCaptureKit controls, never a guessed synthetic shadow crop. Native
 cursor decoding retains Microsoft's documented
 [alpha versus mask composition](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-drawiconex)
 semantics. Inverting an AND/XOR cursor over transparent destination pixels is

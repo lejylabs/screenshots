@@ -166,10 +166,7 @@ fn bind(args: &[OsString], mut catalog: CaptureCatalog) -> Result<()> {
         "Selected display ID is ambiguous"
     );
     app_core::RememberedRegion::from_display(display, area)?;
-    ensure!(
-        display.scale_factor == 1.0 && display.rotation == 0.0,
-        "Template capture currently requires unrotated 100% physical-pixel coordinates"
-    );
+    app_core::validate_display_pixel_coordinates(display)?;
     let identities = app_core::capture_monitor_identities(&displays)?;
     let mut matches = identities.into_iter().filter(|identity| {
         identity.display_id == display_id

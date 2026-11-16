@@ -35,8 +35,17 @@ impl CaptureBudget {
         let total = u64::from(width)
             .checked_mul(u64::from(height))
             .and_then(|pixels| pixels.checked_mul(4))
-            .and_then(|bytes| self.0.checked_add(bytes))
-            .filter(|bytes| *bytes <= MAX_CAPTURE_BYTES)
+            .ok_or(CaptureError::MemoryLimit)?;
+        self.admit_bytes(total)
+    }
+    fn admit_bytes(&mut self, bytes: u64) -> Result<(), CaptureError> {
+        if bytes == 0 {
+            return Err(CaptureError::EmptyFrame);
+        }
+        let total = self
+            .0
+            .checked_add(bytes)
+            .filter(|total| *total <= MAX_CAPTURE_BYTES)
             .ok_or(CaptureError::MemoryLimit)?;
         self.0 = total;
         Ok(())
@@ -70,20 +79,47 @@ pub enum CaptureRequest {
 
 enum PreparedCapture {
     Display(Monitor, String),
+    #[cfg(not(target_os = "macos"))]
     Window(Window, String, String, Option<u32>),
+    #[cfg(target_os = "macos")]
+    MacWindow(crate::capture_native::MacPreparedWindow, String, String),
     Region(Monitor, String, u32, u32, u32, u32, Option<DisplayGeometry>),
 }
 
 impl PreparedCapture {
+    fn admission_bytes(&self) -> Result<u64, CaptureError> {
+        #[cfg(target_os = "macos")]
+        if let Self::MacWindow(source, ..) = self {
+            return Ok(source.admission_bytes());
+        }
+        let (width, height) = self.dimensions()?;
+        validate_image_size(width, height)?;
+        Ok(u64::from(width) * u64::from(height) * 4)
+    }
     fn dimensions(&self) -> Result<(u32, u32), CaptureError> {
         match self {
-            Self::Display(monitor, _) => Ok((
-                monitor.width().map_err(backend_error)?,
-                monitor.height().map_err(backend_error)?,
-            )),
+            Self::Display(monitor, _) => {
+                #[cfg(target_os = "macos")]
+                {
+                    return crate::capture_native::mac_display_dimensions(monitor)
+                        .map_err(backend_error);
+                }
+                #[cfg(not(target_os = "macos"))]
+                {
+                    Ok((
+                        monitor.width().map_err(backend_error)?,
+                        monitor.height().map_err(backend_error)?,
+                    ))
+                }
+            }
+            #[cfg(not(target_os = "macos"))]
             Self::Window(window, _, _, _) => Ok((
                 window.width().map_err(backend_error)?,
                 window.height().map_err(backend_error)?,
+            )),
+            #[cfg(target_os = "macos")]
+            Self::MacWindow(..) => Err(CaptureError::Unsupported(
+                "Native window admission uses physical byte reservation",
             )),
             Self::Region(_, _, _, _, width, height, _) => Ok((*width, *height)),
         }
@@ -130,8 +166,27 @@ impl DisplayGeometry {
             && self.height > 0
             && self.scale_factor.is_finite()
             && self.scale_factor > 0.0
-            && self.rotation.is_finite()
+            && matches!(self.rotation, 0.0 | 90.0 | 180.0 | 270.0)
     }
+}
+
+/// Validate coordinates returned by this platform's native display adapter.
+/// Windows observations are calibrated in physical pixels; other adapters keep
+/// their existing unscaled, unrotated region-coordinate policy.
+pub fn validate_display_pixel_coordinates(display: &DisplayInfo) -> Result<(), CaptureError> {
+    validate_image_size(display.width, display.height)?;
+    if !display.scale_factor.is_finite()
+        || display.scale_factor <= 0.0
+        || !matches!(display.rotation, 0.0 | 90.0 | 180.0 | 270.0)
+    {
+        return Err(CaptureError::StaleRegion);
+    }
+    if !cfg!(target_os = "windows") && (display.scale_factor != 1.0 || display.rotation != 0.0) {
+        return Err(CaptureError::Unsupported(
+            "This native adapter requires unrotated 100% physical-pixel region coordinates",
+        ));
+    }
+    Ok(())
 }
 
 /// Session metadata only: never retains the source frame or a texture.
@@ -261,6 +316,16 @@ pub struct CapturedImage {
 
 #[derive(Debug, Error)]
 pub enum CaptureError {
+    #[error("macOS Screen Recording permission is not authorized; no permission request was made")]
+    MacScreenPermissionDenied,
+    #[error("macOS Accessibility permission is not authorized; no permission request was made")]
+    MacAccessibilityPermissionDenied,
+    #[error("macOS microphone permission is not authorized; no permission request was made")]
+    MacMicrophonePermissionDenied,
+    #[error(
+        "Clipboard read failed, was too large, or became unavailable; Wayland reads require focused application Paste"
+    )]
+    Clipboard,
     #[error("Remote image transfer or decoding failed")]
     ImageUrlFailed,
     #[error("Capture permission was denied or the selected portal source was closed")]
@@ -329,6 +394,8 @@ impl XcapBackend {
         &self,
         check: &crate::NativeCaptureCheck<'_>,
     ) -> Result<CapturedImage, CaptureError> {
+        #[cfg(target_os = "windows")]
+        let _dpi = crate::capture_native::dpi_scope().map_err(backend_error)?;
         crate::capture_native::validate_options(&self.options, true).map_err(backend_error)?;
         let immediate = self.wait_native_delay(check)?;
         if crate::native_capture_job::executor().is_some() {
@@ -370,6 +437,8 @@ impl XcapBackend {
         &self,
         check: &crate::NativeCaptureCheck<'_>,
     ) -> Result<CapturedImage, CaptureError> {
+        #[cfg(target_os = "windows")]
+        let _dpi = crate::capture_native::dpi_scope().map_err(backend_error)?;
         crate::capture_native::validate_options(&self.options, false).map_err(backend_error)?;
         let immediate = self.wait_native_delay(check)?;
         if crate::native_capture_job::executor().is_some() {
@@ -513,6 +582,27 @@ impl XcapBackend {
         Ok(self)
     }
 
+    pub(crate) fn capture_physical_desktop_with_cancel(
+        &self,
+        check: &crate::NativeCaptureCheck<'_>,
+    ) -> Result<CapturedImage, CaptureError> {
+        if crate::native_capture_job::executor().is_none() {
+            return Err(CaptureError::Unsupported(
+                "Desktop capture requires the isolated native operation executor",
+            ));
+        }
+        let immediate = self.wait_native_delay(check)?;
+        immediate
+            .native_frames(
+                crate::NativeCaptureCall::Desktop {
+                    options: immediate.options,
+                },
+                check,
+            )?
+            .pop()
+            .ok_or(CaptureError::EmptyFrame)
+    }
+
     /// One admission group, with no partial outputs if any request fails.
     pub fn capture_batch(
         &self,
@@ -567,42 +657,36 @@ impl XcapBackend {
     ) -> Result<Vec<CapturedImage>, CaptureError> {
         self.check_native(check)?;
         #[cfg(target_os = "windows")]
-        let _options_dpi = if self.options != crate::CaptureOptions::default() {
-            Some(crate::capture_native::dpi_scope().map_err(backend_error)?)
-        } else {
-            None
-        };
+        let topology = crate::capture_native::topology_guard().map_err(backend_error)?;
         let mut budget = CaptureBudget::default();
         let prepared = requests
             .into_iter()
             .map(|request| {
                 self.check_native(check)?;
                 let prepared = self.prepare(request)?;
-                let (width, height) = prepared.dimensions()?;
-                budget.admit(width, height)?;
+                budget.admit_bytes(prepared.admission_bytes()?)?;
                 Ok(prepared)
             })
             .collect::<Result<Vec<_>, CaptureError>>()?;
         let mut actual = CaptureBudget::default();
-        prepared
+        let frames = prepared
             .into_iter()
             .map(|prepared| {
                 self.check_native(check)?;
-                let (width, height) = prepared.dimensions()?;
-                CaptureBudget(actual.0).admit(width, height)?;
+                CaptureBudget(actual.0).admit_bytes(prepared.admission_bytes()?)?;
                 let started = Instant::now();
                 let mut display_geometry = None;
                 let (display_id, window_id, image, label) = match prepared {
                     PreparedCapture::Display(monitor, id) => {
                         let cursor_geometry = cursor_geometry(&monitor, &self.options)?;
                         let before = if cfg!(target_os = "windows") {
-                            monitor_geometry(&monitor)
-                                .ok()
-                                .filter(|geometry| geometry.valid())
+                            Some(monitor_geometry(&monitor)?)
                         } else {
                             None
                         };
-                        let mut image = monitor.capture_image().map_err(backend_error)?;
+                        let mut image =
+                            crate::capture_native::capture_display(&monitor, &self.options)
+                                .map_err(backend_error)?;
                         if let Some(geometry) = cursor_geometry {
                             crate::capture_native::apply_cursor(
                                 &self.options,
@@ -615,12 +699,17 @@ impl XcapBackend {
                                 return Err(CaptureError::StaleRegion);
                             }
                         }
-                        display_geometry = before.filter(|geometry| {
-                            (geometry.width, geometry.height) == image.dimensions()
-                                && monitor_geometry(&monitor).ok() == Some(*geometry)
-                        });
+                        if let Some(geometry) = before {
+                            if (geometry.width, geometry.height) != image.dimensions()
+                                || monitor_geometry(&monitor)? != geometry
+                            {
+                                return Err(CaptureError::StaleRegion);
+                            }
+                            display_geometry = Some(geometry);
+                        }
                         (id, None, image, "display".to_owned())
                     }
+                    #[cfg(not(target_os = "macos"))]
                     PreparedCapture::Window(window, display, id, expected_process) => {
                         if expected_process
                             .is_some_and(|expected| window.pid().ok() != Some(expected))
@@ -636,6 +725,11 @@ impl XcapBackend {
                         }
                         (display, Some(id.clone()), image, format!("window-{id}"))
                     }
+                    #[cfg(target_os = "macos")]
+                    PreparedCapture::MacWindow(source, display, id) => {
+                        let image = source.capture().map_err(backend_error)?;
+                        (display, Some(id.clone()), image, format!("window-{id}"))
+                    }
                     PreparedCapture::Region(monitor, id, x, y, width, height, expected) => {
                         let cursor_geometry = cursor_geometry(&monitor, &self.options)?;
                         if let Some(expected) = expected {
@@ -643,9 +737,17 @@ impl XcapBackend {
                                 return Err(CaptureError::StaleRegion);
                             }
                         }
-                        let mut image = monitor
-                            .capture_region(x, y, width, height)
-                            .map_err(backend_error)?;
+                        let mut image = crate::capture_native::capture_region(
+                            &monitor,
+                            crate::PixelRegion {
+                                x,
+                                y,
+                                width,
+                                height,
+                            },
+                            &self.options,
+                        )
+                        .map_err(backend_error)?;
                         if let Some(geometry) = cursor_geometry {
                             let origin_x = i32::try_from(i64::from(geometry.x) + i64::from(x))
                                 .map_err(|_| CaptureError::InvalidRegion)?;
@@ -681,7 +783,11 @@ impl XcapBackend {
                 shot.display_geometry = display_geometry;
                 Ok(shot)
             })
-            .collect()
+            .collect::<Result<Vec<_>, CaptureError>>()?;
+        #[cfg(target_os = "windows")]
+        topology.check().map_err(backend_error)?;
+        self.check_native(check)?;
+        Ok(frames)
     }
 
     fn prepare(&self, request: CaptureRequest) -> Result<PreparedCapture, CaptureError> {
@@ -713,8 +819,15 @@ impl XcapBackend {
                 let monitor = self.find_monitor(&display_id)?;
                 let x = u32::try_from(x).map_err(|_| CaptureError::InvalidRegion)?;
                 let y = u32::try_from(y).map_err(|_| CaptureError::InvalidRegion)?;
-                let display_width = monitor.width().map_err(backend_error)?;
-                let display_height = monitor.height().map_err(backend_error)?;
+                #[cfg(target_os = "macos")]
+                let (display_width, display_height) =
+                    crate::capture_native::mac_display_dimensions(&monitor)
+                        .map_err(backend_error)?;
+                #[cfg(not(target_os = "macos"))]
+                let (display_width, display_height) = (
+                    monitor.width().map_err(backend_error)?,
+                    monitor.height().map_err(backend_error)?,
+                );
                 if width == 0
                     || height == 0
                     || x.checked_add(width).is_none_or(|end| end > display_width)
@@ -722,8 +835,13 @@ impl XcapBackend {
                 {
                     return Err(CaptureError::InvalidRegion);
                 }
+                let expected = if cfg!(target_os = "windows") {
+                    Some(monitor_geometry(&monitor)?)
+                } else {
+                    None
+                };
                 Ok(PreparedCapture::Region(
-                    monitor, display_id, x, y, width, height, None,
+                    monitor, display_id, x, y, width, height, expected,
                 ))
             }
             CaptureRequest::Window(id) => self.prepare_window(id, None),
@@ -768,12 +886,21 @@ impl XcapBackend {
         let display = String::new();
         #[cfg(not(target_os = "linux"))]
         let display = monitor_id(&window.current_monitor().map_err(backend_error)?)?;
-        Ok(PreparedCapture::Window(
-            window,
-            display,
-            id,
-            expected_process,
-        ))
+        #[cfg(target_os = "macos")]
+        {
+            let source = crate::capture_native::MacPreparedWindow::new(&window, &self.options)
+                .map_err(backend_error)?;
+            Ok(PreparedCapture::MacWindow(source, display, id))
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            Ok(PreparedCapture::Window(
+                window,
+                display,
+                id,
+                expected_process,
+            ))
+        }
     }
 
     fn find_monitor(&self, display_id: &str) -> Result<Monitor, CaptureError> {
@@ -799,11 +926,15 @@ impl XcapBackend {
             self.check_native(check)?;
             return Ok(displays);
         }
+        #[cfg(target_os = "windows")]
+        let topology = crate::capture_native::topology_guard().map_err(backend_error)?;
         let displays = Monitor::all()
             .map_err(backend_error)?
             .iter()
             .map(display_info)
             .collect::<Result<Vec<_>, _>>()?;
+        #[cfg(target_os = "windows")]
+        topology.check().map_err(backend_error)?;
         self.check_native(check)?;
         Ok(displays)
     }
@@ -846,6 +977,8 @@ impl XcapBackend {
             self.check_native(check)?;
             return Ok(windows);
         }
+        #[cfg(target_os = "windows")]
+        let _dpi = crate::capture_native::dpi_scope().map_err(backend_error)?;
         let windows = Window::all()
             .map_err(backend_error)?
             .iter()
@@ -979,9 +1112,26 @@ impl CaptureBackend for XcapBackend {
 }
 
 #[cfg(target_os = "linux")]
-fn linux_wayland_session() -> bool {
-    std::env::var_os("WAYLAND_DISPLAY").is_some_and(|value| !value.is_empty())
-        || std::env::var_os("XDG_SESSION_TYPE").is_some_and(|value| value == "wayland")
+#[doc(hidden)]
+pub fn linux_wayland_markers(
+    display: Option<&std::ffi::OsStr>,
+    socket: Option<&std::ffi::OsStr>,
+    session: Option<&std::ffi::OsStr>,
+) -> bool {
+    socket.is_some()
+        || display.is_some_and(|value| !value.is_empty())
+        || session
+            .and_then(std::ffi::OsStr::to_str)
+            .is_some_and(|value| value.eq_ignore_ascii_case("wayland"))
+}
+#[cfg(target_os = "linux")]
+#[doc(hidden)]
+pub fn linux_wayland_session() -> bool {
+    linux_wayland_markers(
+        std::env::var_os("WAYLAND_DISPLAY").as_deref(),
+        std::env::var_os("WAYLAND_SOCKET").as_deref(),
+        std::env::var_os("XDG_SESSION_TYPE").as_deref(),
+    )
 }
 
 #[cfg(target_os = "linux")]
@@ -1004,11 +1154,14 @@ fn cursor_geometry(
     monitor: &Monitor,
     options: &crate::CaptureOptions,
 ) -> Result<Option<DisplayGeometry>, CaptureError> {
+    if cfg!(target_os = "macos") {
+        return Ok(None);
+    }
     if options.cursor != crate::CaptureCursor::Include {
         return Ok(None);
     }
     let geometry = monitor_geometry(monitor)?;
-    if geometry.scale_factor != 1.0 || geometry.rotation != 0.0 {
+    if !cfg!(target_os = "windows") && (geometry.scale_factor != 1.0 || geometry.rotation != 0.0) {
         return Err(CaptureError::Unsupported(
             "still cursor composition requires unrotated 100% physical-pixel display coordinates",
         ));
@@ -1017,29 +1170,37 @@ fn cursor_geometry(
 }
 
 fn monitor_geometry(monitor: &Monitor) -> Result<DisplayGeometry, CaptureError> {
-    Ok(DisplayGeometry {
-        x: monitor.x().map_err(backend_error)?,
-        y: monitor.y().map_err(backend_error)?,
-        width: monitor.width().map_err(backend_error)?,
-        height: monitor.height().map_err(backend_error)?,
-        scale_factor: monitor.scale_factor().map_err(backend_error)?,
-        rotation: monitor.rotation().map_err(backend_error)?,
-    })
+    #[cfg(target_os = "windows")]
+    {
+        crate::capture_native::physical_monitor_geometry(monitor).map_err(backend_error)
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        Ok(DisplayGeometry {
+            x: monitor.x().map_err(backend_error)?,
+            y: monitor.y().map_err(backend_error)?,
+            width: monitor.width().map_err(backend_error)?,
+            height: monitor.height().map_err(backend_error)?,
+            scale_factor: monitor.scale_factor().map_err(backend_error)?,
+            rotation: monitor.rotation().map_err(backend_error)?,
+        })
+    }
 }
 
 fn display_info(monitor: &Monitor) -> Result<DisplayInfo, CaptureError> {
+    let geometry = monitor_geometry(monitor)?;
     Ok(DisplayInfo {
         id: monitor_id(monitor)?,
         name: monitor
             .friendly_name()
             .or_else(|_| monitor.name())
             .map_err(backend_error)?,
-        x: monitor.x().map_err(backend_error)?,
-        y: monitor.y().map_err(backend_error)?,
-        width: monitor.width().map_err(backend_error)?,
-        height: monitor.height().map_err(backend_error)?,
-        scale_factor: monitor.scale_factor().map_err(backend_error)?,
-        rotation: monitor.rotation().map_err(backend_error)?,
+        x: geometry.x,
+        y: geometry.y,
+        width: geometry.width,
+        height: geometry.height,
+        scale_factor: geometry.scale_factor,
+        rotation: geometry.rotation,
         is_primary: monitor.is_primary().map_err(backend_error)?,
     })
 }
@@ -1802,6 +1963,19 @@ mod tests {
 
         let mut partial = CaptureBudget::default();
         partial.admit(3840, 2160).unwrap();
+
+        let mut unknown_native_extent = CaptureBudget::default();
+        unknown_native_extent
+            .admit_bytes(MAX_CAPTURE_BYTES)
+            .unwrap();
+        assert!(unknown_native_extent.admit(1, 1).is_err());
+        assert_eq!(unknown_native_extent.0, MAX_CAPTURE_BYTES);
+        let mut earlier_frame = CaptureBudget::default();
+        earlier_frame.admit(1, 1).unwrap();
+        assert!(earlier_frame.admit_bytes(MAX_CAPTURE_BYTES).is_err());
+        assert_eq!(earlier_frame.0, 4);
+        assert!(earlier_frame.admit_bytes(u64::MAX).is_err());
+        assert_eq!(earlier_frame.0, 4);
         let before = partial.0;
         assert!(partial.admit(8192, 8192).is_err());
         assert_eq!(partial.0, before);

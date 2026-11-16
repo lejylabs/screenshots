@@ -753,9 +753,63 @@ impl Render for ExternalPaths {
     }
 }
 
+/// One native encoded-image drop. Empty bytes describe negotiation only.
+#[derive(Clone, Eq, PartialEq)]
+pub struct ExternalImageDrop {
+    /// The negotiated supported native image format.
+    pub format: crate::ImageFormat,
+    /// Bounded encoded bytes; None denotes negotiation before the final drop.
+    pub bytes: Option<std::sync::Arc<Vec<u8>>>,
+}
+impl std::fmt::Debug for ExternalImageDrop {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ExternalImageDrop")
+            .field("format", &self.format)
+            .field("bytes", &self.bytes.as_ref().map(|v| v.len()))
+            .finish()
+    }
+}
+impl Render for ExternalImageDrop {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        Empty
+    }
+}
+/// A URL offered by a native drop; transfer metadata, never a log payload.
+#[derive(Clone, Eq, PartialEq)]
+pub struct ExternalUrlDrop {
+    /// One bounded URL reference, without an implicit fetch.
+    pub url: std::sync::Arc<str>,
+}
+impl std::fmt::Debug for ExternalUrlDrop {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ExternalUrlDrop")
+            .field("url_bytes", &self.url.len())
+            .finish()
+    }
+}
+impl Render for ExternalUrlDrop {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        Empty
+    }
+}
+
 /// A file drop event from the platform, generated when files are dragged and dropped onto the window.
 #[derive(Debug, Clone)]
 pub enum FileDropEvent {
+    /// Native image negotiation or the bounded bytes received after Drop.
+    ImageEntered {
+        /// Position in the destination window.
+        position: Point<Pixels>,
+        /// Metadata or bounded encoded image data.
+        image: ExternalImageDrop,
+    },
+    /// A bounded URL reference received during native drag negotiation.
+    UrlEntered {
+        /// Position in the destination window.
+        position: Point<Pixels>,
+        /// One bounded URL reference.
+        url: ExternalUrlDrop,
+    },
     /// The files have entered the window.
     Entered {
         /// The position of the mouse relative to the window.

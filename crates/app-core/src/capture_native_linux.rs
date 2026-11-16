@@ -16,8 +16,7 @@ use x11rb::{
 
 fn session_display() -> Result<String> {
     ensure!(
-        std::env::var_os("WAYLAND_DISPLAY").is_none_or(|value| value.is_empty())
-            && std::env::var_os("XDG_SESSION_TYPE").is_none_or(|value| value != "wayland"),
+        !crate::linux_wayland_session(),
         "Native monitor binding and still cursor composition require an X11 session"
     );
     let display = std::env::var("DISPLAY").context("X11 DISPLAY is unavailable")?;
@@ -106,8 +105,7 @@ pub(super) fn validate_options(options: &CaptureOptions, window: bool) -> Result
     }
     if options.cursor == CaptureCursor::Include {
         ensure!(
-            std::env::var_os("WAYLAND_DISPLAY").is_none_or(|value| value.is_empty())
-                && std::env::var_os("XDG_SESSION_TYPE").is_none_or(|value| value != "wayland"),
+            !crate::linux_wayland_session(),
             "Still cursor composition requires an X11 session"
         );
     }

@@ -17,9 +17,15 @@ Record a finite rectangle from a local X11 display with separately installed
 screenshots record x11 capture.mkv --seconds 10 --fps 15 --width 1280 --height 720 --x 0 --y 0
 ```
 
-This is a partial screen-recording capability: Unix, local X11, one video stream,
+The new [macOS native completion](macos-capture-completion.md) adds the separately
+guarded `record avfoundation ... --display ID` mode: a fixed native display
+source supplies bounded raw frames, never an ambiguous FFmpeg video-device name
+or camera index. Its actual SDK/runtime gate is tracked there; X11 evidence
+below does not establish macOS authorization or capture acceptance.
+
+This X11 backend is a partial screen-recording capability: Unix, local X11, one video stream,
 Matroska with FFV1 lossless video or a GIF animation. It does not provide audio,
-macOS native capture, Wayland portals, editor integration
+Wayland portals, editor integration
 or a recording UI. X11 support on a Unix system still depends on the installed
 FFmpeg build, permissions and an available X11 session. The application does not
 install, download or distribute either external executable. The user's installed

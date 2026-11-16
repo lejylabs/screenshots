@@ -2,8 +2,8 @@
 
 `screenshots capture desktop OUTPUT` captures one frozen image per currently
 enumerated display and exports one stitched image. This is a Windows-only CLI
-entry, currently requiring 100% scaling on every monitor until scaled XCap
-coordinates have passed native calibration. Other sessions remain unsupported. It does
+entry with operation-scoped physical mode/rectangle/DPI calibration, including
+mixed scales and already-oriented rotations. Other sessions remain unsupported. It does
 not copy the clipboard, create history, initialize the UI or start a stream.
 
 The pure `stitch_desktop` core operation accepts 1–32 display descriptions and
@@ -21,10 +21,13 @@ The native entry enumerates displays, preflights the layout, calls the existing
 single capture batch, requires each frame's before/after-validated display geometry
 to equal the original description, re-enumerates and rejects changed geometry before assembly.
 No output is published unless capture, topology comparison and assembly all
-succeed. A topology change that returns to the same values between observations
-cannot be detected; this remains native acceptance work. The pure compositor
+succeed. The entire request runs in one isolated native helper with an outer
+topology witness. Windows 11's dynamic topology generation also detects restored
+layouts; Windows 10 uses global scale notifications, known native events and
+endpoint checks with its explicitly weaker guarantee. Physical reconfiguration
+acceptance remains open. The pure compositor
 accepts mixed scales only when supplied positions already describe nonoverlapping
-physical pixels; the native entry requires 100% scale. Rotations must be 0, 90,
+physical pixels; native Windows positions are independently calibrated. Rotations must be 0, 90,
 180 or 270 degrees. This feature does not convert logical display coordinates.
 
 Synthetic core fixtures cover reversed frame order, negative origins, unequal

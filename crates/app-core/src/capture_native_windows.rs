@@ -11,17 +11,57 @@ use windows_sys::Win32::{
     Graphics::{Dwm::*, Gdi::*},
     UI::{HiDpi::*, WindowsAndMessaging::*},
 };
+#[path = "capture_native_windows_geometry.rs"]
+mod geometry;
+pub(super) use geometry::{TopologyGuard, monitor_geometry};
 
 pub(crate) struct DpiScope(DPI_AWARENESS_CONTEXT);
+fn enter_dpi_context(
+    mut set: impl FnMut(DPI_AWARENESS_CONTEXT) -> DPI_AWARENESS_CONTEXT,
+) -> Result<DPI_AWARENESS_CONTEXT> {
+    for context in [
+        DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
+        DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE,
+    ] {
+        let previous = set(context);
+        if !previous.is_null() {
+            return Ok(previous);
+        }
+    }
+    anyhow::bail!("Cannot enter physical-pixel capture DPI context")
+}
+#[cfg(test)]
+#[test]
+fn per_monitor_scope_falls_back_without_using_unaware_or_system_scaling() {
+    let previous = DPI_AWARENESS_CONTEXT_SYSTEM_AWARE;
+    let mut attempted = Vec::new();
+    assert_eq!(
+        enter_dpi_context(|context| {
+            attempted.push(context);
+            if context == DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE {
+                previous
+            } else {
+                null_mut()
+            }
+        })
+        .unwrap(),
+        previous
+    );
+    assert_eq!(
+        attempted,
+        [
+            DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
+            DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE
+        ]
+    );
+    assert!(enter_dpi_context(|_| null_mut()).is_err());
+}
 impl DpiScope {
     pub fn new() -> Result<Self> {
-        let previous =
-            unsafe { SetThreadDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2) };
-        ensure!(
-            !previous.is_null(),
-            "Cannot enter physical-pixel capture DPI context"
-        );
-        Ok(Self(previous))
+        // PMv1 preserves physical coordinates on Windows 10 1607, before PMv2.
+        Ok(Self(enter_dpi_context(|context| unsafe {
+            SetThreadDpiAwarenessContext(context)
+        })?))
     }
 }
 impl Drop for DpiScope {

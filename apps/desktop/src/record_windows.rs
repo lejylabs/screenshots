@@ -708,6 +708,7 @@ mod tests {
                 y: 4,
                 format,
                 cursor: None,
+                display: None,
                 audio: None,
             };
             let command = encoder(&options);
@@ -745,6 +746,7 @@ mod tests {
                 y: 0,
                 format: OutputFormat::Matroska,
                 cursor,
+                display: None,
                 audio: None,
             };
             let command = encoder(&options);

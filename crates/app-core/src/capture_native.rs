@@ -35,6 +35,14 @@ pub(crate) fn display_identities(displays: &[DisplayInfo]) -> Result<Vec<Capture
 pub(crate) fn dpi_scope() -> Result<platform::DpiScope> {
     platform::DpiScope::new()
 }
+#[cfg(target_os = "windows")]
+pub(crate) fn topology_guard() -> Result<platform::TopologyGuard> {
+    platform::TopologyGuard::new()
+}
+#[cfg(target_os = "windows")]
+pub(crate) fn physical_monitor_geometry(monitor: &xcap::Monitor) -> Result<crate::DisplayGeometry> {
+    platform::monitor_geometry(monitor)
+}
 pub(crate) fn validate_options(options: &CaptureOptions, window: bool) -> Result<()> {
     options.validate()?;
     platform::validate_options(options, window)
@@ -43,6 +51,9 @@ pub(crate) fn validate_template_session() -> Result<()> {
     platform::validate_template_session()
 }
 
+#[cfg(target_os = "macos")]
+pub(crate) use crate::capture_macos_image::PreparedWindow as MacPreparedWindow;
+#[cfg(not(target_os = "macos"))]
 pub(crate) fn capture_window(window: &xcap::Window, options: &CaptureOptions) -> Result<RgbaImage> {
     validate_options(options, true)?;
     let native = CaptureOptions {
@@ -53,6 +64,39 @@ pub(crate) fn capture_window(window: &xcap::Window, options: &CaptureOptions) ->
         return Ok(window.capture_image()?);
     }
     platform::capture_window(window, &native)
+}
+#[cfg(target_os = "macos")]
+pub(crate) fn mac_display_dimensions(monitor: &xcap::Monitor) -> Result<(u32, u32)> {
+    platform::display_dimensions(monitor)
+}
+pub(crate) fn capture_display(
+    monitor: &xcap::Monitor,
+    options: &CaptureOptions,
+) -> Result<RgbaImage> {
+    #[cfg(target_os = "macos")]
+    {
+        platform::capture_display(monitor, options)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = options;
+        Ok(monitor.capture_image()?)
+    }
+}
+pub(crate) fn capture_region(
+    monitor: &xcap::Monitor,
+    region: crate::PixelRegion,
+    options: &CaptureOptions,
+) -> Result<RgbaImage> {
+    #[cfg(target_os = "macos")]
+    {
+        platform::capture_region(monitor, region, options)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = options;
+        Ok(monitor.capture_region(region.x, region.y, region.width, region.height)?)
+    }
 }
 
 pub(crate) fn apply_cursor(
