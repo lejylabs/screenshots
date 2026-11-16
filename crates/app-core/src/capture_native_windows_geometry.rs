@@ -279,6 +279,21 @@ impl TopologyGuard {
 mod tests {
     use super::*;
     #[test]
+    fn actual_native_display_observations_agree_in_a_per_monitor_scope() -> Result<()> {
+        let witness = TopologyGuard::new()?;
+        let monitors = xcap::Monitor::all()?;
+        ensure!(
+            (1..=32).contains(&monitors.len()),
+            "Native fixture needs a display"
+        );
+        for monitor in monitors {
+            let geometry = monitor_geometry(&monitor)?;
+            ensure!(geometry.width > 0 && geometry.height > 0);
+            ensure!(geometry.scale_factor.is_finite() && geometry.scale_factor > 0.0);
+        }
+        witness.check()
+    }
+    #[test]
     fn fallback_witness_rejects_aba_between_identity_capture_and_verify_phases() -> Result<()> {
         let witness = TopologyGuard::with_generation(|| None)?;
         let identity_before = "physical-monitor-A";

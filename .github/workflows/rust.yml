@@ -43,3 +43,38 @@ jobs:
         run: cargo check --locked -p app-core --all-targets -j 2
       - name: Portable admission models against native SDK build
         run: cargo test --locked --profile release-fast -p app-core capture_macos_model -- --test-threads=1
+
+  windows-native-witness:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup show active-toolchain
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: native-witness-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            Windows-cargo-
+      - uses: actions/cache/restore@v4
+        with:
+          path: |
+            target/vcpkg-installed
+            target/vcpkg-downloads
+          key: native-sftp-x86_64-pc-windows-msvc-${{ hashFiles('packaging/windows/vcpkg.json') }}
+      - name: Admit the actual cached native dependency tree
+        shell: pwsh
+        run: |
+          if (!(Test-Path target/vcpkg-installed/x64-windows-static-md/lib/libcurl.lib)) { throw 'Real cached native dependencies unavailable; no synthetic SDK/library fallback' }
+          New-Item -ItemType Directory -Path target/vcpkg -Force | Out-Null
+          New-Item -ItemType File -Path target/vcpkg/.vcpkg-root -Force | Out-Null
+          New-Item -ItemType Junction -Path (Join-Path $PWD 'target/vcpkg/installed') -Target (Join-Path $PWD 'target/vcpkg-installed') | Out-Null
+          "VCPKG_ROOT=$(Join-Path $PWD 'target/vcpkg')" >> $env:GITHUB_ENV
+          "VCPKGRS_TRIPLET=x64-windows-static-md" >> $env:GITHUB_ENV
+          "SCREENSHOTS_REQUIRE_NATIVE_CURL=1" >> $env:GITHUB_ENV
+      - name: Run owned native topology and physical-mode fixtures
+        run: cargo test --locked --profile release-fast -p app-core -j 2 capture_native::platform:: -- --test-threads=1
+      - name: Run independent physical-coordinate models
+        run: cargo test --locked --profile release-fast -p app-core -j 2 display_pixels -- --test-threads=1

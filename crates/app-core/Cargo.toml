@@ -62,7 +62,7 @@ dispatch2 = "=0.3.1"
 objc2-foundation = { version = "=0.3.2", default-features = false, features = ["std", "NSObject", "NSString", "NSArray", "NSDictionary", "NSBundle", "NSError", "NSObjCRuntime", "NSValue"] }
 objc2-core-foundation = { version = "=0.3.2", default-features = false, features = ["std", "objc2", "CFArray", "CFDictionary", "CFNumber", "CFString"] }
 objc2-core-graphics = { version = "=0.3.2", default-features = false, features = ["std", "CGImage", "CGGeometry", "CGColorSpace"] }
-objc2-av-foundation = { version = "=0.3.2", default-features = false, features = ["std", "objc2-core-foundation", "objc2-core-graphics", "objc2-core-media", "AVCaptureDevice", "AVCaptureInput", "AVCaptureOutputBase", "AVCaptureSession", "AVCaptureVideoDataOutput"] }
+objc2-av-foundation = { version = "=0.3.2", default-features = false, features = ["std", "objc2-core-foundation", "objc2-core-graphics", "objc2-core-media", "AVCaptureDevice", "AVMediaFormat", "AVCaptureInput", "AVCaptureOutputBase", "AVCaptureSession", "AVCaptureVideoDataOutput"] }
 objc2-core-media = { version = "=0.3.2", default-features = false, features = ["std", "objc2", "objc2-core-video", "CMSampleBuffer", "CMTime"] }
 objc2-core-video = { version = "=0.3.2", default-features = false, features = ["std", "CVBase", "CVBuffer", "CVImageBuffer", "CVPixelBuffer", "CVReturn"] }
 security-framework = { version = "=3.7.0", features = ["OSX_10_15"] }

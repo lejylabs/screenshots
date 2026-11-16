@@ -1,9 +1,6 @@
 //! Explicit physical-pixel desktop composition; no capture stream or retained cache.
 
-use crate::{
-    CaptureBackend, CaptureError, CaptureRequest, CapturedImage, DisplayInfo, PixelFormat,
-    XcapBackend,
-};
+use crate::{CaptureError, CaptureRequest, CapturedImage, DisplayInfo, PixelFormat, XcapBackend};
 use image::RgbaImage;
 use std::{collections::HashSet, path::PathBuf, sync::Arc};
 
@@ -331,5 +328,93 @@ mod tests {
         assert!(layout(&[a.clone(), far]).is_err());
         let many = vec![a; 33];
         assert!(layout(&many).is_err());
+    }
+
+    #[test]
+    fn short_rows_share_cancellation_work_and_do_not_change_sources() {
+        let display = display("a", -1, 0, 1, 40000);
+        let frame = frame(&display, [13, 29, 71, 0]);
+        let original = frame.pixels.clone();
+        let calls = std::cell::Cell::new(0);
+        assert!(matches!(
+            stitch_desktop_with_cancel(&[display], &[frame], &|| {
+                calls.set(calls.get() + 1);
+                calls.get() >= 3
+            }),
+            Err(CaptureError::Canceled)
+        ));
+        assert_eq!(calls.get(), 3);
+        assert!(original.pixels().all(|pixel| pixel.0 == [13, 29, 71, 0]));
+    }
+
+    #[test]
+    fn isolated_desktop_call_has_one_unambiguous_raw_frame() {
+        let call = crate::NativeCaptureCall::Desktop {
+            options: Default::default(),
+        };
+        call.validate().unwrap();
+        assert_eq!(call.frame_count(), Some(1));
+        assert!(!call.is_enumeration());
+        call.validate_frame_metadata(0, "desktop", None, 3, 2, None)
+            .unwrap();
+        for (index, id, window) in [
+            (1, "desktop", None),
+            (0, "other", None),
+            (0, "desktop", Some("window")),
+        ] {
+            assert!(
+                call.validate_frame_metadata(index, id, window, 3, 2, None)
+                    .is_err()
+            );
+        }
+        assert!(
+            crate::NativeCaptureCall::Desktop {
+                options: crate::CaptureOptions {
+                    delay_ms: 1,
+                    ..Default::default()
+                }
+            }
+            .validate()
+            .is_err()
+        );
+    }
+
+    #[test]
+    #[ignore = "optimized synthetic copy comparison; no hardware acceptance"]
+    fn physical_desktop_copy_performance() {
+        let a = display("a", -3840, 0, 3840, 2160);
+        let mut b = display("b", 0, 0, 3840, 2160);
+        b.scale_factor = 1.5;
+        b.rotation = 180.0;
+        let frames = [frame(&a, [11, 29, 71, 255]), frame(&b, [47, 61, 89, 128])];
+        let displays = [a, b];
+        let mut before = Vec::new();
+        let mut after = Vec::new();
+        for sample in 0..105 {
+            let started = std::time::Instant::now();
+            let mut oracle = RgbaImage::new(7680, 2160);
+            image::imageops::replace(&mut oracle, frames[0].pixels.as_ref(), 0, 0);
+            image::imageops::replace(&mut oracle, frames[1].pixels.as_ref(), 3840, 0);
+            let old = started.elapsed().as_micros();
+            let started = std::time::Instant::now();
+            let output = stitch_desktop(&displays, &frames).unwrap();
+            let new = started.elapsed().as_micros();
+            assert_eq!(output.pixels.as_ref(), &oracle);
+            if sample >= 5 {
+                before.push(old);
+                after.push(new);
+            }
+        }
+        before.sort_unstable();
+        after.sort_unstable();
+        eprintln!(
+            "{{\"scope\":\"two4K synthetic already-oriented source rasters; copy+allocation only\",\"samples\":100,\"old_p50_us\":{},\"old_p95_us\":{},\"new_p50_us\":{},\"new_p95_us\":{},\"source_bytes\":{},\"output_bytes\":{}}}",
+            before[49],
+            before[94],
+            after[49],
+            after[94],
+            2 * 3840 * 2160 * 4,
+            7680 * 2160 * 4
+        );
     }
 }

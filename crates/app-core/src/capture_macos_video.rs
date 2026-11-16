@@ -353,19 +353,17 @@ pub fn run_macos_video_source_in_worker(
     unsafe {
         input.setCapturesCursor(request.cursor);
         input.setCapturesMouseClicks(false);
-        input.setScaleFactor(1.0);
-        if display.unrotated_scale()? == 1.0 {
-            input.setCropRect(CGRect {
-                origin: CGPoint {
-                    x: f64::from(crop.0),
-                    y: f64::from(crop.1),
-                },
-                size: CGSize {
-                    width: f64::from(crop.2),
-                    height: f64::from(crop.3),
-                },
-            });
-        }
+        input.setScaleFactor(display.unrotated_scale()?);
+        input.setCropRect(CGRect {
+            origin: CGPoint {
+                x: crop.x,
+                y: crop.y,
+            },
+            size: CGSize {
+                width: crop.width,
+                height: crop.height,
+            },
+        });
         input.setMinFrameDuration(CMTime::new(1, request.fps as i32));
     }
     ensure!(
@@ -507,25 +505,17 @@ pub fn preflight_macos_video_source_in_worker(
 ) -> Result<crate::MacDisplayProof> {
     request.validate()?;
     native::screen_permission()?;
-    if request.microphone
-        && unsafe { AVCaptureDevice::authorizationStatusForMediaType(AVMediaTypeAudio) }.0 != 3
-    {
-        return Err(crate::CaptureError::MacMicrophonePermissionDenied.into());
+    if request.microphone {
+        let audio = unsafe { AVMediaTypeAudio }.context("Native audio media type unavailable")?;
+        if unsafe { AVCaptureDevice::authorizationStatusForMediaType(audio) }.0 != 3 {
+            return Err(crate::CaptureError::MacMicrophonePermissionDenied.into());
+        }
     }
     let display = native::displays()?
         .into_iter()
         .find(|display| display.id == request.display)
         .context("Selected display is unavailable")?;
-    let scale = display.unrotated_scale()?;
+    display.unrotated_scale()?;
     display.screen_input_crop(request.region)?;
-    if scale != 1.0 {
-        ensure!(
-            request.region.x == 0
-                && request.region.y == 0
-                && request.region.width == display.pixel_width
-                && request.region.height == display.pixel_height,
-            "Retina AVFoundation subregion units require native calibration; only an unscaled full display is currently admitted"
-        );
-    }
     Ok(display)
 }

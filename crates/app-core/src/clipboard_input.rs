@@ -68,6 +68,7 @@ impl ClipboardFileReference {
             Self::from_utf16(&path.as_os_str().encode_wide().collect::<Vec<_>>())
         }
     }
+    #[cfg(any(target_os = "windows", test))]
     pub(crate) fn from_utf16(units: &[u16]) -> Result<Self> {
         ensure!(
             !units.contains(&0) && units.len() <= CLIPBOARD_FILE_BYTES / 2,
@@ -228,6 +229,7 @@ pub(crate) fn uri_files(bytes: &[u8]) -> Result<ClipboardSnapshot> {
     value.validate()?;
     Ok(value)
 }
+#[cfg(any(target_os = "windows", test))]
 pub(crate) fn drop_files(bytes: &[u8]) -> Result<ClipboardSnapshot> {
     ensure!(
         (22..=CLIPBOARD_FILES_BYTES + 20).contains(&bytes.len()),

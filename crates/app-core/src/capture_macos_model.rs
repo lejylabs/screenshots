@@ -150,20 +150,21 @@ impl MacDisplayProof {
         );
         Ok(x)
     }
-    /// AVFoundation's crop is local physical pixels with a bottom-left origin.
-    pub fn screen_input_crop(&self, region: PixelRegion) -> Result<(u32, u32, u32, u32)> {
-        self.unrotated_scale()?;
+    /// Actual macOS SDK AVCaptureInput.h declares display-local POINTS,
+    /// bottom-left; pair this rectangle with scaleFactor=unrotated_scale().
+    pub fn screen_input_crop(&self, region: PixelRegion) -> Result<MacLogicalRect> {
+        let scale = self.unrotated_scale()?;
         validate_region(region, self.pixel_width, self.pixel_height)?;
         let top = region
             .y
             .checked_add(region.height)
             .context("macOS crop overflow")?;
-        Ok((
-            region.x,
-            self.pixel_height - top,
-            region.width,
-            region.height,
-        ))
+        Ok(MacLogicalRect {
+            x: f64::from(region.x) / scale,
+            y: f64::from(self.pixel_height - top) / scale,
+            width: f64::from(region.width) / scale,
+            height: f64::from(region.height) / scale,
+        })
     }
 }
 
@@ -669,7 +670,12 @@ mod tests {
         };
         assert_eq!(
             display.screen_input_crop(region).unwrap(),
-            (20, 1690, 100, 80)
+            MacLogicalRect {
+                x: 10.0,
+                y: 845.0,
+                width: 50.0,
+                height: 40.0
+            }
         );
         assert_eq!(
             display.logical.region_center(2.0, region).unwrap(),
