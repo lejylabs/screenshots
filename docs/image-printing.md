@@ -230,3 +230,20 @@ remain unverified. Metadata checking and private Unix success do not accept them
 - [Microsoft EndDoc blocking behavior](https://learn.microsoft.com/en-us/windows/win32/api/wingdi/nf-wingdi-enddoc).
 - [Microsoft System32-only LoadLibraryExW](https://learn.microsoft.com/en-us/windows/win32/api/libloaderapi/nf-libloaderapi-loadlibraryexw).
 - [Microsoft GetProcAddress](https://learn.microsoft.com/en-us/windows/win32/api/libloaderapi/nf-libloaderapi-getprocaddress).
+
+## Native ARM macOS runtime evidence (2026-11-17)
+
+Auxiliary snapshot `b85db9261104fdac868d4d5d1d79b901445a6e65`, application
+source `9f2e135bbcf3671811018faa3c028938210e7079`, passed native ARM macOS job
+134043931856 in [run 44084691005](https://github.com/lejylabs/screenshots/actions/runs/44084691005).
+The actual fresh-process VM enforcement probe, three core print controls, six
+desktop controls including worker rejection/timeout/cancel, and the real private
+IPP CLI fixture pass. The fixture verifies missing-queue refusal, exact existing
+queue submission, stripped metadata, preserved source and stdout failure without
+retry. It never uses a physical printer or user queue. The log is preserved at
+`target/verification/native-b85db926-macos-arm.log`. This closes that source's
+ARM runtime check after the earlier pre-exec EINVAL failure; Intel job 134043931578 was canceled during later optimized app-UI compilation
+(the cancellation reaped Cargo/rustc); it supplies no full Intel print-runtime
+pass. Windows GDI output/driver faults, calibrated physical output and reference
+hardware resource acceptance remain separate gates. Later source changes are
+not covered by this snapshot.

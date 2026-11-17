@@ -2067,3 +2067,52 @@ Optimized workspace/all-target Clippy, Windows GNU metadata, formatting and diff
 checks pass. [Source/provenance/evidence](../vendor/gpui-pre-wgpu/LOCAL-PATCH.md).
 Exact logs and restoration checks remain in
 `target/verification/pathless-render-targets-integration/`.
+
+
+## Corrected modern sharing and result pipeline (2026-11-17)
+
+Actual finding rounds 6–12 corrected numeric raw/canonical masks, JSON/XML
+Cookie ancestry, constructor rejection, duplicate mask charging, multipart
+argument consumption and post-transfer opened-source identity. Independent
+source rounds 13/14 are clean. The subsequent two conflicting C# test identifiers
+were renamed without production changes; the initial compiler failure remains
+separate from the passing helper build.
+
+Executed optimized checks pass 33 core/process/legacy cases, three shared-source
+controls, 11 real Link/QR/result cases, 357 helper assertions and the complete
+137-request HTTPS fixture. The latter includes actual changed/unchanged file
+transfers, sealed raw schedules and uncertainty/no retry/later-output, final
+memory/saved pixels, copied/installed runtime and running-old-process upgrade.
+The bus, unlocked collection, TLS CA/services and user-data paths are exclusively
+owned synthetic fixtures; extracted test-provider packages have repository hash
+and public signature verification, with no global installation or existing
+credential access. Optimized all-target Clippy, Windows GNU metadata, formatting
+and diff checks pass. These are not real-account, native Windows/macOS or
+reference-hardware acceptance. See [the detailed contract](sharex-runtime.md#corrected-parser-source-and-result-integration-2026-11-17)
+and `target/verification/sharex-review6-integration/` for exact source/artifact
+identities, test compiler correction and full results.
+
+
+Subsequent dependency check (2026-11-17): the unchanged dependency graph's
+default audit now reports Chrono as unmaintained under RUSTSEC-2026-0543. The
+[official database entry](https://github.com/RustSec/advisory-db/blob/main/crates/chrono/RUSTSEC-2026-0543.md)
+has no patched Chrono version. This failed run is retained separately in
+`target/verification/sharex-review6-integration/advisories.log`; earlier passes
+are not relabeled. Maintained-API migration is a separate open implementation,
+with no advisory ignore or version spoof. Functional sharing tests above remain
+valid but do not close this global maintenance gate.
+
+## Maintained date/time graph integration (2026-11-17)
+
+The subsequent Chrono audit failure above is now corrected in the active graph
+without ignores. The integrated Jiff migration preserves exact history ordering,
+public UTC formats, leap handling, final-year schedule admission and negative
+current-clock millisecond flooring; on-demand native local conversion refreshes
+Unix timezone rules without idle activity. Actual fresh source rounds 7/8 are
+clean. The optimized workspace passes 1,098 tests (zero failures, 73 ignored,
+61 outer suites), Clippy/format/Linux metadata and default advisory checks pass.
+The independent 80,004-case legacy oracle and owned timezone positive/old-source
+negative controls pass. Native/resource and retained calendar fixture gates are
+separate; this does not close the full non-UI backlog. Exact graph/provenance,
+additional unconfigured license-check failure and limits follow
+[the maintenance evidence](dependency-maintenance.md#integrated-chrono-maintenance-migration-2026-11-17).

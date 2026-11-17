@@ -189,6 +189,14 @@ RefCell borrow spans source/helper calls; no new timer/thread/runtime is added.
 Native COM creation, API failure/ordering, allocation and visual cleanup still
 require actual Windows acceptance.
 
+The native `IDropTarget` implementation explicitly sets `Agile = false`.
+The pinned windows-implement 0.60.2 macro otherwise adds IAgileObject and the
+free-threaded marshaler by default, which is incompatible with the handler's
+Rc/Cell-owned foreground window state. Windows GNU library/test metadata verifies
+the actual binding parameter. A production native two-STA/QI assertion belongs
+to the full isolated receiver fixture; this correction alone does not bound
+foreground GetData or establish acquisition isolation.
+
 Incoming GPUI payloads now also carry one private inline origin: the incoming
 target WindowId or internal source WindowId. All four AnyDrag constructors are
 updated. A new incoming path/image/URL offer may replace older incoming metadata;

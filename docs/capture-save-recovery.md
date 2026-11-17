@@ -200,3 +200,18 @@ capture/input session. Both successful and failed uncached preview regressions
 check that every unsaved source and the Save As retry path remain intact, with
 clipboard state unchanged. Review three was not clean; both regressions passed
 in the coordinated optimized run above.
+
+## JSON-layout-independent journal CAS (2026-11-17)
+
+`cc38b9c` compares the validated, bounded typed intent against the expected state,
+then uses the exact observed original JSON payload in the conditional SQL write.
+Equivalent whitespace/property ordering no longer falsely blocks recovery;
+changed intent state still fails closed and preserves the journal and stage.
+The regression checks pretty JSON recovery, a changed digest refusing cleanup,
+and exact recovered pixels. No schema change or relaxed payload/path/hash bound
+is involved. The optimized save/recovery group passes 29 cases (one opt-in
+ignored), and the complete core run passes 523 (53 ignored), with optimized
+all-target Clippy and formatting passing. The earlier core-only failure exposed
+a real difference between serde feature graphs and remains archived under
+`target/verification/sharex-review6-integration/`. Native crash/full-volume and
+reference-hardware acceptance are not inferred from these tests.

@@ -4,6 +4,42 @@ Date: 2026-11-17
 Scope: the user's complete major-feature list, with final GPUI redesign and new
 UI controls excluded. The workstation stays on. The full backlog is **open**.
 
+Current dependency gate (2026-11-17): the active application graph now uses
+Jiff 0.2.43/jiff-core 0.1.5; default `cargo deny check advisories` passes again
+without ignores or version spoofing. The earlier Chrono maintenance failure
+RUSTSEC-2026-0543 is retained as historical evidence. All current timestamp/
+calendar/clock consumers and the unused rusqlite conversion feature are migrated.
+Fresh source rounds 7/8 are clean, optimized Linux all-target checking, Clippy
+and formatting pass, and the full optimized workspace passes **1,098 tests,
+zero failures, 73 ignored, 61 outer suites**. An independent published-Chrono
+oracle agrees on 80,004 parse/format/order/duration cases (13,830 admitted).
+The owned same-process timezone probe passes; exact old source fails its
+negative control. Windows GNU metadata, five exact retained Date-Picker interaction fixtures and
+31 scheduler tests also pass. Native runtime and source-specific resource
+observations remain separate checks.
+[Maintenance details](dependency-maintenance.md).
+
+The corrected modern SXCU/source/result pipeline is integrated. Fresh source
+reviews 13/14 are clean; 33 focused Rust, three shared-source and 11 actual CLI
+cases, 357 helper assertions and the full 137-request private HTTPS/Task/schedule/
+installed-runtime fixture pass. Clippy, Windows GNU metadata and formatting pass.
+The fixture uses its own bus/keyring/CA, never the user's keyring or clipboard.
+[Current sharing evidence](sharex-runtime.md#corrected-parser-source-and-result-integration-2026-11-17).
+
+Two integration regressions are corrected in `b3f0a27` and `cc38b9c`: Unix
+listener EOF now follows socket retirement, and save-intent comparisons accept
+semantically identical JSON layouts while retaining exact observed-byte CAS.
+The optimized core run passes **523 tests, zero failures, 53 ignored**; 29 save/
+recovery controls, the listener controls and 32 fresh retirement repeats pass.
+All-target optimized Clippy and formatting pass. The corrected full optimized
+workspace run now passes **1,094 tests, zero failures, 73 ignored, 61 outer
+suites**, excluding child-harness summaries (log SHA256
+`724cccda0bb6ca97c023e4bbf5bd4d9d9652f2aa1970d799ceb6d1ce7570d8e7`).
+The earlier full-workspace run
+failed the listener case; the subsequent core-only run exposed the JSON-layout
+case. Both failed logs are retained, and neither is reported as a passing full
+workspace run. Proof: `target/verification/sharex-review6-integration/`.
+
 The renderer now skips fresh path render targets for scenes with no paths.
 The old behavior fails the targeted allocation assertion; the corrected source
 passes all 47 optimized package tests and an identical-workload memory probe.
@@ -12,8 +48,12 @@ and reference-hardware budgets remain open. [Renderer evidence](../vendor/gpui-p
 
 Explicit isolated image printing is integrated. Three optimized core and six
 desktop tests, the real CLI/private IPP end-to-end fixture, Linux/Windows GNU
-metadata, optimized Clippy and formatting pass. Windows native GDI/fault,
-macOS runtime and resource gates remain open. [Printing](image-printing.md).
+metadata, optimized Clippy and formatting pass. Native ARM macOS snapshot
+`b85db926` (application source `9f2e135`) now also passes fresh-process memory
+limit enforcement, three core/six desktop print controls and the actual private
+IPP CLI fixture. Intel job 134043931578 was canceled during later compilation and establishes
+no full runtime pass; Windows native GDI output/fault
+and resource gates remain open. [Printing](image-printing.md).
 
 Chronological capture/upload history sorting is now integrated in core and CLI,
 with exact fractional UTC ordering and self-contained timestamp/ID cursors.
@@ -253,7 +293,7 @@ completion is listed separately.
   acceptance remain. Structured coordinate/uploader mutation smoke now covers
   16,618 seed/mutation cases, 24 boundaries and independent exact oracles; a
   coverage-guided/sanitizer campaign remains separate.
-- [x] **Dependency maintenance:** maintained font/SVG and D-Bus active families
+- [ ] **Dependency maintenance:** maintained font/SVG and D-Bus active families
   and focused regression coverage are implemented. Recheck the exact final graph;
   dormant upstream optional-backend lock entries and the default-branch GLib alert
   remain separate facts. [Current scope](dependency-maintenance.md).

@@ -1,41 +1,22 @@
-//! Windows global shortcuts: construct, change and drop on the native event-loop thread.
+//! Native global shortcuts: construct, change and drop on the native event-loop thread.
 use anyhow::{Result, ensure};
 use global_hotkey::{
     GlobalHotKeyEvent, GlobalHotKeyManager, HotKeyState,
     hotkey::{HotKey, Modifiers},
 };
 
-pub struct CaptureHotkey {
-    manager: GlobalHotKeyManager,
+pub struct CaptureHotkey<M: ShortcutManager = GlobalHotKeyManager> {
+    manager: M,
     keys: Vec<(HotKey, CaptureCommand)>,
     status: String,
     pending: Vec<(HotKey, CaptureCommand)>,
     prepared: Option<Vec<(HotKey, CaptureCommand)>>,
     cleanup_failed: bool,
+    #[cfg(target_os = "macos")]
+    _native_thread: std::marker::PhantomData<std::rc::Rc<()>>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CaptureCommand {
-    Primary,
-    Region,
-    EditRegion,
-    ActiveWindow,
-    RepeatRegion,
-    ActiveDisplay,
-}
-
-impl CaptureCommand {
-    fn label(self) -> &'static str {
-        crate::CaptureHotkeys::LABELS[match self {
-            Self::Primary => 0,
-            Self::Region => 1,
-            Self::EditRegion => 2,
-            Self::ActiveWindow => 3,
-            Self::RepeatRegion => 4,
-            Self::ActiveDisplay => 5,
-        }]
-    }
-}
+pub use crate::capture_command::CaptureCommand;
 
 fn shortcut_label(key: HotKey) -> String {
     let name = key.key.to_string();
@@ -56,8 +37,11 @@ fn shortcut_label(key: HotKey) -> String {
     parts.join("+")
 }
 
-impl CaptureHotkey {
+#[cfg(any(target_os = "windows", target_os = "macos"))]
+impl CaptureHotkey<GlobalHotKeyManager> {
     pub fn unregistered() -> Result<Self> {
+        #[cfg(target_os = "macos")]
+        ensure!(objc2_foundation::MainThreadMarker::new().is_some(), "Carbon shortcuts require the Cocoa main thread");
         Ok(Self {
             manager: GlobalHotKeyManager::new()?,
             keys: Vec::new(),
@@ -65,6 +49,8 @@ impl CaptureHotkey {
             pending: Vec::new(),
             prepared: None,
             cleanup_failed: false,
+            #[cfg(target_os = "macos")]
+            _native_thread: std::marker::PhantomData,
         })
     }
 
@@ -74,6 +60,33 @@ impl CaptureHotkey {
         Ok(manager)
     }
 
+}
+
+/// Registration and cleanup always run on the manager's native owner thread.
+#[doc(hidden)]
+pub trait ShortcutManager {
+    fn register(&self, key: HotKey) -> Result<()>;
+    fn unregister(&self, key: HotKey) -> Result<()>;
+}
+
+impl ShortcutManager for GlobalHotKeyManager {
+    fn register(&self, key: HotKey) -> Result<()> {
+        #[cfg(target_os = "linux")] { let _ = key; anyhow::bail!("Use the fd-driven X11 or native Wayland portal service") }
+        #[cfg(not(target_os = "linux"))] { Ok(GlobalHotKeyManager::register(self, key)?) }
+    }
+    fn unregister(&self, key: HotKey) -> Result<()> {
+        #[cfg(target_os = "linux")] { let _ = key; anyhow::bail!("Polling hotkey backend is disabled") }
+        #[cfg(not(target_os = "linux"))] { Ok(GlobalHotKeyManager::unregister(self, key)?) }
+    }
+}
+
+impl<M: ShortcutManager> CaptureHotkey<M> {
+    pub(crate) fn with_manager(manager: M) -> Self {
+        Self { manager, keys: Vec::new(), status: "Waiting for settings; no global shortcuts active".into(), pending: Vec::new(), prepared: None, cleanup_failed: false, #[cfg(target_os = "macos")] _native_thread: std::marker::PhantomData }
+    }
+    pub(crate) fn manager(&self) -> &M { &self.manager }
+    #[cfg(target_os = "macos")]
+    pub(crate) fn registered_ids(&self) -> Vec<u32> { self.keys.iter().map(|(key, _)| key.id()).collect() }
     /// Startup admits each configured command independently; never substitutes defaults.
     pub fn register_settings(&mut self, settings: &crate::CaptureHotkeys) -> Result<()> {
         ensure!(
@@ -240,7 +253,7 @@ fn command_for_event(
         .map(|(_, command)| *command)
 }
 
-impl Drop for CaptureHotkey {
+impl<M: ShortcutManager> Drop for CaptureHotkey<M> {
     fn drop(&mut self) {
         for (key, _) in self.keys.iter().chain(&self.pending) {
             if let Err(error) = self.manager.unregister(*key) {
@@ -250,7 +263,7 @@ impl Drop for CaptureHotkey {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, target_os = "windows"))]
 mod tests {
     use super::*;
     use global_hotkey::hotkey::Code;
@@ -476,3 +489,7 @@ mod tests {
         Ok(())
     }
 }
+
+#[cfg(test)]
+#[path = "hotkey_transaction_tests.rs"]
+mod transaction_tests;

@@ -213,6 +213,45 @@ fn png_v1_recovery_and_generic_byte_copy_remain_compatible() -> Result<()> {
 }
 
 #[test]
+fn recovery_compares_typed_intents_but_updates_exact_observed_json() -> Result<()> {
+    let f = Fixture::new();
+    STOP_AT.with(|s| *s.borrow_mut() = Some("ready"));
+    assert!(f.save(CaptureFormatPolicy::Png).is_err());
+    STOP_AT.with(|s| *s.borrow_mut() = None);
+    let intent = f.pending();
+    let connection = super::super::open_existing(&f.database)?;
+    let mut value = serde_json::to_value(&intent)?;
+    connection.execute(
+        "UPDATE pending_capture_save SET payload=?1",
+        [serde_json::to_string_pretty(&value)?],
+    )?;
+    let observed = matching_payload(&connection, &intent)?;
+    assert!(observed.contains('\n'));
+    value["ready"]["sha256"] = "0".repeat(64).into();
+    connection.execute(
+        "UPDATE pending_capture_save SET payload=?1",
+        [serde_json::to_string(&value)?],
+    )?;
+    assert!(clear(&connection, &intent).is_err());
+    assert!(load(&connection)?.is_some());
+    assert!(intent.stage.exists());
+    connection.execute("UPDATE pending_capture_save SET payload=?1", [observed])?;
+    drop(connection);
+    assert_eq!(
+        recover_capture_save(
+            &f.database,
+            &intent.operation_id,
+            super::super::MoveRecovery::Finish
+        )?
+        .status,
+        "indexed"
+    );
+    assert_eq!(f.rows(), 1);
+    assert_eq!(image::open(&intent.target)?.into_rgba8(), *f.image.pixels);
+    Ok(())
+}
+
+#[test]
 fn transparency_mismatched_suffix_and_cancel_do_not_reserve_or_publish() -> Result<()> {
     let mut f = Fixture::new();
     f.image.pixels = Arc::new(image::RgbaImage::from_pixel(

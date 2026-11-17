@@ -2,7 +2,7 @@
 
 use crate::{HistoryEntry, HistoryFilter, UploadHistoryEntry};
 use anyhow::{Context, Result, ensure};
-use chrono::NaiveDate;
+use jiff::civil::Date;
 use rusqlite::{Connection, Row, params_from_iter, types::Value};
 use rusqlite::{functions::FunctionFlags, types::ValueRef};
 use std::{
@@ -92,7 +92,7 @@ enum Kind {
     Uploads,
 }
 
-fn date(value: &str) -> Result<NaiveDate> {
+fn date(value: &str) -> Result<Date> {
     ensure!(
         value.len() == 10
             && value.bytes().enumerate().all(|(index, byte)| {
@@ -104,7 +104,7 @@ fn date(value: &str) -> Result<NaiveDate> {
             }),
         "History dates must use YYYY-MM-DD"
     );
-    NaiveDate::parse_from_str(value, "%Y-%m-%d").context("Invalid history date")
+    value.parse::<Date>().context("Invalid history date")
 }
 
 fn validate_query(query: &HistoryQuery, kind: Kind) -> Result<Option<String>> {
@@ -358,9 +358,9 @@ fn validate_timestamp(value: &str) -> Result<()> {
         date(value)?;
     } else {
         let parsed =
-            chrono::DateTime::parse_from_rfc3339(value).context("Invalid history timestamp")?;
+            shared::timestamp::parse_rfc3339(value).context("Invalid history timestamp")?;
         ensure!(
-            parsed.offset().local_minus_utc() == 0
+            parsed.offset_seconds == 0
                 && value.get(..10).is_some_and(|prefix| date(prefix).is_ok()),
             "History timestamp must use UTC"
         );

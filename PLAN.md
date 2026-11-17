@@ -13,18 +13,17 @@ image/QR/OCR tools, storage maintenance, native credential adapters and packagin
 are separate slices; they do not close platform, editor workflow, resource or
 ShareX-parity acceptance gates. The complete requested backlog remains open.
 
-Latest non-UI checkpoint (2026-11-17): chronological capture/upload history
-queries now order exact fractional UTC timestamps with independent keyset cursors.
-Seventeen targeted core and two real CLI cases, two explicit optimized cost/
-allocator probes, 156 separate executable cost/memory requests, optimized Clippy,
-Windows GNU metadata and formatting pass. The preceding Windows file-drop
-correction `f2f03a4` passed 1,065 regular workspace tests (71 opt-ins excluded)
-and focused GPUI regressions. Native COM acquisition containment remains a code
-gap; physical/reference-hardware and release acceptance remain separate.
-Read the [current checklist](docs/non-ui-status.md),
-[history contract](docs/history-queries.md) and
-[drop contract](docs/clipboard-import-output.md) for exact scope and source
-provenance. The full non-UI backlog remains open.
+Latest non-UI checkpoint (2026-11-17): corrected modern sharing/source/result
+execution has two clean source reviews and passes 33 focused Rust cases, three
+shared-source controls, 11 real CLI cases, 357 helper assertions and the complete
+137-request private HTTPS/Task/schedule/installed-runtime fixture. Clippy,
+Windows GNU metadata and formatting pass. Earlier printing, precise date queries
+and the lazy path renderer have their own measured checkpoints. Linux main-app
+native services and full Windows drop acquisition isolation remain separate
+in-progress implementations; native hardware/account/signature and performance
+gates stay open. Read [the current checklist](docs/non-ui-status.md) and
+[sharing evidence](docs/sharex-runtime.md#corrected-parser-source-and-result-integration-2026-11-17).
+The full non-UI backlog is not declared complete.
 
 ## Session handoff — start here (2026-11-12)
 

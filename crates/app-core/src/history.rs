@@ -148,7 +148,7 @@ fn insert_capture(
             info.0,
             info.1,
             info.2,
-            chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+            shared::timestamp::utc_seconds(jiff::Timestamp::now()),
             source,
             info.3
         ],
@@ -345,7 +345,7 @@ pub fn record_uploaded_png(database: &Path, source: &Path, origin: &str, url: &s
             filename,
             origin,
             link,
-            chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
+            shared::timestamp::utc_seconds(jiff::Timestamp::now())
         ],
     )?;
     transaction.commit()?;

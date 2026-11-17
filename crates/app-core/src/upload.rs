@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, io::Read, path::Path, sync::Arc, time::Duration};
 use tokio::io::{AsyncReadExt, AsyncSeekExt};
 #[path = "upload_source.rs"]
-mod upload_source;
+pub(crate) mod upload_source;
 use upload_source::{TrackedUploadReader, UploadSourceGuard, verify_transfer};
 #[cfg(test)]
 #[path = "upload_source_tests.rs"]

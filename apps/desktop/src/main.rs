@@ -15,6 +15,8 @@ mod capture_worker;
 mod cli;
 mod clipboard_command;
 mod desktop_integration;
+#[cfg(target_os = "linux")]
+mod desktop_services_process;
 mod editor_document;
 mod file_logging;
 mod gif_assembly;
@@ -64,12 +66,18 @@ fn main() {
     let result = launch(
         arguments,
         |arguments| {
+            #[cfg(target_os = "linux")]
+            if desktop_services_process::try_child(arguments)? { return Ok(true); }
             if print_image::try_child(arguments)? {
                 return Ok(true);
             }
             capture_worker::try_child(arguments)
         },
-        capture_worker::install,
+        || {
+            #[cfg(target_os = "linux")]
+            desktop_services_process::install()?;
+            capture_worker::install()
+        },
         cli::run,
         || {
             let mut args = std::env::args_os().skip(1);

@@ -325,7 +325,9 @@ impl Task {
             .transpose()?;
         let mut actions = Vec::with_capacity(profile.actions.len());
         let run_id = uuid::Uuid::new_v4().to_string();
-        let timestamp = chrono::Utc::now().format("%Y%m%dT%H%M%S%3fZ").to_string();
+        let timestamp = jiff::Timestamp::now()
+            .strftime("%Y%m%dT%H%M%S%3fZ")
+            .to_string();
         let mut outputs = std::collections::HashSet::new();
         let mut has_link = false;
         let mut has_output = false;
