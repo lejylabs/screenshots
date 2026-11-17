@@ -1,0 +1,208 @@
+name: macOS SDK probe
+on:
+  push:
+    branches: [feat/macos-sdk-probe]
+permissions:
+  contents: read
+jobs:
+  macos-app:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-15, macos-15-intel]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup show active-toolchain
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: sdk-probe-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            sdk-probe-${{ runner.os }}-${{ runner.arch }}-
+            ${{ runner.os }}-cargo-
+      - name: Probe fresh-process native VM enforcement without image or print access
+        run: |
+          python3 - <<'BUDGET'
+          from pathlib import Path
+          import os,json,tomllib
+          root=Path.cwd(); fixture=Path(os.environ['RUNNER_TEMP'])/'owned-macos-vm-budget'
+          (fixture/'src').mkdir(parents=True,exist_ok=True)
+          packages=tomllib.loads((root/'Cargo.lock').read_text())['package']
+          versions={name:next(p['version'] for p in packages if p['name']==name) for name in ('anyhow','libc')}
+          manifest='[package]\nname="owned-native-budget-probe"\nversion="0.0.0"\nedition="2024"\n[workspace]\n[dependencies]\n'+''.join(name+'="='+version+'"\n' for name,version in versions.items())
+          (fixture/'Cargo.toml').write_text(manifest.replace(chr(92)+'n',chr(10)))
+          source='#[allow(dead_code)]\n#[path='+json.dumps(str(root/'crates/app-core/src/clipboard_input_budget.rs'))+']\nmod budget;\nfn main()->anyhow::Result<()> { let mut budget=budget::Budget::enter()?; budget.decoding()?; println!("post-exec VM growth bound enforced"); Ok(()) }\n'
+          (fixture/'src/main.rs').write_text(source.replace(chr(92)+'n',chr(10)))
+          BUDGET
+          cargo run --release --manifest-path "$RUNNER_TEMP/owned-macos-vm-budget/Cargo.toml"
+      - name: Record actual native SDK screen-input contract
+        run: |
+          sw_vers
+          xcrun --show-sdk-version
+          python3 - <<'HEADER'
+          from pathlib import Path
+          import subprocess
+          sdk=Path(subprocess.check_output(['xcrun','--show-sdk-path'],text=True).strip())
+          header=sdk/'System/Library/Frameworks/AVFoundation.framework/Headers/AVCaptureInput.h'
+          source=header.read_text()
+          for name in ['cropRect','scaleFactor','removesDuplicateFrames']:
+              start=source.find('@property',source.find('@interface AVCaptureScreenInput'))
+              found=source.find(name,start)
+              print('SDK contract',name,source[max(start,found-2300):found+700])
+          HEADER
+      - name: Check actual native core and test sources
+        run: cargo check --locked -p screenshots --all-targets -j 2
+      - name: Portable admission models against native SDK build
+        run: cargo test --locked --profile release-fast -p app-core capture_macos_model -- --test-threads=1
+
+      - name: Typecheck the owned native fixture without executing it
+        run: xcrun swiftc -typecheck tools/MacCaptureFixture/main.swift
+      - name: Permission-free native Mac lifetime and notifications
+        run: |
+          cargo test --locked --profile release-fast -p app-core -j 2 capture_macos -- --test-threads=1
+          cargo test --locked --profile release-fast -p screenshots --bin screenshots -j 2 capture_worker::tests::mac_lifeline_preserves_normal_video_start_and_finish_control_packets -- --exact --test-threads=1
+          cargo test --locked --profile release-fast -p screenshots --bin screenshots -j 2 capture_worker::tests::video_parent_loss_stops_source_encoder_and_probe_without_a_global_pid_signal -- --exact --test-threads=1
+
+      - name: Run native portability signing fixtures only
+        run: python3 scripts/test-native-signing.py
+
+      - name: Run owned persistence and native logger fixtures
+        run: |
+          cargo test --locked --profile release-fast -p app-core -j 2 history::save::tests -- --test-threads=1
+          cargo test --locked --profile release-fast -p app-core -j 2 managed_color::tests -- --test-threads=1
+          cargo test --locked --profile release-fast -p screenshots --bin screenshots -j 2 file_logging::tests:: -- --test-threads=1
+          cargo test --locked --profile release-fast -p screenshots --test history_move -j 2 executable_save_recovery -- --test-threads=1
+
+      - name: Run coordinate grid and metadata-consumer fixtures
+        run: |
+          cargo test --locked --profile release-fast -p app-core -j 2 desktop_composite_macos -- --test-threads=1
+          cargo test --locked --profile release-fast -p screenshots --bin screenshots -j 2 capture_worker::protocol::tests:: -- --test-threads=1
+          cargo test --locked --profile release-fast -p screenshots --bin screenshots -j 2 task::seal::tests::all_native_task_sources_admit_without_pixels_and_revalidate_at_execution -- --exact --test-threads=1
+
+      - name: Run owned video family completion regressions
+        run: |
+          cargo test --locked --profile release-fast -p screenshots --bin screenshots -j 2 capture_worker::video::completion_tests:: -- --test-threads=1
+
+      - name: Run owned Unix singleton fixtures
+        run: |
+          cargo test --locked --profile release-fast -p app-core -j 2 single_instance_unix::tests:: -- --test-threads=1
+          cargo test --locked --profile release-fast -p app-ui --lib -j 2 desktop_startup_tests:: -- --test-threads=1
+
+      - name: Run owned Unix print acceptance
+        run: |
+          cargo test --locked --profile release-fast -p app-core --lib -j 2 image_print -- --test-threads=1
+          cargo test --locked --profile release-fast -p screenshots --bin screenshots -j 2 print_image::tests:: -- --test-threads=1
+          cargo build --locked --profile release-fast -p screenshots -j 2
+          python3 scripts/verify-image-print-virtual-ipp.py "$PWD/target/release-fast/screenshots"
+
+  windows-native-witness:
+    runs-on: windows-latest
+    timeout-minutes: 50
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup show active-toolchain
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: native-witness-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            Windows-cargo-
+      - uses: actions/cache/restore@v4
+        id: native_cache
+        with:
+          path: |
+            target/vcpkg-installed
+            target/vcpkg-downloads
+          key: native-sftp-x86_64-pc-windows-msvc-${{ hashFiles('packaging/windows/vcpkg.json') }}
+      - name: Admit or build pinned native dependencies
+        id: native_admission
+        shell: pwsh
+        run: |
+          if (!(Test-Path target/vcpkg-installed/x64-windows-static-md/lib/libcurl.lib)) {
+            git clone --filter=blob:none --no-checkout https://github.com/microsoft/vcpkg.git target/vcpkg
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            git -C target/vcpkg checkout 8f363bdc11359ede4bc51e5eb32a2617538049c8
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            & target/vcpkg/bootstrap-vcpkg.bat -disableMetrics
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            $env:VCPKG_DOWNLOADS = Join-Path $PWD 'target/vcpkg-downloads'
+            $env:VCPKG_MAX_CONCURRENCY = '2'
+            & target/vcpkg/vcpkg.exe install --triplet x64-windows-static-md --x-manifest-root=packaging/windows --x-install-root=target/vcpkg-installed --disable-metrics
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+          New-Item -ItemType Directory -Path target/vcpkg -Force | Out-Null
+          New-Item -ItemType File -Path target/vcpkg/.vcpkg-root -Force | Out-Null
+          New-Item -ItemType Junction -Path (Join-Path $PWD 'target/vcpkg/installed') -Target (Join-Path $PWD 'target/vcpkg-installed') | Out-Null
+          "VCPKG_ROOT=$(Join-Path $PWD 'target/vcpkg')" >> $env:GITHUB_ENV
+          "VCPKGRS_TRIPLET=x64-windows-static-md" >> $env:GITHUB_ENV
+          "SCREENSHOTS_REQUIRE_NATIVE_CURL=1" >> $env:GITHUB_ENV
+      - name: Cache verified native dependency build
+        if: ${{ always() && steps.native_admission.outcome == 'success' && steps.native_cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            target/vcpkg-installed
+            target/vcpkg-downloads
+          key: native-sftp-x86_64-pc-windows-msvc-${{ hashFiles('packaging/windows/vcpkg.json') }}
+      - name: Run owned native topology and physical-mode fixtures
+        run: |
+          cargo test --locked --profile release-fast -p app-core -j 2 capture_native::platform:: -- --test-threads=1
+      - name: Run independent physical-coordinate models
+        run: cargo test --locked --profile release-fast -p app-core -j 2 display_pixels -- --test-threads=1
+
+      - name: Verify native bitmap allocation and history spelling guards
+        run: |
+          cargo test --locked --profile release-fast -p app-core -j 2 native_bitmap_admission -- --test-threads=1
+          cargo test --locked --profile release-fast -p app-core -j 2 ordinary_and_verbatim_paths_share_history_without_bypassing_insert_guards -- --test-threads=1
+
+      - name: Verify atomic native worker commit limit
+        run: cargo test --locked --profile release-fast -p screenshots --bin screenshots -j 2 native_worker_job_has_an_explicit_commit_ceiling -- --test-threads=1
+      - name: Run Windows native portability signing fixtures only
+        run: python scripts/test-native-signing.py
+
+      - name: Contain owned nonqueued native message floods
+        run: cargo test --locked --profile release-fast -p screenshots --bin screenshots -j 2 capture_worker::tests::windows_sent_message_flood_is_contained_by_parent_deadline -- --exact --test-threads=1
+      - name: Verify native MSIX manifest bytes without SDK invocation
+        run: python scripts/test-package-app.py
+
+      - name: Run owned persistence and native logger fixtures
+        run: |
+          cargo test --locked --profile release-fast -p app-core -j 2 history::save::tests -- --test-threads=1
+          cargo test --locked --profile release-fast -p app-core -j 2 managed_color::tests -- --test-threads=1
+          cargo test --locked --profile release-fast -p screenshots --bin screenshots -j 2 file_logging::tests:: -- --test-threads=1
+          cargo test --locked --profile release-fast -p screenshots --test history_move -j 2 executable_save_recovery -- --test-threads=1
+
+      - name: Run coordinate grid and metadata-consumer fixtures
+        run: |
+          cargo test --locked --profile release-fast -p app-core -j 2 desktop_composite_macos -- --test-threads=1
+          cargo test --locked --profile release-fast -p screenshots --bin screenshots -j 2 capture_worker::protocol::tests:: -- --test-threads=1
+          cargo test --locked --profile release-fast -p screenshots --bin screenshots -j 2 task::seal::tests::all_native_task_sources_admit_without_pixels_and_revalidate_at_execution -- --exact --test-threads=1
+
+      - name: Run owned native OLE drop fixtures
+        run: |
+          cargo test --locked --profile release-fast -p gpui-pre-windows --lib -j 2 file_drop -- --test-threads=1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo test --locked --profile release-fast -p gpui-pre --lib -j 2 incoming_drop_ownership_tests -- --test-threads=1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo test --locked --profile release-fast -p gpui-pre --lib -j 2 windows_file_drop_consumer_tests -- --test-threads=1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Run owned Windows print process and pixel fixtures
+        shell: pwsh
+        run: |
+          cargo test --locked --profile release-fast -p app-core --lib -j 2 image_print -- --test-threads=1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo test --locked --profile release-fast -p screenshots --bin screenshots -j 2 print_image::tests:: -- --test-threads=1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          New-Item -ItemType Directory -Path target/owned-print-fixture -Force | Out-Null
+          rustc --edition 2024 -O apps/desktop/tests/fixtures/print_image/fake_worker_windows.rs -o target/owned-print-fixture/fake-worker.exe
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $env:SCREENSHOTS_PRINT_TEST_HELPER = Join-Path $PWD 'target/owned-print-fixture/fake-worker.exe'
+          cargo test --locked --profile release-fast -p screenshots --bin screenshots -j 2 print_image::tests::windows_owned_job_acceptance_rejection_timeout_and_cancel -- --ignored --exact --test-threads=1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
