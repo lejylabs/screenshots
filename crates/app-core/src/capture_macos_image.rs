@@ -583,21 +583,20 @@ unsafe fn decode_inner(
     Ok(pixels)
 }
 
-type NoToneMapDraw =
-    unsafe extern "C" fn(*mut c_void, Rect, *const c_void, u32, *const c_void) -> bool;
-fn no_tone_map_draw() -> Option<NoToneMapDraw> {
+type SetHeadroom = unsafe extern "C" fn(*mut c_void, f32) -> bool;
+fn set_headroom() -> Option<SetHeadroom> {
     // Optional public API is resolved only for a live HDR conversion; older
     // supported macOS launches/SDR capture retain no new dyld requirement.
     let symbol = unsafe {
         libc::dlsym(
             libc::RTLD_DEFAULT,
-            c"CGContextDrawImageApplyingToneMapping".as_ptr(),
+            c"CGContextSetEDRTargetHeadroom".as_ptr(),
         )
     };
     if symbol.is_null() {
         None
     } else {
-        Some(unsafe { std::mem::transmute::<*mut c_void, NoToneMapDraw>(symbol) })
+        Some(unsafe { std::mem::transmute::<*mut c_void, SetHeadroom>(symbol) })
     }
 }
 
@@ -611,8 +610,8 @@ unsafe fn float_srgb(
     hdr: bool,
 ) -> Result<image::RgbaImage> {
     crate::capture_color::float_admission(width, height, source_bytes)?;
-    let explicit_draw = if hdr {
-        Some(no_tone_map_draw().context("Native explicit HDR color conversion unavailable")?)
+    let explicit_headroom = if hdr {
+        Some(set_headroom().context("Native explicit HDR color conversion unavailable")?)
     } else {
         None
     };
@@ -645,16 +644,15 @@ unsafe fn float_srgb(
             height: f64::from(height),
         },
     };
-    if let Some(draw) = explicit_draw {
-        // Explicitly suppress CoreGraphics metadata-driven tone mapping: the
-        // sole SDR shoulder is applied below after precision-preserving decode.
+    if let Some(set) = explicit_headroom {
+        // Unknown destination headroom suppresses native tone mapping. The
+        // `.none` draw method can reject unknown-source headroom or clip to SDR.
         ensure!(
-            unsafe { draw(context.0, bounds, image, 5, ptr::null()) },
-            "Native precision-preserving HDR color conversion failed"
+            unsafe { set(context.0, 0.0) },
+            "Native precision-preserving HDR context configuration failed"
         );
-    } else {
-        unsafe { CGContextDrawImage(context.0, bounds, image) };
     }
+    unsafe { CGContextDrawImage(context.0, bounds, image) };
     drop(context);
     crate::capture_macos_loop::Topology::check()?;
     // The owned capture helper enforces the parent deadline/cancellation and is
@@ -697,14 +695,47 @@ mod tests {
             )
         });
         assert!(!image.0.is_null());
-        if no_tone_map_draw().is_none() {
+        if set_headroom().is_none() {
             assert!(unsafe { decode(image.0) }.is_err());
             return;
         }
-        let output = unsafe { decode(image.0) }.unwrap();
+        // Exercise both unspecified metadata (the original failing case) and
+        // explicit HDR headroom, which would otherwise trigger native mapping.
+        type CopyWithHeadroom = unsafe extern "C" fn(f32, *const c_void) -> *const c_void;
+        let symbol = unsafe {
+            libc::dlsym(
+                libc::RTLD_DEFAULT,
+                c"CGImageCreateCopyWithContentHeadroom".as_ptr(),
+            )
+        };
+        assert!(!symbol.is_null());
+        let copy: CopyWithHeadroom = unsafe { std::mem::transmute(symbol) };
         let expected =
             crate::capture_color::linear_rgba_to_sdr(2, 2, &bytes, true, &|| false).unwrap();
-        assert_eq!(output.as_raw(), expected.as_raw());
+        for headroom in [0.0, 2.0, 16.0] {
+            let tagged = crate::capture_macos_sck::Image(unsafe { copy(headroom, image.0) });
+            assert!(!tagged.0.is_null());
+            let output = unsafe { decode(tagged.0) }.unwrap();
+            assert_eq!(output.as_raw(), expected.as_raw(), "headroom={headroom}");
+            let crop = unsafe {
+                decode_region(
+                    tagged.0,
+                    crate::PixelRegion {
+                        x: 1,
+                        y: 1,
+                        width: 1,
+                        height: 1,
+                    },
+                    (2, 2),
+                )
+            }
+            .unwrap();
+            assert_eq!(
+                crop.get_pixel(0, 0).0,
+                crate::capture_color::linear_pixel([12.5, 12.5, 12.5, 1.0], true).unwrap(),
+                "cropped headroom={headroom}"
+            );
+        }
         let crop = unsafe {
             decode_region(
                 image.0,

@@ -39,7 +39,7 @@ struct PayloadCounters {
 };
 struct SourceMutation {LONG id,applied,guard,sequence,armed,duplicate_release_calls,actor;DWORD pid,tid;};
 struct Shared {
-    LONG admission_epoch,allow_epoch,registration_probe_epoch;
+    LONG admission_epoch,allow_epoch,registration_probe_epoch,probe_reclaim;
     DWORD allow_pid,allow_tid,registration_probe_pid;
     DWORD controller_pid;
     DWORD receiver_pid, receiver_tid, source_pid, source_tid;

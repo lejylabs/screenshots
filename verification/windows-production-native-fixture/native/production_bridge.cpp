@@ -100,7 +100,7 @@ extern "C" __declspec(dllexport) void __cdecl acceptance_hook(unsigned code, uns
         void* bytes = GlobalLock(data); require(bytes != nullptr, "actual target bytes");
         memcpy(state->marshal, bytes, info.cbSize.LowPart); GlobalUnlock(data); state->marshal_bytes = info.cbSize.LowPart; state->registration = S_OK;
         registration_epoch=InterlockedCompareExchange(&state->admission_epoch,0,0);
-        if (registration_epoch>1 && !wcscmp(scenario,L"same-hwnd-reclaim")) {
+        if (registration_epoch>1 && InterlockedCompareExchange(&state->probe_reclaim,0,0)==1) {
             // Prove a real registration wake cannot release the next source before ALLOW.
             state->registration_probe_pid=GetCurrentProcessId();
             InterlockedExchange(&state->registration_probe_epoch,registration_epoch);
@@ -352,6 +352,9 @@ extern "C" __declspec(dllexport) void __cdecl acceptance_rearm(HWND owner) {
     require(InterlockedIncrement(&state->admission_epoch)>0,"bounded positive admission epoch");
     state->ordered_enter_waiting=0;state->source_cleanup_done=0;state->returned_enter=0;state->returned_drop=0;
     state->owner_hwnd = reinterpret_cast<UINT_PTR>(owner); state->enter_pid = 0; state->native_stage = 0;
+}
+extern "C" __declspec(dllexport) void __cdecl acceptance_probe_reclaim() {
+    InterlockedExchange(&state->probe_reclaim,1);
 }
 extern "C" __declspec(dllexport) int __cdecl acceptance_wait_reaped() {
     if (!exact_receiver) return 1;

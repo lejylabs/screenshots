@@ -779,6 +779,16 @@ pub fn serve(
                         target,
                         _interface: interface,
                     });
+                    #[cfg(screenshots_native_drop_acceptance)]
+                    if receiver.enabled.get() {
+                        // A newly registered B may share an already-enabled receiver;
+                        // registration alone must never manufacture admission.
+                        super::native_drop_acceptance::hook(
+                            9,
+                            receiver.sequence.get(),
+                            std::ptr::null_mut(),
+                        );
+                    }
                     fatal_if(receiver.send(
                         wire::Header {
                             kind: wire::REGISTERED,

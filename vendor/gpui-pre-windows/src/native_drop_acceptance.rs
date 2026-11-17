@@ -910,6 +910,9 @@ fn provider(case: &str, hwnd: HWND) -> Result<()> {
         } else if case == "same-hwnd-reclaim" {
             unsafe {
                 rearm(hwnd);
+                let probe: unsafe extern "C" fn() =
+                    std::mem::transmute(symbol(module, s!("acceptance_probe_reclaim")));
+                probe();
             }
             broker.cancel();
         }
