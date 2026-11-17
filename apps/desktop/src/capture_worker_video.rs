@@ -268,6 +268,26 @@ pub(super) fn inherited_sink(nonce: &[u8; 16], parent: u32) -> Result<UnixStream
     Ok(sink)
 }
 
+// The source reserves the borrowed peers' group until authenticated FINISH.
+struct FamilyCompletion {
+    finished: bool,
+}
+impl FamilyCompletion {
+    fn new() -> Self {
+        Self { finished: false }
+    }
+    fn finish(mut self) {
+        self.finished = true;
+    }
+}
+impl Drop for FamilyCompletion {
+    fn drop(&mut self) {
+        if !self.finished {
+            super::unix::terminate_own_group();
+        }
+    }
+}
+
 #[cfg(test)]
 pub(super) fn fixture(
     request: MacVideoRequest,
@@ -281,8 +301,13 @@ pub(super) fn fixture(
         "Private raw fixture is deliberately tiny"
     );
     let mut sink = inherited_sink(nonce, parent)?;
+    let family = FamilyCompletion::new();
     protocol::handshake(io, protocol::VIDEO_READY, nonce)?;
     protocol::expect_handshake(io, protocol::VIDEO_START, nonce)?;
+    if mode == "video_failure" {
+        protocol::failure(io, &CaptureError::MacScreenPermissionDenied)?;
+        return Ok(());
+    }
     if mode == "video_hang" {
         loop {
             std::thread::park();
@@ -314,6 +339,7 @@ pub(super) fn fixture(
     };
     protocol::reply(io, NativeCaptureReply::MacVideo { summary })?;
     protocol::expect_handshake(io, protocol::VIDEO_FINISH, nonce)?;
+    family.finish();
     Ok(())
 }
 
@@ -336,6 +362,7 @@ pub(super) fn serve(
             return Ok(());
         }
     };
+    let family = FamilyCompletion::new();
     protocol::handshake(io, protocol::VIDEO_READY, nonce)?;
     protocol::expect_handshake(io, protocol::VIDEO_START, nonce)?;
     let deadline = io.deadline;
@@ -385,5 +412,10 @@ pub(super) fn serve(
     // flush/probe/reap phase acknowledges completion; ordinary cleanup then applies.
     protocol::reply(io, NativeCaptureReply::MacVideo { summary })?;
     protocol::expect_handshake(io, protocol::VIDEO_FINISH, nonce)?;
+    family.finish();
     Ok(())
 }
+
+#[cfg(test)]
+#[path = "capture_worker_video_completion_tests.rs"]
+mod completion_tests;

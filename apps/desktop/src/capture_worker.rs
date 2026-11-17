@@ -2185,6 +2185,17 @@ mod tests {
         Ok(())
     }
     #[cfg(unix)]
+    fn process_details(pid: i32) -> String {
+        #[cfg(target_os = "macos")]
+        {
+            format!("{:?}", unix::process_state(pid))
+        }
+        #[cfg(target_os = "linux")]
+        {
+            format!("pid={pid} live={}", process_live(pid))
+        }
+    }
+    #[cfg(unix)]
     fn process_live(pid: i32) -> bool {
         #[cfg(target_os = "linux")]
         {
@@ -2311,14 +2322,28 @@ mod tests {
             };
             let source = read_pid(&marker);
             let peer = read_pid(&peer_marker);
+            assert!(source > 1 && peer > 1);
+            let source_initial = process_details(source);
+            let peer_initial = process_details(peer);
+            eprintln!(
+                "Owned video ready mode={mode} owner={} source={source_initial} peer={peer_initial}",
+                owner.id()
+            );
             assert!(process_live(source) && process_live(peer));
             owner.kill().unwrap();
             owner.wait().unwrap();
             let until = Instant::now() + Duration::from_secs(5);
-            while process_live(source) || process_live(peer) {
+            loop {
+                let source_live = process_live(source);
+                let peer_live = process_live(peer);
+                if !source_live && !peer_live {
+                    break;
+                }
                 assert!(
                     Instant::now() < until,
-                    "Owned video family survived parent loss"
+                    "Owned video family survived parent loss: mode={mode} source_initial={source_initial} peer_initial={peer_initial} source_final={} peer_final={}",
+                    process_details(source),
+                    process_details(peer)
                 );
                 std::thread::sleep(Duration::from_millis(5));
             }
