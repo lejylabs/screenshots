@@ -2135,3 +2135,22 @@ Earlier failures and exact execution identities remain archived. This closes the
 local functional integration slice; main GUI, Mac runtime/physical/session,
 joint 50 MiB private memory and remaining PLAN performance gates are separate.
 [Contract and evidence](unix-native-services.md).
+
+## Windows native drop receiver source integration (2026-11-17)
+
+All eligible GPUI Windows targets now use the isolated non-agile receiving STA,
+with the native watchdog installed before message retrieval/unmarshaling and
+absolute expiry checks before completion/publication. Per-window lifecycle,
+reentrant retirement, bounded single admission through final delivery and
+asynchronous exact-owner cleanup replace the foreground source-calling target.
+Actual source reviews 5/6 are clean on the frozen patch; Root preserves current
+Unix/Jiff changes through genuine three-way merging and corrects the constructor
+wrapper call during GNU compilation.
+
+Optimized Linux metadata, Windows GNU workspace/all-target and vendor-test
+metadata, 122 application consumers (9 ignored), three optimized deadline
+controls, Clippy and formatting pass. These are named local checks, not Windows
+execution. The separately authored cfg native fixture and all native COM/OLE,
+fault/editor/lifecycle/private-GPU/resource acceptance remain open. Details and
+precise original-source/C++ prerequisite limits follow the
+[drop contract](clipboard-import-output.md#integrated-windows-receiver-source-2026-11-17).

@@ -13,16 +13,16 @@ pub(super) const ENV: &str = "SCREENSHOTS_NATIVE_CAPTURE_PIPE";
 pub(super) const CHUNK: usize = 64 * 1024;
 
 #[cfg(unix)]
-pub(super) struct Transport {
+pub(crate) struct Transport {
     pub stream: std::os::unix::net::UnixStream,
 }
 #[cfg(target_os = "windows")]
-pub(super) struct Transport {
+pub(crate) struct Transport {
     read: std::fs::File,
     write: std::fs::File,
 }
 
-pub(super) struct Prepared {
+pub(crate) struct Prepared {
     pub transport: Transport,
     pub nonce: [u8; 16],
     #[cfg(unix)]
@@ -241,6 +241,10 @@ impl Prepared {
     }
 }
 impl Transport {
+    #[cfg(target_os = "windows")]
+    pub(crate) fn into_windows_files(self) -> (std::fs::File, std::fs::File) {
+        (self.read, self.write)
+    }
     pub fn inherited() -> Result<(Self, [u8; 16], u32)> {
         Self::inherited_kind(false)
     }

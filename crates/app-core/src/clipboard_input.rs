@@ -279,6 +279,18 @@ pub(crate) fn drop_files(bytes: &[u8]) -> Result<ClipboardSnapshot> {
 
 #[path = "clipboard_input_budget.rs"]
 mod budget;
+/// Holds the existing probed +96 MiB native acquisition ceiling in an owned
+/// authenticated receiver process. It never opens a clipboard or raises decode limits.
+#[cfg(target_os = "windows")]
+pub struct NativeAcquisitionBudget {
+    _resource: budget::Budget,
+}
+#[cfg(target_os = "windows")]
+pub fn native_acquisition_budget() -> Result<NativeAcquisitionBudget> {
+    Ok(NativeAcquisitionBudget {
+        _resource: budget::Budget::enter()?,
+    })
+}
 #[cfg(target_os = "linux")]
 #[path = "clipboard_input_x11.rs"]
 mod platform;

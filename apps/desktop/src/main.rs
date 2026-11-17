@@ -59,6 +59,8 @@ mod upload_batch;
 mod upload_file;
 mod upload_files;
 mod upload_results;
+#[cfg(target_os = "windows")]
+mod windows_drop_spawn;
 mod workflow;
 
 fn main() {
@@ -70,6 +72,10 @@ fn main() {
             if desktop_services_process::try_child(arguments)? {
                 return Ok(true);
             }
+            #[cfg(target_os = "windows")]
+            if windows_drop_spawn::try_child(arguments)? {
+                return Ok(true);
+            }
             if print_image::try_child(arguments)? {
                 return Ok(true);
             }
@@ -78,7 +84,10 @@ fn main() {
         || {
             #[cfg(target_os = "linux")]
             desktop_services_process::install()?;
-            capture_worker::install()
+            capture_worker::install()?;
+            #[cfg(target_os = "windows")]
+            windows_drop_spawn::install()?;
+            Ok(())
         },
         cli::run,
         || {

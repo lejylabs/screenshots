@@ -91,9 +91,28 @@ impl PreparedDisplay {
             }),
         };
         ensure!(!native.0.is_null(), "Native display image is unavailable");
-        let mut pixels = unsafe { crate::capture_macos_image::decode(native.0) }?;
+        let native_region =
+            if self.source.is_none() && self.options.cursor == CaptureCursor::Include {
+                None
+            } else {
+                region
+            };
+        let mut pixels = match native_region {
+            Some(area) => unsafe {
+                crate::capture_macos_image::decode_region(
+                    native.0,
+                    area,
+                    (self.coordinates.pixel_width, self.coordinates.pixel_height),
+                )
+            }?,
+            None => unsafe { crate::capture_macos_image::decode(native.0) }?,
+        };
         ensure!(
-            pixels.dimensions() == (self.coordinates.pixel_width, self.coordinates.pixel_height),
+            pixels.dimensions()
+                == native_region.map_or(
+                    (self.coordinates.pixel_width, self.coordinates.pixel_height),
+                    |area| (area.width, area.height)
+                ),
             "Native display pixel extent changed"
         );
         if self.source.is_none() && self.options.cursor == CaptureCursor::Include {
@@ -104,7 +123,7 @@ impl PreparedDisplay {
             )?;
         }
         self.check()?;
-        if let Some(area) = region {
+        if let Some(area) = region.filter(|_| native_region.is_none()) {
             Ok(
                 image::imageops::crop_imm(&pixels, area.x, area.y, area.width, area.height)
                     .to_image(),

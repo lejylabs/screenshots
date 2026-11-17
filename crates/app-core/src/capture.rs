@@ -87,15 +87,23 @@ enum PreparedCapture {
 }
 
 impl PreparedCapture {
+    #[cfg(not(target_os = "windows"))]
     fn admission_bytes(&self) -> Result<u64, CaptureError> {
         #[cfg(target_os = "macos")]
         if let Self::MacWindow(source, ..) = self {
             return Ok(source.admission_bytes());
         }
+        #[cfg(target_os = "macos")]
+        if let Self::Display(monitor, _) | Self::Region(monitor, ..) = self {
+            return crate::capture_native::mac_source_admission_bytes(monitor)
+                .map_err(backend_error);
+        }
         let (width, height) = self.dimensions()?;
         validate_image_size(width, height)?;
-        Ok(u64::from(width) * u64::from(height) * 4)
+        let output = u64::from(width) * u64::from(height) * 4;
+        Ok(output)
     }
+    #[cfg(not(target_os = "windows"))]
     fn dimensions(&self) -> Result<(u32, u32), CaptureError> {
         match self {
             Self::Display(monitor, _) => {
@@ -128,6 +136,78 @@ impl PreparedCapture {
             )),
             Self::Region(_, _, _, _, width, height, _) => Ok((*width, *height)),
         }
+    }
+}
+
+struct PreparedCaptureReservation {
+    source: PreparedCapture,
+    reserved_bytes: u64,
+    #[cfg(target_os = "windows")]
+    windows: crate::capture_native::WindowsCaptureAdmission,
+}
+impl PreparedCaptureReservation {
+    fn freeze(source: PreparedCapture) -> Result<Self, CaptureError> {
+        #[cfg(target_os = "windows")]
+        let windows = match &source {
+            PreparedCapture::Display(monitor, _) => {
+                crate::capture_native::windows_display_admission(monitor, None)
+            }
+            PreparedCapture::Region(monitor, _, x, y, width, height, _) => {
+                crate::capture_native::windows_display_admission(
+                    monitor,
+                    Some(crate::PixelRegion {
+                        x: *x,
+                        y: *y,
+                        width: *width,
+                        height: *height,
+                    }),
+                )
+            }
+            PreparedCapture::Window(window, ..) => {
+                crate::capture_native::windows_window_admission(window)
+            }
+        }
+        .map_err(backend_error)?;
+        #[cfg(target_os = "windows")]
+        let reserved_bytes = windows.bytes();
+        #[cfg(not(target_os = "windows"))]
+        let reserved_bytes = source.admission_bytes()?;
+        Ok(Self {
+            source,
+            reserved_bytes,
+            #[cfg(target_os = "windows")]
+            windows,
+        })
+    }
+    fn verify(&self) -> Result<(), CaptureError> {
+        #[cfg(target_os = "windows")]
+        return match &self.source {
+            PreparedCapture::Display(monitor, _) => {
+                crate::capture_native::check_windows_display_admission(monitor, None, &self.windows)
+            }
+            PreparedCapture::Region(monitor, _, x, y, width, height, _) => {
+                crate::capture_native::check_windows_display_admission(
+                    monitor,
+                    Some(crate::PixelRegion {
+                        x: *x,
+                        y: *y,
+                        width: *width,
+                        height: *height,
+                    }),
+                    &self.windows,
+                )
+            }
+            PreparedCapture::Window(window, ..) => {
+                crate::capture_native::check_windows_window_admission(window, &self.windows)
+            }
+        }
+        .map_err(backend_error);
+        #[cfg(not(target_os = "windows"))]
+        if self.source.admission_bytes()? != self.reserved_bytes {
+            return Err(CaptureError::StaleRegion);
+        }
+        #[cfg(not(target_os = "windows"))]
+        Ok(())
     }
 }
 
@@ -350,8 +430,9 @@ pub struct WindowInfo {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PixelFormat {
-    /// XCap returns `image::RgbaImage` (8-bit RGBA). Color space is not
-    /// reported; treat as sRGB until a later spike measures otherwise.
+    /// Normalized SDR document pixels after supported native/import conversion.
+    /// Untagged legacy RGB8 backends retain their documented sRGB assumption;
+    /// this format is not a claim about original HDR precision or preservation.
     Rgba8UnormSrgb,
 }
 
@@ -365,6 +446,7 @@ pub struct CapturedImage {
     pub png_path: PathBuf,
     pub pixels: Arc<RgbaImage>,
     pub elapsed_ms: u128,
+    /// Normalized in-memory format; original native HDR pixels are not retained.
     pub source_format: PixelFormat,
     /// Present only for an unmodified full-display snapshot with stable native geometry.
     pub display_geometry: Option<DisplayGeometry>,
@@ -738,6 +820,12 @@ impl XcapBackend {
         check: &crate::NativeCaptureCheck<'_>,
     ) -> Result<Vec<CapturedImage>, CaptureError> {
         self.check_native(check)?;
+        if requests.is_empty() || requests.len() > 32 {
+            return Err(CaptureError::Unsupported(
+                "Native capture batches require 1 to 32 sources",
+            ));
+        }
+
         #[cfg(target_os = "windows")]
         let topology = crate::capture_native::topology_guard().map_err(backend_error)?;
         let mut budget = CaptureBudget::default();
@@ -745,17 +833,28 @@ impl XcapBackend {
             .into_iter()
             .map(|request| {
                 self.check_native(check)?;
-                let prepared = self.prepare(request)?;
-                budget.admit_bytes(prepared.admission_bytes()?)?;
+                let prepared = PreparedCaptureReservation::freeze(self.prepare(request)?)?;
+                budget.admit_bytes(prepared.reserved_bytes)?;
                 Ok(prepared)
             })
             .collect::<Result<Vec<_>, CaptureError>>()?;
         let mut actual = CaptureBudget::default();
+        let mut admitted_sources = CaptureBudget::default();
         let frames = prepared
             .into_iter()
-            .map(|prepared| {
+            .map(|reservation| {
                 self.check_native(check)?;
-                CaptureBudget(actual.0).admit_bytes(prepared.admission_bytes()?)?;
+                #[cfg(target_os = "windows")]
+                topology.check().map_err(backend_error)?;
+                reservation.verify()?;
+                // Retain cumulative native charges even after earlier frames normalize to RGBA8.
+                admitted_sources.admit_bytes(reservation.reserved_bytes)?;
+                let PreparedCaptureReservation {
+                    source: prepared,
+                    #[cfg(target_os = "windows")]
+                    windows,
+                    ..
+                } = reservation;
                 let started = Instant::now();
                 let mut display_geometry = None;
                 let (display_id, window_id, image, label) = match prepared {
@@ -770,6 +869,14 @@ impl XcapBackend {
                         } else {
                             None
                         };
+                        #[cfg(target_os = "windows")]
+                        let mut image = crate::capture_native::capture_display(
+                            &monitor,
+                            &self.options,
+                            &windows,
+                        )
+                        .map_err(backend_error)?;
+                        #[cfg(not(target_os = "windows"))]
                         let mut image =
                             crate::capture_native::capture_display(&monitor, &self.options)
                                 .map_err(backend_error)?;
@@ -802,6 +909,11 @@ impl XcapBackend {
                         {
                             return Err(CaptureError::WindowNotFound(id));
                         }
+                        #[cfg(target_os = "windows")]
+                        let image =
+                            crate::capture_native::capture_window(&window, &self.options, &windows)
+                                .map_err(backend_error)?;
+                        #[cfg(not(target_os = "windows"))]
                         let image = crate::capture_native::capture_window(&window, &self.options)
                             .map_err(backend_error)?;
                         if expected_process
@@ -823,17 +935,24 @@ impl XcapBackend {
                                 return Err(CaptureError::StaleRegion);
                             }
                         }
+                        let area = crate::PixelRegion {
+                            x,
+                            y,
+                            width,
+                            height,
+                        };
+                        #[cfg(target_os = "windows")]
                         let mut image = crate::capture_native::capture_region(
                             &monitor,
-                            crate::PixelRegion {
-                                x,
-                                y,
-                                width,
-                                height,
-                            },
+                            area,
                             &self.options,
+                            &windows,
                         )
                         .map_err(backend_error)?;
+                        #[cfg(not(target_os = "windows"))]
+                        let mut image =
+                            crate::capture_native::capture_region(&monitor, area, &self.options)
+                                .map_err(backend_error)?;
                         if let Some(geometry) = cursor_geometry {
                             let origin_x = i32::try_from(i64::from(geometry.x) + i64::from(x))
                                 .map_err(|_| CaptureError::InvalidRegion)?;
@@ -1420,6 +1539,22 @@ pub fn capture_output_dir() -> PathBuf {
 mod tests {
     use super::*;
 
+    #[test]
+    fn invalid_source_count_fails_before_native_initialization() {
+        let backend = XcapBackend::new(PathBuf::new());
+        assert!(
+            backend
+                .capture_batch_inline(Vec::new(), &|| Ok(()))
+                .is_err()
+        );
+        assert!(
+            backend
+                .capture_batch_inline(vec![CaptureRequest::Display("fixture".into()); 33], &|| Ok(
+                    ()
+                ))
+                .is_err()
+        );
+    }
     #[test]
     fn encoded_png_publication_preserves_bytes_and_refuses_replacement() {
         let root =

@@ -221,6 +221,10 @@ fn load() -> Result<bool> {
 pub(super) fn available() -> Result<bool> {
     load()
 }
+pub(super) fn hdr_available() -> bool {
+    AnyClass::get(c"SCScreenshotConfiguration").is_some()
+}
+
 fn shareable(until: Instant) -> Result<Retained<AnyObject>> {
     let pending = Completion::new(ValueKind::Object)?;
     let state = pending.0.clone();
@@ -440,6 +444,10 @@ impl Window {
             selected_bytes,
         )?;
         let image = if AnyClass::get(c"SCScreenshotConfiguration").is_some() {
+            ensure!(
+                u64::from(self.width) * u64::from(self.height) * 16 <= crate::MAX_CAPTURE_BYTES,
+                "Native HDR window exceeds decoded memory admission"
+            );
             capture_modern(&self.filter, options, None, until)?
         } else {
             capture_legacy_sck(
@@ -498,16 +506,40 @@ fn capture_modern(
     dimensions: Option<(u32, u32)>,
     until: Instant,
 ) -> Result<Image> {
-    // macOS26 defaults to captured-content dimensions, including requested native effects.
+    if let Some((width, height)) = dimensions {
+        // Admit the documented RGBA float context before requesting native pixels;
+        // actual CGImage depth/stride is rechecked before any conversion allocation.
+        let bytes = u64::from(width) * u64::from(height) * 16;
+        ensure!(
+            bytes <= crate::MAX_CAPTURE_BYTES,
+            "Native HDR screenshot exceeds decoded memory admission"
+        );
+    }
+    // macOS26 returns extended-sRGB HDR pixels; convert explicitly to SDR once.
+    // Never request both images: that retains an unnecessary full native bitmap.
+    // DynamicRange HDR = 1; SDK acceptance remains a native integration gate.
     let config: Retained<AnyObject> =
         unsafe { msg_send![class(c"SCScreenshotConfiguration")?, new] };
+    for selector in [
+        sel!(setDynamicRange:),
+        sel!(setFileURL:),
+        sel!(setShowsCursor:),
+        sel!(setIgnoreShadows:),
+        sel!(setIncludeChildWindows:),
+    ] {
+        let supported: Bool = unsafe { msg_send![&config, respondsToSelector:selector] };
+        ensure!(
+            supported.as_bool(),
+            "Required native HDR screenshot configuration unavailable"
+        );
+    }
     unsafe {
         if let Some((width, height)) = dimensions {
             let _: () = msg_send![&config,setWidth:width as usize];
             let _: () = msg_send![&config,setHeight:height as usize];
         }
         let _: () = msg_send![&config,setFileURL:ptr::null::<AnyObject>()];
-        let _: () = msg_send![&config,setDynamicRange:0isize];
+        let _: () = msg_send![&config,setDynamicRange:1isize];
         let _: () =
             msg_send![&config,setShowsCursor:Bool::new(options.cursor==CaptureCursor::Include)];
         let _: () = msg_send![&config,setIgnoreShadows:Bool::new(options.window_shadow!=CaptureWindowShadow::Include)];
@@ -524,8 +556,13 @@ fn capture_modern(
     let raw = pending.0.wait(until)?;
     let output = unsafe { Retained::<AnyObject>::from_raw(raw as *mut AnyObject) }
         .context("Native screenshot output disappeared")?;
-    let image: *mut CGImage = unsafe { msg_send![&output, sdrImage] };
-    ensure!(!image.is_null(), "Native screenshot supplied no SDR image");
+    let supported: Bool = unsafe { msg_send![&output, respondsToSelector:sel!(hdrImage)] };
+    ensure!(
+        supported.as_bool(),
+        "Native HDR screenshot output unavailable"
+    );
+    let image: *mut CGImage = unsafe { msg_send![&output, hdrImage] };
+    ensure!(!image.is_null(), "Native screenshot supplied no HDR image");
     unsafe { CFRetain(image.cast()) };
     Ok(Image(image.cast()))
 }

@@ -105,3 +105,9 @@ pub(super) fn validate_template_session() -> Result<()> {
 pub(super) fn apply_cursor(_: &mut RgbaImage, _: i32, _: i32) -> Result<()> {
     bail!("macOS cursor must be embedded by its admitted native source, not composed a second time")
 }
+
+pub(super) fn source_admission_bytes(monitor: &xcap::Monitor) -> Result<u64> {
+    let (width, height) = display_dimensions(monitor)?;
+    let hdr = crate::capture_macos_sck::available()? && crate::capture_macos_sck::hdr_available();
+    Ok(u64::from(width) * u64::from(height) * if hdr { 16 } else { 4 })
+}

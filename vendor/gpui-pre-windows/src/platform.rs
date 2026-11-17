@@ -86,6 +86,7 @@ struct WindowsPlatformInner {
 }
 
 pub(crate) struct WindowsPlatformState {
+    pub(crate) native_drop: crate::native_drop_broker::NativeDropBroker,
     callbacks: PlatformCallbacks,
     menus: RefCell<Vec<OwnedMenu>>,
     jump_list: RefCell<JumpList>,
@@ -127,6 +128,7 @@ impl WindowsPlatformState {
             current_cursor: Cell::new(current_cursor),
             cursor_visible: Arc::new(AtomicBool::new(true)),
             draw_coordinator: Rc::new(DrawCoordinator::new()),
+            native_drop: crate::native_drop_broker::NativeDropBroker::default(),
             directx_devices: RefCell::new(directx_devices),
             low_power_mode_enabled: Cell::new(false),
             menus: RefCell::new(Vec::new()),
@@ -306,6 +308,7 @@ impl WindowsPlatform {
             directx_devices: self.inner.state.directx_devices.borrow().clone().unwrap(),
             invalidate_devices: self.invalidate_devices.clone(),
             draw_coordinator: self.inner.state.draw_coordinator.clone(),
+            native_drop: self.inner.state.native_drop.clone(),
         }
     }
 
@@ -509,6 +512,10 @@ fn encode_restart_arguments(arguments: &[OsString]) -> OsString {
 }
 
 impl Platform for WindowsPlatform {
+    fn cancel_pending_native_drop(&self) {
+        self.inner.state.native_drop.cancel();
+    }
+
     fn platform_info(&self) -> gpui::PlatformInfo {
         gpui::PlatformInfo {
             os: gpui::OperatingSystem::Windows,
@@ -1462,6 +1469,7 @@ impl Drop for WindowsPlatform {
 }
 
 pub(crate) struct WindowCreationInfo {
+    pub(crate) native_drop: crate::native_drop_broker::NativeDropBroker,
     pub(crate) icon: HICON,
     pub(crate) executor: ForegroundExecutor,
     pub(crate) current_cursor: Option<HCURSOR>,

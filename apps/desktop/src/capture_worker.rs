@@ -19,6 +19,14 @@ mod portal;
 mod protocol;
 #[path = "capture_worker_transport.rs"]
 mod transport;
+#[cfg(target_os = "windows")]
+pub(crate) fn drop_transport(command: &mut Command) -> Result<transport::Prepared> {
+    transport::Prepared::new(command)
+}
+#[cfg(target_os = "windows")]
+pub(crate) fn inherited_drop_transport() -> Result<(transport::Transport, [u8; 16], u32)> {
+    transport::Transport::inherited()
+}
 #[cfg(unix)]
 #[path = "capture_worker_unix.rs"]
 mod unix;

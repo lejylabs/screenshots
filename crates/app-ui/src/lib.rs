@@ -3,6 +3,13 @@
 use anyhow::Context as _;
 use gpui_kit as gpui;
 use gpui_kit::platform as gpui_platform;
+#[cfg(target_os = "windows")]
+pub use gpui_windows::{
+    NATIVE_DROP_CHILD_ARGUMENT as WINDOWS_NATIVE_DROP_ARGUMENT,
+    NativeDropProcess as WindowsNativeDropProcess, NativeDropSpawner as WindowsNativeDropSpawner,
+    install_native_drop_spawner as install_windows_native_drop_spawner,
+    native_drop_receiver as run_windows_native_drop_receiver,
+};
 mod assets;
 mod caption;
 mod format_catalog;
