@@ -63,7 +63,7 @@ jobs:
             libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libxcb-randr0-dev \
             libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev \
             libvulkan-dev libegl1-mesa-dev libgbm-dev libdrm-dev \
-            libpipewire-0.3-dev
+            libpipewire-0.3-dev xvfb dbus-daemon
       - name: Install pinned Rust and components
         shell: bash
         run: rustup show active-toolchain
@@ -153,6 +153,13 @@ jobs:
       - name: Verify on-demand native Unix timezone refresh
         if: runner.os != 'Windows'
         run: python3 scripts/test-local-time-refresh.py
+      - name: Verify private native Linux desktop services
+        if: runner.os == 'Linux'
+        timeout-minutes: 20
+        run: |
+          python3 scripts/test-unix-native-services.py --self-test
+          python3 scripts/test-unix-native-services.py --allow-private-fixtures --self-test-cleanup
+          python3 scripts/test-unix-native-services.py --allow-private-fixtures
       - name: Compile owned native Windows window fixture
         if: runner.os == 'Windows'
         timeout-minutes: 15
