@@ -4,6 +4,12 @@ Date: 2026-11-17
 Scope: the user's complete major-feature list, with final GPUI redesign and new
 UI controls excluded. The workstation stays on. The full backlog is **open**.
 
+The renderer now skips fresh path render targets for scenes with no paths.
+The old behavior fails the targeted allocation assertion; the corrected source
+passes all 47 optimized package tests and an identical-workload memory probe.
+The single memory pair shows no meaningful private-memory saving. Actual shell
+and reference-hardware budgets remain open. [Renderer evidence](../vendor/gpui-pre-wgpu/LOCAL-PATCH.md).
+
 Explicit isolated image printing is integrated. Three optimized core and six
 desktop tests, the real CLI/private IPP end-to-end fixture, Linux/Windows GNU
 metadata, optimized Clippy and formatting pass. Windows native GDI/fault,
@@ -341,8 +347,8 @@ themes and editor controls are preserved, not redesigned.
 Coverage update: the earlier hidden-path sweep inventoried **160 Markdown files**
 (94 project and 66 vendor), excluding target and .git. The subsequently authored
 and reviewed Unix lifecycle contract increases the current source inventory to
-162 (96 project and 66 vendor) after the independently reviewed image-printing
-contract was integrated. The earlier 161-file count included the Unix lifecycle
+163 (96 project and 67 vendor) after the independently reviewed image-printing
+contract and the renderer provenance/evidence note were integrated. The earlier 161-file count included the Unix lifecycle
 contract; original snapshot hashes remain historical. Its snapshot hashes,
 requirement/status extracts and exact per-file reading depth are recorded in the
 local reconciliation reports. All 160 complete bodies have now been semantically read (94 project, 66

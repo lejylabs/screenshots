@@ -129,7 +129,15 @@ records. Two sequential loopback TCP connections use OS socket buffers; none
 survives the operation. Streamed PostScript is bounded by seven bytes/pixel plus
 4 KiB and is never stored by the application. No PNG/disk round trip, pixel
 snapshot, GPU texture or application image temp file is added. The sole helper
-has a 1 GiB virtual address limit and core dumps disabled. Linux parent death terminates that group. macOS reuses
+has a 1 GiB virtual-address limit on Linux and core dumps disabled. On macOS,
+the authenticated fresh worker reuses the native-image budget: it measures its
+own VM baseline, verifies small-success/over-limit-failure under a 96 MiB growth
+ceiling, then allows at most 1 GiB VM growth for decode/printing. This is a growth
+allowance, not a claim of 1 GiB total VM or process-private memory. It is installed
+after exec, before image decoding or print access. Lowering the forked GUI/test
+process to a fixed 1 GiB VM ceiling before exec caused EINVAL in native ARM CI;
+that failed run is preserved. Unsupported enforcement still fails closed.
+Linux parent death terminates that group. macOS reuses
 the native kqueue lifeline, which adds one 128 KiB-stack operation-owned waiting
 thread. Windows converts RGBA to opaque BGRA in the same owned allocation and
 uses the existing suspended/atomic-job child launcher with one permitted helper,
@@ -162,8 +170,12 @@ The pre-restart unit run had no result and is preserved as interrupted.
 Executable SHA256:
 `c595658cf9ad7878073fb79c21a33935fe6a2d98509720bd1333cf6248c692b0`.
 Exact source/merge identities, commands, initial failures and passing logs are in
-`target/verification/native-print-integration/`. Native GDI output/failure
-injection, macOS actual lifetime/IPP and reference-hardware resource acceptance
+`target/verification/native-print-integration/`. Native Windows SDK and owned OLE/print-process fixtures subsequently passed
+on the exact `fac0328` source in run 44053816811; that is not driver output.
+ARM macOS passed the pure print tests but failed the mock startup with EINVAL
+before IPP; Intel macOS was cancelled. The post-exec memory-limit correction
+awaits a fresh native run. Native GDI output/failure injection, macOS actual
+lifetime/IPP and reference-hardware resource acceptance
 remain unverified. Metadata checking and private Unix success do not accept them.
 
 ## Required native CI and acceptance

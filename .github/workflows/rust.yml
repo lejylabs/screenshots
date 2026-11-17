@@ -24,6 +24,21 @@ jobs:
           restore-keys: |
             sdk-probe-${{ runner.os }}-${{ runner.arch }}-
             ${{ runner.os }}-cargo-
+      - name: Probe fresh-process native VM enforcement without image or print access
+        run: |
+          python3 - <<'BUDGET'
+          from pathlib import Path
+          import os,json,tomllib
+          root=Path.cwd(); fixture=Path(os.environ['RUNNER_TEMP'])/'owned-macos-vm-budget'
+          (fixture/'src').mkdir(parents=True,exist_ok=True)
+          packages=tomllib.loads((root/'Cargo.lock').read_text())['package']
+          versions={name:next(p['version'] for p in packages if p['name']==name) for name in ('anyhow','libc')}
+          manifest='[package]\nname="owned-native-budget-probe"\nversion="0.0.0"\nedition="2024"\n[workspace]\n[dependencies]\n'+''.join(name+'="='+version+'"\n' for name,version in versions.items())
+          (fixture/'Cargo.toml').write_text(manifest)
+          source='#[allow(dead_code)]\n#[path='+json.dumps(str(root/'crates/app-core/src/clipboard_input_budget.rs'))+']\nmod budget;\nfn main()->anyhow::Result<()> { let mut budget=budget::Budget::enter()?; budget.decoding()?; println!("post-exec VM growth bound enforced"); Ok(()) }\n'
+          (fixture/'src/main.rs').write_text(source)
+          BUDGET
+          cargo run --release --manifest-path "$RUNNER_TEMP/owned-macos-vm-budget/Cargo.toml"
       - name: Record actual native SDK screen-input contract
         run: |
           sw_vers

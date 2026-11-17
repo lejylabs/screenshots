@@ -1,4 +1,4 @@
-//! Per-operation native allocation containment. Called only in the isolated clipboard worker.
+//! Per-operation native allocation containment. Called only in isolated workers.
 use anyhow::{Result, ensure};
 const NATIVE_GROWTH: u64 = 96 * 1024 * 1024;
 const DECODE_GROWTH: u64 = 1024 * 1024 * 1024;

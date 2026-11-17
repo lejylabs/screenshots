@@ -172,3 +172,9 @@ Open Font License texts are retained beside the fonts under
 `vendor/gpui-pre/test-assets/fonts/ibm-plex-sans/license.txt` and
 `vendor/gpui-pre/test-assets/fonts/lilex/OFL.txt`. These files support toolkit
 unit tests and are not loaded into the application.
+
+The vendored gpui-pre-wgpu 0.3.12 retains the upstream Apache-2.0 license in
+`vendor/gpui-pre-wgpu/LICENSE-APACHE`. Its lazy path-target allocation and focused
+GPU regressions are documented in `vendor/gpui-pre-wgpu/LOCAL-PATCH.md`; the
+original package inventory is retained in `UPSTREAM-SHA256.txt`. No production
+package version or dependency is added by this same-version source override.

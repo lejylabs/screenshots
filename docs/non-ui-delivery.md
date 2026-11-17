@@ -2044,3 +2044,26 @@ See [the contract](image-printing.md) and exact local evidence under
 `target/verification/native-print-integration/`. Native Windows GDI output/fault
 injection, macOS actual process/IPP and resource acceptance remain open; neither
 metadata checks nor a loopback sink proves physical print delivery.
+
+
+## Pathless renderer allocations (2026-11-17)
+
+The same-version gpui-pre-wgpu source override now prepares intermediate path
+textures only for scenes containing paths. Existing cached targets, backend and
+sample selection, path rendering and lifecycle behavior are preserved. Two
+independent source reviews are clean. The actual optimized old-behavior control
+fails precisely at the absent-target assertion; corrected source passes all 47
+package tests, including real GPU path/readback/overlap/resize/invalidation and
+font/atlas/shader checks. Published-package font/dev-dependency omissions were
+repaired only in a temporary verification workspace and restored afterward.
+Initial setup failures are retained, not counted as the expected control.
+
+An identical five-frame 1024x768 fresh-process probe selected four path samples:
+baseline targets existed; corrected targets were absent, avoiding a logical
+15 MiB request. Private/PSS/RSS measurements were essentially unchanged; this
+single pair does not establish process-memory savings or visible-shell budget
+acceptance. No backend filtering or working-set trimming was introduced.
+Optimized workspace/all-target Clippy, Windows GNU metadata, formatting and diff
+checks pass. [Source/provenance/evidence](../vendor/gpui-pre-wgpu/LOCAL-PATCH.md).
+Exact logs and restoration checks remain in
+`target/verification/pathless-render-targets-integration/`.
