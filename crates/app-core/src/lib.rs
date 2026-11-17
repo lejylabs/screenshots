@@ -245,17 +245,20 @@ pub use clipboard::{
 };
 
 mod capture_command;
-mod tray_command;
 #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
 mod hotkey;
+mod tray_command;
 pub use capture_command::CaptureCommand;
-pub use tray_command::TrayCommand;
 #[cfg(any(target_os = "windows", target_os = "macos"))]
 pub use hotkey::CaptureHotkey;
+pub use tray_command::TrayCommand;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 mod unix_desktop_services;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
-pub use unix_desktop_services::{UnixDesktopServices, UnixDesktopEvent, UnixDesktopAction, UnixShortcutReport, UnixShortcutOperation};
+pub use unix_desktop_services::{
+    UnixDesktopAction, UnixDesktopEvent, UnixDesktopServices, UnixShortcutOperation,
+    UnixShortcutReport,
+};
 
 #[cfg(target_os = "windows")]
 mod native_appearance;
@@ -288,8 +291,13 @@ pub fn version() -> &'static str {
 
 #[cfg(target_os = "linux")]
 #[doc(hidden)]
-pub use unix_desktop_services::{X11ShortcutRegistrar, shortcut_portal_owner, shortcut_portal_request};
+pub use unix_desktop_services::{
+    X11ShortcutRegistrar, shortcut_portal_owner, shortcut_portal_request,
+};
 
 #[cfg(target_os = "linux")]
 #[doc(hidden)]
-pub use unix_desktop_services::{LinuxDesktopProcess, LinuxDesktopProcessOwner, install_linux_desktop_spawner, serve_linux_desktop_child, LinuxTaskPortal};
+pub use unix_desktop_services::{
+    LinuxDesktopProcess, LinuxDesktopProcessOwner, LinuxTaskPortal, install_linux_desktop_spawner,
+    serve_linux_desktop_child,
+};

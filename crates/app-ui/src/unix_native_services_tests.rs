@@ -71,11 +71,19 @@ fn repeated_minimize_and_reopen_releases_the_control_thumbnail_atlas_entry(
                 this.minimize_unix_control(window, cx);
                 assert!(this.last_render.is_none());
                 assert!(!window.has_image_atlas_entry(&render));
-                show_control_window(window).unwrap();
                 cx.notify();
             })
             .unwrap();
+        cx.run_until_parked();
+        handle
+            .update(cx, |_, window, _| {
+                assert_eq!(window.visibility(), gpui::WindowVisibility::Hidden);
+                show_control_window(window).unwrap();
+            })
+            .unwrap();
+        cx.run_until_parked();
         cx.update_window(raw, |_, window, cx| {
+            assert_eq!(window.visibility(), gpui::WindowVisibility::Visible);
             window.render_frame(cx);
             assert!(!window.has_image_atlas_entry(&render));
         })

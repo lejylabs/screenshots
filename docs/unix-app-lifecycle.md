@@ -21,22 +21,27 @@ GUI ownership. macOS file URLs retain their existing bounded native-open route,
 including the pending early URL. This does not integrate the separate headless
 Task host into the GUI or claim Task-host hotkeys as main-app hotkeys.
 
-The normal Unix app retains its existing visible control window, window design,
-controls, keyboard Quit and Close-to-quit behavior. Its main-app native tray and
-global capture hotkeys are still follow-up work. It never starts headless or
-hides on Close without those capabilities. A launcher can request an existing
-window, and macOS also registers GPUI's native `Application::on_reopen` for Dock
-or Finder reopen. Reopen and IPC consumer work is deferred to GPUI's main thread;
+The normal scoped Unix app starts with its existing visible control window and
+then initializes singleton-owned native tray/global-shortcut services. Existing
+controls and design stay intact. Close minimizes only when a real tray host is
+available and releases the control thumbnail atlas entry; unavailable tray or
+WindowedOnly fallback follows Quit. This implementation does not claim headless
+startup or Unix graphics-detach resource acceptance. A launcher can request the
+existing window, and macOS also registers GPUI's native `Application::on_reopen`
+for Dock or Finder reopen. Reopen and IPC consumer work is deferred to GPUI's main thread;
 no native window operation runs in the IPC thread. Native focus policy can grant
 attention instead of focus on Wayland. Protocol success means Show was queued or
 coalesced, not proof of physical presentation or forced focus.
 
-Quit stops launch admission before the existing capture/save/editor/storage
-cancellation-and-wait flow. A stale Show cannot reopen a quitting controller.
-The ownership guard survives `Application::run` and GPUI teardown; only then does
-Drop wake/join the listener and release the lock. Unexpected listener closure
-also enters the existing Quit flow. No optional native registration is created
-from an unscoped fallback.
+Quit stays provisional while recoverable capture/save/editor/storage work is
+pending. Native capture input pauses, and Show can expose the existing busy
+window; it cannot start a replacement capture. Failed output save cancels Quit
+and resumes the same owned services/listener. Only irreversible final exit stops
+Show admission. The ownership guard survives `Application::run`, native service
+cleanup and GPUI teardown; then Drop retires the listener and releases the lock.
+Unexpected listener closure enters Quit. Unscoped fallback starts no optional
+native registration. Current service/source and verification limits follow
+[Unix desktop services](unix-native-services.md).
 
 ## Authority and capability discovery
 
@@ -194,7 +199,9 @@ Private native runtime plan:
    Compare reference budgets in PLAN; do not interpret the declared 256 KiB stack
    or fd inventory as measured resident/private memory.
 
-Main-app Linux/macOS tray, native capture hotkeys, actual unknown-scope sessions,
+Main-app tray/global-shortcut implementation is integrated; its current source,
+private adapter results and remaining native Mac/GUI/physical/resource gates are
+recorded in [Unix desktop services](unix-native-services.md). Actual unknown-scope sessions,
 focus policy, sleep/session-lock/restart behavior, real permissions/accessibility,
 signed release and reference-hardware performance remain explicit follow-ups.
 

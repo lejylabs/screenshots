@@ -1269,7 +1269,16 @@ impl CaptureWorkspace {
             let disabled = self.settings_loading
                 || self.settings_saving
                 || self.quitting
-                || { #[cfg(target_os = "windows")] { self.hotkey.is_none() } #[cfg(any(target_os = "linux", target_os = "macos"))] { self.unix_services.is_none() || self.unix_shortcuts_busy } }
+                || {
+                    #[cfg(target_os = "windows")]
+                    {
+                        self.hotkey.is_none()
+                    }
+                    #[cfg(any(target_os = "linux", target_os = "macos"))]
+                    {
+                        self.unix_services.is_none() || self.unix_shortcuts_busy
+                    }
+                }
                 || self.output_directory.is_none();
             panel.child(div().text_sm().child("Use Ctrl, Alt, Shift or Super (Command on macOS) + a letter, digit, F1–F24 or PrintScreen. Letters/digits need Ctrl, Alt or Super. Leave empty to disable."))
                 .children(self.hotkey_inputs.iter().flat_map(|inputs| inputs.iter().enumerate()).map(|(index, input)| {

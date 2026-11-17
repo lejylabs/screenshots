@@ -1,6 +1,15 @@
 # Unix main-application desktop services
 
-This is a held integration candidate. Syntax parsing is the only executed verification in this lane. Compilation, new checks, private fixtures, native runtime and resource/latency acceptance are unrun. No user-desktop registration, capture, clipboard read, account access, registered-source change or dependency-lock write was performed.
+Integrated development source, 2026-11-17. The optimized full workspace now
+passes **1,141 tests, zero failures, 73 ignored, 61 outer suites**, excluding
+child-harness summaries. Optimized all-target Clippy, formatting, Windows GNU
+all-target metadata and default advisory checks pass. The final six-mode private
+Xvfb/D-Bus fixture also passes with reservation-before-publication. Actual fresh
+applied-source reviews 11/12 are clean. Earlier protocol, X11 ordering and
+TestWindow failures remain archived. Formatting and a redundant Arc-clone move
+follow the full-suite checkpoint and are covered by final Clippy/metadata/native
+checks. No native Mac/full-GUI/physical-input/resource acceptance is implied;
+tests used owned services and never captured the user desktop or clipboard.
 
 ## Admission and native ownership
 
@@ -59,6 +68,54 @@ There are no measured process/private/PSS, idle CPU/wakeup, startup, physical in
 
 ## Verification handoff
 
-Prepared pure checks cover registration transactions, native alias resolution, sender identity, bounded status and packets, epochs, paused key state, menu semantics and modifier filtering. Private socket-pair faults exercise stalled X11 handshake/replies/checked cleanup, blocked writes, cancellation, oversized headers and floods. The explicit private fixture creates a blank Xvfb server, isolated Xauthority and D-Bus service directory; it covers real activation of an installed idle portal, modifier aliases, directed forgeries, native grab rollback, delayed consent with old presses, shutdown during consent/stalled authentication, tray/menu state and process/session cleanup. None has executed.
+Focused executed checks cover registration transactions, native alias resolution, sender identity, bounded status and packets, epochs, paused key state, menu semantics, modifier filtering and consumed-control dispatch. The deterministic reservation/completion scheduling tests pass in that full run. Private socket-pair faults exercise stalled X11 handshake/replies/checked cleanup, blocked writes, cancellation, oversized headers and floods. The explicit private fixture creates a blank Xvfb server, isolated Xauthority and D-Bus service directory; it covers real activation of an installed idle portal, modifier aliases, directed forgeries, native grab rollback, delayed consent with old presses, shutdown during consent/stalled authentication, tray/menu state and process/session cleanup. All six private modes completed successfully in `private-native-g.log`: activation, stalled_bus, close_stalled_bus, x11, wayland and close_consent. The fixture uses a non-reserved Ctrl+Alt+G input, keeps the F8 grab-conflict test, verifies the real current-epoch action through services.action and bounds its receive wait. Earlier compile/commit/timeout failures remain archived separately.
 
-After genuine three-way integration, run optimized compilation, Clippy and existing core/UI/desktop/Windows regressions, private Linux fixtures, and the dedicated macOS plan. Fresh reviews must include the full connected controller/settings/capture/close paths; R1 did not certify unchanged large UI bodies. Repeated synthetic capture/minimize/reopen atlas checks, recoverable save-failure/busy-Show checks and deterministic queued hotkey/menu/quit gate checks are also prepared. No parser or compile result establishes native behavior or performance acceptance.
+Integration used genuine current/base/candidate merges, preserving Jiff and newer Windows printing features/exports. Complete the current optimized regressions, Clippy, Windows metadata and native macOS plan before claiming their gates. Fresh reviews must include the full connected controller/settings/capture/close paths; R1 did not certify unchanged large UI bodies. Repeated synthetic capture/minimize/reopen atlas checks, recoverable save-failure/busy-Show checks and deterministic queued hotkey/menu/quit gate checks are also prepared. No parser or compile result establishes native behavior or performance acceptance.
+
+## Actual integration corrections and evidence
+
+Original held source patch `1c764ef84189080fb5619b3813639e515d156abc09b32ee2c0b1c7f1f739be74`
+received two actual clean source reviews (8/9). Compilation corrected three
+D-Bus Path String-error conversions. An original optimized protocol regression
+exposed Serde internally-tagged unit variants ignoring unknown fields; empty
+struct variants retain exact wire bytes and now reject extras, with every
+packet variant and nested status/event checked.
+
+Actual X11 execution exposed consumed-control lost wakes and completion before
+quiet native readiness. Pump reports consumed control packets before idle wait;
+completion replies wait for the existing quiet drain, preserving held-key
+suppression without waiting for physical release. Input is enabled before a
+successful activation reply; completed rollback while quitting can reply with
+input still paused. This adds one bounded deferred metadata report and no timer
+or idle loop. The six-mode fixture then passed.
+
+An additional fresh applied-source review found publication ordering: a fast
+supervisor could restore the gate before the producer's later false store.
+The current correction reserves a slot in the existing Tokio sync channel
+before changing counters/gates, closes admission before publishing, and has no
+counter/gate mutation on full/closed admission. Logical capacity remains one
+queued configuration plus one active request; the sync primitive needs no Tokio
+runtime/thread. A small bounded channel block replaces the previous std sync
+queue; it is metadata storage and does not relax the joint memory budget.
+A deterministic worker-completes-before-publisher-returns case and rejected
+admission gate/epoch cases pin the ordering.
+
+Exact initial native result, binary/source/runner hashes and verified Arch Xvfb
+provenance live in `target/verification/unix-native-services-integration/`.
+The private runner activates only its own mock service directory and redirects
+HOME/XDG/authority; package extraction uses official SHA/signature verification
+without global installation. The latest whole-workspace run and two actual fresh applied-source reviews
+are successful. Exact source/artifact/check hashes are retained with the result. Existing minimized-shell retention, actual
+GUI/physical input and PLAN resource budgets remain explicitly open.
+
+## Final local functional checkpoint
+
+Full optimized log SHA256:
+`fb9a7765209ebf8d76aaf4f623463c21e8cf3adccc728be2207fff4834726920`.
+The private fixture covers activation, stalled authentication, shutdown during
+stalled authentication, real X11 grabs/rollback/delivery, Wayland preferred
+triggers/consent/forgery/old-input suppression and cancellation during consent.
+Its own three-second event deadline reports closed/missing current-epoch input
+instead of spinning on channel EOF. Official Arch Xvfb package SHA256 and
+signature are verified before private extraction; all its runtime dependencies
+resolve to existing system libraries. No system package installation is used.

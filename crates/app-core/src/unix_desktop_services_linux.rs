@@ -11,7 +11,6 @@ use std::{
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, AtomicU64, Ordering},
-        mpsc as control,
     },
     thread::JoinHandle,
     time::{Duration, Instant},
@@ -95,8 +94,10 @@ fn shared() -> Arc<Shared> {
     })
 }
 
+#[cfg(test)]
+thread_local! { static AFTER_REQUEST_PUBLISHED: std::cell::RefCell<Option<Box<dyn FnOnce()>>> = const { std::cell::RefCell::new(None) }; }
 pub(super) struct Services {
-    sender: control::SyncSender<Request>,
+    sender: mpsc::Sender<Request>,
     wake: UnixStream,
     shared: Arc<Shared>,
     worker: Option<JoinHandle<Result<()>>>,
@@ -110,7 +111,7 @@ impl Services {
         let (read, write) = UnixStream::pair()?;
         read.set_nonblocking(true)?;
         write.set_nonblocking(true)?;
-        let (sender, requests) = control::sync_channel(1);
+        let (sender, requests) = mpsc::channel(1);
         let (events, receiver) = mpsc::channel(32);
         let shared = shared();
         let state = shared.clone();
@@ -144,39 +145,43 @@ impl Services {
         let _ = (&self.wake).write(&[1]);
     }
     fn request(&self, change: Change) -> UnixShortcutOperation {
-        let (reply, response) = oneshot::channel();
-        let previous = self.shared.generation.fetch_add(1, Ordering::AcqRel);
-        let generation = previous.wrapping_add(1);
-        let previous_input = self.shared.input_epoch.fetch_add(1, Ordering::AcqRel);
-        let input_epoch = previous_input.wrapping_add(1);
-        if self.shared.stop.load(Ordering::Acquire)
-            || self
-                .sender
-                .try_send(Request {
-                    generation,
-                    input_epoch,
-                    change,
-                    reply,
-                })
-                .is_err()
-        {
-            let _ = self.shared.input_epoch.compare_exchange(
-                input_epoch,
-                previous_input,
-                Ordering::AcqRel,
-                Ordering::Acquire,
-            );
-            let _ = self.shared.generation.compare_exchange(
-                generation,
-                previous,
-                Ordering::AcqRel,
-                Ordering::Acquire,
-            );
-            return Box::pin(std::future::ready(UnixShortcutReport::unavailable(
+        let unavailable = || {
+            Box::pin(std::future::ready(UnixShortcutReport::unavailable(
                 "Native shortcut service is busy or unavailable",
-            )));
+            ))) as UnixShortcutOperation
+        };
+        if self.shared.stop.load(Ordering::Acquire) {
+            return unavailable();
         }
+        // Reserve admission before changing the gate/epochs; rejection has no published state.
+        let permit = match self.sender.try_reserve() {
+            Ok(permit) => permit,
+            Err(_) => return unavailable(),
+        };
+        let (reply, response) = oneshot::channel();
+        let generation = self
+            .shared
+            .generation
+            .fetch_add(1, Ordering::AcqRel)
+            .wrapping_add(1);
+        let input_epoch = self
+            .shared
+            .input_epoch
+            .fetch_add(1, Ordering::AcqRel)
+            .wrapping_add(1);
         self.shared.allow_capture.store(false, Ordering::Release);
+        permit.send(Request {
+            generation,
+            input_epoch,
+            change,
+            reply,
+        });
+        #[cfg(test)]
+        AFTER_REQUEST_PUBLISHED.with(|hook| {
+            if let Some(hook) = hook.borrow_mut().take() {
+                hook();
+            }
+        });
         self.wake();
         Box::pin(async move {
             response.await.unwrap_or_else(|_| {
@@ -372,6 +377,7 @@ fn run_native(state: Arc<Shared>, wayland: bool, display: Option<String>) -> Res
         process::ready()?;
         let mut resume_pending = true;
         let mut configuration_pending = false;
+        let mut deferred_reply: Option<(u64, UnixShortcutReport)> = None;
         while !state.stop.load(Ordering::Acquire) {
             process::pump()?;
             if process::take_retire() {
@@ -450,6 +456,10 @@ fn run_native(state: Arc<Shared>, wayland: bool, display: Option<String>) -> Res
             }
             let mut handled = false;
             if let Some((generation, input_epoch, change)) = process::next_change() {
+                ensure!(
+                    deferred_reply.is_none(),
+                    "Desktop readiness reply is already pending"
+                );
                 handled = true;
                 state.generation.store(generation, Ordering::Release);
                 state.input_epoch.fetch_max(input_epoch, Ordering::AcqRel);
@@ -470,7 +480,15 @@ fn run_native(state: Arc<Shared>, wayland: bool, display: Option<String>) -> Res
                     report = UnixShortcutReport::unavailable(&status);
                 }
                 *state.shortcut_status.lock().unwrap() = report.status.clone();
-                process::reply(generation, report)?;
+                if configuration_pending {
+                    process::reply(generation, report)?;
+                } else {
+                    ensure!(
+                        deferred_reply.is_none(),
+                        "Desktop readiness reply is already pending"
+                    );
+                    deferred_reply = Some((generation, report));
+                }
             }
             if let Backend::X11(keys) = &backend {
                 match keys.manager().drain() {
@@ -503,16 +521,30 @@ fn run_native(state: Arc<Shared>, wayland: bool, display: Option<String>) -> Res
             if state.stop.load(Ordering::Acquire) {
                 break;
             }
+            // A control already consumed here must be dispatched before an idle wait or readiness ACK.
+            if process::pump()? {
+                continue;
+            }
+            let quiet = !handled && !full_batch;
             if resume_pending
                 && !configuration_pending
                 && !state.quitting.load(Ordering::Acquire)
-                && !handled
-                && !full_batch
+                && quiet
             {
                 state.allow_capture.store(true, Ordering::Release);
                 resume_pending = false;
             }
-            process::pump()?;
+            if quiet && !configuration_pending {
+                if let Some((generation, mut report)) = deferred_reply.take() {
+                    if let Backend::Unavailable(status) = &backend {
+                        report = UnixShortcutReport::unavailable(status);
+                    } else {
+                        report.status = state.shortcut_status.lock().unwrap().clone();
+                    }
+                    // Held keys remain tracked; no physical release is required to settle readiness.
+                    process::reply(generation, report)?;
+                }
+            }
             if handled || full_batch || state.repeat_changed.load(Ordering::Acquire) {
                 continue;
             }
@@ -537,7 +569,9 @@ pub(super) fn wait(
     wake: RawFd,
     deadline: Option<Instant>,
 ) -> Result<()> {
-    process::pump()?;
+    if process::pump()? {
+        return Ok(());
+    }
     let watch = connection.channel().watch();
     let mut fds = [
         libc::pollfd {
@@ -604,7 +638,13 @@ fn failure_status(state: &Shared, events: &mpsc::Sender<UnixDesktopEvent>, error
     let tray = bounded_status(&format!("Native services stopped: {error:#}; Close quits"));
     *state.shortcut_status.lock().unwrap() = shortcuts.clone();
     *state.tray_status.lock().unwrap() = tray.clone();
-    deliver(events, UnixDesktopEvent::TrayStatus { available: false, status: tray });
+    deliver(
+        events,
+        UnixDesktopEvent::TrayStatus {
+            available: false,
+            status: tray,
+        },
+    );
     deliver(events, UnixDesktopEvent::ShortcutStatus(shortcuts));
 }
 #[cfg(test)]
@@ -629,17 +669,121 @@ mod sender_tests {
             let state = super::shared();
             *state.tray_status.lock().unwrap() = "Tray ready".into();
             let (events, mut receiver) = super::mpsc::channel(1);
-            if full { events.try_send(super::UnixDesktopEvent::ShortcutStatus("occupied".into())).unwrap(); }
+            if full {
+                events
+                    .try_send(super::UnixDesktopEvent::ShortcutStatus("occupied".into()))
+                    .unwrap();
+            }
             super::failure_status(&state, &events, &anyhow::anyhow!("owned fixture failure"));
-            assert!(state.tray_status.lock().unwrap().contains("Native services stopped"));
-            assert!(state.shortcut_status.lock().unwrap().contains("owned fixture failure"));
+            assert!(
+                state
+                    .tray_status
+                    .lock()
+                    .unwrap()
+                    .contains("Native services stopped")
+            );
+            assert!(
+                state
+                    .shortcut_status
+                    .lock()
+                    .unwrap()
+                    .contains("owned fixture failure")
+            );
             if !full {
                 match receiver.try_recv().unwrap() {
-                    super::UnixDesktopEvent::TrayStatus { status, available } => { assert!(!available); assert_eq!(status, *state.tray_status.lock().unwrap()); }
+                    super::UnixDesktopEvent::TrayStatus { status, available } => {
+                        assert!(!available);
+                        assert_eq!(status, *state.tray_status.lock().unwrap());
+                    }
                     _ => panic!("Expected terminal tray report"),
                 }
             }
         }
     }
-
+    fn service_without_native_worker() -> (
+        super::Services,
+        super::mpsc::Receiver<super::Request>,
+        std::os::unix::net::UnixStream,
+    ) {
+        let (read, write) = std::os::unix::net::UnixStream::pair().unwrap();
+        let (sender, receiver) = super::mpsc::channel(1);
+        (
+            super::Services {
+                sender,
+                wake: write,
+                shared: super::shared(),
+                worker: None,
+            },
+            receiver,
+            read,
+        )
+    }
+    #[test]
+    fn rejected_request_preserves_capture_gate_and_epochs() {
+        use std::sync::atomic::Ordering;
+        for allowed in [false, true] {
+            let (service, receiver, _read) = service_without_native_worker();
+            service
+                .shared
+                .allow_capture
+                .store(allowed, Ordering::Release);
+            let permit = service.sender.try_reserve().unwrap();
+            let _rejected = service.request(super::Change::Finish(false));
+            assert_eq!(
+                service.shared.allow_capture.load(Ordering::Acquire),
+                allowed
+            );
+            assert_eq!(service.shared.generation.load(Ordering::Acquire), 0);
+            assert_eq!(service.shared.input_epoch.load(Ordering::Acquire), 0);
+            drop(permit);
+            drop(receiver);
+            let _closed = service.request(super::Change::Finish(false));
+            assert_eq!(
+                service.shared.allow_capture.load(Ordering::Acquire),
+                allowed
+            );
+            assert_eq!(service.shared.generation.load(Ordering::Acquire), 0);
+            assert_eq!(service.shared.input_epoch.load(Ordering::Acquire), 0);
+        }
+    }
+    #[test]
+    fn completion_before_publisher_returns_cannot_reclose_the_capture_gate() {
+        use std::sync::atomic::Ordering;
+        let (service, mut receiver, _read) = service_without_native_worker();
+        service.shared.allow_capture.store(true, Ordering::Release);
+        let state = service.shared.clone();
+        let (done, completed) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            let request = receiver.blocking_recv().unwrap();
+            assert!(
+                !state.allow_capture.load(Ordering::Acquire),
+                "Gate must be closed before work is observable"
+            );
+            state.allow_capture.store(true, Ordering::Release);
+            assert!(
+                request
+                    .reply
+                    .send(super::UnixShortcutReport {
+                        status: "ready".into(),
+                        outcome: Ok(())
+                    })
+                    .is_ok()
+            );
+            done.send(()).unwrap();
+        });
+        super::AFTER_REQUEST_PUBLISHED.with(|hook| {
+            *hook.borrow_mut() = Some(Box::new(move || {
+                completed
+                    .recv_timeout(std::time::Duration::from_secs(2))
+                    .unwrap()
+            }))
+        });
+        let mut operation = service.request(super::Change::Finish(false));
+        assert!(service.shared.allow_capture.load(Ordering::Acquire));
+        let mut context = std::task::Context::from_waker(std::task::Waker::noop());
+        assert!(
+            matches!(operation.as_mut().poll(&mut context), std::task::Poll::Ready(report) if report.outcome.is_ok())
+        );
+        worker.join().unwrap();
+    }
 }

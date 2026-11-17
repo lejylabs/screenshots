@@ -118,7 +118,7 @@ jobs:
 
   windows-native-witness:
     runs-on: windows-latest
-    timeout-minutes: 50
+    timeout-minutes: 180
     steps:
       - uses: actions/checkout@v4
       - run: rustup show active-toolchain
@@ -167,6 +167,15 @@ jobs:
             target/vcpkg-installed
             target/vcpkg-downloads
           key: native-sftp-x86_64-pc-windows-msvc-${{ hashFiles('packaging/windows/vcpkg.json') }}
+      # sdk-probe-windows-unit-graph-v1: cache codegen; build timeout is not a product budget.
+      - uses: actions/cache/restore@v4
+        id: native_target_cache
+        with:
+          path: target/release-fast
+          key: sdk-target-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Cargo.lock') }}-${{ github.sha }}
+          restore-keys: |
+            sdk-target-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Cargo.lock') }}-
+            sdk-target-v1-${{ runner.os }}-${{ runner.arch }}-
       - name: Run owned native topology and physical-mode fixtures
         run: |
           cargo test --workspace --lib --bins -j 2 --locked --profile release-fast capture_native::platform:: -- --test-threads=1
@@ -223,3 +232,8 @@ jobs:
           $env:SCREENSHOTS_PRINT_TEST_HELPER = Join-Path $PWD 'target/owned-print-fixture/fake-worker.exe'
           cargo test --workspace --lib --bins -j 2 --locked --profile release-fast print_image::tests::windows_owned_job_acceptance_rejection_timeout_and_cancel -- --ignored --exact --test-threads=1
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - uses: actions/cache/save@v4
+        if: ${{ always() && steps.native_target_cache.outputs.cache-hit != 'true' }}
+        with:
+          path: target/release-fast
+          key: sdk-target-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Cargo.lock') }}-${{ github.sha }}

@@ -10,9 +10,9 @@ mod format_catalog;
 mod native_probe;
 #[cfg(test)]
 mod ui_tests;
-mod workspace;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 mod unix_native_services;
+mod workspace;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use unix_native_services::rollback_unix_shortcuts;
 use workspace::{capture_button, ui_button};
@@ -1192,7 +1192,16 @@ impl CaptureWorkspace {
             || self.quitting
             || self.settings_loading
             || self.settings_saving
-            || { #[cfg(any(target_os = "linux", target_os = "macos"))] { self.unix_shortcuts_busy } #[cfg(not(any(target_os = "linux", target_os = "macos")))] { false } }
+            || {
+                #[cfg(any(target_os = "linux", target_os = "macos"))]
+                {
+                    self.unix_shortcuts_busy
+                }
+                #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+                {
+                    false
+                }
+            }
             || self.editor.is_some()
             || self.editor_closing
             || self.capture_delay.is_some()
@@ -2388,9 +2397,17 @@ impl CaptureWorkspace {
                                 DelayedCapture::Region => {
                                     this.open_overlays(OverlayMode::Fullscreen, cx)
                                 }
-                                #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
+                                #[cfg(any(
+                                    target_os = "windows",
+                                    target_os = "linux",
+                                    target_os = "macos"
+                                ))]
                                 DelayedCapture::ActiveWindow => this.capture_active_window(cx),
-                                #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
+                                #[cfg(any(
+                                    target_os = "windows",
+                                    target_os = "linux",
+                                    target_os = "macos"
+                                ))]
                                 DelayedCapture::ActiveDisplay => this.capture_active_display(cx),
                             }
                         } else {
@@ -2643,7 +2660,9 @@ impl CaptureWorkspace {
     fn set_last_region(&mut self, region: Option<app_core::RememberedRegion>) {
         self.last_region = region;
         #[cfg(any(target_os = "linux", target_os = "macos"))]
-        if let Some(services) = &self.unix_services { services.set_repeat_region_available(self.last_region.is_some()); }
+        if let Some(services) = &self.unix_services {
+            services.set_repeat_region_available(self.last_region.is_some());
+        }
         #[cfg(target_os = "windows")]
         if let Some(tray) = &self.tray {
             tray.set_repeat_region_available(self.last_region.is_some());
@@ -2920,12 +2939,16 @@ impl CaptureWorkspace {
 
     fn finish_quit_if_idle(&mut self, cx: &mut Context<Self>) {
         #[cfg(any(target_os = "linux", target_os = "macos"))]
-        if !self.quitting { self.set_unix_quitting(false); }
+        if !self.quitting {
+            self.set_unix_quitting(false);
+        }
         #[cfg(any(target_os = "linux", target_os = "macos"))]
         if self.quitting {
             self.set_unix_quitting(true);
             self.stop_unix_native_services(cx);
-            if self.unix_services_stopping || self.unix_services.is_some() { return; }
+            if self.unix_services_stopping || self.unix_services.is_some() {
+                return;
+            }
         }
         if !self.quitting && self.pending_open_image.is_some() {
             self.try_open_pending_image(cx);
@@ -6479,7 +6502,11 @@ impl CaptureWorkspace {
             CaptureJob::ExactRegion(region) => Some(region.clone()),
             _ => None,
         });
-        if !preview && profile.requires_single_image() && focused_display.is_none() && jobs.len() != 1 {
+        if !preview
+            && profile.requires_single_image()
+            && focused_display.is_none()
+            && jobs.len() != 1
+        {
             self.capture_status =
                 "Choose one display or window for Copy only or Annotate first.".into();
             cx.notify();
@@ -7050,7 +7077,9 @@ fn overlay_options(
 
 fn commit_application_quit(cx: &mut App) {
     #[cfg(any(target_os = "linux", target_os = "macos"))]
-    if let Some(control) = cx.try_global::<UnixLaunchControl>() { control.0.lock().unwrap().stop_accepting(); }
+    if let Some(control) = cx.try_global::<UnixLaunchControl>() {
+        control.0.lock().unwrap().stop_accepting();
+    }
     cx.quit();
 }
 
@@ -7075,7 +7104,10 @@ fn close_application(cx: &mut App) {
             this.close_editor(cx);
             this.quitting = true;
             #[cfg(any(target_os = "linux", target_os = "macos"))]
-            { this.set_unix_quitting(true); this.stop_unix_native_services(cx); }
+            {
+                this.set_unix_quitting(true);
+                this.stop_unix_native_services(cx);
+            }
             let busy = this.refreshing
                 || this.capturing
                 || this.copying
@@ -7087,7 +7119,16 @@ fn close_application(cx: &mut App) {
                 || this.upload_config_loading
                 || this.upload_cancel.is_some()
                 || this.editor_closing
-                || { #[cfg(any(target_os = "linux", target_os = "macos"))] { this.unix_services_stopping || this.unix_services.is_some() } #[cfg(not(any(target_os = "linux", target_os = "macos")))] { false } };
+                || {
+                    #[cfg(any(target_os = "linux", target_os = "macos"))]
+                    {
+                        this.unix_services_stopping || this.unix_services.is_some()
+                    }
+                    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+                    {
+                        false
+                    }
+                };
             if busy {
                 this.capture_status = "Quitting: waiting for active work…".into();
                 cx.notify();
@@ -7117,7 +7158,10 @@ fn close_application(cx: &mut App) {
                     this.cancel_upload(cx);
                     this.quitting = true;
                     #[cfg(any(target_os = "linux", target_os = "macos"))]
-                    { this.set_unix_quitting(true); this.stop_unix_native_services(cx); }
+                    {
+                        this.set_unix_quitting(true);
+                        this.stop_unix_native_services(cx);
+                    }
                     let busy = this.refreshing
                         || this.capturing
                         || this.copying
@@ -7128,7 +7172,16 @@ fn close_application(cx: &mut App) {
                         || this.upload_config_loading
                         || this.upload_cancel.is_some()
                         || this.editor_closing
-                        || { #[cfg(any(target_os = "linux", target_os = "macos"))] { this.unix_services_stopping || this.unix_services.is_some() } #[cfg(not(any(target_os = "linux", target_os = "macos")))] { false } };
+                        || {
+                            #[cfg(any(target_os = "linux", target_os = "macos"))]
+                            {
+                                this.unix_services_stopping || this.unix_services.is_some()
+                            }
+                            #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+                            {
+                                false
+                            }
+                        };
                     if busy {
                         this.capture_status = "Quitting: waiting for active work to finish…".into();
                         this.restore_control(cx);
@@ -7273,8 +7326,14 @@ fn listen_unix_reopen(
     match result {
         Ok(mut events) => {
             let services_owner = owner.downgrade();
-            let services_instance = instance.clone();
-            cx.defer(move |cx| { services_owner.update(cx, |this, cx| this.start_unix_native_services(services_instance, cx)).ok(); });
+            let services_instance = instance;
+            cx.defer(move |cx| {
+                services_owner
+                    .update(cx, |this, cx| {
+                        this.start_unix_native_services(services_instance, cx)
+                    })
+                    .ok();
+            });
             let owner = owner.downgrade();
             cx.spawn(async move |cx| {
                 while events.recv().await.is_some() {
@@ -7388,7 +7447,15 @@ fn run_image_window(
                             let close_owner = close_owner.clone();
                             let handle = window.window_handle();
                             cx.defer(move |cx| {
-                                handle.update(cx, |_, window, cx| { close_owner.update(cx, |this, cx| this.close_unix_control(window, cx)).ok(); }).ok();
+                                handle
+                                    .update(cx, |_, window, cx| {
+                                        close_owner
+                                            .update(cx, |this, cx| {
+                                                this.close_unix_control(window, cx)
+                                            })
+                                            .ok();
+                                    })
+                                    .ok();
                             });
                         }
                         #[cfg(not(any(target_os = "linux", target_os = "macos")))]
@@ -7561,7 +7628,15 @@ fn run_prepared(
                                 let close_owner = close_owner.clone();
                                 let handle = window.window_handle();
                                 cx.defer(move |cx| {
-                                    handle.update(cx, |_, window, cx| { close_owner.update(cx, |this, cx| this.close_unix_control(window, cx)).ok(); }).ok();
+                                    handle
+                                        .update(cx, |_, window, cx| {
+                                            close_owner
+                                                .update(cx, |this, cx| {
+                                                    this.close_unix_control(window, cx)
+                                                })
+                                                .ok();
+                                        })
+                                        .ok();
                                 });
                             }
                             #[cfg(not(any(target_os = "linux", target_os = "macos")))]

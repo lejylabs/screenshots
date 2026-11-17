@@ -19,6 +19,14 @@ negative control. Windows GNU metadata, five exact retained Date-Picker interact
 observations remain separate checks.
 [Maintenance details](dependency-maintenance.md).
 
+Main-app Unix tray/global-shortcut services are integrated through an isolated
+Linux native helper and main-thread macOS callbacks. The final optimized
+workspace passes **1,141 tests, zero failures, 73 ignored, 61 outer suites**.
+Fresh applied-source reviews 11/12, final Clippy/format/default advisory and
+Windows GNU metadata pass; all six owned native Xvfb/D-Bus fixture modes pass.
+Main-app GUI/resident resource, native Mac and physical/session gates remain
+separate. [Unix services](unix-native-services.md).
+
 The corrected modern SXCU/source/result pipeline is integrated. Fresh source
 reviews 13/14 are clean; 33 focused Rust, three shared-source and 11 actual CLI
 cases, 357 helper assertions and the full 137-request private HTTPS/Task/schedule/
@@ -280,7 +288,8 @@ completion is listed separately.
   committed; [non-Windows main-app ownership/reopen](unix-app-lifecycle.md)
   has passed optimized private Linux integration checks; native macOS and resource
   acceptance remain open. Finish main-app
-  Linux/macOS tray/global-hotkey services, native fallback/focus/session acceptance,
+  native fallback/focus/session acceptance beyond the integrated Linux/macOS
+  tray/global-hotkey services and private six-mode functional checks,
   real signing/notarization, standard-user install/upgrade/uninstall,
   permissions/IME/accessibility, physical hotkeys/tray/clipboard and failure/
   performance matrices. User installs, native package layouts, notifications,

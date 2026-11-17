@@ -67,7 +67,9 @@ fn main() {
         arguments,
         |arguments| {
             #[cfg(target_os = "linux")]
-            if desktop_services_process::try_child(arguments)? { return Ok(true); }
+            if desktop_services_process::try_child(arguments)? {
+                return Ok(true);
+            }
             if print_image::try_child(arguments)? {
                 return Ok(true);
             }

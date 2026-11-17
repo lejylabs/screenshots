@@ -218,7 +218,7 @@ fn observe(value: Snapshot, state: &Shared, events: &mpsc::Sender<UnixDesktopEve
 }
 pub(super) fn supervise(
     mut control: UnixStream,
-    requests: control::Receiver<Request>,
+    mut requests: mpsc::Receiver<Request>,
     events: mpsc::Sender<UnixDesktopEvent>,
     state: &Arc<Shared>,
     wayland: bool,
@@ -495,18 +495,20 @@ pub(super) fn task_event(id: String) {
         }
     });
 }
-pub(super) fn pump() -> Result<()> {
+pub(super) fn pump() -> Result<bool> {
     CHILD.with(|slot| {
         let mut slot = slot.borrow_mut();
         let Some(context) = slot.as_mut() else {
-            return Ok(());
+            return Ok(false);
         };
         ensure!(!context.failed, "Desktop helper IPC failed");
         flush(context)?;
+        let mut consumed = false;
         for _ in 0..64 {
             let Some(packet) = receive(&context.socket, &context.nonce)? else {
                 break;
             };
+            consumed = true;
             match packet {
                 Packet::Change {
                     generation,
@@ -551,7 +553,7 @@ pub(super) fn pump() -> Result<()> {
                 _ => anyhow::bail!("Unexpected desktop parent packet"),
             }
         }
-        Ok(())
+        Ok(consumed)
     })
 }
 pub(super) fn next_change() -> Option<(u64, u64, Change)> {
@@ -901,6 +903,70 @@ mod protocol_tests {
         );
     }
     #[test]
+    fn consumed_control_packets_request_dispatch_without_creating_a_sticky_idle_wake() {
+        let (socket, parent) = pair();
+        let nonce = [23; 16];
+        let state = super::super::shared();
+        CHILD.with(|slot| assert!(slot.borrow().is_none()));
+        struct Reset;
+        impl Drop for Reset {
+            fn drop(&mut self) {
+                CHILD.with(|slot| *slot.borrow_mut() = None);
+            }
+        }
+        let _reset = Reset;
+        CHILD.with(|slot| {
+            *slot.borrow_mut() = Some(ChildContext {
+                socket,
+                nonce,
+                state: state.clone(),
+                events: VecDeque::new(),
+                tasks: VecDeque::new(),
+                dirty: false,
+                pending: None,
+                retire: false,
+                failed: false,
+            })
+        });
+        assert!(
+            send(
+                &parent,
+                &Packet::Change {
+                    generation: 1,
+                    input_epoch: 1,
+                    change: Change::Finish(false)
+                },
+                &nonce
+            )
+            .unwrap()
+        );
+        assert!(pump().unwrap());
+        assert!(matches!(next_change(), Some((1, 1, Change::Finish(false)))));
+        assert!(!pump().unwrap());
+        assert!(
+            send(
+                &parent,
+                &Packet::SetQuitting {
+                    input_epoch: 2,
+                    quitting: true
+                },
+                &nonce
+            )
+            .unwrap()
+        );
+        assert!(pump().unwrap());
+        assert!(state.quitting.load(Ordering::Acquire));
+        assert!(
+            !pump().unwrap(),
+            "Retirement is not a permanent runnable wake"
+        );
+        assert!(take_retire());
+        assert!(send(&parent, &Packet::Shutdown {}, &nonce).unwrap());
+        assert!(pump().unwrap());
+        assert!(state.stop.load(Ordering::Acquire));
+        assert!(!pump().unwrap());
+    }
+    #[test]
     fn oversized_packet_is_rejected_as_one_record() {
         let (first, second) = pair();
         let data = vec![0u8; MAX + HEADER + 1];
@@ -933,7 +999,7 @@ mod protocol_tests {
     fn canceled_quit_retires_both_pre_quit_and_while_quitting_captures() {
         let state = super::super::shared();
         let (write, _read) = pair();
-        let (sender, _requests) = control::sync_channel(1);
+        let (sender, _requests) = mpsc::channel(1);
         let mut services = super::super::Services {
             sender,
             wake: write,
@@ -995,7 +1061,7 @@ mod protocol_tests {
     fn prior_capture_epoch_cannot_replay_after_settings_admission() {
         let state = super::super::shared();
         let (write, _read) = pair();
-        let (sender, _requests) = control::sync_channel(1);
+        let (sender, _requests) = mpsc::channel(1);
         let mut services = super::super::Services {
             sender,
             wake: write,

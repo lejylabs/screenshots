@@ -41,7 +41,10 @@ fn shortcut_label(key: HotKey) -> String {
 impl CaptureHotkey<GlobalHotKeyManager> {
     pub fn unregistered() -> Result<Self> {
         #[cfg(target_os = "macos")]
-        ensure!(objc2_foundation::MainThreadMarker::new().is_some(), "Carbon shortcuts require the Cocoa main thread");
+        ensure!(
+            objc2_foundation::MainThreadMarker::new().is_some(),
+            "Carbon shortcuts require the Cocoa main thread"
+        );
         Ok(Self {
             manager: GlobalHotKeyManager::new()?,
             keys: Vec::new(),
@@ -59,7 +62,6 @@ impl CaptureHotkey<GlobalHotKeyManager> {
         manager.register_settings(&crate::CaptureHotkeys::default())?;
         Ok(manager)
     }
-
 }
 
 /// Registration and cleanup always run on the manager's native owner thread.
@@ -71,22 +73,49 @@ pub trait ShortcutManager {
 
 impl ShortcutManager for GlobalHotKeyManager {
     fn register(&self, key: HotKey) -> Result<()> {
-        #[cfg(target_os = "linux")] { let _ = key; anyhow::bail!("Use the fd-driven X11 or native Wayland portal service") }
-        #[cfg(not(target_os = "linux"))] { Ok(GlobalHotKeyManager::register(self, key)?) }
+        #[cfg(target_os = "linux")]
+        {
+            let _ = key;
+            anyhow::bail!("Use the fd-driven X11 or native Wayland portal service")
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            Ok(GlobalHotKeyManager::register(self, key)?)
+        }
     }
     fn unregister(&self, key: HotKey) -> Result<()> {
-        #[cfg(target_os = "linux")] { let _ = key; anyhow::bail!("Polling hotkey backend is disabled") }
-        #[cfg(not(target_os = "linux"))] { Ok(GlobalHotKeyManager::unregister(self, key)?) }
+        #[cfg(target_os = "linux")]
+        {
+            let _ = key;
+            anyhow::bail!("Polling hotkey backend is disabled")
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            Ok(GlobalHotKeyManager::unregister(self, key)?)
+        }
     }
 }
 
 impl<M: ShortcutManager> CaptureHotkey<M> {
     pub(crate) fn with_manager(manager: M) -> Self {
-        Self { manager, keys: Vec::new(), status: "Waiting for settings; no global shortcuts active".into(), pending: Vec::new(), prepared: None, cleanup_failed: false, #[cfg(target_os = "macos")] _native_thread: std::marker::PhantomData }
+        Self {
+            manager,
+            keys: Vec::new(),
+            status: "Waiting for settings; no global shortcuts active".into(),
+            pending: Vec::new(),
+            prepared: None,
+            cleanup_failed: false,
+            #[cfg(target_os = "macos")]
+            _native_thread: std::marker::PhantomData,
+        }
     }
-    pub(crate) fn manager(&self) -> &M { &self.manager }
+    pub(crate) fn manager(&self) -> &M {
+        &self.manager
+    }
     #[cfg(target_os = "macos")]
-    pub(crate) fn registered_ids(&self) -> Vec<u32> { self.keys.iter().map(|(key, _)| key.id()).collect() }
+    pub(crate) fn registered_ids(&self) -> Vec<u32> {
+        self.keys.iter().map(|(key, _)| key.id()).collect()
+    }
     /// Startup admits each configured command independently; never substitutes defaults.
     pub fn register_settings(&mut self, settings: &crate::CaptureHotkeys) -> Result<()> {
         ensure!(
