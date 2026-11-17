@@ -4,6 +4,11 @@ Date: 2026-11-17
 Scope: the user's complete major-feature list, with final GPUI redesign and new
 UI controls excluded. The workstation stays on. The full backlog is **open**.
 
+Explicit isolated image printing is integrated. Three optimized core and six
+desktop tests, the real CLI/private IPP end-to-end fixture, Linux/Windows GNU
+metadata, optimized Clippy and formatting pass. Windows native GDI/fault,
+macOS runtime and resource gates remain open. [Printing](image-printing.md).
+
 Chronological capture/upload history sorting is now integrated in core and CLI,
 with exact fractional UTC ordering and self-contained timestamp/ID cursors.
 The targeted optimized run passes 17 core and two actual CLI cases; both new
@@ -192,7 +197,10 @@ completion is listed separately.
   remain in the separate matrix. [Contract](editor-document.md).
 - [ ] **Import/output:** explicit URL CLI/Task input, bounded native clipboard
   and existing cross-platform Paste are committed. Remaining native raw image/URL
-  drops, print and drag-out need integration. Descriptor-only Wayland GUI startup
+  drops and drag-out need integration. Explicit isolated image printing is now
+  integrated and passes optimized pure/process and real private IPP checks; native
+  Windows GDI output/fault injection, macOS runtime and resource acceptance remain
+  open. [Printing contract](image-printing.md). Descriptor-only Wayland GUI startup
   and capture/Library format policy are integrated with local functional checks
   passed and source/document review completed in the committed delivery.
   Open With/file associations are implemented. Managed RGB matrix/TRC and SDR
@@ -333,7 +341,9 @@ themes and editor controls are preserved, not redesigned.
 Coverage update: the earlier hidden-path sweep inventoried **160 Markdown files**
 (94 project and 66 vendor), excluding target and .git. The subsequently authored
 and reviewed Unix lifecycle contract increases the current source inventory to
-161 (95 project and 66 vendor). Its snapshot hashes,
+162 (96 project and 66 vendor) after the independently reviewed image-printing
+contract was integrated. The earlier 161-file count included the Unix lifecycle
+contract; original snapshot hashes remain historical. Its snapshot hashes,
 requirement/status extracts and exact per-file reading depth are recorded in the
 local reconciliation reports. All 160 complete bodies have now been semantically read (94 project, 66
 vendor), with exact per-file hashes and full-body read reports in

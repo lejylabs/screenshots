@@ -1,5 +1,10 @@
 //! Application core. This crate must not depend on GPUI.
 
+mod image_print;
+#[cfg(target_os = "windows")]
+pub use image_print::print_windows_pixels;
+pub use image_print::{PrintPaper, print_fit, write_print_postscript};
+
 #[cfg(target_os = "windows")]
 #[doc(hidden)]
 pub mod windows_child;

@@ -2020,3 +2020,27 @@ failures, source identities and results are in
 `target/verification/history-chronological-integration/`. See the
 [query contract](history-queries.md) for limits and measurements. No new UI,
 index/migration, dependency, worker, cache, thread, polling or idle action is added.
+
+
+## Explicit isolated image printing (2026-11-17)
+
+Core/CLI printing now decodes final managed pixels in an operation-owned helper,
+flattens alpha over white, fits one portrait A4/Letter page and submits only to
+an explicit destination. Unix uses bounded direct IPP to an existing local
+non-temporary queue; Windows uses explicit GDI/driver-mode admission and lazy
+System32-only Winspool loading. No startup query, default queue, image tempfile,
+new UI, discovery, queue provisioning or automatic retry is added.
+
+Independent source rounds 2/3 are clean after fixing review 1's CUPS lp discovery
+and provisioning fallback. Actual optimized core tests (three), desktop tests
+(six) and real CLI/private IPP E2E pass, including missing-queue one-query/no-job,
+metadata-free final pixels/source preservation, cancellation/deadline/cleanup
+and broken public stdout without automatic resubmission. Linux and Windows GNU
+all-target metadata, optimized all-target Clippy, formatting and diff checks pass.
+Interrupted pre-restart work and the Windows SDK constant-type correction remain
+separate records; no zero-filter or interrupted run is counted as a test pass.
+
+See [the contract](image-printing.md) and exact local evidence under
+`target/verification/native-print-integration/`. Native Windows GDI output/fault
+injection, macOS actual process/IPP and resource acceptance remain open; neither
+metadata checks nor a loopback sink proves physical print delivery.

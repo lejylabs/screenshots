@@ -18,6 +18,8 @@ Headless commands (no desktop UI; outputs and uploads require explicit actions):
   screenshots desktop associations status|enable|disable
   screenshots desktop notify TITLE BODY
   screenshots hash-file FILE [--expect SHA256_HEX]
+  screenshots print-image INPUT --printer NAME --paper a4|letter [--server HOST:PORT]
+      (numeric loopback IPv4 server required on Linux/macOS; one page/copy; spool acceptance only)
   screenshots image convert INPUT OUTPUT [--width N] [--height N]
       [--rotate 90|180|270] [--flip-horizontal] [--flip-vertical]
       [--jpeg-quality 1..100] [--webp-quality 1..100]
@@ -133,6 +135,7 @@ pub fn run(args: Vec<OsString>) -> Result<bool> {
     };
     match command {
         "formats" => crate::capture_format_command::run(&args[1..])?,
+        "print-image" => crate::print_image::run(&args[1..])?,
         "--open" => {
             ensure!(
                 args.len() == 2 && !args[1].is_empty() && args[1].as_encoded_bytes().len() <= 4096,
