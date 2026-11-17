@@ -1,6 +1,15 @@
 #![cfg(target_os = "windows")]
 
 mod clipboard;
+mod native_drop_broker;
+mod native_drop_deadline;
+mod native_drop_events;
+mod native_drop_process;
+mod native_drop_receiver;
+mod native_drop_wire;
+pub use native_drop_process::CHILD_ARGUMENT as NATIVE_DROP_CHILD_ARGUMENT;
+pub use native_drop_process::{NativeDropProcess, NativeDropSpawner, install_native_drop_spawner};
+pub use native_drop_receiver::serve as native_drop_receiver;
 mod destination_list;
 mod dialog;
 mod direct_manipulation;

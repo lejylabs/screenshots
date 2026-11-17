@@ -288,6 +288,7 @@ dependencies = [
  "anyhow",
  "app-core",
  "gpui-kit",
+ "gpui-pre-windows",
  "image",
  "raw-window-handle",
  "shared",

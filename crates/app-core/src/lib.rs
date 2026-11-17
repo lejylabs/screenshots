@@ -106,6 +106,8 @@ pub use arrows::ArrowAnnotation;
 pub use filenames::{capture_file_name, validate_capture_name_template};
 mod clipboard;
 mod clipboard_input;
+#[cfg(target_os = "windows")]
+pub use clipboard_input::{NativeAcquisitionBudget, native_acquisition_budget};
 mod managed_color;
 pub use clipboard_input::{
     ClipboardFileReference, ClipboardInspectKind, ClipboardPathEncoding, ClipboardSnapshot,

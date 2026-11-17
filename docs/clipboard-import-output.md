@@ -226,7 +226,9 @@ explicitly through the window's shared drop state and deferred cleanup above,
 without requiring a later OS Leave callback. The closed-target fixtures do not
 prove native Shell callback ordering on window close.
 
-The 64 KiB check is **post-acquisition**. Source `QueryGetData`/`GetData`, release
+Historical acquisition limit of the earlier f2f03a4 correction (superseded by
+the integrated receiver source below; native runtime acceptance remains open):
+the 64 KiB check was **post-acquisition**. Source `QueryGetData`/`GetData`, release
 callbacks and drag-image helper calls remain synchronous COM/native operations.
 `GetData` can allocate an arbitrarily large native medium or block before this
 reader sees its extent; rejecting that returned medium does not undo that peak.
@@ -597,3 +599,77 @@ those original clipboard reviews alone did not establish that result.
 The private native evidence and the explicit opaque-X11 queue boundary above
 retain their stated scope. These reviews ran read-only without user clipboard,
 printer, device, account or native application calls.
+
+
+## Integrated Windows receiver source (2026-11-17)
+
+The receiver source is now integrated through a genuine three-way merge that
+preserves current Unix services, Jiff and the earlier non-agile binding fix.
+Original patch `0b7f93cbca2126938b40c85a688370e547dfdf2541815011676c74b569c0aae3`
+received actual fresh clean source reviews 5/6. Root corrected one constructor
+call to the inner window object during real GNU type checking. Optimized Linux
+all-target checking, Windows GNU workspace/all-target and vendor-test metadata,
+122 optimized existing application consumer tests (9 ignored), three optimized
+actual deadline tests, Clippy and formatting pass. The foreground source-calling
+target is removed. Actual Rust/native receiving, first-boundary/fault/lifecycle/
+editor and resource acceptance remain unrun; source/metadata alone never closes
+that gate. Exact preparation/resolution and named results are retained under
+`target/verification/windows-production-integration/`.
+
+The implementation installs only a process-spawner pointer at ordinary startup. A
+single receiver process and two parent threads (controller/watchdog and bounded
+private-pipe reader, each requesting a 256 KiB stack) exist while visible,
+non-minimized GPUI native windows are eligible. Every GPUI Windows window uses
+the same seam; hidden/minimized targets retire asynchronously, and a restore
+waits for its previous registration to finish. A standalone GPUI probe without
+an installed spawner has no incoming OLE registration. The receiver loads no
+renderer, decoder, capture stream, clipboard reader or network runtime.
+
+The parent arms an absolute five-second deadline before acknowledging each
+receiver native interval, including initialization, registration, PeekMessage,
+dispatch, source/helper/medium/error-reference cleanup and shutdown. Native
+progress or nested callbacks cannot renew that deadline. The existing +96 MiB
+probed private-commit growth guard is installed before native acquisition. The
+parent retains the exact process and Job through reaping and joins its one
+blocking reader before replacement. A failed OS termination/reap retains that
+cleanup owner and prevents overlap. The foreground never waits synchronously.
+
+A single native admission covers active and completed transfers through final
+foreground delivery/discard, including cancellation and receiver replacement.
+The fixed protocol carries at most one <=32 MiB encoded body or <=64 KiB native
+metadata body (file framing adds at most 132 bytes), <=32 target records, and
+coalesced per-target movement. Shell helper creation/release is per gesture and
+remains inside the native interval. Native paths preserve UTF-16/WTF-8 semantics;
+PNG/JFIF/WebP/DIBV5/DIB and credential-free HTTP(S) URLs reach the existing typed
+GPUI drop and image-worker routes. Raster acquisition and URL fetch begin only
+at final Drop; hover never fetches or decodes. Source diagnostic descriptions
+are not read or logged, and native IErrorInfo TLS references are drained under
+the same watchdog with a finite churn bound.
+
+Revision 10 of the separate owned Windows topology fixture passed all 18
+mandatory direct/actual-OLE cases, with three explicit non-input negative
+controls recorded separately. It establishes the C++ receiving boundary and
+first custom-unmarshal guard, not the Rust production integration. The integrated
+Rust target explicitly disables windows-implement's default agility. Its QI and
+two-STA callback fixture, payload/protocol/lease/deadline tests, production native
+fault/editor/close tests and optimized joint resource observations remain unrun.
+The 50/100 MiB idle/visible-shell and all PLAN performance budgets are unchanged.
+Neither this source checkpoint nor the topology result establishes native user-session,
+physical input/presentation, mixed-DPI or performance acceptance.
+
+The first independent source review of patch c3bd41ac was not clean: a missing
+Windows flag import, reentrant Leave revival and an overdue-event deadline bypass.
+The held fix separates gesture retirement from captured operation/admission IDs
+and checks the absolute clock before permits, completion and locked publication.
+Actual Rust COM reentry and overdue-publication regressions are authored but
+unrun. Extra resource cost is bounded scalar operation state per target and
+one small Rust Rc allocation per active helper; no queue/thread/timer is added.
+Later actual source reviews 5/6 are clean. Root metadata/consumer/deadline checks
+above pass; actual native and aggregate resource checks remain required.
+
+The separate cfg-only production-native fixture has authored real-spawner/helper
+COM/OLE, terminal/effect/count, foreground rejection/cancel, failure/reap and
+owned-desktop controls. Its evolving counts are authored inventory, never pass
+counts. Original R10 remains a C++ prerequisite. The new fixture must clear its
+own source review, cfg/MSVC/C++/PowerShell checks and actual positive/negative
+execution before it supplies receiving-boundary evidence.

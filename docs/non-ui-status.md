@@ -19,6 +19,13 @@ negative control. Windows GNU metadata, five exact retained Date-Picker interact
 observations remain separate checks.
 [Maintenance details](dependency-maintenance.md).
 
+Windows incoming native file/image/URL data now uses the isolated non-agile
+receiver source for all eligible windows. Linux and GNU workspace/vendor-test
+metadata, 122 optimized existing consumers, three deadline controls, Clippy and
+formatting pass. Actual Rust COM/OLE/fault/editor/lifecycle and joint resources
+remain pending in the explicitly owned production fixture; the earlier 18-case
+C++ topology result is separate. [Drop contract](clipboard-import-output.md#integrated-windows-receiver-source-2026-11-17).
+
 Main-app Unix tray/global-shortcut services are integrated through an isolated
 Linux native helper and main-thread macOS callbacks. The final optimized
 workspace passes **1,141 tests, zero failures, 73 ignored, 61 outer suites**.
