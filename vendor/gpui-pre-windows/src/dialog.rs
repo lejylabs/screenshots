@@ -48,6 +48,10 @@ impl DialogOwner {
         self.closed.store(true, Ordering::Release);
     }
 
+    pub(crate) fn is_closed(&self) -> bool {
+        self.closed.load(Ordering::Acquire)
+    }
+
     pub(crate) async fn when_idle(&self) {
         // After close(), queued requests cannot start a native dialog. Only the
         // active dialog can still use the HWND, and it holds this lock until exit.

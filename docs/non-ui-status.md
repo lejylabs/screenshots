@@ -4,17 +4,17 @@ Date: 2026-11-17
 Scope: the user's complete major-feature list, with final GPUI redesign and new
 UI controls excluded. The workstation stays on. The full backlog is **open**.
 
-The current working checkpoint integrates [capture/Library format policy](capture-library-formats.md)
-and [descriptor-only Wayland startup](linux-wayland-startup.md). Local optimized
-verification passes **1,044 regular tests**, zero failures, with 71 opt-ins
-excluded across 60 outer suites. Fifty-four independent private CLI requests,
-all 19 owned native Wayland checks, the vendor startup parent/16 private child
-scenarios, formatting, all-target optimized Clippy, Windows GNU metadata and
-default advisories pass. Fresh consecutive source/document reviews 14/15 are
-clean on checkpoint `78a88feceee86db4d5886edf3915544821321b1e15531cdccdec3a0ccc97cf25`.
-Reviewed execution code is committed as `fd98138633de4a15b028b62b54c0a2a9af301ec9`.
-This is not full non-UI or platform acceptance.
-The older 996-test figures below remain a separate historical checkpoint.
+The current working checkpoint additionally integrates bounded Windows file-drop
+metadata and window-specific native/GPUI drag ownership. Its complete optimized
+workspace run passes **1,065 regular tests**, zero failures, with 71 opt-ins
+excluded across 60 outer suites. Linux/Windows GNU all-target metadata,
+Windows dependency-unit metadata, all-target optimized Clippy and focused pure/
+GPUI/font/style regressions pass. Native COM acquisition hard containment remains
+an implementation gap, and real Windows COM/resource acceptance remains open.
+[Drop contract](clipboard-import-output.md#windows-existing-file-drop-metadata-bounds).
+The earlier format/Wayland source is committed as
+`fd98138633de4a15b028b62b54c0a2a9af301ec9`; its 1,044-test/private CLI/Wayland
+results remain a separate measured checkpoint. This is not full non-UI acceptance.
 
 Earlier pushed baseline: branch `feat/non-ui-delivery`, `247f419`, including the
 reviewed persistence, logging, managed-color and portable packaging follow-ups.
@@ -110,16 +110,16 @@ remains powered on; no shutdown will be performed.
   release/package checks passed; the complete run passed 523 regular tests and
   all doctests, with 53 opt-in cases excluded. The new timing-only opt-in test
   also passed separately. [Contract](saved-png-admission.md).
-- [ ] Exact current-source native acceptance remains open. The older source
-  `32398b6`/auxiliary snapshot `ab7b99c` finished in
-  [run 43946653508](https://github.com/lejylabs/screenshots/actions/runs/43946653508):
-  Windows and Intel macOS succeeded; ARM macOS passed SDK/portable checks but
-  failed the private `video_parent_loss` fixture after five seconds, with a later
-  runner cleanup of its orphan Python process. The separate FamilyCompletion
-  correction is HELD, unintegrated and not native-proven. These older outcomes
-  do not accept the current format/Wayland source or Mac/ARM matrix. Records:
-  `target/verification/native-ab7b99c-results.json`. Physical hardware/permission
-  acceptance remains separate from SDK/private-process checks.
+- [ ] Exact current-source native acceptance remains open. The Mac video-family
+  completion guard is committed as `b8e4e9a98285d3485bb6bac47aee4ca7d5599ff1`.
+  Its workflow-only auxiliary snapshot passed native ARM macOS, Intel macOS and
+  Windows in [run 44028548810](https://github.com/lejylabs/screenshots/actions/runs/44028548810),
+  including the new owned family-completion regressions on both Macs. This fixes
+  the source-level parent-loss race; one green run does not identify every cause
+  of the older ARM failure or prove physical capture/TCC/hardware acceptance.
+  Linux/macOS ownership/reopen is committed as `1755943`; its newer native CI and
+  the current Windows drop integration remain separate exact-source gates.
+
 - [x] Maintained native font/SVG and D-Bus families: active production graph
   passes default `cargo deny check advisories` without ignores. Actual private
   D-Bus AccessKit activation/actions/update/reactivation, SVG/text and Windows
@@ -322,8 +322,10 @@ themes and editor controls are preserved, not redesigned.
   the [delivery request](non-ui-delivery.md#request-and-constraints) and PLAN's
   performance/privacy contract.
 
-Coverage update: the latest hidden-path sweep inventories **160 Markdown files**
-(94 project and 66 vendor), excluding target and .git. Its snapshot hashes,
+Coverage update: the earlier hidden-path sweep inventoried **160 Markdown files**
+(94 project and 66 vendor), excluding target and .git. The subsequently authored
+and reviewed Unix lifecycle contract increases the current source inventory to
+161 (95 project and 66 vendor). Its snapshot hashes,
 requirement/status extracts and exact per-file reading depth are recorded in the
 local reconciliation reports. All 160 complete bodies have now been semantically read (94 project, 66
 vendor), with exact per-file hashes and full-body read reports in

@@ -13,16 +13,16 @@ image/QR/OCR tools, storage maintenance, native credential adapters and packagin
 are separate slices; they do not close platform, editor workflow, resource or
 ShareX-parity acceptance gates. The complete requested backlog remains open.
 
-Latest non-UI checkpoint (2026-11-17): capture/Library PNG/JPEG/WebP policy and
-descriptor-only Wayland startup are integrated. The unchanged execution source
-passes 1,044 optimized regular tests (71 opt-ins excluded), 54 independent
-private CLI requests, 19 actual private Wayland checks, Clippy, Windows GNU
-metadata and default advisories. Fresh consecutive source/document reviews
-14/15 are clean; reviewed execution code is committed as
-`fd98138633de4a15b028b62b54c0a2a9af301ec9`. See the focused
-[format](docs/capture-library-formats.md) and
-[Wayland](docs/linux-wayland-startup.md) contracts for measured scope; no
-physical/reference-hardware or full-backlog acceptance is claimed.
+Latest non-UI checkpoint (2026-11-17): the applied bounded Windows file-drop
+metadata/window-ownership correction passes 1,065 optimized regular workspace
+tests (71 opt-ins excluded), all-target Clippy, Linux/Windows GNU metadata and
+focused GPUI regressions. Native COM acquisition containment remains a code gap;
+real Windows execution and resource acceptance are separate. Earlier format/
+Wayland, Mac video-family completion and Unix ownership/reopen are committed and
+have their own exact-checkpoint evidence. Read the
+[current checklist](docs/non-ui-status.md) and
+[drop contract](docs/clipboard-import-output.md) for scope; the full non-UI backlog,
+physical/reference-hardware and release acceptance remain open.
 
 ## Session handoff — start here (2026-11-12)
 
