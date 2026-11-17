@@ -23,7 +23,11 @@ listener EOF now follows socket retirement, and save-intent comparisons accept
 semantically identical JSON layouts while retaining exact observed-byte CAS.
 The optimized core run passes **523 tests, zero failures, 53 ignored**; 29 save/
 recovery controls, the listener controls and 32 fresh retirement repeats pass.
-All-target optimized Clippy and formatting pass. The earlier full-workspace run
+All-target optimized Clippy and formatting pass. The corrected full optimized
+workspace run now passes **1,094 tests, zero failures, 73 ignored, 61 outer
+suites**, excluding child-harness summaries (log SHA256
+`724cccda0bb6ca97c023e4bbf5bd4d9d9652f2aa1970d799ceb6d1ce7570d8e7`).
+The earlier full-workspace run
 failed the listener case; the subsequent core-only run exposed the JSON-layout
 case. Both failed logs are retained, and neither is reported as a passing full
 workspace run. Proof: `target/verification/sharex-review6-integration/`.
