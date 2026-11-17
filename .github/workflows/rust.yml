@@ -21,7 +21,7 @@ jobs:
           if (!$VsPath) { throw 'Installed MSVC compiler unavailable' }
           & (Join-Path $VsPath 'Common7/Tools/Launch-VsDevShell.ps1') -Arch amd64 -HostArch amd64 -SkipAutomaticLocation
           if ($LASTEXITCODE -ne 0) { throw 'MSVC environment failed' }
-          & tools/WindowsDropTopology/run_probe.ps1 -OutputDirectory (Join-Path $PWD 'target/drop-topology-proof')
+          & tools/WindowsDropTopology/run_probe.ps1 -OutputDirectory (Join-Path $PWD 'target/drop-topology-proof') -OwnedHostedCiInputDesktop
       - name: Preserve exact probe source and every result including failures
         if: always()
         uses: actions/upload-artifact@v4

@@ -6,6 +6,7 @@
 #include <psapi.h>
 #include <rpc.h>
 #include <rpcasync.h>
+#include <shlobj.h>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -16,6 +17,7 @@
 
 constexpr SIZE_T growth = 96 * 1024 * 1024;
 constexpr DWORD deadline_ms = 5000;
+struct QueryTrace { DWORD format, aspect, tymed; LONG index, after_enter; DWORD pid, tid; };
 struct Shared {
     DWORD receiver_pid, receiver_tid, source_pid, source_tid;
     DWORD enter_pid, enter_tid, query_pid, query_tid, data_pid, data_tid, query_client_pid;
@@ -24,14 +26,28 @@ struct Shared {
     LONG registration, enter_result, query_result, get_result, source_data_result, cleanup_result, copied, completed;
     DWORD failure_pid, failure_win32_error; LONG failure_hresult; char failure_stage[96];
     ULONGLONG private_baseline, offered_bytes;
+    LONG preflight_query_calls, preflight_get_calls, preflight_medium_releases, native_stage, enum_calls, source_continue_calls, source_feedback_calls, private_move_calls, query_trace_count;
+    QueryTrace query_trace[16];
+    LONG cursor_ok; DWORD cursor_error; POINT cursor; DWORD message_position; UINT_PTR point_window;
     DWORD marshal_bytes;
     BYTE marshal[16 * 1024];
 };
 static Shared* state;
 static HANDLE ready_event, done_event, stop_event;
 static const wchar_t* scenario;
-static bool ole_route = false, baseline = false;
+static bool ole_route = false, baseline = false, ci_input = false;
+static void require_owned_ci() {
+    wchar_t actions[8]{}, operating_system[32]{}, runner_environment[32]{}, explicit_gate[8]{};
+    GetEnvironmentVariableW(L"GITHUB_ACTIONS", actions, 8);
+    GetEnvironmentVariableW(L"RUNNER_OS", operating_system, 32);
+    GetEnvironmentVariableW(L"RUNNER_ENVIRONMENT", runner_environment, 32);
+    GetEnvironmentVariableW(L"SCREENSHOTS_OWNED_HOSTED_CI_INPUT", explicit_gate, 8);
+    if (std::wcscmp(actions, L"true") || std::wcscmp(operating_system, L"Windows") || std::wcscmp(runner_environment, L"github-hosted") || std::wcscmp(explicit_gate, L"1")) {
+        std::fprintf(stderr, "Owned hosted Windows CI input mode is not authorized by its environment gates\n"); ExitProcess(91);
+    }
+}
 static const wchar_t* parse_scenario(const wchar_t* value) {
+    if (!std::wcsncmp(value, L"ci-", 3)) { ci_input = true; require_owned_ci(); value += 3; }
     if (!std::wcsncmp(value, L"baseline-", 9)) { baseline = true; value += 9; }
     if (!std::wcsncmp(value, L"ole-", 4)) { ole_route = true; value += 4; }
     return value;
@@ -66,7 +82,7 @@ static LRESULT CALLBACK owner_proc(HWND hwnd, UINT message, WPARAM wparam, LPARA
 static HWND owner_window() {
     WNDCLASSW cls{}; cls.lpfnWndProc = owner_proc; cls.hInstance = GetModuleHandleW(nullptr); cls.lpszClassName = L"ScreenshotsPrivateDropProbe";
     require(RegisterClassW(&cls) != 0, "private window class");
-    // This desktop is never selected as the input desktop or shown to the user.
+    // Hosted CI input mode is separately gated; ordinary cases are noninteractive.
     HWND window = CreateWindowExW(0, cls.lpszClassName, L"owned synthetic receiver", WS_POPUP | WS_VISIBLE, 0, 0, 128, 128, nullptr, nullptr, cls.hInstance, nullptr);
     require(window != nullptr, "private owner window");
     return window;
@@ -91,8 +107,8 @@ static HANDLE contain_native() {
 }
 
 struct MediumRelease final : IUnknown {
-    LONG refs = 1; HGLOBAL global;
-    explicit MediumRelease(HGLOBAL value) : global(value) {}
+    LONG refs = 1; HGLOBAL global; bool target_medium;
+    MediumRelease(HGLOBAL value, bool target) : global(value), target_medium(target) {}
     HRESULT STDMETHODCALLTYPE QueryInterface(REFIID iid, void** out) override {
         if (!out) return E_POINTER; *out = nullptr;
         if (iid != IID_IUnknown) return E_NOINTERFACE;
@@ -102,8 +118,9 @@ struct MediumRelease final : IUnknown {
     ULONG STDMETHODCALLTYPE Release() override {
         LONG count = InterlockedDecrement(&refs);
         if (!count) {
-            InterlockedIncrement(&state->medium_releases);
-            if (!std::wcscmp(scenario, L"release-stall")) Sleep(INFINITE);
+            if (target_medium) InterlockedIncrement(&state->medium_releases);
+            else InterlockedIncrement(&state->preflight_medium_releases);
+            if (target_medium && !std::wcscmp(scenario, L"release-stall")) Sleep(INFINITE);
             GlobalFree(global); delete this;
         }
         return count;
@@ -119,6 +136,13 @@ struct Source final : IDataObject {
     ULONG STDMETHODCALLTYPE AddRef() override { return InterlockedIncrement(&refs); }
     ULONG STDMETHODCALLTYPE Release() override { LONG n = InterlockedDecrement(&refs); if (!n) delete this; return n; }
     HRESULT STDMETHODCALLTYPE QueryGetData(FORMATETC* format) override {
+        bool target_entered = state->enter_pid != 0 && state->native_stage == 2;
+        LONG slot = InterlockedIncrement(&state->query_trace_count) - 1;
+        if (slot >= 0 && slot < 16) state->query_trace[slot] = QueryTrace{static_cast<DWORD>(format ? format->cfFormat : 0), format ? format->dwAspect : 0, format ? format->tymed : 0, format ? format->lindex : 0, target_entered ? 1 : 0, GetCurrentProcessId(), GetCurrentThreadId()};
+        if (!target_entered) {
+            InterlockedIncrement(&state->preflight_query_calls);
+            return format && format->cfFormat == CF_HDROP && (format->tymed & TYMED_HGLOBAL) != 0 ? S_OK : DV_E_FORMATETC;
+        }
         state->query_pid = GetCurrentProcessId(); state->query_tid = GetCurrentThreadId();
         RPC_CALL_ATTRIBUTES_V2_W attributes{}; attributes.Version = 2; attributes.Flags = RPC_QUERY_CLIENT_PID;
         if (!baseline && RpcServerInqCallAttributesW(nullptr, &attributes) == RPC_S_OK)
@@ -126,14 +150,18 @@ struct Source final : IDataObject {
         InterlockedIncrement(&state->query_calls);
         SetEvent(ready_event);
         if (!std::wcscmp(scenario, L"query-stall")) Sleep(INFINITE);
-        return format && format->cfFormat == CF_HDROP && format->tymed == TYMED_HGLOBAL ? S_OK : DV_E_FORMATETC;
+        return format && format->cfFormat == CF_HDROP && (format->tymed & TYMED_HGLOBAL) != 0 ? S_OK : DV_E_FORMATETC;
     }
     HRESULT STDMETHODCALLTYPE GetData(FORMATETC* format, STGMEDIUM* medium) override {
-        state->data_pid = GetCurrentProcessId(); state->data_tid = GetCurrentThreadId();
-        InterlockedIncrement(&state->data_calls);
-        if (!std::wcscmp(scenario, L"get-stall")) Sleep(INFINITE);
         if (!format || !medium) return E_POINTER;
-        SIZE_T bytes = !std::wcscmp(scenario, L"over-memory") ? 128 * 1024 * 1024 : 64;
+        *medium = STGMEDIUM{};
+        if (format->cfFormat != CF_HDROP || (format->tymed & TYMED_HGLOBAL) == 0) return DV_E_FORMATETC;
+        bool target_entered = state->enter_pid != 0 && state->native_stage == 3;
+        if (!target_entered) InterlockedIncrement(&state->preflight_get_calls);
+        state->data_pid = GetCurrentProcessId(); state->data_tid = GetCurrentThreadId();
+        if (target_entered) InterlockedIncrement(&state->data_calls);
+        if (target_entered && !std::wcscmp(scenario, L"get-stall")) Sleep(INFINITE);
+        SIZE_T bytes = target_entered && !std::wcscmp(scenario, L"over-memory") ? 128 * 1024 * 1024 : 64;
         state->offered_bytes = bytes;
         HGLOBAL global = GlobalAlloc(GMEM_MOVEABLE | GMEM_ZEROINIT, bytes);
         if (!global) { state->source_data_result = E_OUTOFMEMORY; return E_OUTOFMEMORY; }
@@ -145,14 +173,20 @@ struct Source final : IDataObject {
         memcpy(data, &offset, sizeof(offset)); memcpy(data + 16, &wide, sizeof(wide));
         memcpy(data + 20, path, sizeof(path)); GlobalUnlock(global);
         medium->tymed = TYMED_HGLOBAL; medium->hGlobal = global;
-        medium->pUnkForRelease = new MediumRelease(global);
+        medium->pUnkForRelease = new MediumRelease(global, target_entered);
         state->source_data_result = S_OK;
         return S_OK;
     }
     HRESULT STDMETHODCALLTYPE GetDataHere(FORMATETC*, STGMEDIUM*) override { return E_NOTIMPL; }
     HRESULT STDMETHODCALLTYPE GetCanonicalFormatEtc(FORMATETC*, FORMATETC* out) override { if (out) out->ptd = nullptr; return E_NOTIMPL; }
     HRESULT STDMETHODCALLTYPE SetData(FORMATETC*, STGMEDIUM*, BOOL) override { return E_NOTIMPL; }
-    HRESULT STDMETHODCALLTYPE EnumFormatEtc(DWORD, IEnumFORMATETC**) override { return E_NOTIMPL; }
+    HRESULT STDMETHODCALLTYPE EnumFormatEtc(DWORD direction, IEnumFORMATETC** out) override {
+        InterlockedIncrement(&state->enum_calls);
+        if (!out) return E_POINTER; *out = nullptr;
+        if (direction != DATADIR_GET) return E_NOTIMPL;
+        FORMATETC format{CF_HDROP, nullptr, DVASPECT_CONTENT, -1, TYMED_HGLOBAL};
+        return SHCreateStdEnumFmtEtc(1, &format, out);
+    }
     HRESULT STDMETHODCALLTYPE DAdvise(FORMATETC*, DWORD, IAdviseSink*, DWORD*) override { return OLE_E_ADVISENOTSUPPORTED; }
     HRESULT STDMETHODCALLTYPE DUnadvise(DWORD) override { return OLE_E_ADVISENOTSUPPORTED; }
     HRESULT STDMETHODCALLTYPE EnumDAdvise(IEnumSTATDATA**) override { return OLE_E_ADVISENOTSUPPORTED; }
@@ -166,12 +200,13 @@ struct DropSource final : IDropSource {
     }
     ULONG STDMETHODCALLTYPE AddRef() override { return InterlockedIncrement(&refs); }
     ULONG STDMETHODCALLTYPE Release() override { LONG n = InterlockedDecrement(&refs); if (!n) delete this; return n; }
-    HRESULT STDMETHODCALLTYPE QueryContinueDrag(BOOL, DWORD) override { return state->enter_pid ? DRAGDROP_S_DROP : S_OK; }
-    HRESULT STDMETHODCALLTYPE GiveFeedback(DWORD) override { return DRAGDROP_S_USEDEFAULTCURSORS; }
+    HRESULT STDMETHODCALLTYPE QueryContinueDrag(BOOL, DWORD) override { InterlockedIncrement(&state->source_continue_calls); return state->enter_pid ? DRAGDROP_S_DROP : S_OK; }
+    HRESULT STDMETHODCALLTYPE GiveFeedback(DWORD) override { InterlockedIncrement(&state->source_feedback_calls); return DRAGDROP_S_USEDEFAULTCURSORS; }
 };
-static void CALLBACK private_move(HWND, UINT, UINT_PTR, DWORD) {
-    // A thread message in the private source only; no SendInput/SetCursorPos.
-    PostThreadMessageW(GetCurrentThreadId(), WM_MOUSEMOVE, MK_LBUTTON, MAKELPARAM(0, 0));
+static void CALLBACK private_move(HWND window, UINT, UINT_PTR, DWORD) {
+    // A window message in the owned source only; never system input injection.
+    InterlockedIncrement(&state->private_move_calls); state->message_position = GetMessagePos();
+    PostMessageW(window, WM_MOUSEMOVE, MK_LBUTTON, MAKELPARAM(-256, -256));
 }
 struct Target final : IDropTarget {
     LONG refs = 1;
@@ -184,20 +219,25 @@ struct Target final : IDropTarget {
     ULONG STDMETHODCALLTYPE Release() override { LONG n = InterlockedDecrement(&refs); if (!n) delete this; return n; }
     HRESULT STDMETHODCALLTYPE DragEnter(IDataObject* source, DWORD, POINTL, DWORD* effect) override {
         state->enter_pid = GetCurrentProcessId(); state->enter_tid = GetCurrentThreadId();
+        state->native_stage = 1;
         // The failure control executes an owned source directly on the HWND's
         // foreground STA; remote COM waits may pump window messages themselves.
         std::unique_ptr<Source> local_baseline(baseline ? new Source : nullptr);
         if (local_baseline) source = local_baseline.get();
         *effect = DROPEFFECT_NONE;
         FORMATETC format{CF_HDROP, nullptr, DVASPECT_CONTENT, -1, TYMED_HGLOBAL};
+        state->native_stage = 2;
         state->query_result = source->QueryGetData(&format);
         if (state->query_result != S_OK) return S_OK;
         STGMEDIUM medium{};
+        state->native_stage = 3;
         state->get_result = source->GetData(&format, &medium);
         if (FAILED(state->get_result)) return S_OK;
         // This deliberately mirrors the old reader's post-acquisition boundary.
         bool admitted = medium.tymed == TYMED_HGLOBAL && GlobalSize(medium.hGlobal) <= 65536;
+        state->native_stage = 4;
         ReleaseStgMedium(&medium);
+        state->native_stage = 5;
         if (admitted) { state->copied = 1; *effect = DROPEFFECT_COPY; }
         return S_OK;
     }
@@ -249,11 +289,17 @@ static int source(int argc, wchar_t** argv) {
     require_hr(OleInitialize(nullptr), "source OleInitialize");
     auto* offered = new Source; DWORD effect = DROPEFFECT_COPY;
     if (ole_route) {
+        WNDCLASSW cls{}; cls.lpfnWndProc = DefWindowProcW; cls.hInstance = GetModuleHandleW(nullptr); cls.lpszClassName = L"ScreenshotsPrivateDropSource";
+        require(RegisterClassW(&cls) != 0, "private source class");
+        HWND source_window = CreateWindowExW(0, cls.lpszClassName, L"owned synthetic source", WS_POPUP | WS_VISIBLE, 256, 256, 64, 64, nullptr, nullptr, cls.hInstance, nullptr);
+        require(source_window != nullptr, "private source window");
+        state->point_window = reinterpret_cast<UINT_PTR>(WindowFromPoint(POINT{0, 0}));
+        state->cursor_ok = GetCursorPos(&state->cursor); state->cursor_error = state->cursor_ok ? 0 : GetLastError();
         auto* drag_source = new DropSource;
-        UINT_PTR timer = SetTimer(nullptr, 0, 10, private_move); require(timer != 0, "private operation timer");
-        private_move(nullptr, 0, 0, 0);
+        UINT_PTR timer = SetTimer(source_window, 1, 10, private_move); require(timer != 0, "private operation timer");
+        private_move(source_window, 0, 0, 0);
         state->enter_result = DoDragDrop(offered, drag_source, DROPEFFECT_COPY, &effect);
-        KillTimer(nullptr, timer); drag_source->Release();
+        KillTimer(source_window, timer); drag_source->Release(); DestroyWindow(source_window); UnregisterClassW(cls.lpszClassName, cls.hInstance);
     } else {
         HGLOBAL global = GlobalAlloc(GMEM_MOVEABLE, state->marshal_bytes); require(global != nullptr, "unmarshal storage");
         void* bytes = GlobalLock(global); require(bytes != nullptr, "unmarshal lock");
@@ -294,13 +340,29 @@ static bool pump_until(HANDLE event, ULONGLONG limit, ULONG& dispatched) {
 int wmain(int argc, wchar_t** argv) {
     if (argc > 1 && !std::wcscmp(argv[1], L"--receiver")) return receiver(argc, argv);
     if (argc > 1 && !std::wcscmp(argv[1], L"--source")) return source(argc, argv);
-    require(argc == 2, "supply [baseline-][ole-]normal/query-stall/get-stall/over-memory/release-stall"); scenario = parse_scenario(argv[1]);
+    bool explicit_ci_flag = argc == 3 && !std::wcscmp(argv[1], L"--owned-ci-input-desktop");
+    require(argc == 2 || explicit_ci_flag, "supply one scenario, with the explicit flag only for owned hosted CI");
+    const wchar_t* case_name = explicit_ci_flag ? argv[2] : argv[1]; scenario = parse_scenario(case_name);
+    require(!ci_input || explicit_ci_flag, "CI input scenario requires --owned-ci-input-desktop");
     std::wstring station_name = L"ScreenshotsDropProbe-" + std::to_wstring(GetCurrentProcessId());
     HWINSTA original_station = GetProcessWindowStation(); HDESK original_desktop = GetThreadDesktop(GetCurrentThreadId());
-    HWINSTA station = CreateWindowStationW(station_name.c_str(), 0, WINSTA_ALL_ACCESS, nullptr);
-    require(station != nullptr, "private window station"); require(SetProcessWindowStation(station), "select private station");
-    HDESK desktop = CreateDesktopW(L"probe", nullptr, nullptr, 0, DESKTOP_CREATEWINDOW | DESKTOP_READOBJECTS | DESKTOP_WRITEOBJECTS | DESKTOP_ENUMERATE, nullptr);
+    HWINSTA station = original_station; HDESK original_input = nullptr; POINT original_cursor{};
+    std::wstring desktop_name = ci_input ? station_name : L"probe", desktop_path;
+    if (ci_input) {
+        wchar_t station_label[128]{}; DWORD actual = 0;
+        require(GetUserObjectInformationW(original_station, UOI_NAME, station_label, sizeof(station_label), &actual) && !std::wcscmp(station_label, L"WinSta0"), "CI input mode needs its interactive WinSta0");
+        original_input = OpenInputDesktop(0, FALSE, DESKTOP_SWITCHDESKTOP | DESKTOP_READOBJECTS | DESKTOP_WRITEOBJECTS);
+        require(original_input != nullptr && GetCursorPos(&original_cursor), "owned CI original input state");
+        desktop_path = L"WinSta0\\" + desktop_name;
+    } else {
+        station = CreateWindowStationW(station_name.c_str(), 0, WINSTA_ALL_ACCESS, nullptr);
+        require(station != nullptr, "private window station"); require(SetProcessWindowStation(station), "select private station");
+        desktop_path = station_name + L"\\probe";
+    }
+    DWORD desktop_access = DESKTOP_CREATEWINDOW | DESKTOP_READOBJECTS | DESKTOP_WRITEOBJECTS | DESKTOP_ENUMERATE | (ci_input ? DESKTOP_SWITCHDESKTOP : 0);
+    HDESK desktop = CreateDesktopW(desktop_name.c_str(), nullptr, nullptr, 0, desktop_access, nullptr);
     require(desktop != nullptr && SetThreadDesktop(desktop), "private desktop");
+    if (ci_input) { require(SwitchDesktop(desktop), "select owned CI input desktop"); require(SetCursorPos(16, 16), "owned CI private cursor position"); }
     HWND window = owner_window();
     SECURITY_ATTRIBUTES security{sizeof(security), nullptr, TRUE};
     HANDLE mapping = CreateFileMappingW(INVALID_HANDLE_VALUE, &security, PAGE_READWRITE, 0, sizeof(Shared), nullptr);
@@ -314,16 +376,16 @@ int wmain(int argc, wchar_t** argv) {
     require(SetInformationJobObject(job, JobObjectExtendedLimitInformation, &limits, sizeof(limits)), "outer job configuration");
     wchar_t executable[32768]; require(GetModuleFileNameW(nullptr, executable, 32768) > 0, "executable path");
     auto command = [&](const wchar_t* mode) {
-        return L"\"" + std::wstring(executable) + L"\" " + mode + L" " + std::to_wstring(reinterpret_cast<UINT_PTR>(mapping)) + L" " + std::to_wstring(reinterpret_cast<UINT_PTR>(ready_event)) + L" " + std::to_wstring(reinterpret_cast<UINT_PTR>(done_event)) + L" " + std::to_wstring(reinterpret_cast<UINT_PTR>(stop_event)) + L" " + std::to_wstring(reinterpret_cast<UINT_PTR>(window)) + L" " + argv[1];
+        return L"\"" + std::wstring(executable) + L"\" " + mode + L" " + std::to_wstring(reinterpret_cast<UINT_PTR>(mapping)) + L" " + std::to_wstring(reinterpret_cast<UINT_PTR>(ready_event)) + L" " + std::to_wstring(reinterpret_cast<UINT_PTR>(done_event)) + L" " + std::to_wstring(reinterpret_cast<UINT_PTR>(stop_event)) + L" " + std::to_wstring(reinterpret_cast<UINT_PTR>(window)) + L" " + case_name;
     };
     auto handles = std::vector<HANDLE>{mapping, ready_event, done_event, stop_event};
-    auto receiver_process = launch(command(L"--receiver"), station_name + L"\\probe", job, handles);
+    auto receiver_process = launch(command(L"--receiver"), desktop_path, job, handles);
     ULONG dispatched = 0; ULONGLONG begin = GetTickCount64();
     bool ready = pump_until(ready_event, begin + deadline_ms, dispatched);
     PROCESS_INFORMATION source_process{}; bool delivered = false, cleaned = false, ping = false;
     if (ready && state->registration == S_OK) {
         ResetEvent(ready_event);
-        source_process = launch(command(L"--source"), station_name + L"\\probe", job, handles);
+        source_process = launch(command(L"--source"), desktop_path, job, handles);
         bool queried = pump_until(ready_event, begin + deadline_ms, dispatched);
         if (queried) {
             ResetEvent(ready_event);
@@ -341,7 +403,13 @@ int wmain(int argc, wchar_t** argv) {
     require(GetExitCodeProcess(receiver_process.hProcess, &receiver_exit), "receiver exit code");
     if (source_process.hProcess) require(GetExitCodeProcess(source_process.hProcess, &source_exit), "source exit code");
     bool topology = state->enter_pid == state->receiver_pid && state->enter_tid == state->receiver_tid && (baseline ? state->query_pid == state->owner_pid && state->query_tid == state->owner_tid : state->query_pid == state->source_pid && state->query_tid == state->source_tid);
-    std::printf("{\"scope\":\"%s\",\"baseline_foreground\":%s,\"baseline_uses_local_owned_source\":%s,\"owner_ping_within_50ms\":%s,\"registration\":%ld,\"ready\":%s,\"delivered\":%s,\"cleaned\":%s,\"topology\":%s,\"native_bound\":%ld,\"small_probe\":%ld,\"large_probe\":%ld,\"baseline_private\":%llu,\"growth_bytes\":%llu,\"copied\":%ld,\"query_calls\":%ld,\"data_calls\":%ld,\"medium_releases\":%ld,\"elapsed_ms\":%llu,\"owner_messages\":%lu,\"controller_pid\":%lu,\"owner_pid\":%lu,\"receiver_pid\":%lu,\"enter_pid\":%lu,\"source_pid\":%lu,\"query_pid\":%lu,\"query_client_pid\":%lu,\"query_client_pid_available\":%s,\"query_result\":%ld,\"get_result\":%ld,\"source_data_result\":%ld,\"offered_bytes\":%llu,\"cleanup_result\":%ld,\"receiver_exit\":%lu,\"source_exit\":%lu,\"failure_pid\":%lu,\"failure_win32_error\":%lu,\"failure_hresult\":%ld,\"failure_stage\":\"%s\",\"all_children_reaped\":true}\n", ole_route ? "private-DoDragDrop" : "private-direct-COM-proxy", baseline ? "true" : "false", baseline ? "true" : "false", ping ? "true" : "false", state->registration, ready ? "true" : "false", delivered ? "true" : "false", cleaned ? "true" : "false", topology ? "true" : "false", state->native_bound, state->small_probe, state->large_probe, state->private_baseline, static_cast<ULONGLONG>(growth), state->copied, state->query_calls, state->data_calls, state->medium_releases, GetTickCount64() - begin, dispatched, GetCurrentProcessId(), state->owner_pid, state->receiver_pid, state->enter_pid, state->source_pid, state->query_pid, state->query_client_pid, state->query_client_pid ? "true" : "false", state->query_result, state->get_result, state->source_data_result, state->offered_bytes, state->cleanup_result, receiver_exit, source_exit, state->failure_pid, state->failure_win32_error, state->failure_hresult, state->failure_stage);
+    std::printf("{\"preflight_query_calls\":%ld,\"preflight_get_calls\":%ld,\"preflight_medium_releases\":%ld,\"native_stage\":%ld,\"enum_calls\":%ld,\"source_continue_calls\":%ld,\"source_feedback_calls\":%ld,\"private_move_calls\":%ld,\"cursor_ok\":%ld,\"cursor_error\":%lu,\"cursor_x\":%ld,\"cursor_y\":%ld,\"message_position\":%lu,\"point_zero_is_owner\":%s,\"query_trace_count\":%ld,\"query_trace\":[", state->preflight_query_calls, state->preflight_get_calls, state->preflight_medium_releases, state->native_stage, state->enum_calls, state->source_continue_calls, state->source_feedback_calls, state->private_move_calls, state->cursor_ok, state->cursor_error, state->cursor.x, state->cursor.y, state->message_position, state->point_window == state->owner_hwnd ? "true" : "false", state->query_trace_count);
+    for (LONG index = 0; index < state->query_trace_count && index < 16; ++index) {
+        const auto& trace = state->query_trace[index];
+        std::printf("%s{\"format\":%lu,\"aspect\":%lu,\"tymed\":%lu,\"index\":%ld,\"after_enter\":%ld,\"pid\":%lu,\"tid\":%lu}", index ? "," : "", trace.format, trace.aspect, trace.tymed, trace.index, trace.after_enter, trace.pid, trace.tid);
+    }
+    std::printf("],");
+    std::printf("\"scope\":\"%s\",\"baseline_foreground\":%s,\"baseline_uses_local_owned_source\":%s,\"owner_ping_within_50ms\":%s,\"registration\":%ld,\"ready\":%s,\"delivered\":%s,\"cleaned\":%s,\"topology\":%s,\"native_bound\":%ld,\"small_probe\":%ld,\"large_probe\":%ld,\"baseline_private\":%llu,\"growth_bytes\":%llu,\"copied\":%ld,\"query_calls\":%ld,\"data_calls\":%ld,\"medium_releases\":%ld,\"elapsed_ms\":%llu,\"owner_messages\":%lu,\"controller_pid\":%lu,\"owner_pid\":%lu,\"receiver_pid\":%lu,\"enter_pid\":%lu,\"source_pid\":%lu,\"query_pid\":%lu,\"query_client_pid\":%lu,\"query_client_pid_available\":%s,\"query_result\":%ld,\"get_result\":%ld,\"source_data_result\":%ld,\"offered_bytes\":%llu,\"cleanup_result\":%ld,\"receiver_exit\":%lu,\"source_exit\":%lu,\"failure_pid\":%lu,\"failure_win32_error\":%lu,\"failure_hresult\":%ld,\"failure_stage\":\"%s\",\"all_children_reaped\":true}\n", ci_input ? "owned-hosted-CI-input-DoDragDrop" : ole_route ? "private-DoDragDrop" : "private-direct-COM-proxy", baseline ? "true" : "false", baseline ? "true" : "false", ping ? "true" : "false", state->registration, ready ? "true" : "false", delivered ? "true" : "false", cleaned ? "true" : "false", topology ? "true" : "false", state->native_bound, state->small_probe, state->large_probe, state->private_baseline, static_cast<ULONGLONG>(growth), state->copied, state->query_calls, state->data_calls, state->medium_releases, GetTickCount64() - begin, dispatched, GetCurrentProcessId(), state->owner_pid, state->receiver_pid, state->enter_pid, state->source_pid, state->query_pid, state->query_client_pid, state->query_client_pid ? "true" : "false", state->query_result, state->get_result, state->source_data_result, state->offered_bytes, state->cleanup_result, receiver_exit, source_exit, state->failure_pid, state->failure_win32_error, state->failure_hresult, state->failure_stage);
     bool expected = ready && state->registration == S_OK && state->native_bound && state->small_probe && state->large_probe && state->query_calls == 1 && (baseline ? state->owner_pid == state->receiver_pid : state->owner_pid != state->receiver_pid);
     if (state->query_client_pid) expected = expected && state->query_client_pid == state->receiver_pid;
     if (!std::wcscmp(scenario, L"normal")) expected = expected && topology && delivered && cleaned && state->copied && state->medium_releases == 1 && state->data_calls == 1 && state->get_result == S_OK && state->cleanup_result == S_OK && (!ole_route || state->enter_result == DRAGDROP_S_DROP);
@@ -356,6 +424,9 @@ int wmain(int argc, wchar_t** argv) {
     CloseHandle(receiver_process.hProcess); if (source_process.hProcess) CloseHandle(source_process.hProcess); CloseHandle(job);
     UnmapViewOfFile(state); state = nullptr; CloseHandle(mapping); CloseHandle(ready_event); CloseHandle(done_event); CloseHandle(stop_event);
     DestroyWindow(window); UnregisterClassW(L"ScreenshotsPrivateDropProbe", GetModuleHandleW(nullptr));
-    require(SetThreadDesktop(original_desktop), "restore desktop"); require(SetProcessWindowStation(original_station), "restore station"); CloseDesktop(desktop); CloseWindowStation(station);
+    if (ci_input) require(SwitchDesktop(original_input), "restore owned CI input desktop");
+    require(SetThreadDesktop(original_desktop), "restore desktop");
+    if (ci_input) { require(SetCursorPos(original_cursor.x, original_cursor.y), "restore owned CI cursor"); CloseDesktop(original_input); }
+    require(SetProcessWindowStation(original_station), "restore station"); CloseDesktop(desktop); if (!ci_input) CloseWindowStation(station);
     return expected ? 0 : 1;
 }
