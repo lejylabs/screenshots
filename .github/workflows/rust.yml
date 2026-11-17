@@ -77,6 +77,13 @@ jobs:
           cargo test --locked --profile release-fast -p app-core -j 2 single_instance_unix::tests:: -- --test-threads=1
           cargo test --locked --profile release-fast -p app-ui --lib -j 2 desktop_startup_tests:: -- --test-threads=1
 
+      - name: Run owned Unix print acceptance
+        run: |
+          cargo test --locked --profile release-fast -p app-core --lib -j 2 image_print -- --test-threads=1
+          cargo test --locked --profile release-fast -p screenshots --bin screenshots -j 2 print_image::tests:: -- --test-threads=1
+          cargo build --locked --profile release-fast -p screenshots -j 2
+          python3 scripts/verify-image-print-virtual-ipp.py "$PWD/target/release-fast/screenshots"
+
   windows-native-witness:
     runs-on: windows-latest
     timeout-minutes: 50
@@ -169,4 +176,18 @@ jobs:
           cargo test --locked --profile release-fast -p gpui-pre --lib -j 2 incoming_drop_ownership_tests -- --test-threads=1
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           cargo test --locked --profile release-fast -p gpui-pre --lib -j 2 windows_file_drop_consumer_tests -- --test-threads=1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Run owned Windows print process and pixel fixtures
+        shell: pwsh
+        run: |
+          cargo test --locked --profile release-fast -p app-core --lib -j 2 image_print -- --test-threads=1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo test --locked --profile release-fast -p screenshots --bin screenshots -j 2 print_image::tests:: -- --test-threads=1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          New-Item -ItemType Directory -Path target/owned-print-fixture -Force | Out-Null
+          rustc --edition 2024 -O apps/desktop/tests/fixtures/print_image/fake_worker_windows.rs -o target/owned-print-fixture/fake-worker.exe
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $env:SCREENSHOTS_PRINT_TEST_HELPER = Join-Path $PWD 'target/owned-print-fixture/fake-worker.exe'
+          cargo test --locked --profile release-fast -p screenshots --bin screenshots -j 2 print_image::tests::windows_owned_job_acceptance_rejection_timeout_and_cancel -- --ignored --exact --test-threads=1
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

@@ -32,6 +32,7 @@ mod ocr;
 #[cfg(target_os = "windows")]
 mod ocr_windows;
 mod png_metadata;
+mod print_image;
 mod qr;
 mod record;
 #[cfg(target_os = "windows")]
@@ -62,7 +63,12 @@ fn main() {
     let arguments: Vec<_> = std::env::args_os().skip(1).collect();
     let result = launch(
         arguments,
-        capture_worker::try_child,
+        |arguments| {
+            if print_image::try_child(arguments)? {
+                return Ok(true);
+            }
+            capture_worker::try_child(arguments)
+        },
         capture_worker::install,
         cli::run,
         || {

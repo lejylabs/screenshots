@@ -13,16 +13,18 @@ image/QR/OCR tools, storage maintenance, native credential adapters and packagin
 are separate slices; they do not close platform, editor workflow, resource or
 ShareX-parity acceptance gates. The complete requested backlog remains open.
 
-Latest non-UI checkpoint (2026-11-17): the applied bounded Windows file-drop
-metadata/window-ownership correction passes 1,065 optimized regular workspace
-tests (71 opt-ins excluded), all-target Clippy, Linux/Windows GNU metadata and
-focused GPUI regressions. Native COM acquisition containment remains a code gap;
-real Windows execution and resource acceptance are separate. Earlier format/
-Wayland, Mac video-family completion and Unix ownership/reopen are committed and
-have their own exact-checkpoint evidence. Read the
-[current checklist](docs/non-ui-status.md) and
-[drop contract](docs/clipboard-import-output.md) for scope; the full non-UI backlog,
-physical/reference-hardware and release acceptance remain open.
+Latest non-UI checkpoint (2026-11-17): chronological capture/upload history
+queries now order exact fractional UTC timestamps with independent keyset cursors.
+Seventeen targeted core and two real CLI cases, two explicit optimized cost/
+allocator probes, 156 separate executable cost/memory requests, optimized Clippy,
+Windows GNU metadata and formatting pass. The preceding Windows file-drop
+correction `f2f03a4` passed 1,065 regular workspace tests (71 opt-ins excluded)
+and focused GPUI regressions. Native COM acquisition containment remains a code
+gap; physical/reference-hardware and release acceptance remain separate.
+Read the [current checklist](docs/non-ui-status.md),
+[history contract](docs/history-queries.md) and
+[drop contract](docs/clipboard-import-output.md) for exact scope and source
+provenance. The full non-UI backlog remains open.
 
 ## Session handoff — start here (2026-11-12)
 

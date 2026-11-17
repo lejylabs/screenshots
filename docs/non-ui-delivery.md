@@ -1990,3 +1990,57 @@ previous failed/canceled jobs and ignored physical tests are not passes. No
 signing identity/account permission/reference hardware was invented. The PC
 remains on, user files and private clipboard remain untouched, and reproducible
 old build artifacts were cleaned as requested.
+
+
+## Exact chronological history queries (2026-11-17)
+
+Core/CLI date-oldest/date-newest now order full-precision UTC timestamps with ID
+ties, independent timestamp/ID cursors, deleted-anchor stability and the existing
+read-only/query/cancellation bounds. Existing ID APIs/JSON remain compatible.
+Fresh source rounds 2/3 converged after fixing oversized numeric sort payloads;
+round 2's legacy-fixture wording Nit was corrected before clean round 3.
+
+Actual optimized checks passed 17 core cases, both real CLI integration cases,
+and two explicitly run ignored timing/allocator probes. Initial test setup
+failures (current writer CHECKs and private reservation callbacks) were corrected
+only in owned fixtures; production admission/writer behavior was unchanged.
+The application-linked allocator reproduction measured 52,967,296 bytes of query
+peak growth with raw malformed dimensions versus 583,312 bytes with guarded
+projections. Warm 10k capture/upload date-query p95 was 4.754/4.764 ms. A separate
+real CLI probe ran 150 timed plus six memory-sampled requests using a migrated
+10k-capture/10k-upload metadata database; bytes stayed unchanged, no image/GUI/
+network was opened, and GNU-time maximum RSS was 23,028 KiB. These local
+observations are not reference-hardware or visible-shell memory acceptance.
+
+All-target optimized Clippy, Windows GNU all-target metadata (14.61 seconds),
+formatting and diff checks pass. The initial cross-check with an unconfigured
+MinGW PATH failed before app checking and is retained separately; the existing
+owned MinGW toolchain produced the passing metadata result. Exact commands,
+failures, source identities and results are in
+`target/verification/history-chronological-integration/`. See the
+[query contract](history-queries.md) for limits and measurements. No new UI,
+index/migration, dependency, worker, cache, thread, polling or idle action is added.
+
+
+## Explicit isolated image printing (2026-11-17)
+
+Core/CLI printing now decodes final managed pixels in an operation-owned helper,
+flattens alpha over white, fits one portrait A4/Letter page and submits only to
+an explicit destination. Unix uses bounded direct IPP to an existing local
+non-temporary queue; Windows uses explicit GDI/driver-mode admission and lazy
+System32-only Winspool loading. No startup query, default queue, image tempfile,
+new UI, discovery, queue provisioning or automatic retry is added.
+
+Independent source rounds 2/3 are clean after fixing review 1's CUPS lp discovery
+and provisioning fallback. Actual optimized core tests (three), desktop tests
+(six) and real CLI/private IPP E2E pass, including missing-queue one-query/no-job,
+metadata-free final pixels/source preservation, cancellation/deadline/cleanup
+and broken public stdout without automatic resubmission. Linux and Windows GNU
+all-target metadata, optimized all-target Clippy, formatting and diff checks pass.
+Interrupted pre-restart work and the Windows SDK constant-type correction remain
+separate records; no zero-filter or interrupted run is counted as a test pass.
+
+See [the contract](image-printing.md) and exact local evidence under
+`target/verification/native-print-integration/`. Native Windows GDI output/fault
+injection, macOS actual process/IPP and resource acceptance remain open; neither
+metadata checks nor a loopback sink proves physical print delivery.
