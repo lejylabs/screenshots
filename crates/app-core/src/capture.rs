@@ -874,8 +874,9 @@ impl XcapBackend {
                             &monitor,
                             &self.options,
                             &windows,
+                            &|| self.check_native(check),
                         )
-                        .map_err(backend_error)?;
+                        .map_err(checked_native_error)?;
                         #[cfg(not(target_os = "windows"))]
                         let mut image =
                             crate::capture_native::capture_display(&monitor, &self.options)
@@ -910,9 +911,13 @@ impl XcapBackend {
                             return Err(CaptureError::WindowNotFound(id));
                         }
                         #[cfg(target_os = "windows")]
-                        let image =
-                            crate::capture_native::capture_window(&window, &self.options, &windows)
-                                .map_err(backend_error)?;
+                        let image = crate::capture_native::capture_window(
+                            &window,
+                            &self.options,
+                            &windows,
+                            &|| self.check_native(check),
+                        )
+                        .map_err(checked_native_error)?;
                         #[cfg(not(target_os = "windows"))]
                         let image = crate::capture_native::capture_window(&window, &self.options)
                             .map_err(backend_error)?;
@@ -947,8 +952,9 @@ impl XcapBackend {
                             area,
                             &self.options,
                             &windows,
+                            &|| self.check_native(check),
                         )
-                        .map_err(backend_error)?;
+                        .map_err(checked_native_error)?;
                         #[cfg(not(target_os = "windows"))]
                         let mut image =
                             crate::capture_native::capture_region(&monitor, area, &self.options)
@@ -1431,6 +1437,12 @@ fn linux_x11_windows_available(display: Option<&std::ffi::OsStr>) -> bool {
         .is_some_and(|display| !display.trim().is_empty())
 }
 
+#[cfg(target_os = "windows")]
+fn checked_native_error(error: anyhow::Error) -> CaptureError {
+    error
+        .downcast::<CaptureError>()
+        .unwrap_or_else(backend_error)
+}
 fn backend_error(error: impl std::fmt::Display) -> CaptureError {
     CaptureError::Backend(error.to_string())
 }
@@ -1539,6 +1551,18 @@ pub fn capture_output_dir() -> PathBuf {
 mod tests {
     use super::*;
 
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn row_cancellation_keeps_its_category_through_native_error_delivery() {
+        assert!(matches!(
+            checked_native_error(CaptureError::NativeCanceled.into()),
+            CaptureError::NativeCanceled
+        ));
+        assert!(matches!(
+            checked_native_error(CaptureError::StaleRegion.into()),
+            CaptureError::StaleRegion
+        ));
+    }
     #[test]
     fn invalid_source_count_fails_before_native_initialization() {
         let backend = XcapBackend::new(PathBuf::new());

@@ -1,6 +1,6 @@
 //! One finite WGC scRGB still capture. No shared D3D state or resident frame pool.
 use super::{DpiScope, wide};
-use crate::PixelRegion;
+use crate::{NativeCaptureCheck, PixelRegion, capture_half_tiles::Plan};
 use anyhow::{Context, Result, ensure};
 use std::{mem::size_of, ptr, sync::mpsc::sync_channel, time::Duration};
 use windows::{
@@ -261,6 +261,7 @@ fn capture(
     area: PixelRegion,
     state: Color,
     check: &impl Fn() -> Result<()>,
+    cancel: &NativeCaptureCheck<'_>,
 ) -> Result<image::RgbaImage> {
     ensure!(
         GraphicsCaptureSession::IsSupported()?,
@@ -286,12 +287,8 @@ fn capture(
                 .is_some_and(|end| end <= height),
         "Native float source exceeds memory/geometry admission"
     );
-    // One frame texture + one FP16 staging texture count against the GPU image
-    // budget S+E+32 MiB. A 4K RGBA8 output is below the 32 MiB staging allowance.
-    ensure!(
-        u64::from(area.width) * u64::from(area.height) * 4 <= 32 * 1024 * 1024,
-        "Native float staging exceeds active GPU-image admission; choose a smaller region"
-    );
+    Plan::new(width, height, area)?;
+    cancel()?;
     let mut device = None;
     let mut context = None;
     unsafe {
@@ -316,6 +313,7 @@ fn capture(
     );
     let dxgi: IDXGIDevice = device.cast()?;
     let direct: IDirect3DDevice = unsafe { CreateDirect3D11DeviceFromDXGIDevice(&dxgi)? }.cast()?;
+    cancel()?;
     check()?;
     let pool = Direct3D11CaptureFramePool::CreateFreeThreaded(
         &direct,
@@ -355,6 +353,7 @@ fn capture(
         .session
         .SetIsCursorCaptureEnabled(false)
         .context("Native float cursor exclusion unavailable")?;
+    cancel()?;
     check()?;
     owner.session.StartCapture()?;
     receiver
@@ -385,66 +384,9 @@ fn capture(
     // Stop the producer before mapping/conversion; the checked-out frame stays
     // alive until all GPU source reads finish. No second frame can be retained.
     owner.session.Close()?;
+    cancel()?;
     check()?;
-    let mut staging_desc = desc;
-    staging_desc.Width = area.width;
-    staging_desc.Height = area.height;
-    staging_desc.BindFlags = 0;
-    staging_desc.MiscFlags = 0;
-    staging_desc.Usage = D3D11_USAGE_STAGING;
-    staging_desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ.0 as u32;
-    let mut staging = None;
-    unsafe {
-        device.CreateTexture2D(&staging_desc, None, Some(&mut staging))?;
-    }
-    let staging = staging.context("Native bounded float staging allocation unavailable")?;
-    let resource: ID3D11Resource = staging.cast()?;
-    let source: ID3D11Resource = texture.cast()?;
-    let bounds = D3D11_BOX {
-        left: area.x,
-        top: area.y,
-        right: area.x + area.width,
-        bottom: area.y + area.height,
-        front: 0,
-        back: 1,
-    };
-    unsafe {
-        context.CopySubresourceRegion(&resource, 0, 0, 0, 0, &source, 0, Some(&bounds));
-    }
-    let mut mapped = D3D11_MAPPED_SUBRESOURCE::default();
-    unsafe {
-        context.Map(&resource, 0, D3D11_MAP_READ, 0, Some(&mut mapped))?;
-    }
-    let _mapping = Mapping {
-        context: &context,
-        resource,
-    };
-    let stride = mapped.RowPitch as usize;
-    let extent = stride
-        .checked_mul(area.height as usize)
-        .context("Native float row extent overflow")?;
-    ensure!(
-        !mapped.pData.is_null()
-            && stride >= area.width as usize * 8
-            && extent <= crate::MAX_CAPTURE_BYTES as usize,
-        "Native float staging exceeds source admission"
-    );
-    let bytes = unsafe { std::slice::from_raw_parts(mapped.pData.cast::<u8>(), extent) };
-    let output = crate::capture_color::half_rgba_to_sdr(
-        area.width,
-        area.height,
-        stride,
-        bytes,
-        state.hdr,
-        state.white_level,
-        &|| false,
-    )?;
-    unsafe {
-        device.GetDeviceRemovedReason()?;
-    }
-    drop(_mapping);
-    drop(staging);
-    drop(source);
+    let output = readback_half(&device, &context, &texture, area, state, check, cancel)?;
     drop(texture);
     drop(access);
     drop(surface);
@@ -453,11 +395,198 @@ fn capture(
     Ok(output)
 }
 
+struct StagingReadback<'a> {
+    device: &'a ID3D11Device,
+    context: &'a ID3D11DeviceContext,
+    source: ID3D11Resource,
+    staging: ID3D11Resource,
+    plan: Plan,
+}
+impl<'a> StagingReadback<'a> {
+    fn new(
+        device: &'a ID3D11Device,
+        context: &'a ID3D11DeviceContext,
+        texture: &ID3D11Texture2D,
+        desc: D3D11_TEXTURE2D_DESC,
+        plan: Plan,
+    ) -> Result<Self> {
+        let mut desc = desc;
+        desc.Width = plan.stage_width();
+        desc.Height = plan.stage_height();
+        desc.BindFlags = 0;
+        desc.MiscFlags = 0;
+        desc.Usage = D3D11_USAGE_STAGING;
+        desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ.0 as u32;
+        let mut texture_out = None;
+        unsafe {
+            device.CreateTexture2D(&desc, None, Some(&mut texture_out))?;
+        }
+        let staging: ID3D11Resource = texture_out
+            .context("Native bounded float staging allocation unavailable")?
+            .cast()?;
+        Ok(Self {
+            device,
+            context,
+            source: texture.cast()?,
+            staging,
+            plan,
+        })
+    }
+    fn with_tile(
+        &self,
+        tile: PixelRegion,
+        cancel: &NativeCaptureCheck<'_>,
+        mut consume: impl FnMut(u32, &[u8]) -> Result<bool>,
+    ) -> Result<bool> {
+        cancel()?;
+        unsafe {
+            self.device.GetDeviceRemovedReason()?;
+        }
+        let [left, top, right, bottom] = self.plan.source_bounds(tile)?;
+        let bounds = D3D11_BOX {
+            left,
+            top,
+            right,
+            bottom,
+            front: 0,
+            back: 1,
+        };
+        unsafe {
+            self.context.CopySubresourceRegion(
+                &self.staging,
+                0,
+                0,
+                0,
+                0,
+                &self.source,
+                0,
+                Some(&bounds),
+            );
+        }
+        let mut mapped = D3D11_MAPPED_SUBRESOURCE::default();
+        unsafe {
+            self.context
+                .Map(&self.staging, 0, D3D11_MAP_READ, 0, Some(&mut mapped))?;
+        }
+        let mapping = Mapping {
+            context: self.context,
+            resource: self.staging.clone(),
+        };
+        let stride = mapped.RowPitch as usize;
+        let length = self.plan.readable_bytes(tile, stride)?;
+        ensure!(
+            !mapped.pData.is_null(),
+            "Native float tile mapping is unavailable"
+        );
+        let mut stop = false;
+        for row in 0..tile.height {
+            cancel()?;
+            let offset = (row as usize)
+                .checked_mul(stride)
+                .context("Native tile row overflow")?;
+            let row_bytes = tile.width as usize * 8;
+            ensure!(
+                offset
+                    .checked_add(row_bytes)
+                    .is_some_and(|end| end <= length),
+                "Native tile row exceeds admitted mapping"
+            );
+            // Do not construct a reference covering undefined pitch padding or
+            // uncopied staging texels; only this copied row enters the CPU view.
+            let bytes = unsafe {
+                std::slice::from_raw_parts(mapped.pData.cast::<u8>().add(offset), row_bytes)
+            };
+            if consume(row, bytes)? {
+                stop = true;
+                break;
+            }
+        }
+        drop(mapping);
+        unsafe {
+            self.device.GetDeviceRemovedReason()?;
+        }
+        cancel()?;
+        Ok(stop)
+    }
+}
+fn readback_half(
+    device: &ID3D11Device,
+    context: &ID3D11DeviceContext,
+    texture: &ID3D11Texture2D,
+    area: PixelRegion,
+    state: Color,
+    check: &impl Fn() -> Result<()>,
+    cancel: &NativeCaptureCheck<'_>,
+) -> Result<image::RgbaImage> {
+    check()?;
+    cancel()?;
+    let mut desc = D3D11_TEXTURE2D_DESC::default();
+    unsafe {
+        texture.GetDesc(&mut desc);
+    }
+    ensure!(
+        desc.Format == DXGI_FORMAT_R16G16B16A16_FLOAT
+            && desc.MipLevels == 1
+            && desc.ArraySize == 1
+            && desc.SampleDesc.Count == 1,
+        "Native float readback texture format changed"
+    );
+    let plan = Plan::new(desc.Width, desc.Height, area)?;
+    let reader = StagingReadback::new(device, context, texture, desc, plan)?;
+    // Both passes read the same checked-out WGC frame; the producer is closed.
+    // A highlight in the final tile must also tone-map pixels in the first tile.
+    let mut hdr = false;
+    if state.hdr {
+        for tile in plan.tiles() {
+            if reader.with_tile(tile, cancel, |_, bytes| {
+                Ok(crate::capture_color::HalfRows::new(
+                    tile.width,
+                    1,
+                    bytes.len(),
+                    bytes,
+                    state.white_level,
+                )?
+                .has_hdr(cancel)?)
+            })? {
+                hdr = true;
+                break;
+            }
+        }
+    }
+    check()?;
+    cancel()?;
+    let mut output = image::RgbaImage::new(plan.output_width(), plan.output_height());
+    let target: &mut [u8] = output.as_mut();
+    for tile in plan.tiles() {
+        let offset = plan.output_offset(tile)?;
+        reader.with_tile(tile, cancel, |row, bytes| {
+            let offset = offset + row as usize * plan.output_stride();
+            let target = &mut target[offset..offset + tile.width as usize * 4];
+            crate::capture_color::HalfRows::new(
+                tile.width,
+                1,
+                bytes.len(),
+                bytes,
+                state.white_level,
+            )?
+            .write_sdr(hdr, target, tile.width as usize * 4, cancel)?;
+            Ok(false)
+        })?;
+    }
+    check()?;
+    cancel()?;
+    unsafe {
+        device.GetDeviceRemovedReason()?;
+    }
+    Ok(output)
+}
+
 pub(super) fn display(
     monitor: &xcap::Monitor,
     area: PixelRegion,
     before: Color,
     check: &impl Fn() -> Result<()>,
+    cancel: &NativeCaptureCheck<'_>,
 ) -> Result<image::RgbaImage> {
     let _dpi = DpiScope::new()?;
     let _apartment = Apartment::new()?;
@@ -477,7 +606,7 @@ pub(super) fn display(
         size.Width == geometry.width as i32 && size.Height == geometry.height as i32,
         "Native float monitor pixel calibration changed"
     );
-    let output = capture(item, area, before, check)?;
+    let output = capture(item, area, before, check, cancel)?;
     ensure!(
         color(monitor)? == Some(before) && super::monitor_geometry(monitor)? == geometry,
         "Native float display color/geometry changed during acquisition"
@@ -490,6 +619,7 @@ pub(super) fn window(
     full: [i32; 4],
     before: Color,
     check: &impl Fn() -> Result<()>,
+    cancel: &NativeCaptureCheck<'_>,
 ) -> Result<image::RgbaImage> {
     let _apartment = Apartment::new()?;
     let interop = factory::<GraphicsCaptureItem, IGraphicsCaptureItemInterop>()?;
@@ -515,6 +645,7 @@ pub(super) fn window(
         },
         before,
         check,
+        cancel,
     )
 }
 
@@ -567,4 +698,167 @@ pub(super) fn window_color(full: [i32; 4]) -> Result<WindowColor> {
     }
     displays.sort_by(|a, b| a.0.cmp(&b.0));
     Ok(WindowColor { selected, displays })
+}
+
+#[cfg(test)]
+mod tiled_tests {
+    use super::*;
+    use crate::capture_half_tiles::tests::{oracles, pixel};
+    fn color(white: u32, hdr: bool) -> Color {
+        Color {
+            hdr,
+            white_level: white,
+            adapter_low: 1,
+            adapter_high: 0,
+            target: 1,
+            flags: 2,
+            encoding: 0,
+            bits: 16,
+            output_space: 12,
+        }
+    }
+    #[test]
+    #[ignore = "explicit private WARP FP16 texture fixture; no display/window/clipboard capture"]
+    fn owned_warp_texture_tiles_match_oracle_and_unmap_after_failure() -> Result<()> {
+        let _apartment = Apartment::new()?;
+        let mut device = None;
+        let mut context = None;
+        unsafe {
+            D3D11CreateDevice(
+                None,
+                windows::Win32::Graphics::Direct3D::D3D_DRIVER_TYPE_WARP,
+                HMODULE::default(),
+                D3D11_CREATE_DEVICE_BGRA_SUPPORT,
+                None,
+                D3D11_SDK_VERSION,
+                Some(&mut device),
+                None,
+                Some(&mut context),
+            )?;
+        }
+        let device = device.context("Private WARP device unavailable")?;
+        let context = context.context("Private WARP context unavailable")?;
+        let mut cases = vec![(
+            2059,
+            269,
+            PixelRegion {
+                x: 3,
+                y: 5,
+                width: 2053,
+                height: 263,
+            },
+        )];
+        if std::env::var("SCREENSHOTS_HDR_TILE_LARGE").as_deref() == Ok("1") {
+            for (width, height) in [(3840, 2160), (5120, 2880), (7680, 4320)] {
+                cases.push((
+                    width,
+                    height,
+                    PixelRegion {
+                        x: 0,
+                        y: 0,
+                        width,
+                        height,
+                    },
+                ));
+            }
+        }
+        let oracle = oracles().remove(0);
+        for (width, height, area) in cases {
+            let mut bytes = vec![0u8; width as usize * height as usize * 8];
+            for y in 0..height {
+                for x in 0..width {
+                    let sample = pixel(&oracle, x, y, area, true);
+                    let at = (y as usize * width as usize + x as usize) * 8;
+                    for (channel, bits) in sample.half.into_iter().enumerate() {
+                        bytes[at + channel * 2..at + channel * 2 + 2]
+                            .copy_from_slice(&bits.to_le_bytes());
+                    }
+                }
+            }
+            let desc = D3D11_TEXTURE2D_DESC {
+                Width: width,
+                Height: height,
+                MipLevels: 1,
+                ArraySize: 1,
+                Format: DXGI_FORMAT_R16G16B16A16_FLOAT,
+                SampleDesc: DXGI_SAMPLE_DESC {
+                    Count: 1,
+                    Quality: 0,
+                },
+                Usage: D3D11_USAGE_IMMUTABLE,
+                BindFlags: D3D11_BIND_SHADER_RESOURCE.0 as u32,
+                CPUAccessFlags: 0,
+                MiscFlags: 0,
+            };
+            let data = D3D11_SUBRESOURCE_DATA {
+                pSysMem: bytes.as_ptr().cast(),
+                SysMemPitch: width * 8,
+                SysMemSlicePitch: 0,
+            };
+            let mut texture = None;
+            unsafe {
+                device.CreateTexture2D(&desc, Some(&data), Some(&mut texture))?;
+            }
+            let texture = texture.context("Private immutable FP16 texture unavailable")?;
+            let output = readback_half(
+                &device,
+                &context,
+                &texture,
+                area,
+                color(oracle.white, true),
+                &|| Ok(()),
+                &|| Ok(()),
+            )?;
+            for (x, y, value) in output.enumerate_pixels() {
+                ensure!(
+                    value.0 == pixel(&oracle, area.x + x, area.y + y, area, true).hdr,
+                    "Native tiled pixels disagree with independent color oracle"
+                );
+            }
+            let plan = Plan::new(width, height, area)?;
+            let reader = StagingReadback::new(&device, &context, &texture, desc, plan)?;
+            let tile = plan.tiles().next().context("Missing private tile")?;
+            let failed = reader.with_tile(tile, &|| Ok(()), |_, _| {
+                Err(crate::CaptureError::NativeCanceled.into())
+            });
+            let error = failed.expect_err("Private mapped callback failure did not propagate");
+            ensure!(
+                matches!(
+                    error.downcast_ref::<crate::CaptureError>(),
+                    Some(crate::CaptureError::NativeCanceled)
+                ),
+                "Private mapping failed for a reason other than injected cancellation"
+            );
+            // Reusing the same staging resource proves that the error path unmapped it.
+            reader.with_tile(tile, &|| Ok(()), |_, _| Ok(false))?;
+            for source_hdr in [true, false] {
+                let calls = std::cell::Cell::new(0u32);
+                let cancelled = readback_half(
+                    &device,
+                    &context,
+                    &texture,
+                    area,
+                    color(oracle.white, source_hdr),
+                    &|| Ok(()),
+                    &|| {
+                        calls.set(calls.get() + 1);
+                        if calls.get() == 9 {
+                            Err(crate::CaptureError::NativeCanceled)
+                        } else {
+                            Ok(())
+                        }
+                    },
+                );
+                let error = cancelled.expect_err("Private row cancellation published output");
+                ensure!(
+                    matches!(
+                        error.downcast_ref::<crate::CaptureError>(),
+                        Some(crate::CaptureError::NativeCanceled)
+                    ),
+                    "Private readback failed for a reason other than injected cancellation"
+                );
+            }
+        }
+        Ok(())
+    }
 }
