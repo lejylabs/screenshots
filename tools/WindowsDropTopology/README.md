@@ -1,4 +1,4 @@
-# Held Windows receiver topology proof, revision 5
+# Held Windows receiver topology proof, revision 6
 
 This is verification source only. It has not been compiled or executed by the
 subagent. The frozen previous native files and all earlier actual CI artifacts
@@ -26,13 +26,36 @@ processed roughly 300 posted-move timer ticks but issued drag feedback only once
 All six external desktop/cursor restoration guards succeeded. The old private
 cases record GetCursorPos error 1459, independently establishing that limitation.
 
-Revision 5 changes only movement in the explicitly gated hosted CI mode: its
+Revision 5 attempted to change movement in the explicitly gated hosted CI mode: its
 finite timer alternates real SetCursorPos positions (16,16) and (32,32), both
 inside the owned 128x128 target, while DoDragDrop owns native mouse capture.
-Only ordinary noninteractive cases retain the posted-move diagnostics. The CI
-branch returns after the real movement so a queued fake negative-coordinate
-message cannot replace or confuse OLE's native movement event. It reports the
-count of actual CI cursor movements separately. No mouse button/keyboard
+Actual revision 5 run 44055717794, job 133944440564, artifact 14315697484 again
+passed six direct cases, while every CI OLE case made only one movement attempt,
+never called QueryContinueDrag/GiveFeedback, and recorded one enumerator call.
+The first attempted position was the unchanged initial (16,16), so it generated
+no movement. The STA WM_TIMER callback then did not run inside DoDragDrop. All
+six external restoration guards succeeded. Those failures remain preserved.
+
+Revision 6 uses one operation-owned source-process mover thread only in the
+explicit hosted CI mode. Before creating any User32 object on that new thread,
+it attaches the source STA's owned private desktop. A kernel waitable timer wakes
+it every 20 ms only during the gesture; it waits for both the call-start marker
+and an actual source enumeration/preflight/continue callback from DoDragDrop
+before its first real movement, (32,32), then (16,16). It waits on its
+local stop event, the controller stop event and its timer. Normal DoDragDrop
+completion signals stop and joins the exact thread handle before source cleanup.
+Blocked cases remain inside the same externally killed/reaped source Job. It
+carries no COM object, IDataObject pointer, UI owner or frame across threads.
+The call-start marker and callback counters use Interlocked reads/writes for
+coordination between the source STA and its mover.
+
+The thread requests a 256 KiB stack and owns one stop event, one waitable timer
+and its join handle. These are fixture-only, bounded by the five-second source
+process deadline, with no thread or timer left in the application. Its PID/TID,
+start/stop markers, real move count and the actual window PID/class under the
+cursor are recorded and asserted. Source enumeration's return HRESULT is also
+recorded separately from its call count. Ordinary noninteractive cases keep the
+old posted-move diagnostic and create no mover thread. No mouse button/keyboard
 injection is used.
 The ordinary noninteractive cases and all previous artifacts remain unchanged.
 
@@ -70,9 +93,8 @@ In that isolated VM, the controller creates a uniquely named temporary desktop
 on WinSta0 and switches the CI VM's input desktop to it. It sets only that owned
 CI cursor inside (16,16)..(32,32), then runs actual DoDragDrop over the owned target HWND.
 There is no system mouse/keyboard injection, user clipboard access, real browser,
-printer, screenshot or secret lookup. The source still uses the finite private
-window-message timer, and its IDropSource drops only after the real target has
-been entered.
+printer, screenshot or secret lookup. The source uses the finite owned mover described above in CI mode, and its
+IDropSource drops only after the real target has been entered.
 
 The controller restores the original CI input desktop/cursor on normal cleanup.
 An independent PowerShell finally guard holds the original desktop handle and
@@ -138,7 +160,7 @@ and 512 MiB per-child commit ceiling. Children are atomically placed in that Job
 and inherit only one bounded mapping and three events. There is no abandoned
 thread or permanent timer. Normal cases retain at most a 64-byte source medium;
 the single over-memory source case deliberately allocates 128 MiB. The private
-source timer exists only within the five-second gesture interval.
+source timer/mover exists only within the five-second gesture interval.
 
 At most controller + receiver + source processes exist. The mapping contains
 numeric instrumentation and a trusted owned target OBJREF capped at 16 KiB.
