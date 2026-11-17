@@ -153,7 +153,7 @@ separates new headless/core coverage from the remaining workflows below.
 | Privacy and library | Pixel-only edited exports/uploads, opt-in managed PNG/JPEG/WebP sanitization to PNG, bounded structural inventory; capture/upload date/order/text queries, missing-reference audit, import/relink/metadata removal/export, portable journaled moves/transfers and trash/restore/purge with explicit finish/cancel recovery and retention. Existing UI has visible-page thumbnails and page-local actions. [Metadata](image-metadata.md), [PNG inventory](png-metadata.md), [sanitized export](sanitized-export.md), [queries](history-queries.md), [audit](history-audit.md), [management](history-management.md), [moves](history-file-moves.md). |
 | OCR, QR and workflows | File QR generation/scanning, optional installed-Tesseract file OCR on Unix/Windows, CLI region OCR/QR using in-memory pixels under strict session/scale limits, exact supplied-image scroll assembly, and bounded nine-operation offline recipes. [QR](qr.md), [OCR](ocr.md), [Windows OCR](windows-ocr.md), [region analysis](region-analysis.md), [scroll assembly](scroll-stitch.md), [recipes](workflows.md). |
 | Recording | Optional installed FFmpeg/ffprobe: finite Unix X11 or Windows gdigrab video/GIF, synthetic mode, cursor show/hide, output verification and bounded process/staging cleanup. This is neither audio nor a full recording workflow. [Unix recorder](recording.md), [Windows recorder](recording-windows.md). |
-| Desktop, storage, release | Explicit Linux/Windows/macOS autostart management; Windows resident/tray/Show-only single-instance lifecycle; native secret adapters and CLI setup; SQLite read-only check, WAL-aware backup to a new path and bounded unfinished-file inspection; pinned Rust/lockfile, native CI matrix, portable archives/checksums/notices and manual update instructions. [Autostart](autostart.md), [Windows](autostart-windows.md), [macOS](autostart-macos.md), [credentials](upload-authentication.md), [storage](storage-recovery.md), [packaging](packaging.md). |
+| Desktop, storage, release | Explicit Linux/Windows/macOS autostart management; Windows resident/tray/Show-only lifecycle and [Linux/macOS main-app ownership/reopen](unix-app-lifecycle.md) with the existing visible-window fallback; native secret adapters and CLI setup; SQLite read-only check, WAL-aware backup to a new path and bounded unfinished-file inspection; pinned Rust/lockfile, native CI matrix, portable archives/checksums/notices and manual update instructions. [Autostart](autostart.md), [Windows](autostart-windows.md), [macOS](autostart-macos.md), [credentials](upload-authentication.md), [storage](storage-recovery.md), [packaging](packaging.md). |
 
 ## Remaining implementation
 
@@ -186,7 +186,7 @@ completion is listed separately.
   and existing cross-platform Paste are committed. Remaining native raw image/URL
   drops, print and drag-out need integration. Descriptor-only Wayland GUI startup
   and capture/Library format policy are integrated with local functional checks
-  passed and final source/document review in progress.
+  passed and source/document review completed in the committed delivery.
   Open With/file associations are implemented. Managed RGB matrix/TRC and SDR
   CICP imports are implemented with independent color oracles and truthful HDR
   refusal. Broader codec variants remain distinct work; native HDR capture/presentation is not established by import.
@@ -215,7 +215,10 @@ completion is listed separately.
   combine/compare/split tools remain completed subsets. Pin windows and new
   recording/OCR/QR interaction controls are excluded UI work.
 - [ ] **Desktop/release:** atomic startup across optional Windows workers is
-  committed; finish non-Windows main-app resident/single-instance integration,
+  committed; [non-Windows main-app ownership/reopen](unix-app-lifecycle.md)
+  has passed optimized private Linux integration checks; native macOS and resource
+  acceptance remain open. Finish main-app
+  Linux/macOS tray/global-hotkey services, native fallback/focus/session acceptance,
   real signing/notarization, standard-user install/upgrade/uninstall,
   permissions/IME/accessibility, physical hotkeys/tray/clipboard and failure/
   performance matrices. User installs, native package layouts, notifications,

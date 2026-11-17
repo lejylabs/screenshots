@@ -6944,6 +6944,10 @@ fn overlay_options(
 }
 
 fn close_application(cx: &mut App) {
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    if let Some(control) = cx.try_global::<UnixLaunchControl>() {
+        control.0.lock().unwrap().stop_accepting();
+    }
     cx.cancel_image_clipboard_read();
     cx.cancel_pending_native_drop();
     if cx.has_global::<ResidentController>() {
@@ -7037,6 +7041,26 @@ pub fn run_open_image(path: PathBuf) {
 /// Enters the desktop after native-worker and CLI admission. Linux takes its startup
 /// environment before either GPUI's own threads or the supplied services can start.
 pub fn run_desktop<S>(open_image: Option<PathBuf>, start_services: impl FnOnce() -> S) {
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    let instance = {
+        let probe = std::env::args_os().any(|arg| {
+            arg == "--resource-probe" || arg.as_encoded_bytes().starts_with(b"--resource-probe=")
+        });
+        match admit_unix_main(
+            open_image.is_some(),
+            probe,
+            app_core::UnixSingleInstance::acquire,
+        ) {
+            Ok(UnixMainAdmission::Run(instance)) => {
+                instance.map(|instance| Arc::new(Mutex::new(instance)))
+            }
+            Ok(UnixMainAdmission::Exit) => return,
+            Err(error) => {
+                eprintln!("screenshots: Could not establish launch ownership: {error:#}");
+                std::process::exit(1);
+            }
+        }
+    };
     with_desktop_startup(
         || {
             #[cfg(any(target_os = "linux", target_os = "freebsd"))]
@@ -7048,9 +7072,19 @@ pub fn run_desktop<S>(open_image: Option<PathBuf>, start_services: impl FnOnce()
         start_services,
         move |platform| {
             if let Some(path) = open_image {
-                run_image_window(Some(path), false, platform);
+                run_image_window(
+                    Some(path),
+                    false,
+                    platform,
+                    #[cfg(any(target_os = "linux", target_os = "macos"))]
+                    None,
+                );
             } else {
-                run_prepared(platform);
+                run_prepared(
+                    platform,
+                    #[cfg(any(target_os = "linux", target_os = "macos"))]
+                    instance,
+                );
             }
         },
     );
@@ -7066,14 +7100,104 @@ fn with_desktop_startup<P, S>(
     run(platform);
 }
 
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+type UnixLaunchOwner = Arc<Mutex<app_core::UnixSingleInstance>>;
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+struct UnixLaunchControl(UnixLaunchOwner);
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+impl gpui::Global for UnixLaunchControl {}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+enum UnixMainAdmission {
+    Run(Option<app_core::UnixSingleInstance>),
+    Exit,
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn admit_unix_main(
+    open_image: bool,
+    resource_probe: bool,
+    acquire: impl FnOnce() -> anyhow::Result<app_core::UnixInstanceAdmission>,
+) -> anyhow::Result<UnixMainAdmission> {
+    if open_image || resource_probe {
+        return Ok(UnixMainAdmission::Run(None));
+    }
+    match acquire()? {
+        app_core::UnixInstanceAdmission::Owner(owner) => Ok(UnixMainAdmission::Run(Some(owner))),
+        app_core::UnixInstanceAdmission::Forwarded => Ok(UnixMainAdmission::Exit),
+        app_core::UnixInstanceAdmission::WindowedOnly(reason) => {
+            eprintln!("screenshots: {reason}");
+            Ok(UnixMainAdmission::Run(None))
+        }
+    }
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn reopen_unix_windows(cx: &mut App) {
+    // Defer native reopening: Cocoa can deliver this while dispatching a native event.
+    cx.defer(|cx| {
+        for handle in cx.windows() {
+            if let Some(handle) = WindowHandle::<CaptureWorkspace>::from_handle(handle, cx) {
+                handle.update(cx, |this, _, cx| this.show_control(cx)).ok();
+            }
+        }
+        cx.activate(true);
+    });
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn listen_unix_reopen(
+    owner: gpui::Entity<CaptureWorkspace>,
+    instance: Option<UnixLaunchOwner>,
+    cx: &mut App,
+) {
+    let Some(instance) = instance else {
+        return;
+    };
+    cx.set_global(UnixLaunchControl(instance.clone()));
+    let result = instance.lock().unwrap().listen();
+    match result {
+        Ok(mut events) => {
+            let owner = owner.downgrade();
+            cx.spawn(async move |cx| {
+                while events.recv().await.is_some() {
+                    if owner
+                        .update(cx, |this, cx| {
+                            if !this.quitting {
+                                this.show_control(cx);
+                                cx.activate(true);
+                            }
+                        })
+                        .is_err()
+                    {
+                        break;
+                    }
+                }
+                cx.update(close_application);
+            })
+            .detach();
+        }
+        Err(error) => {
+            tracing::error!(%error, "Could not start launch listener; closing the app");
+            cx.defer(close_application);
+        }
+    }
+}
+
 fn run_image_window(
     path: Option<PathBuf>,
     native_services: bool,
     platform: Option<std::rc::Rc<dyn gpui::Platform>>,
+    #[cfg(any(target_os = "linux", target_os = "macos"))] instance: Option<UnixLaunchOwner>,
 ) {
     let platform = platform.unwrap_or_else(|| gpui_platform::current_platform(false));
     let fonts = caption::CaptionFonts(platform.text_system());
     let app = gpui::Application::with_platform(platform).with_assets(assets::AppAssets);
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    app.on_reopen(reopen_unix_windows);
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    let listener = instance.clone();
     #[cfg(target_os = "macos")]
     let receiver = std::rc::Rc::new(std::cell::RefCell::new(
         None::<(gpui::Entity<CaptureWorkspace>, gpui::AsyncApp)>,
@@ -7158,6 +7282,10 @@ fn run_image_window(
                 }
             })
             .ok();
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        handle
+            .update(cx, |_, _, cx| listen_unix_reopen(cx.entity(), listener, cx))
+            .ok();
         #[cfg(target_os = "macos")]
         handle
             .update(cx, |_, window, cx| {
@@ -7169,6 +7297,8 @@ fn run_image_window(
             .ok();
         cx.activate(true);
     });
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    drop(instance); // Keep ownership through GPUI/native teardown.
 }
 
 #[cfg(any(test, target_os = "macos"))]
@@ -7214,10 +7344,13 @@ pub fn run() {
     run_desktop(None, || ());
 }
 
-fn run_prepared(platform: Option<std::rc::Rc<dyn gpui::Platform>>) {
+fn run_prepared(
+    platform: Option<std::rc::Rc<dyn gpui::Platform>>,
+    #[cfg(any(target_os = "linux", target_os = "macos"))] instance: Option<UnixLaunchOwner>,
+) {
     #[cfg(target_os = "macos")]
     {
-        run_image_window(None, true, platform);
+        run_image_window(None, instance.is_some(), platform, instance);
         return;
     }
     #[cfg(not(target_os = "macos"))]
@@ -7242,41 +7375,59 @@ fn run_prepared(platform: Option<std::rc::Rc<dyn gpui::Platform>>) {
 
         let platform = platform.unwrap_or_else(|| gpui_platform::current_platform(false));
         let fonts = caption::CaptionFonts(platform.text_system());
-        gpui::Application::with_platform(platform)
-            .with_assets(assets::AppAssets)
-            .run(move |cx: &mut App| {
-                cx.set_global(fonts);
-                redaction_editor::bind_keys(cx);
-                cx.on_action(|_: &Quit, cx| cx.defer(close_application));
-                cx.bind_keys([
-                    KeyBinding::new("escape", CloseOverlay, None),
-                    KeyBinding::new("ctrl-shift-o", OpenProbeOverlays, Some("CaptureWorkspace")),
-                    KeyBinding::new(
-                        "ctrl-shift-f",
-                        OpenFullscreenOverlays,
-                        Some("CaptureWorkspace"),
-                    ),
-                    KeyBinding::new("ctrl-shift-c", CapturePrimary, Some("CaptureWorkspace")),
-                    KeyBinding::new(
-                        if cfg!(target_os = "macos") {
-                            "cmd-q"
-                        } else {
-                            "ctrl-q"
-                        },
-                        Quit,
-                        None,
-                    ),
-                ]);
+        let app = gpui::Application::with_platform(platform).with_assets(assets::AppAssets);
+        #[cfg(target_os = "linux")]
+        app.on_reopen(reopen_unix_windows);
+        #[cfg(target_os = "linux")]
+        let listener = instance.clone();
+        #[cfg(target_os = "linux")]
+        let native_services = instance.is_some();
+        #[cfg(not(target_os = "linux"))]
+        let native_services = true;
+        app.run(move |cx: &mut App| {
+            cx.set_global(fonts);
+            redaction_editor::bind_keys(cx);
+            cx.on_action(|_: &Quit, cx| cx.defer(close_application));
+            cx.bind_keys([
+                KeyBinding::new("escape", CloseOverlay, None),
+                KeyBinding::new("ctrl-shift-o", OpenProbeOverlays, Some("CaptureWorkspace")),
+                KeyBinding::new(
+                    "ctrl-shift-f",
+                    OpenFullscreenOverlays,
+                    Some("CaptureWorkspace"),
+                ),
+                KeyBinding::new("ctrl-shift-c", CapturePrimary, Some("CaptureWorkspace")),
+                KeyBinding::new(
+                    if cfg!(target_os = "macos") {
+                        "cmd-q"
+                    } else {
+                        "ctrl-q"
+                    },
+                    Quit,
+                    None,
+                ),
+            ]);
 
-                let bounds = Bounds::centered(None, size(px(1060.0), px(760.0)), cx);
-                cx.open_kit_window(
+            let bounds = Bounds::centered(None, size(px(1060.0), px(760.0)), cx);
+            let handle = cx
+                .open_kit_window(
                     WindowOptions {
                         window_min_size: Some(size(px(680.), px(480.))),
                         window_bounds: Some(WindowBounds::Windowed(bounds)),
                         ..app_window_options("screenshots")
                     },
                     |window, cx| {
-                        let shell = cx.new(|cx| CaptureWorkspace::new(window, cx));
+                        let shell = cx.new(|cx| {
+                            if native_services {
+                                CaptureWorkspace::new(window, cx)
+                            } else {
+                                CaptureWorkspace::with_native_services(
+                                    Some(window.window_handle()),
+                                    false,
+                                    cx,
+                                )
+                            }
+                        });
                         window.on_window_should_close(cx, |_, cx| {
                             cx.defer(close_application);
                             false
@@ -7287,8 +7438,16 @@ fn run_prepared(platform: Option<std::rc::Rc<dyn gpui::Platform>>) {
                     },
                 )
                 .expect("failed to open spike window");
-                cx.activate(true);
-            });
+            #[cfg(target_os = "linux")]
+            handle
+                .update(cx, |_, _, cx| listen_unix_reopen(cx.entity(), listener, cx))
+                .ok();
+            #[cfg(not(target_os = "linux"))]
+            let _ = handle;
+            cx.activate(true);
+        });
+        #[cfg(target_os = "linux")]
+        drop(instance); // Keep ownership through GPUI/native teardown.
     }
 }
 

@@ -1744,6 +1744,20 @@ The initial polling loops and file-based frame handoffs have been replaced with 
 Windows implementation: normal startup uses SID/session-scoped named kernel objects with Windows default token security. A second launch sends only a bounded/coalesced Show signal, then exits before GPUI/tray/hotkey initialization. The listener starts after event delivery is installed and waits natively without polling. Ownership survives until GPUI shutdown completes. Resource cost: one parked native waiter with a 256 KiB requested stack and a small fixed handle set; updated idle measurements are not claimed here. The kernel-object handoff/restart test and a real two-process release smoke check passed: the secondary exited and native window enumeration confirmed a visible control window in the original process. The smoke processes exited on their diagnostic deadlines with no stderr errors. Cross-platform IPC, foreground-activation policy and shutdown/session/elevation races remain verification work.
 
 
+Linux/macOS main-app ownership and Show/reopen are implemented in the
+[Unix lifecycle slice](docs/unix-app-lifecycle.md), with verification pending.
+An ordinary launch acquires worker-free user/session ownership before platform
+and logger startup; one bounded native Unix listener begins only once startup
+environment is consumed and the existing control window exists. File-editor
+`--open` and resource probes bypass Show-only ownership. Unknown stable authority
+retains a truthful visible-only fallback with global services disabled. The
+existing Unix Close-to-quit window remains the accessible fallback; main-app
+native tray and capture hotkeys remain follow-ups. macOS uses GPUI native reopen.
+Quit stops launch admission and ownership survives GPUI teardown. Cost is one
+parked 256 KiB requested-stack waiter, five owned fds and one coalescing token;
+no idle polling or performance acceptance is claimed. Native runtime, platform
+focus/session behavior and measured budgets remain separate gates.
+
 A capture tool should run as a single instance. A second launch forwards its request to the running instance and exits. Two instances would register the same hotkeys and write the same history.
 
 The running instance owns the tray icon, the hotkeys, and the database worker. Closing the main window hides the window. Quitting is explicit.

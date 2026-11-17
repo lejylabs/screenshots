@@ -72,6 +72,11 @@ jobs:
         run: |
           cargo test --locked --profile release-fast -p screenshots --bin screenshots -j 2 capture_worker::video::completion_tests:: -- --test-threads=1
 
+      - name: Run owned Unix singleton fixtures
+        run: |
+          cargo test --locked --profile release-fast -p app-core -j 2 single_instance_unix::tests:: -- --test-threads=1
+          cargo test --locked --profile release-fast -p app-ui --lib -j 2 desktop_startup_tests:: -- --test-threads=1
+
   windows-native-witness:
     runs-on: windows-latest
     timeout-minutes: 50
