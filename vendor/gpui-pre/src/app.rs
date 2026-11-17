@@ -1864,12 +1864,11 @@ impl App {
     /// Native cancellation must not synchronously dispatch input into the caller.
     pub fn cancel_pending_native_drop(&mut self) {
         self.platform.cancel_pending_native_drop();
-        if self.active_drag.as_ref().is_some_and(|drag| {
-            drag.external_payload_source.is_none()
-                && (drag.value.is::<crate::ExternalPaths>()
-                    || drag.value.is::<crate::ExternalImageDrop>()
-                    || drag.value.is::<crate::ExternalUrlDrop>())
-        }) {
+        if self
+            .active_drag
+            .as_ref()
+            .is_some_and(|drag| matches!(drag.origin, DragOrigin::Incoming(_)))
+        {
             self.active_drag.take();
             self.refresh_windows();
         }
@@ -3053,9 +3052,17 @@ impl App {
     }
 
     pub(crate) fn hand_active_drag_to_platform(&mut self, source_window: WindowId) -> bool {
-        let Some(drag) = self.active_drag.take() else {
+        if !self
+            .active_drag
+            .as_ref()
+            .is_some_and(|drag| matches!(drag.origin, DragOrigin::Internal(_)))
+        {
+            return false;
+        }
+        let Some(mut drag) = self.active_drag.take() else {
             return false;
         };
+        drag.origin = DragOrigin::Internal(source_window);
         self.platform_owned_drag = Some(PlatformOwnedDrag {
             source_window,
             state: PlatformOwnedDragState::Suspended(drag),
@@ -3083,6 +3090,13 @@ impl App {
     }
 
     pub(crate) fn hand_restored_drag_to_platform(&mut self, source_window: WindowId) -> bool {
+        if !self
+            .active_drag
+            .as_ref()
+            .is_some_and(|drag| drag.origin == DragOrigin::Internal(source_window))
+        {
+            return false;
+        }
         let Some(platform_drag) = self.platform_owned_drag.as_mut().filter(|drag| {
             drag.source_window == source_window
                 && matches!(&drag.state, PlatformOwnedDragState::RestoredInSourceWindow)
@@ -3104,9 +3118,33 @@ impl App {
         {
             return false;
         }
+        let restored = matches!(
+            &self.platform_owned_drag.as_ref().unwrap().state,
+            PlatformOwnedDragState::RestoredInSourceWindow
+        );
         self.platform_owned_drag = None;
-        self.active_drag = None;
+        if restored
+            && self
+                .active_drag
+                .as_ref()
+                .is_some_and(|drag| drag.origin == DragOrigin::Internal(source_window))
+        {
+            self.active_drag = None;
+        }
         true
+    }
+
+    pub(crate) fn retire_incoming_drag(&mut self, target_window: WindowId) -> bool {
+        if self
+            .active_drag
+            .as_ref()
+            .is_some_and(|drag| drag.origin == DragOrigin::Incoming(target_window))
+        {
+            self.active_drag = None;
+            true
+        } else {
+            false
+        }
     }
 
     /// Sets the cursor style for the currently active drag operation.
@@ -3297,6 +3335,13 @@ impl App {
                 cx.window_update_stack.pop();
 
                 if window.removed {
+                    if cx
+                        .active_drag
+                        .as_ref()
+                        .is_some_and(|drag| drag.origin.window_id() == window_id)
+                    {
+                        cx.active_drag = None;
+                    }
                     cx.end_platform_drag(window_id);
                     cx.window_handles.remove(&window_id);
                     cx.windows.remove(window_id);
@@ -3557,9 +3602,26 @@ impl<G: Global> DerefMut for GlobalLease<G> {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum DragOrigin {
+    Internal(WindowId),
+    Incoming(WindowId),
+}
+
+impl DragOrigin {
+    pub(crate) fn window_id(self) -> WindowId {
+        match self {
+            Self::Internal(window) | Self::Incoming(window) => window,
+        }
+    }
+}
+
 /// Contains state associated with an active drag operation, started by dragging an element
 /// within the window or by dragging into the app from the underlying platform.
 pub struct AnyDrag {
+    // The incoming target or internal source owns this payload's lifetime.
+    pub(crate) origin: DragOrigin,
+
     /// The view used to render this drag
     pub view: AnyView,
 

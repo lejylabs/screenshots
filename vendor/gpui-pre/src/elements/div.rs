@@ -3061,6 +3061,9 @@ impl Interactivity {
                                         as ExternalDragPayloadSource
                                 });
                             cx.active_drag = Some(AnyDrag {
+                                origin: crate::app::DragOrigin::Internal(
+                                    window.window_handle().window_id(),
+                                ),
                                 view: drag,
                                 value: listener.value,
                                 cursor_offset,

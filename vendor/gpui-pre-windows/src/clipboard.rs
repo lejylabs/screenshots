@@ -1,4 +1,6 @@
-use std::{borrow::Cow, sync::LazyLock};
+use std::{
+    borrow::Cow, ffi::OsString, os::windows::ffi::OsStringExt, path::PathBuf, sync::LazyLock,
+};
 
 use anyhow::Result;
 use collections::FxHashMap;
@@ -20,6 +22,14 @@ use windows::core::{Owned, PCWSTR};
 
 use gpui::{
     ClipboardEntry, ClipboardItem, ClipboardString, ExternalPaths, Image, ImageFormat, hash,
+};
+
+#[path = "file_drop.rs"]
+mod file_drop;
+pub(crate) use file_drop::{DropRegistration, FileDropState};
+use file_drop::{
+    MAX_DROP_BYTES, MAX_DROP_FILES, MAX_PATH_BYTES, MAX_PATH_CAPACITY_BYTES,
+    MAX_PATHS_CAPACITY_BYTES, validate_drop_files,
 };
 
 const DRAGDROP_GET_FILES_COUNT: u32 = 0xFFFFFFFF;
@@ -127,24 +137,53 @@ pub(crate) fn read_from_clipboard() -> Option<ClipboardItem> {
     Some(ClipboardItem { entries })
 }
 
-pub(crate) fn with_file_names<F>(hdrop: HDROP, mut f: F)
-where
-    F: FnMut(String),
-{
-    let file_count = unsafe { DragQueryFileW(hdrop, DRAGDROP_GET_FILES_COUNT, None) };
-    for file_index in 0..file_count {
-        let filename_length = unsafe { DragQueryFileW(hdrop, file_index, None) } as usize;
-        let mut buffer = vec![0u16; filename_length + 1];
-        let ret = unsafe { DragQueryFileW(hdrop, file_index, Some(buffer.as_mut_slice())) };
-        if ret == 0 {
-            log::error!("unable to read file name of dragged file");
-            continue;
-        }
-        match String::from_utf16(&buffer[0..filename_length]) {
-            Ok(file_name) => f(file_name),
-            Err(e) => log::error!("dragged file name is not UTF-16: {}", e),
+pub(crate) fn read_file_paths(global: HGLOBAL) -> Option<ExternalPaths> {
+    let size = unsafe { GlobalSize(global) };
+    if !(22..=MAX_DROP_BYTES).contains(&size) {
+        return None;
+    }
+    let locked = LockedGlobal::lock(global)?;
+    let expected_count = validate_drop_files(locked.as_bytes())?;
+    let hdrop = HDROP(global.0);
+    let count = unsafe { DragQueryFileW(hdrop, DRAGDROP_GET_FILES_COUNT, None) } as usize;
+    if count != expected_count || count > MAX_DROP_FILES {
+        return None;
+    }
+
+    // Preflight every length before allocating any retained path.
+    let mut lengths = [0usize; MAX_DROP_FILES];
+    let mut native_bytes = 0usize;
+    for (index, length) in lengths[..count].iter_mut().enumerate() {
+        *length = unsafe { DragQueryFileW(hdrop, index as u32, None) } as usize;
+        let bytes = length.checked_mul(2)?;
+        native_bytes = native_bytes.checked_add(bytes)?;
+        if bytes == 0 || bytes > MAX_PATH_BYTES || native_bytes > MAX_DROP_BYTES {
+            return None;
         }
     }
+
+    let mut paths = smallvec::SmallVec::with_capacity(count);
+    if paths.capacity() > MAX_DROP_FILES {
+        return None;
+    }
+    let mut retained_capacity = 0usize;
+    let mut buffer = [0u16; MAX_PATH_BYTES / 2 + 1];
+    for (index, &length) in lengths[..count].iter().enumerate() {
+        buffer.fill(u16::MAX);
+        let copied =
+            unsafe { DragQueryFileW(hdrop, index as u32, Some(&mut buffer[..length + 1])) };
+        if copied as usize != length || buffer[length] != 0 || buffer[..length].contains(&0) {
+            return None;
+        }
+        let path = PathBuf::from(OsString::from_wide(&buffer[..length]));
+        retained_capacity = retained_capacity.checked_add(path.capacity())?;
+        if path.capacity() > MAX_PATH_CAPACITY_BYTES || retained_capacity > MAX_PATHS_CAPACITY_BYTES
+        {
+            return None;
+        }
+        paths.push(path);
+    }
+    Some(ExternalPaths(paths))
 }
 
 fn set_clipboard_bytes<T>(data: &[T], format: u32) -> Result<()> {
@@ -265,13 +304,8 @@ fn read_image(format: u32) -> Option<ClipboardEntry> {
 }
 
 fn read_files() -> Option<ClipboardEntry> {
-    let locked = get_clipboard_data(CF_HDROP.0 as u32)?;
-    let hdrop = HDROP(locked.ptr as *mut _);
-    let mut filenames = Vec::new();
-    with_file_names(hdrop, |name| filenames.push(std::path::PathBuf::from(name)));
-    Some(ClipboardEntry::ExternalPaths(ExternalPaths(
-        filenames.into(),
-    )))
+    let global = HGLOBAL(unsafe { GetClipboardData(CF_HDROP.0 as u32).ok() }?.0);
+    read_file_paths(global).map(ClipboardEntry::ExternalPaths)
 }
 
 /// DIB is BMP without the 14-byte BITMAPFILEHEADER. Prepend one.
@@ -392,3 +426,7 @@ impl Drop for LockedGlobal {
         unsafe { GlobalUnlock(self.global).ok() };
     }
 }
+
+#[cfg(test)]
+#[path = "file_drop_native_tests.rs"]
+mod file_drop_native_tests;

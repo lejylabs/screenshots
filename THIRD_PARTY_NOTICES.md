@@ -165,3 +165,10 @@ curves use the existing per-channel converter. The original crate checksum,
 upstream revision and byte inventory are in `vendor/moxcms/LOCAL-PATCH.md` and
 `UPSTREAM-SHA256.txt`. No crate version, runtime or color-profile restriction is
 added by this correction.
+
+GPUI's test-only font fixtures retain the exact IBM Plex Sans and Lilex files
+from Zed revision `d2a4fb6ded7c470be25d1541281da3882495b65b`. Their original SIL
+Open Font License texts are retained beside the fonts under
+`vendor/gpui-pre/test-assets/fonts/ibm-plex-sans/license.txt` and
+`vendor/gpui-pre/test-assets/fonts/lilex/OFL.txt`. These files support toolkit
+unit tests and are not loaded into the application.

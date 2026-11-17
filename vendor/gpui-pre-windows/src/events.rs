@@ -77,6 +77,34 @@ impl Drop for DrawWindowGuard<'_> {
     }
 }
 
+fn route_window_close(callbacks: &Callbacks, owner: &crate::dialog::DialogOwner) -> Option<isize> {
+    if owner.is_closed() || callbacks.close_request_in_progress.replace(true) {
+        return Some(0);
+    }
+    let result = (|| {
+        let should_close = if let Some(mut callback) = callbacks.should_close.take() {
+            let accepted = callback();
+            callbacks.should_close.set(Some(callback));
+            accepted
+        } else {
+            true
+        };
+        if !should_close || owner.is_closed() {
+            return Some(0);
+        }
+        if let Some(callback) = callbacks.close.take() {
+            // GPUI schedules removal; its teardown must Revoke before DestroyWindow.
+            owner.close();
+            callback();
+            Some(0)
+        } else {
+            None
+        }
+    })();
+    callbacks.close_request_in_progress.set(false);
+    result
+}
+
 impl WindowsWindowInner {
     pub(crate) fn handle_msg(
         self: &Rc<Self>,
@@ -316,10 +344,7 @@ impl WindowsWindowInner {
     }
 
     fn handle_close_msg(&self) -> Option<isize> {
-        let mut callback = self.state.callbacks.should_close.take()?;
-        let should_close = callback();
-        self.state.callbacks.should_close.set(Some(callback));
-        if should_close { None } else { Some(0) }
+        route_window_close(&self.state.callbacks, &self.dialog_owner)
     }
 
     fn handle_destroy_msg(&self, handle: HWND) -> Option<isize> {
@@ -1833,3 +1858,7 @@ fn notify_frame_changed(handle: HWND) {
         .log_err();
     }
 }
+
+#[cfg(test)]
+#[path = "file_drop_close_route_tests.rs"]
+mod file_drop_close_route_tests;
