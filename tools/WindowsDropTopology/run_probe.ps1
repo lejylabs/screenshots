@@ -11,7 +11,7 @@ $Executable = Join-Path $OutputDirectory 'receiver_topology.exe'
 if ($LASTEXITCODE -ne 0) { throw 'Native topology fixture compilation failed' }
 $Cases = @(
     'normal', 'query-stall', 'get-stall', 'over-memory', 'release-stall',
-    'baseline-query-stall',
+    'baseline-query-stall', 'custom-normal', 'custom-unmarshal-stall', 'custom-unmarshal-memory',
     'ole-normal', 'ole-query-stall', 'baseline-ole-query-stall'
 )
 if ($OwnedHostedCiInputDesktop) {
@@ -32,7 +32,7 @@ public static class OwnedCiDesktopRestore {
     [DllImport("user32.dll")] public static extern short GetAsyncKeyState(int key);
 }
 '@
-    $Cases += @('ci-ole-normal', 'ci-ole-query-stall', 'ci-ole-get-stall', 'ci-ole-over-memory', 'ci-ole-release-stall', 'ci-baseline-ole-query-stall')
+    $Cases += @('ci-ole-normal', 'ci-ole-query-stall', 'ci-ole-get-stall', 'ci-ole-over-memory', 'ci-ole-release-stall', 'ci-baseline-ole-query-stall', 'ci-custom-ole-normal', 'ci-custom-ole-unmarshal-stall', 'ci-custom-ole-unmarshal-memory')
 }
 $Results = @()
 foreach ($Case in $Cases) {
@@ -103,8 +103,11 @@ foreach ($Case in $Cases) {
     }
 }
 $NormalizedSource = [System.Text.Encoding]::UTF8.GetBytes([System.IO.File]::ReadAllText($Source).Replace("`r`n", "`n"))
+$NormalizedCustom = [System.Text.Encoding]::UTF8.GetBytes([System.IO.File]::ReadAllText((Join-Path $PSScriptRoot 'custom_marshal.hpp')).Replace("`r`n", "`n"))
 $Report = [ordered]@{
     source_sha256=(Get-FileHash -Algorithm SHA256 $Source).Hash.ToLowerInvariant()
+    custom_marshaler_sha256=(Get-FileHash -Algorithm SHA256 (Join-Path $PSScriptRoot 'custom_marshal.hpp')).Hash.ToLowerInvariant()
+    custom_marshaler_lf_sha256=[System.Convert]::ToHexString([System.Security.Cryptography.SHA256]::HashData($NormalizedCustom)).ToLowerInvariant()
     source_lf_sha256=[System.Convert]::ToHexString([System.Security.Cryptography.SHA256]::HashData($NormalizedSource)).ToLowerInvariant()
     executable_sha256=(Get-FileHash -Algorithm SHA256 $Executable).Hash.ToLowerInvariant()
     windows=[System.Environment]::OSVersion.VersionString

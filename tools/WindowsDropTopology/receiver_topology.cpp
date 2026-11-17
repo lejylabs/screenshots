@@ -28,6 +28,12 @@ struct Shared {
     DWORD failure_pid, failure_win32_error; LONG failure_hresult; char failure_stage[96];
     LONG failure_claimed, input_not_owned, input_check_failures;
     DWORD source_input_error, controller_input_error, last_input_return;
+    LONG first_unmarshal_pid, external_unmarshal_calls, unmarshal_memory_refused, custom_marshal_calls;
+    DWORD first_unmarshal_tid;
+    LONG first_factory_pid, first_factory_guard, first_factory_sequence, first_factory_armed_sequence, unmarshal_release_outside_guard;
+    DWORD first_factory_tid;
+    LONG pump_sequence, pump_guard_active, controller_armed_sequence, first_unmarshal_guard, first_unmarshal_sequence, first_unmarshal_armed_sequence;
+    UINT_PTR pump_enter_handle, pump_armed_handle, pump_done_handle;
     ULONGLONG private_baseline, offered_bytes;
     LONG preflight_query_calls, preflight_get_calls, preflight_medium_releases, native_stage, enum_calls, enum_result, source_continue_calls, source_feedback_calls, private_move_calls, ci_cursor_moves, query_trace_count;
     LONG drag_call_started, mover_started, mover_stopped, cursor_window_is_owner;
@@ -44,8 +50,9 @@ struct Shared {
 };
 static Shared* state;
 static HANDLE ready_event, done_event, stop_event;
+static HANDLE pump_enter_event, pump_armed_event, pump_done_event;
 static const wchar_t* scenario;
-static bool ole_route = false, baseline = false, ci_input = false;
+static bool ole_route = false, baseline = false, ci_input = false, custom_source = false;
 static IDataObject* source_data;
 static IDropSource* source_drop;
 static DWORD source_effect;
@@ -64,6 +71,7 @@ static void require_owned_ci() {
 }
 static const wchar_t* parse_scenario(const wchar_t* value) {
     if (!std::wcsncmp(value, L"ci-", 3)) { ci_input = true; require_owned_ci(); value += 3; }
+    if (!std::wcsncmp(value, L"custom-", 7)) { custom_source = true; value += 7; }
     if (!std::wcsncmp(value, L"baseline-", 9)) { baseline = true; value += 9; }
     if (!std::wcsncmp(value, L"ole-", 4)) { ole_route = true; value += 4; }
     return value;
@@ -140,6 +148,7 @@ static void attach(int argc, wchar_t** argv) {
     state = static_cast<Shared*>(MapViewOfFile(from_arg(argv[2]), FILE_MAP_ALL_ACCESS, 0, 0, sizeof(Shared)));
     require(state != nullptr, "child mapping");
     ready_event = from_arg(argv[3]); done_event = from_arg(argv[4]); stop_event = from_arg(argv[5]);
+    pump_enter_event = reinterpret_cast<HANDLE>(state->pump_enter_handle); pump_armed_event = reinterpret_cast<HANDLE>(state->pump_armed_handle); pump_done_event = reinterpret_cast<HANDLE>(state->pump_done_handle);
     scenario = parse_scenario(argv[7]);
     if (ci_input) expected_ci_desktop = L"ScreenshotsDropProbe-" + std::to_wstring(state->controller_pid);
 }
@@ -283,6 +292,7 @@ struct Source final : IDataObject {
     HRESULT STDMETHODCALLTYPE DUnadvise(DWORD) override { return OLE_E_ADVISENOTSUPPORTED; }
     HRESULT STDMETHODCALLTYPE EnumDAdvise(IEnumSTATDATA**) override { return OLE_E_ADVISENOTSUPPORTED; }
 };
+#include "custom_marshal.hpp"
 struct DropSource final : IDropSource {
     LONG refs = 1;
     HRESULT STDMETHODCALLTYPE QueryInterface(REFIID iid, void** out) override {
@@ -293,7 +303,11 @@ struct DropSource final : IDropSource {
     }
     ULONG STDMETHODCALLTYPE AddRef() override { return InterlockedIncrement(&refs); }
     ULONG STDMETHODCALLTYPE Release() override { LONG n = InterlockedDecrement(&refs); if (!n) delete this; return n; }
-    HRESULT STDMETHODCALLTYPE QueryContinueDrag(BOOL, DWORD) override { InterlockedIncrement(&state->source_continue_calls); return state->enter_pid ? DRAGDROP_S_DROP : S_OK; }
+    HRESULT STDMETHODCALLTYPE QueryContinueDrag(BOOL, DWORD) override {
+        InterlockedIncrement(&state->source_continue_calls);
+        if (custom_source && state->external_unmarshal_calls && (state->first_unmarshal_pid != static_cast<LONG>(state->receiver_pid) || state->unmarshal_memory_refused)) return DRAGDROP_S_CANCEL;
+        return state->enter_pid ? DRAGDROP_S_DROP : S_OK;
+    }
     HRESULT STDMETHODCALLTYPE GiveFeedback(DWORD) override { InterlockedIncrement(&state->source_feedback_calls); return DRAGDROP_S_USEDEFAULTCURSORS; }
 };
 static void CALLBACK private_move(HWND window, UINT, UINT_PTR, DWORD) {
@@ -398,6 +412,7 @@ static int receiver(int argc, wchar_t** argv) {
     attach(argc, argv); state->receiver_pid = GetCurrentProcessId(); state->receiver_tid = GetCurrentThreadId();
     HANDLE budget = contain_native();
     require_hr(OleInitialize(nullptr), "receiver OleInitialize");
+    DWORD marshal_factory = custom_source ? register_owned_unmarshaler() : 0;
     HWND owner = reinterpret_cast<HWND>(_wcstoui64(argv[6], nullptr, 10));
     if (baseline) owner = owner_window();
     state->owner_hwnd = reinterpret_cast<UINT_PTR>(owner);
@@ -407,7 +422,7 @@ static int receiver(int argc, wchar_t** argv) {
     state->registration = registered;
     if (FAILED(registered)) {
         record_failure("RegisterDragDrop", GetLastError(), registered);
-        SetEvent(ready_event); target->Release(); OleUninitialize(); CloseHandle(budget); return 20;
+        SetEvent(ready_event); target->Release(); if (marshal_factory) CoRevokeClassObject(marshal_factory); OleUninitialize(); CloseHandle(budget); return 20;
     }
     IStream* stream = nullptr;
     require_hr(CreateStreamOnHGlobal(nullptr, TRUE, &stream), "marshal stream");
@@ -419,22 +434,33 @@ static int receiver(int argc, wchar_t** argv) {
     state->marshal_bytes = stat.cbSize.LowPart; memcpy(state->marshal, bytes, state->marshal_bytes); GlobalUnlock(global);
     SetEvent(ready_event);
     for (;;) {
-        DWORD wait = MsgWaitForMultipleObjects(1, &stop_event, FALSE, INFINITE, QS_ALLINPUT);
+        DWORD wait = MsgWaitForMultipleObjectsEx(1, &stop_event, INFINITE, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
         if (wait == WAIT_OBJECT_0) break;
         require(wait == WAIT_OBJECT_0 + 1, "receiver wait");
-        MSG msg{}; while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) { TranslateMessage(&msg); DispatchMessageW(&msg); }
+        LONG sequence = InterlockedIncrement(&state->pump_sequence);
+        require(SetEvent(pump_enter_event), "announce receiver dispatch interval");
+        HANDLE armed_wait[]{stop_event, pump_armed_event};
+        DWORD armed = WaitForMultipleObjects(2, armed_wait, FALSE, deadline_ms);
+        if (armed == WAIT_OBJECT_0) break;
+        require(armed == WAIT_OBJECT_0 + 1 && InterlockedCompareExchange(&state->controller_armed_sequence, 0, 0) == sequence, "external controller must arm before receiver native dispatch");
+        InterlockedExchange(&state->pump_guard_active, 1);
+        MSG msg{};
+        for (unsigned count = 0; count < 32 && PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE); ++count) { TranslateMessage(&msg); DispatchMessageW(&msg); }
+        InterlockedExchange(&state->pump_guard_active, 0);
+        require(SetEvent(pump_done_event), "complete receiver dispatch interval");
     }
     // These potentially foreign cleanup calls remain inside the same hard deadline.
     state->cleanup_result = RevokeDragDrop(owner);
     LARGE_INTEGER zero{}; stream->Seek(zero, STREAM_SEEK_SET, nullptr);
-    CoReleaseMarshalData(stream); stream->Release(); target->Release(); OleUninitialize(); CloseHandle(budget);
+    CoReleaseMarshalData(stream); stream->Release(); target->Release(); if (marshal_factory) CoRevokeClassObject(marshal_factory); OleUninitialize(); CloseHandle(budget);
     if (baseline) DestroyWindow(owner);
     state->completed = 1; return 0;
 }
 static int source(int argc, wchar_t** argv) {
     attach(argc, argv); state->source_pid = GetCurrentProcessId(); state->source_tid = GetCurrentThreadId();
     require_hr(OleInitialize(nullptr), "source OleInitialize");
-    auto* offered = new Source; DWORD effect = DROPEFFECT_COPY;
+    DWORD marshal_factory = custom_source ? register_owned_unmarshaler() : 0;
+    IDataObject* offered = custom_source ? static_cast<IDataObject*>(new CustomSource) : new Source; DWORD effect = DROPEFFECT_COPY;
     if (ole_route) {
         WNDCLASSW cls{}; cls.lpfnWndProc = source_proc; cls.hInstance = GetModuleHandleW(nullptr); cls.lpszClassName = L"ScreenshotsPrivateDropSource";
         require(RegisterClassW(&cls) != 0, "private source class");
@@ -482,6 +508,7 @@ static int source(int argc, wchar_t** argv) {
     }
     offered->Release();
     // Final proxy and custom-medium rundown is deliberately observed before success.
+    if (marshal_factory) CoRevokeClassObject(marshal_factory);
     OleUninitialize(); SetEvent(done_event); return 0;
 }
 static PROCESS_INFORMATION launch(const std::wstring& command, const std::wstring& desktop, HANDLE job, const std::vector<HANDLE>& inherited) {
@@ -499,10 +526,19 @@ static PROCESS_INFORMATION launch(const std::wstring& command, const std::wstrin
 static bool pump_until(HANDLE event, ULONGLONG limit, ULONG& dispatched) {
     for (;;) {
         ULONGLONG now = GetTickCount64(); if (now >= limit) return false;
-        DWORD wait = MsgWaitForMultipleObjects(1, &event, FALSE, static_cast<DWORD>(limit - now), QS_ALLINPUT);
+        HANDLE watched[]{event, pump_enter_event, pump_done_event};
+        DWORD wait = MsgWaitForMultipleObjects(3, watched, FALSE, static_cast<DWORD>(limit - now), QS_ALLINPUT);
         if (wait == WAIT_OBJECT_0) return true;
+        if (wait == WAIT_OBJECT_0 + 1) {
+            // The existing absolute source-case deadline is already active and
+            // is never reset or extended by this or a nested dispatch interval.
+            LONG sequence = InterlockedCompareExchange(&state->pump_sequence, 0, 0);
+            InterlockedExchange(&state->controller_armed_sequence, sequence);
+            require(SetEvent(pump_armed_event), "arm receiver dispatch interval"); continue;
+        }
+        if (wait == WAIT_OBJECT_0 + 2) continue;
         if (wait == WAIT_TIMEOUT) return false;
-        require(wait == WAIT_OBJECT_0 + 1, "owner wait");
+        require(wait == WAIT_OBJECT_0 + 3, "owner wait");
         MSG msg{}; while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) { ++dispatched; TranslateMessage(&msg); DispatchMessageW(&msg); }
     }
 }
@@ -543,6 +579,11 @@ int wmain(int argc, wchar_t** argv) {
     state->enum_result = state->enum_next_result = E_PENDING;
     ready_event = CreateEventW(&security, TRUE, FALSE, nullptr); done_event = CreateEventW(&security, TRUE, FALSE, nullptr); stop_event = CreateEventW(&security, TRUE, FALSE, nullptr);
     require(ready_event && done_event && stop_event, "private events");
+    pump_enter_event = CreateEventW(&security, FALSE, FALSE, nullptr); pump_armed_event = CreateEventW(&security, FALSE, FALSE, nullptr); pump_done_event = CreateEventW(&security, FALSE, FALSE, nullptr);
+    require(pump_enter_event && pump_armed_event && pump_done_event, "private dispatch guard events");
+    state->pump_enter_handle = reinterpret_cast<UINT_PTR>(pump_enter_event); state->pump_armed_handle = reinterpret_cast<UINT_PTR>(pump_armed_event); state->pump_done_handle = reinterpret_cast<UINT_PTR>(pump_done_event);
+    DWORD owner_marshal_factory = 0;
+    if (custom_source) { require_hr(OleInitialize(nullptr), "owned foreground OleInitialize for custom factory"); owner_marshal_factory = register_owned_unmarshaler(); }
     HANDLE job = CreateJobObjectW(nullptr, nullptr); require(job != nullptr, "outer job");
     JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits{}; limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE | JOB_OBJECT_LIMIT_ACTIVE_PROCESS | JOB_OBJECT_LIMIT_PROCESS_MEMORY;
     limits.BasicLimitInformation.ActiveProcessLimit = 2; limits.ProcessMemoryLimit = 512 * 1024 * 1024;
@@ -551,7 +592,7 @@ int wmain(int argc, wchar_t** argv) {
     auto command = [&](const wchar_t* mode) {
         return L"\"" + std::wstring(executable) + L"\" " + mode + L" " + std::to_wstring(reinterpret_cast<UINT_PTR>(mapping)) + L" " + std::to_wstring(reinterpret_cast<UINT_PTR>(ready_event)) + L" " + std::to_wstring(reinterpret_cast<UINT_PTR>(done_event)) + L" " + std::to_wstring(reinterpret_cast<UINT_PTR>(stop_event)) + L" " + std::to_wstring(reinterpret_cast<UINT_PTR>(window)) + L" " + case_name;
     };
-    auto handles = std::vector<HANDLE>{mapping, ready_event, done_event, stop_event};
+    auto handles = std::vector<HANDLE>{mapping, ready_event, done_event, stop_event, pump_enter_event, pump_armed_event, pump_done_event};
     auto receiver_process = launch(command(L"--receiver"), desktop_path, job, handles);
     ULONG dispatched = 0; ULONGLONG begin = GetTickCount64();
     bool ready = pump_until(ready_event, begin + deadline_ms, dispatched);
@@ -582,7 +623,10 @@ int wmain(int argc, wchar_t** argv) {
     bool topology = state->enter_pid == state->receiver_pid && state->enter_tid == state->receiver_tid && (baseline ? state->query_pid == state->owner_pid && state->query_tid == state->owner_tid : state->query_pid == state->source_pid && state->query_tid == state->source_tid);
     wchar_t source_iid[40]{}, drop_iid[40]{};
     StringFromGUID2(state->last_source_iid, source_iid, 40); StringFromGUID2(state->last_drop_source_iid, drop_iid, 40);
-    std::printf("{\"input_not_owned\":%ld,\"input_check_failures\":%ld,\"source_input_error\":%lu,\"controller_input_error\":%lu,\"last_input_return\":%lu,\"first_failure_preserved\":%ld,", state->input_not_owned, state->input_check_failures, state->source_input_error, state->controller_input_error, state->last_input_return, state->failure_claimed);
+    bool first_boundary = custom_source && state->first_factory_pid == static_cast<LONG>(state->receiver_pid) && state->first_factory_tid == state->receiver_tid && state->first_factory_guard == 1 && state->first_factory_sequence > 0 && state->first_factory_sequence == state->first_factory_armed_sequence && state->unmarshal_release_outside_guard == 0 && state->first_unmarshal_pid == static_cast<LONG>(state->receiver_pid) && state->first_unmarshal_tid == state->receiver_tid && state->external_unmarshal_calls >= 1 && state->custom_marshal_calls >= 1 && state->first_unmarshal_guard == 1 && state->first_unmarshal_sequence > 0 && state->first_unmarshal_sequence == state->first_unmarshal_armed_sequence;
+    std::printf("{\"first_factory_pid\":%ld,\"first_factory_tid\":%lu,\"first_factory_guard\":%ld,\"first_factory_sequence\":%ld,\"first_factory_armed_sequence\":%ld,\"unmarshal_release_outside_guard\":%ld,", state->first_factory_pid, state->first_factory_tid, state->first_factory_guard, state->first_factory_sequence, state->first_factory_armed_sequence, state->unmarshal_release_outside_guard);
+    std::printf("\"custom_source\":%s,\"first_unmarshal_boundary_verified\":%s,\"first_unmarshal_pid\":%ld,\"first_unmarshal_tid\":%lu,\"external_unmarshal_calls\":%ld,\"custom_marshal_calls\":%ld,\"unmarshal_memory_refused\":%ld,\"first_unmarshal_guard\":%ld,\"first_unmarshal_sequence\":%ld,\"first_unmarshal_armed_sequence\":%ld,", custom_source ? "true" : "false", first_boundary ? "true" : "false", state->first_unmarshal_pid, state->first_unmarshal_tid, state->external_unmarshal_calls, state->custom_marshal_calls, state->unmarshal_memory_refused, state->first_unmarshal_guard, state->first_unmarshal_sequence, state->first_unmarshal_armed_sequence);
+    std::printf("\"input_not_owned\":%ld,\"input_check_failures\":%ld,\"source_input_error\":%lu,\"controller_input_error\":%lu,\"last_input_return\":%lu,\"first_failure_preserved\":%ld,", state->input_not_owned, state->input_check_failures, state->source_input_error, state->controller_input_error, state->last_input_return, state->failure_claimed);
     std::printf("\"input_stage\":%ld,\"source_window_ready\":%ld,\"drag_call_done\":%ld,\"injected_button_downs\":%ld,\"injected_button_ups\":%ld,\"controller_button_ups\":%ld,\"source_qi_calls\":%ld,\"drop_source_qi_calls\":%ld,\"last_source_iid\":\"%ls\",\"last_drop_source_iid\":\"%ls\",\"source_gui_ok\":%ld,\"source_capture_nonzero\":%ld,\"source_active_pid\":%lu,\"source_capture_pid\":%lu,\"source_capture_class\":\"%s\",", state->input_stage, state->source_window_ready, state->drag_call_done, state->injected_button_downs, state->injected_button_ups, state->controller_button_ups, state->source_qi_calls, state->drop_source_qi_calls, source_iid, drop_iid, state->source_gui_ok, state->source_capture_nonzero, state->source_active_pid, state->source_capture_pid, state->source_capture_class);
     std::printf("\"drag_call_started\":%ld,\"enum_result\":%ld,\"enum_next_calls\":%ld,\"enum_next_result\":%ld,\"enum_next_fetched\":%ld,\"mover_started\":%ld,\"mover_stopped\":%ld,\"mover_pid\":%lu,\"mover_tid\":%lu,\"cursor_window_is_owner\":%ld,\"cursor_window_pid\":%lu,\"cursor_window_class\":\"%s\",", state->drag_call_started, state->enum_result, state->enum_next_calls, state->enum_next_result, state->enum_next_fetched, state->mover_started, state->mover_stopped, state->mover_pid, state->mover_tid, state->cursor_window_is_owner, state->cursor_window_pid, state->cursor_window_class);
     std::printf("\"preflight_query_calls\":%ld,\"preflight_get_calls\":%ld,\"preflight_medium_releases\":%ld,\"native_stage\":%ld,\"enum_calls\":%ld,\"source_continue_calls\":%ld,\"source_feedback_calls\":%ld,\"private_move_calls\":%ld,\"ci_cursor_moves\":%ld,\"cursor_ok\":%ld,\"cursor_error\":%lu,\"cursor_x\":%ld,\"cursor_y\":%ld,\"message_position\":%lu,\"point_zero_is_owner\":%s,\"query_trace_count\":%ld,\"query_trace\":[", state->preflight_query_calls, state->preflight_get_calls, state->preflight_medium_releases, state->native_stage, state->enum_calls, state->source_continue_calls, state->source_feedback_calls, state->private_move_calls, state->ci_cursor_moves, state->cursor_ok, state->cursor_error, state->cursor.x, state->cursor.y, state->message_position, state->point_window == state->owner_hwnd ? "true" : "false", state->query_trace_count);
@@ -609,9 +653,19 @@ int wmain(int argc, wchar_t** argv) {
         expected = expected && state->injected_button_downs == 1 && state->input_stage == 2 && state->controller_button_ups == 1;
         if (delivered) expected = expected && state->mover_stopped == 1 && state->injected_button_ups == 1;
     }
+    if (custom_source) {
+        if (!std::wcscmp(scenario, L"unmarshal-stall") || !std::wcscmp(scenario, L"unmarshal-memory")) {
+            expected = ready && state->registration == S_OK && state->native_bound && state->small_probe && state->large_probe && first_boundary && state->enter_pid == 0 && state->copied == 0 && state->query_calls == 0 && state->data_calls == 0 && ping;
+            if (!std::wcscmp(scenario, L"unmarshal-stall")) expected = expected && !delivered;
+            else expected = expected && state->unmarshal_memory_refused == 1;
+            if (ci_input) { expected = expected && state->input_stage == 2 && state->injected_button_downs == 1 && state->controller_button_ups == 1 && state->mover_started == 1 && state->mover_pid == state->source_pid && state->mover_tid != state->source_tid && state->ci_cursor_moves >= 1 && state->cursor_window_is_owner == 1; if (delivered) expected = expected && state->mover_stopped == 1 && state->injected_button_ups == 1; }
+        } else expected = expected && first_boundary;
+    }
+    expected = expected && state->failure_claimed == 0;
     CloseHandle(receiver_process.hProcess); if (source_process.hProcess) CloseHandle(source_process.hProcess); CloseHandle(job);
-    UnmapViewOfFile(state); state = nullptr; CloseHandle(mapping); CloseHandle(ready_event); CloseHandle(done_event); CloseHandle(stop_event);
+    UnmapViewOfFile(state); state = nullptr; CloseHandle(mapping); CloseHandle(ready_event); CloseHandle(done_event); CloseHandle(stop_event); CloseHandle(pump_enter_event); CloseHandle(pump_armed_event); CloseHandle(pump_done_event);
     DestroyWindow(window); UnregisterClassW(L"ScreenshotsPrivateDropProbe", GetModuleHandleW(nullptr));
+    if (owner_marshal_factory) { CoRevokeClassObject(owner_marshal_factory); OleUninitialize(); }
     if (ci_input) require(SwitchDesktop(original_input), "restore owned CI input desktop");
     require(SetThreadDesktop(original_desktop), "restore desktop");
     if (ci_input) { require(SetCursorPos(original_cursor.x, original_cursor.y), "restore owned CI cursor"); CloseDesktop(original_input); }

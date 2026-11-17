@@ -1,216 +1,169 @@
-# Held Windows receiver topology proof, revision 8
+# Held first-unmarshal proof, revision 9
 
-This is source-only verification work, not production integration. The author has
-not compiled or executed this revision. Root must review the complete source and
-run it only in its disposable GitHub-hosted Windows VM. All earlier frozen source
-and actual CI failure artifacts remain unchanged. No probe has run on the user's
-computer, read the user's clipboard, or accessed a printer/account/secret.
+This revision is uncompiled/unexecuted by its author and is held for root's
+review and auxiliary Windows CI. Copy all four files, including
+`custom_marshal.hpp`. It changes no production application source. Native input
+is permitted only in the existing explicitly gated disposable GitHub-hosted VM,
+never on the user's computer or a self-hosted runner.
 
-## Actual evidence and remaining question
+## Proven base and new question
 
-Revision 3 run 44051463077 passes six direct COM cases, including normal medium
-release, query/GetData/release five-second reaps and a successful 128 MiB source
-HGLOBAL that fails receiver GetData with E_OUTOFMEMORY under the installed
-96 MiB private-commit growth ceiling. Its three private DoDragDrop cases never
-enter the target. Raw Windows CRLF source SHA-256 is
-f0eab7b43aaf3a7a17cb632f2a7230e9a78fc5316eb09334e815be6313f4eaa0;
-normalizing only CRLF to LF yields the frozen local b5151b8759367e87e235b82c5f457fa2aadbb51c241399d65d8e8af239574c9e.
+Actual revision 8 run 44075604618, job 134012674293, artifact 14324198695 passes
+all six direct COM and all six real CI OLE cases. Its three non-input cases
+remain explicit negative controls. Cross-process RegisterDragDrop against the
+separate HWND owner actually routes OLE callbacks to the helper STA. Normal
+transfer releases the synthetic medium once; query/GetData/release stalls are
+killed and reaped after the requested five-second deadline while the HWND owner
+responds to a posted ping. The foreground failure control misses that ping.
+A successful 128 MiB source HGLOBAL returns receiver E_OUTOFMEMORY under its
+installed/probed +96 MiB private-commit limit, without copy publication. All
+controller button releases and external desktop/cursor restores succeed.
 
-Revisions 4 and 5 also pass all six direct cases, but fail the real OLE cases.
-Revision 4 establishes GetCursorPos error 1459 on the noninteractive private
-station and a valid (16,16) cursor/owned target on the explicitly selected CI
-input desktop. Its source handles posted moves but native feedback occurs only
-once. Revision 5's first cursor set is a no-op to the initial (16,16), then its
-source STA's WM_TIMER does not dispatch inside DoDragDrop. Both revisions restore
-the six CI desktops/cursors successfully; neither establishes OLE routing.
+The actual revision 8 CRLF source hash is
+`0d24c62d9783e3cdd84b8340e92817919ab041224c75454583ead7bd697966a0`;
+normalizing only CRLF to LF matches local
+`30be918f2f82d7ae1391c199aa4d0c93995db9e6da0af3a4fbc744ef63811a54`.
+The artifact ZIP digest is
+`adbcd1df4eca5987dd940b07903c3d82ad0580a2d4e3e62c8da1d39fba8ce2fc`.
+These are synthetic process/OLE controls, not full app or hardware acceptance.
 
-Revision 6 run 44059075939, job 133955895430, artifact 14316838348 again passes
-six direct cases. Its independent mover makes roughly 247 actual cursor moves;
-WindowFromPoint consistently identifies the owned ScreenshotsPrivateDropProbe
-and correct owner PID, and source enumeration returns S_OK. Yet every CI OLE
-case still has no QueryContinueDrag, GiveFeedback or target entry. All six
-external desktop/cursor guards succeed. The ordinary source must therefore be
-started from a real initiating gesture before making any routing inference.
+Callback location alone does not establish where the IDataObject parameter was
+first unmarshaled. It also does not establish a usable watchdog trigger in a
+parked receiver: starting a deadline inside DragEnter is too late for argument
+unmarshaling. Revision 9 tests both explicitly.
 
-Revision 7 initiates a real left-button event on its owned source window and
-calls DoDragDrop from that window's WM_LBUTTONDOWN handler. It preserves every
-previous outcome and adds source input, QueryInterface, enumeration Next and GUI
-capture-stage diagnostics. A failure remains a failure; no direct-proxy result
-is a substitute for actual OLE target discovery.
+## Controlled custom source
 
-Revision 7 run 44067178252, job 133983753282, artifact 14319993444 passes
-six direct cases but every CI case exits at controller SendInput(left-up) with
-ERROR_ACCESS_DENIED (5). That final require suppressed the source-stage JSON;
-these results establish no OLE behavior. Every external desktop/cursor restore
-succeeds. The owned desktop access mask omitted DESKTOP_JOURNALPLAYBACK (0x20),
-which is required for journal playback and needed by SendInput on that desktop.
+CustomSource implements IDataObject and IMarshal. Its outer custom packet adds
+one fixed four-byte marker, then delegates a nested standard OBJREF for an owned
+normal Source. There is no image, file opening, arbitrary blob growth, downloaded
+DLL or registry write. The same executable registers an in-process class factory
+in each fixture process with CoRegisterClassObject(CLSCTX_INPROC_SERVER,
+REGCLS_MULTIPLEUSE), then revokes it on normal cleanup. Microsoft documents this
+registration combination. The ordinary source/target cases remain unchanged in
+their advertised single CF_HDROP format and input gesture.
 
-Revision 8 adds only that right to creation of the owned CI desktop and the
-external releaser's input-desktop handle. It changes no ACL, logon privilege,
-security policy or ordinary private-desktop access. Native input is still
-explicitly gated to the disposable hosted VM.
+The factory records the first non-source PID/TID and dispatch-guard sequence
+before allocating its unmarshaler. The unmarshaler separately records its first
+non-source PID/TID and guard sequence before delegating the standard packet.
+Both must be the helper STA and lie inside the same externally armed interval.
+Unmarshaler final Release/ReleaseMarshalData outside that interval is counted
+and fails the boundary proof. Main-foreground execution fails the proof rather
+than being described as acceptable marshaling.
 
-Every SendInput now independently checks both the current input desktop and its
-calling thread's attached desktop against the exact generated owned desktop
-name. A mismatch records a not-owned error and sends nothing; no original CI
-input desktop is used as fallback. The mover remains pinned to its source-owned
-desktop. Source and controller input errors have separate fields, and the first
-native failure is retained with an Interlocked claim so a cleanup failure cannot
-overwrite the original cause. A failed controller release is recorded and causes
-test failure, while the controller still emits its entire bounded diagnostic
-JSON and attempts normal restoration. The existing independent release/restore
-guards remain active. Actual API rights/enforcement must still be demonstrated
-by the next native run; no successful gesture or OLE routing is claimed here.
+The controlled code returns an error if it observes first unmarshal in a process
+other than the receiver, instead of deliberately hanging the observer. In the
+receiver, `unmarshal-stall` actually blocks before target entry, and
+`unmarshal-memory` tries an actual 128 MiB commit before target entry. The latter
+must fail under the preinstalled +96 MiB limit. The original source GetData does
+not run in those two cases. No source error or callback PID substitutes for this
+first-boundary evidence.
 
-## Explicitly different execution scopes
+## Guard before native dispatch
 
-Without opt-in, every native case uses a unique unselected noninteractive window
-station and desktop. This mode performs no SwitchDesktop, SetCursorPos or
-SendInput. Its posted-move negative controls remain in the result report.
+The receiver waits event-driven while idle. When its native queue wakes, it
+announces a new sequence using an inherited auto-reset event and waits for the
+controller's armed acknowledgement. Only after the matching acknowledgement
+does it mark its dispatch interval active and call PeekMessage/DispatchMessage.
+PeekMessage itself can dispatch sent messages, so the guard is established before
+that call, rather than merely before DispatchMessage. Each batch handles at most
+32 queued messages, then clears the guard and signals completion.
 
-The actual gesture mode requires a disposable dedicated GitHub-hosted Windows VM,
-never the user's computer, another user's session or a self-hosted runner. Both
-script and native code gate it with:
+The fixture controller's absolute five-second deadline is already active before
+the source starts. Its event/message wait acknowledges dispatch sequences without
+resetting or extending that deadline. This verifies an arm-before-dispatch
+handshake with a deadline independent of the receiver thread. A production
+parked controller must supply an equivalent per-interval deadline; the fixture's
+whole-case deadline is deliberately stronger and does not include human delay.
 
-- explicit PowerShell -OwnedHostedCiInputDesktop;
-- native --owned-ci-input-desktop and a ci- scenario;
-- GITHUB_ACTIONS=true, RUNNER_OS=Windows, RUNNER_ENVIRONMENT=github-hosted;
-- SCREENSHOTS_OWNED_HOSTED_CI_INPUT=1 set after the script verifies those flags.
+If the factory/unmarshal runs before the guard, on another thread/apartment or
+in the HWND owner's process, this revision fails and the receiving architecture
+needs another boundary. Do not relabel the already passing ordinary callback
+cases as complete containment. A source-provided marshaler in the external
+source process is outside the application's process-memory budget; this proof
+concerns code executing inside the receiving application/helper.
 
-These environment checks prevent accidental host execution; they are not a
-cryptographic host attestation. The reviewed auxiliary workflow's windows-latest
-runner and actual GitHub run identity establish where the test was launched.
+## Cases and assertions
 
-The CI controller creates a uniquely named temporary WinSta0 desktop, switches
-that VM's input to it, and uses only its owned source/target windows. The source
-window is 64x64 at (256,256); the target is 128x128 at (0,0). No full-desktop
-surface, screenshot, real browser, clipboard, network request or credential call
-is involved. Only one synthetic left-button down/up and cursor movement are
-used; there is no keyboard injection. The original left button must be up before
-the case begins.
+The six original direct cases and six original real CI OLE cases remain required.
+Add three direct and three real OLE custom cases:
 
-## Source gesture and thread ownership
+- normal transfer with actual custom MarshalInterface, helper factory/unmarshal
+  PID/TID, matching armed/active sequences, ordinary GetData and medium release;
+- first-unmarshal stall before target entry, no target query/data/copy, responsive
+  HWND-owner ping, externally killed and reaped processes;
+- first-unmarshal allocation refusal before target entry, no target query/data/
+  copy, actual failed 128 MiB commit and responsive owner.
 
-The source STA creates its data object and native window, retaining all COM
-pointers on that STA. One CI-only native mover thread requests a 256 KiB stack.
-Before any User32 object is created on that new thread, it attaches the exact
-source STA's owned desktop. Its context contains only a stop handle, desktop
-handle and source HWND, never an IDataObject/COM pointer, frame or UI reference.
-A kernel waitable timer wakes it every 20 ms only during this operation.
+Normal custom cases additionally retain all existing data, cleanup and genuine
+DoDragDrop assertions. Custom failure cases report `enter_pid=0` truthfully and
+have a separate positive `first_unmarshal_boundary_verified` field. They may not
+pretend target entry happened. RPC client PID remains asserted only when Windows
+provides it. All new first-factory/unmarshal/release/sequence fields are retained
+in the JSON even when an assertion fails.
 
-After source-window readiness, the mover goes to (272,272), verifies that the
-window under that point is the exact owned source HWND, then sends one left-down.
-The source STA's ordinary GetMessage/DispatchMessage loop receives WM_LBUTTONDOWN
-and starts DoDragDrop in that handler. The mover waits for the atomic call-start
-marker and an actual source enumeration/preflight/continue callback from inside
-DoDragDrop. Its first target move is then (32,32), followed by (16,16), both within
-the owned target. It never posts fake negative-coordinate moves in this mode.
+## Existing owned input and cleanup safeguards
 
-Normal DoDragDrop completion signals the source-local stop event and joins the
-exact mover thread handle before releasing COM objects or destroying the source
-window. The mover sends left-up before exit. The controller's stop event also
-wakes it on cancellation, and the existing five-second owned Job contains every
-thread on a stall. Source/STA coordination uses Interlocked operations. A short
-process-local SRW lock serializes only the fixed QueryInterface GUID diagnostic
-copy; no foreign COM/native callback is made while that lock is held.
+The script requires -OwnedHostedCiInputDesktop, the private native flag/scenario,
+GITHUB_ACTIONS=true, RUNNER_OS=Windows, RUNNER_ENVIRONMENT=github-hosted and the
+explicit SCREENSHOTS_OWNED_HOSTED_CI_INPUT gate. These prevent accidental host
+execution; they are not a cryptographic attestation. The reviewed hosted workflow
+and actual GitHub run identity establish the execution environment.
 
-The source implements a one-element IEnumFORMATETC directly: exactly CF_HDROP,
-HGLOBAL, CONTENT, lindex -1, with bounded Next/Skip/Reset/Clone behavior and
-explicit Next call/result/fetched counters. This removes an opaque enumerator
-from the diagnostic path. Fixed 16-entry FORMATETC traces separate OLE preflight
-from the target's explicit QueryGetData/GetData stages. Fault injection and ping
-signals occur only in the target acquisition stages, never during preflight.
+The controller creates a unique private WinSta0 desktop with journal-playback
+access, switches only the owned CI VM, and owns fixed source/target windows. A
+source-process mover attaches the exact source desktop, presses only on the
+verified source HWND at (272,272), then moves to (32,32)/(16,16) only after an
+actual source callback from DoDragDrop. DoDragDrop starts in the source window's
+real WM_LBUTTONDOWN handler. No COM pointer crosses that mover thread.
 
-## Three button/desktop cleanup boundaries
+The mover releases and joins normally. The controller always attempts left-up
+after exact source/helper process reaping and before restoration. Every SendInput
+checks both current input and attached thread desktop against the exact owned
+generated name; an ownership change sends nothing. First failure is preserved,
+source/controller input errors remain separate, and controller errors retain
+bounded JSON. No ACL, global policy or logon privilege is changed.
 
-1. The source mover sends left-up and joins on normal completion. If any source
-   callback stalls or exits, all its threads remain inside the externally killed
-   and reaped Job.
-2. After reaping exact receiver/source process handles, the controller always
-   sends left-up on its still-selected owned CI desktop before restoring the
-   original desktop or cursor. This covers source errors and forced source kills.
-3. An independent PowerShell finally guard holds the original input desktop and
-   cursor before launch. On normal exit, exception or the 15-second controller
-   kill, it launches the same executable in --release-owned-ci-input CONTROLLER_ID
-   mode before switching back. That fresh native helper verifies all CI gates
-   and that the current input desktop name exactly matches the generated desktop
-   for that owned controller PID. It attaches only that desktop and sends left-up.
-   If the controller already restored the original desktop, the helper reports a
-   skip and injects nothing. It never sends input to an unrelated desktop.
+The independent PowerShell finally guard runs the same executable in the gated
+--release-owned-ci-input mode before switching back. That fresh process verifies
+the exact current owned desktop name, attaches only it, releases the button, and
+has a two-second exact-process timeout. If normal controller restoration already
+occurred, it reports a skip and injects nothing. Desktop/cursor restoration is
+attempted even on release errors. The original button must be up before a case.
+There is no user clipboard, browser, printer, credential or capture operation.
 
-The external release helper has its own two-second process-handle timeout and
-is killed by its exact Process object on failure. Regardless of release errors,
-the outer finally still attempts original desktop/cursor restoration and reports
-failure. No process is found or killed by name. Normal and fault-case reports
-record source/controller button counts and external release/restoration outcomes.
-A complete CI worker crash is outside these guards; the VM is disposable, with
-no user session or user data to recover.
+## Build, identity and resources
 
-## Build, outputs and mandatory assertions
-
-In a developer PowerShell, ordinary private diagnostics:
-
-```powershell
-pwsh -NoProfile -File .\run_probe.ps1 -OutputDirectory .\results
-```
-
-Only on the explicitly owned hosted Windows CI VM:
+In the owned hosted Windows VM's x64 MSVC developer PowerShell:
 
 ```powershell
 pwsh -NoProfile -File .\run_probe.ps1 -OutputDirectory .\results -OwnedHostedCiInputDesktop
 ```
 
-The script records exact MSVC C++20 /EHsc /W4 /O2 arguments, raw/native and
-normalized-LF source SHA-256, executable SHA-256, per-case stdout/stderr and
-report.json. No Cargo/application build or third-party dependency is used.
-All six direct cases remain mandatory. Opted-in CI additionally requires six
-actual OLE cases: normal, query/get/release stalls, over-memory and the foreground
-baseline. The three old private no-target failures remain explicit bounded
-negative controls only when these real CI OLE cases are also required.
+The script records source, custom-header and executable SHA-256, including separate
+raw CRLF/native and normalized-LF source/header identities. Per-case stdout/stderr
+and report.json are preserved. It builds only this C++ fixture, never Cargo or the
+screenshots product. Source examples/default non-input cases remain diagnostic;
+no local/native host execution is authorized by this handoff.
 
-Normal success requires actual receiver/source PID/TID routing, separate HWND
-owner, successful GetData and cleanup, one custom medium release, publication only
-after release, actual OLE DRAGDROP_S_DROP, and reaped exact process handles.
-A posted ping during blocked QueryGetData must complete within 50 ms in the
-contained HWND owner. The foreground failure control owns its HWND and invokes
-an owned synthetic source directly on that STA; its blocked ping must fail.
-This is a deterministic control, not every external source's COM wait behavior
-or a physical input/presentation latency distribution.
+There are controller + receiver + source processes during a case. The existing
+Job still has two child slots, +96 MiB receiver private-commit growth verified
+before OLE, 512 MiB outer per-child commit, a five-second acquisition/cleanup
+deadline and exact process-handle reaps. The private mapping adds only fixed
+numeric fields and three guard handles; the inherited whitelist is now one
+mapping plus six events. There is no unbounded trace/queue. The CI mover remains
+one 256 KiB-stack thread with operation-only timer/stop/join handles. The extra
+factory/unmarshaler objects are small, operation-scoped native objects. Idle
+receiver waiting adds no polling timer or runtime. This is fixture resource cost,
+not a measurement of a production parked helper or aggregate app memory.
 
-The memory case requires exactly one target GetData, a successful 128 MiB source
-allocation and an actual receiver memory-error HRESULT; returned-medium size
-rejection alone cannot pass. CI assertions also require the correct mover
-PID/TID, actual under-cursor owner PID/class, real left-down/source handler stage,
-controller left-up and normal stop/join/source left-up. QueryInterface GUIDs,
-GetGUIThreadInfo capture/active PID/class, enum completion and fixed failure/
-HRESULT/process-exit fields remain diagnostic even when the case fails. RPC
-caller PID is asserted only when Windows supplies it; zero means unavailable.
+The outside-guard release counter covers this controlled unmarshaler's relevant
+methods. It does not establish arbitrary installed DLL behavior, OS/kernel/shared
+mapping memory, Explorer/browser interoperability, mixed DPI/accessibility or a
+security sandbox. Native Shell drag-image-helper ownership, queued-result leases,
+stale-window/app cancellation and actual raw/URL editor integration remain further
+required work. The held Rust payload adapter is still unregistered/uncompiled.
 
-## Resource and evidence limits
-
-The receiver installs/probes measured-private-baseline +96 MiB commit growth
-before OLE/source access. The external five-second deadline covers acquisition,
-media release and cleanup. Its kill-on-close Job has two child slots and 512 MiB
-per-child commit ceiling. Child creation is atomic with the Job and inherits
-only one bounded mapping and three events. Normal source data is 64 bytes; the
-single memory fault intentionally creates 128 MiB in the owned source.
-
-The fixture has controller + receiver + source during the gesture, one fixed
-mapping with numeric instrumentation and <=16 KiB trusted target OBJREF, three
-inherited events and the operation-only mover handles/stack. The separate button
-release helper starts after controller completion/kill. No permanent timer,
-abandoned application thread, source watcher, image cache or renderer is added.
-Each controller is externally bounded to 15 seconds; the complete opted-in list
-normally finishes within roughly 90 seconds.
-
-No result establishes arbitrary custom-unmarshaler behavior, main-app integration,
-Explorer/browser compatibility, DPI/accessibility, application cancellation,
-production idle/helper startup cost or full performance acceptance. The separate
-controlled custom IMarshal draft has not run and is not part of this revision.
-Production hard containment and raw/URL adapter integration remain open.
-
-Primary native access reference: [Desktop Security and Access Rights](https://learn.microsoft.com/en-us/windows/win32/winstation/desktop-security-and-access-rights).
-The SendInput/journal-playback connection is also described by the archived
-Microsoft staff post originally published at
-https://blogs.msdn.microsoft.com/alejacma/2010/03/17/sendinput-doesnt-work-but-it-doesnt-return-an-error/ .
-This source diagnosis remains subject to the owned native runtime result.
+Native basis: [REGCLS combinations](https://learn.microsoft.com/en-us/windows/win32/api/combaseapi/ne-combaseapi-regcls),
+[CoUnmarshalInterface](https://learn.microsoft.com/en-us/windows/win32/api/combaseapi/nf-combaseapi-counmarshalinterface),
+[IMarshal](https://learn.microsoft.com/en-us/windows/win32/api/objidl/nn-objidl-imarshal).
