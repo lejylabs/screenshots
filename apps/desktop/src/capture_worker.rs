@@ -707,7 +707,10 @@ fn execute(
     check: &NativeCaptureCheck<'_>,
     context: app_core::NativeCaptureContext,
 ) -> Result<NativeCaptureReply, CaptureError> {
-    if matches!(call, NativeCaptureCall::MacVideo { .. }) {
+    if matches!(
+        call,
+        NativeCaptureCall::MacVideo { .. } | NativeCaptureCall::PortalVideo { .. }
+    ) {
         return Err(CaptureError::Unsupported(
             "Native video requires its owned streaming plan",
         ));
@@ -727,6 +730,14 @@ fn execute(
     )
 }
 fn operation_timeout(call: &NativeCaptureCall) -> Duration {
+    if let NativeCaptureCall::PortalVideo { request } = call {
+        return Duration::from_secs(150 + u64::from(request.seconds));
+    }
+    if let NativeCaptureCall::PortalScroll { request } = call {
+        return Duration::from_millis(
+            150_000 + u64::from(request.frames.saturating_sub(1)) * u64::from(request.interval_ms),
+        );
+    }
     if let NativeCaptureCall::MacVideo { request } = call {
         return Duration::from_secs(u64::from(request.seconds) + 10);
     }
@@ -902,7 +913,13 @@ fn serve() -> Result<()> {
     if let NativeCaptureCall::MacVideo { request } = call {
         return video::serve(request, &mut io, &nonce, parent);
     }
+    #[cfg(target_os = "linux")]
+    if let NativeCaptureCall::PortalVideo { request } = call {
+        return video::serve_portal(request, &mut io, &nonce, parent);
+    }
     let result = match call {
+        #[cfg(target_os = "linux")]
+        NativeCaptureCall::PortalScroll { request } => portal::scroll(request, io.deadline),
         #[cfg(target_os = "linux")]
         NativeCaptureCall::Portal { source, cursor } => {
             portal::capture(source, cursor, io.deadline)
@@ -1022,9 +1039,7 @@ mod tests {
         let folder = Folder::new();
         let output = folder.0.join("raw");
         let plan = video_plan(output.clone());
-        let call = NativeCaptureCall::MacVideo {
-            request: plan.request,
-        };
+        let call = plan.call.clone();
         let reply = execute_operation(
             || Ok(fake_command("video", None)),
             call,
@@ -1053,9 +1068,7 @@ mod tests {
             let plan = video_plan(output.clone());
             let reply = execute_operation(
                 || Ok(fake_command("video", None)),
-                NativeCaptureCall::MacVideo {
-                    request: plan.request,
-                },
+                plan.call.clone(),
                 &|| Ok(()),
                 Duration::from_secs(5),
                 Operation::Video(plan),
@@ -1078,9 +1091,7 @@ mod tests {
         for mode in ["video_truncated", "video_hang"] {
             let output = folder.0.join(mode);
             let plan = video_plan(output.clone());
-            let call = NativeCaptureCall::MacVideo {
-                request: plan.request,
-            };
+            let call = plan.call.clone();
             let result = execute_operation(
                 move || Ok(fake_command(mode, None)),
                 call,
@@ -2162,9 +2173,7 @@ mod tests {
                 std::fs::write(output.with_extension("hold-probe"), b"private probe pause")?;
             }
             let plan = video_plan(output);
-            let call = NativeCaptureCall::MacVideo {
-                request: plan.request,
-            };
+            let call = plan.call.clone();
             let marker = PathBuf::from(marker);
             let _ = execute_operation(
                 move || {

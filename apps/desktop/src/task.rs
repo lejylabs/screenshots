@@ -25,6 +25,9 @@ struct Profile {
 #[derive(Deserialize, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 enum Source {
+    PortalScroll {
+        request: app_core::PortalScrollRequest,
+    },
     None,
     RawFile {
         path: PathBuf,
@@ -257,6 +260,10 @@ impl Task {
         match &mut profile.source {
             Source::ImageUrl { url, allow_http } => {
                 app_core::ImageUrlSource::new(url.clone(), *allow_http)?;
+            }
+            Source::PortalScroll { request } => {
+                ensure!(cfg!(target_os = "linux"), "Portal scrolling requires Linux");
+                request.validate()?;
             }
             Source::Portal { .. } => ensure!(
                 cfg!(target_os = "linux"),
@@ -516,6 +523,9 @@ impl Task {
             Source::ImageUrl { url, allow_http } => {
                 app_core::ImageUrlSource::new(url.clone(), *allow_http)?
                     .capture_with_cancel(&native_check)?
+            }
+            Source::PortalScroll { request } => {
+                app_core::capture_portal_scroll_with_cancel(*request, &native_check)?.0
             }
             Source::Portal { source, cursor } => {
                 app_core::capture_portal_with_cancel(*source, *cursor, &native_check)?

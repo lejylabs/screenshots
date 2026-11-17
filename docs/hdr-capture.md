@@ -57,8 +57,9 @@ native acquisition. Native macOS CG fixture/SDK/link, WGC device/fault/runtime,
 HDR/P3/SDR/mirror hardware, mixed DPI/topology/permission/cursor, cancellation,
 CPU/private/GPU memory, latency and idle/soak gates remain open.
 
-The separate Linux adapter extends proven SPA color metadata and preserves
-legacy RGB8 negotiation; its integration and native results must be recorded
-separately. Exact current source/checkpoint evidence lives under
+The integrated Linux adapter extends proven SPA color metadata while preserving
+legacy RGB8 negotiation. Portable RGB, installed-SPA filtering and real private
+PipeWire color/refusal/dual-format cases pass; exact evidence and producer limits
+are recorded in [finite Wayland capture](wayland-finite-capture.md). Exact current source/checkpoint evidence lives under
 `target/verification/hdr-integration/` and the independently reviewed frozen
 packets under `target/verification/hdr-capture-delivery-held/`.

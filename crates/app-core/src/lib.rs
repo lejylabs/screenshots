@@ -76,7 +76,11 @@ pub use native_capture_job::{
     NativeCaptureExecutor, NativeCaptureReply, NativeSourceInventory,
     install_native_capture_executor, validate_native_frames,
 };
-pub use portal_capture::{PortalCaptureCursor, PortalCaptureSource, capture_portal_with_cancel};
+pub use portal_capture::{
+    PortalCaptureCursor, PortalCaptureSource, PortalScrollRequest, PortalScrollSummary,
+    PortalStreamSource, PortalVideoRequest, PortalVideoSummary, capture_portal_scroll_with_cancel,
+    capture_portal_with_cancel,
+};
 mod capture_options;
 mod image_cancel;
 mod raster_ops;
@@ -104,8 +108,12 @@ pub use file_identity::FileIdentity;
 mod filenames;
 pub use arrows::ArrowAnnotation;
 pub use filenames::{capture_file_name, validate_capture_name_template};
-#[cfg(any(target_os = "macos", target_os = "windows", test))]
 mod capture_color;
+mod capture_rgb;
+pub use capture_rgb::{
+    NativeRgbColor, NativeRgbPacking, NativeRgbPrimaries, NativeRgbSource, NativeRgbTransfer,
+    decode_native_rgb_with_cancel,
+};
 #[cfg(any(target_os = "windows", test))]
 mod capture_windows_admission;
 mod clipboard;

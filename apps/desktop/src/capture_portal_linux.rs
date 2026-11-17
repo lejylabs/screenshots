@@ -1,4 +1,4 @@
-//! One authorized portal source, one CPU frame, no ambient remote or screenshot file.
+//! Operation-owned restricted portal source; still, finite video, or manual scroll assembly.
 use app_core::{
     CaptureError, CapturedImage, PixelFormat, PortalCaptureCursor, PortalCaptureSource,
 };
@@ -13,12 +13,16 @@ use std::{
     collections::HashMap,
     future::Future,
     io,
+    io::Write,
     os::fd::{AsRawFd, OwnedFd},
+    os::unix::net::UnixStream,
     path::PathBuf,
     rc::Rc,
     sync::Arc,
     time::{Duration, Instant},
 };
+#[path = "capture_portal_formats.rs"]
+mod formats;
 #[path = "capture_portal_pixels.rs"]
 mod pixels;
 #[repr(transparent)]
@@ -56,14 +60,166 @@ fn source_type(source: PortalCaptureSource) -> SourceType {
         PortalCaptureSource::Window => SourceType::WINDOW,
     }
 }
+fn timestamp_policy() -> CaptureError {
+    CaptureError::Unsupported("Portal video requires non-future CLOCK_MONOTONIC source Header PTS")
+}
+fn monotonic_ns() -> Result<i64, CaptureError> {
+    let mut time: libc::timespec = unsafe { std::mem::zeroed() };
+    if unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut time) } != 0 {
+        return Err(timestamp_policy());
+    }
+    let seconds = i64::try_from(time.tv_sec).map_err(|_| timestamp_policy())?;
+    let nanos = i64::try_from(time.tv_nsec).map_err(|_| timestamp_policy())?;
+    seconds
+        .checked_mul(1_000_000_000)
+        .and_then(|value| value.checked_add(nanos))
+        .filter(|value| *value > 0)
+        .ok_or_else(timestamp_policy)
+}
+/// Made only after the authenticated VIDEO_START, never from a frame callback.
+#[derive(Clone, Copy)]
+pub(super) struct VideoStart {
+    cutoff_ns: i64,
+}
+impl VideoStart {
+    pub(super) fn after_encoder_start() -> Result<Self, CaptureError> {
+        Ok(Self {
+            cutoff_ns: monotonic_ns()?,
+        })
+    }
+    #[cfg(test)]
+    pub(super) fn cutoff_ns(self) -> i64 {
+        self.cutoff_ns
+    }
+}
+#[derive(Default)]
+struct VideoClock {
+    previous: Option<i64>,
+    start: Option<VideoStart>,
+    fresh: bool,
+}
+impl VideoClock {
+    fn admit(&mut self, pts: Option<i64>, now_ns: i64) -> Result<bool, CaptureError> {
+        let pts = pts
+            .filter(|pts| *pts > 0 && *pts <= now_ns)
+            .ok_or_else(timestamp_policy)?;
+        if self.start.is_some_and(|start| pts <= start.cutoff_ns) {
+            if self.fresh {
+                return Err(timestamp_policy());
+            }
+            return Ok(false);
+        }
+        if self.previous.is_some_and(|previous| pts <= previous) {
+            return Err(timestamp_policy());
+        }
+        self.previous = Some(pts);
+        self.fresh = self.start.is_some();
+        Ok(true)
+    }
+}
+enum Output {
+    Frame(image::RgbaImage),
+    Video(app_core::PortalVideoSummary),
+    Scroll(image::RgbaImage, app_core::PortalScrollSummary),
+}
+enum Mode<'a> {
+    Still,
+    Video {
+        request: app_core::PortalVideoRequest,
+        sink: UnixStream,
+        ready: &'a mut dyn FnMut() -> Result<VideoStart, CaptureError>,
+    },
+    Scroll(app_core::PortalScrollRequest),
+}
+impl Mode<'_> {
+    fn source(&self) -> Option<app_core::PortalStreamSource> {
+        match self {
+            Self::Still => None,
+            Self::Video { request, .. } => Some(request.stream),
+            Self::Scroll(request) => Some(request.stream),
+        }
+    }
+}
+fn captured(
+    source: PortalCaptureSource,
+    pixels: image::RgbaImage,
+    started: Instant,
+) -> CapturedImage {
+    CapturedImage {
+        desktop_layout: None,
+        display_id: source.identifier().into(),
+        window_id: None,
+        width: pixels.width(),
+        height: pixels.height(),
+        png_path: PathBuf::new(),
+        pixels: Arc::new(pixels),
+        elapsed_ms: started.elapsed().as_millis(),
+        source_format: PixelFormat::Rgba8UnormSrgb,
+        display_geometry: None,
+    }
+}
+pub(super) fn scroll(
+    request: app_core::PortalScrollRequest,
+    until: Instant,
+) -> Result<app_core::NativeCaptureReply, CaptureError> {
+    request.validate()?;
+    let started = Instant::now();
+    let Output::Scroll(pixels, summary) = run(
+        request.stream.source,
+        request.stream.cursor,
+        until,
+        Mode::Scroll(request),
+    )?
+    else {
+        return Err(failed());
+    };
+    Ok(app_core::NativeCaptureReply::PortalScroll {
+        image: captured(request.stream.source, pixels, started),
+        summary,
+    })
+}
+pub(super) fn video(
+    request: app_core::PortalVideoRequest,
+    until: Instant,
+    sink: UnixStream,
+    ready: &mut dyn FnMut() -> Result<VideoStart, CaptureError>,
+) -> Result<app_core::PortalVideoSummary, CaptureError> {
+    request.validate()?;
+    let Output::Video(summary) = run(
+        request.stream.source,
+        request.stream.cursor,
+        until,
+        Mode::Video {
+            request,
+            sink,
+            ready,
+        },
+    )?
+    else {
+        return Err(failed());
+    };
+    Ok(summary)
+}
 pub(super) fn capture(
     source: PortalCaptureSource,
     cursor: PortalCaptureCursor,
     until: Instant,
 ) -> Result<CapturedImage, CaptureError> {
     let started = Instant::now();
-    let pixels = ashpd::zbus::block_on(async {
-        let proxy = bounded(until, async {
+    let Output::Frame(pixels) = run(source, cursor, until, Mode::Still)? else {
+        return Err(failed());
+    };
+    Ok(captured(source, pixels, started))
+}
+fn run(
+    source: PortalCaptureSource,
+    cursor: PortalCaptureCursor,
+    until: Instant,
+    mode: Mode<'_>,
+) -> Result<Output, CaptureError> {
+    let consent_until = until.min(Instant::now() + Duration::from_secs(120));
+    ashpd::zbus::block_on(async {
+        let proxy = bounded(consent_until, async {
             Screencast::new().await.map_err(portal_error)
         })
         .await?;
@@ -72,11 +228,11 @@ pub(super) fn capture(
                 "Portal ScreenCast version 3 or newer is required",
             ));
         }
-        let sources = bounded(until, async {
+        let sources = bounded(consent_until, async {
             proxy.available_source_types().await.map_err(portal_error)
         })
         .await?;
-        let cursors = bounded(until, async {
+        let cursors = bounded(consent_until, async {
             proxy.available_cursor_modes().await.map_err(portal_error)
         })
         .await?;
@@ -89,7 +245,7 @@ pub(super) fn capture(
                 "Portal does not offer the requested source/cursor policy",
             ));
         }
-        let session = bounded(until, async {
+        let session = bounded(consent_until, async {
             proxy
                 .create_session(Default::default())
                 .await
@@ -139,12 +295,15 @@ pub(super) fn capture(
                 validate_remote(&remote)?;
                 Ok((remote, stream.pipe_wire_node_id(), stream.pipewire_serial()))
             };
-            let (remote, node, serial) = future::or(capture, async {
-                closed.next().await;
-                Err(CaptureError::PermissionDenied)
-            })
+            let (remote, node, serial) = bounded(
+                consent_until,
+                future::or(capture, async {
+                    closed.next().await;
+                    Err(CaptureError::PermissionDenied)
+                }),
+            )
             .await?;
-            receive_frame(remote, node, serial, &mut closed, until).await
+            receive_frame(remote, node, serial, &mut closed, until, mode).await
         };
         let result = bounded(until, work).await;
         // Native/session resources must be gone before publishing a frame to the parent.
@@ -157,20 +316,9 @@ pub(super) fn capture(
             (Err(error), _) => Err(error),
             (Ok(_), Err(_)) => Err(failed()),
         }
-    })?;
-    Ok(CapturedImage {
-        desktop_layout: None,
-        display_id: source.identifier().into(),
-        window_id: None,
-        width: pixels.width(),
-        height: pixels.height(),
-        png_path: PathBuf::new(),
-        pixels: Arc::new(pixels),
-        elapsed_ms: started.elapsed().as_millis(),
-        source_format: PixelFormat::Rgba8UnormSrgb,
-        display_geometry: None,
     })
 }
+
 fn validate_remote(remote: &OwnedFd) -> Result<(), CaptureError> {
     let fd = remote.as_raw_fd();
     let mut info: libc::stat = unsafe { std::mem::zeroed() };
@@ -216,7 +364,14 @@ struct State {
     format: Option<pixels::Format>,
     buffers: HashMap<usize, usize>,
     mapped: usize,
-    frame: Option<image::RgbaImage>,
+    frame: Option<Arc<image::RgbaImage>>,
+    source: Option<app_core::PortalStreamSource>,
+    decoded: u32,
+    received: u32,
+    timestamp: Option<i64>,
+    video_clock: Option<VideoClock>,
+    streaming: bool,
+    finished: bool,
 }
 impl State {
     fn fail(&mut self, error: CaptureError) {
@@ -275,13 +430,19 @@ async fn receive_frame(
     expected_serial: Option<u64>,
     closed: &mut (impl Stream + Unpin),
     overall: Instant,
-) -> Result<image::RgbaImage, CaptureError> {
+    mut mode: Mode<'_>,
+) -> Result<Output, CaptureError> {
     pw::init();
     let until = overall.min(Instant::now() + Duration::from_secs(20));
     let main = pw::main_loop::MainLoopRc::new(None).map_err(|_| failed())?;
     let context = pw::context::ContextRc::new(&main, None).map_err(|_| failed())?;
     let core = context.connect_fd_rc(remote, None).map_err(|_| failed())?;
-    let state = Rc::new(RefCell::new(State::default()));
+    let state = Rc::new(RefCell::new(State {
+        source: mode.source(),
+        video_clock: matches!(&mode, Mode::Video { .. }).then(VideoClock::default),
+        ..State::default()
+    }));
+
     let done = Rc::new(Cell::new(false));
     let pending = Rc::new(Cell::new(None));
     let events = state.clone();
@@ -354,8 +515,20 @@ async fn receive_frame(
     let _stream = stream
         .add_local_listener_with_user_data(data)
         .state_changed(|_, state, _, new| {
-            if matches!(new, pw::stream::StreamState::Error(_)) {
-                state.borrow_mut().fail(failed());
+            let mut state = state.borrow_mut();
+            if matches!(new, pw::stream::StreamState::Streaming) {
+                state.streaming = true;
+            }
+            if matches!(new, pw::stream::StreamState::Error(_))
+                || (state.source.is_some()
+                    && state.streaming
+                    && !state.finished
+                    && matches!(
+                        new,
+                        pw::stream::StreamState::Paused | pw::stream::StreamState::Unconnected
+                    ))
+            {
+                state.fail(failed());
             }
         })
         .param_changed(|stream, state, id, param| {
@@ -377,6 +550,11 @@ async fn receive_frame(
                 let mut info = spa::param::video::VideoInfoRaw::new();
                 info.parse(param).map_err(|_| pixels::unsupported())?;
                 let format = pixels::Format::parse(info)?;
+                if state.borrow().source.is_some_and(|source| {
+                    (source.width, source.height) != (format.width, format.height)
+                }) {
+                    return Err(pixels::unsupported());
+                }
                 if state
                     .borrow()
                     .format
@@ -385,9 +563,16 @@ async fn receive_frame(
                     return Err(pixels::unsupported());
                 }
                 let buffers = buffer_parameters(format)?;
-                stream
-                    .update_params(&mut [spa::pod::Pod::from_bytes(&buffers).ok_or_else(failed)?])
-                    .map_err(|_| failed())?;
+                let header = if state.borrow().video_clock.is_some() {
+                    Some(header_parameter()?)
+                } else {
+                    None
+                };
+                let mut params = vec![spa::pod::Pod::from_bytes(&buffers).ok_or_else(failed)?];
+                if let Some(header) = &header {
+                    params.push(spa::pod::Pod::from_bytes(header).ok_or_else(failed)?);
+                }
+                stream.update_params(&mut params).map_err(|_| failed())?;
                 state.borrow_mut().format = Some(format);
                 Ok(())
             })();
@@ -400,7 +585,11 @@ async fn receive_frame(
             let mut state = state.borrow_mut();
             match result {
                 Ok(size)
-                    if state.buffers.len() < 2
+                    if (state.source.is_none()
+                        || state
+                            .format
+                            .is_some_and(|format| size <= format.finite_buffer_limit()))
+                        && state.buffers.len() < 2
                         && !state.buffers.contains_key(&(buffer as usize))
                         && state
                             .mapped
@@ -420,7 +609,10 @@ async fn receive_frame(
             }
         })
         .process(|stream, state| {
-            if state.borrow().frame.is_some() || state.borrow().error.is_some() {
+            if state.borrow().finished
+                || (state.borrow().source.is_none() && state.borrow().frame.is_some())
+                || state.borrow().error.is_some()
+            {
                 return;
             }
             let Some(mut buffer) = stream.dequeue_buffer() else {
@@ -428,13 +620,62 @@ async fn receive_frame(
             };
             let result = (|| {
                 let format = state.borrow().format.ok_or_else(pixels::unsupported)?;
+                if state.borrow().source.is_some() {
+                    let mut state = state.borrow_mut();
+                    if state.received >= 16384 {
+                        return Err(CaptureError::MemoryLimit);
+                    }
+                    state.received += 1;
+                }
                 if buffer
                     .find_meta::<Transform>()
                     .is_some_and(|transform| transform.0 != 0)
                 {
                     return Err(pixels::unsupported());
                 }
-                if let Some(header) = buffer.find_meta::<spa::buffer::meta::MetaHeader>() {
+                let header = buffer.find_meta::<spa::buffer::meta::MetaHeader>();
+                let current_ns = if state.borrow().video_clock.is_some() {
+                    monotonic_ns()?
+                } else {
+                    0
+                };
+                if state.borrow().video_clock.is_some() {
+                    let header = header.ok_or_else(timestamp_policy)?;
+                    if header.offset() != 0
+                        || header.dts_offset() != 0
+                        || (state
+                            .borrow()
+                            .video_clock
+                            .as_ref()
+                            .is_some_and(|clock| clock.fresh)
+                            && header
+                                .flags()
+                                .contains(spa::buffer::meta::MetaHeaderFlags::DISCONT))
+                    {
+                        return Err(timestamp_policy());
+                    }
+                }
+                if let Some(clock) = state.borrow_mut().video_clock.as_mut() {
+                    if !clock.admit(header.map(|header| header.pts()), current_ns)? {
+                        return Ok(None);
+                    }
+                }
+                if let Some(header) = header {
+                    if state.borrow().source.is_some() && state.borrow().video_clock.is_none() {
+                        let mut state = state.borrow_mut();
+                        if header.pts() < 0
+                            || state
+                                .timestamp
+                                .is_some_and(|previous| header.pts() <= previous)
+                            || (state.decoded != 0
+                                && header
+                                    .flags()
+                                    .contains(spa::buffer::meta::MetaHeaderFlags::DISCONT))
+                        {
+                            return Err(pixels::unsupported());
+                        }
+                        state.timestamp = Some(header.pts());
+                    }
                     if header.flags().bits()
                         & !(spa::buffer::meta::MetaHeaderFlags::DISCONT
                             | spa::buffer::meta::MetaHeaderFlags::MARKER)
@@ -499,8 +740,12 @@ async fn receive_frame(
             drop(buffer); // Return the sole consumed native buffer before deactivation.
             match result {
                 Ok(Some(frame)) => {
-                    state.borrow_mut().frame = Some(frame);
-                    if stream.set_active(false).is_err() {
+                    {
+                        let mut state = state.borrow_mut();
+                        state.frame = Some(Arc::new(frame));
+                        state.decoded += 1;
+                    }
+                    if state.borrow().source.is_none() && stream.set_active(false).is_err() {
                         state.borrow_mut().fail(failed());
                     }
                 }
@@ -510,7 +755,11 @@ async fn receive_frame(
         })
         .register()
         .map_err(|_| failed())?;
-    let formats = format_parameters()?;
+    let formats = formats::offers(mode.source())?;
+    let mut parameters = formats
+        .iter()
+        .map(|bytes| spa::pod::Pod::from_bytes(bytes).ok_or_else(failed))
+        .collect::<Result<Vec<_>, _>>()?;
     stream
         .connect(
             spa::utils::Direction::Input,
@@ -518,7 +767,7 @@ async fn receive_frame(
             pw::stream::StreamFlags::AUTOCONNECT
                 | pw::stream::StreamFlags::MAP_BUFFERS
                 | pw::stream::StreamFlags::DONT_RECONNECT,
-            &mut [spa::pod::Pod::from_bytes(&formats).ok_or_else(failed)?],
+            &mut parameters,
         )
         .map_err(|_| failed())?;
     drive(
@@ -529,11 +778,174 @@ async fn receive_frame(
         until,
     )
     .await?;
+    if let Mode::Video { ready, .. } = &mut mode {
+        let start = ready()?;
+        {
+            let mut state = state.borrow_mut();
+            state.frame = None;
+            state.video_clock.as_mut().ok_or_else(failed)?.start = Some(start);
+        }
+        // Flush the native consumer queue; PTS also excludes older upstream/converter frames.
+        stream.flush(false).map_err(|_| failed())?;
+        drive(
+            &main,
+            &state,
+            || state.borrow().frame.is_some(),
+            closed,
+            overall.min(Instant::now() + Duration::from_secs(5)),
+        )
+        .await?;
+    }
+    let output = match mode {
+        Mode::Still => Output::Frame(
+            Arc::try_unwrap(state.borrow_mut().frame.take().ok_or_else(failed)?)
+                .map_err(|_| failed())?,
+        ),
+        Mode::Video { request, sink, .. } => {
+            let sink = async_io::Async::new(sink).map_err(|_| failed())?;
+            let started = Instant::now();
+            let active = overall.min(started + Duration::from_secs(u64::from(request.seconds) + 5));
+            let expected = request.frames()?;
+            let mut previous = 0;
+            let mut repeated = 0;
+            let mut last_sample = Duration::ZERO;
+            for index in 0..expected {
+                let tick = started
+                    + Duration::from_nanos(
+                        u64::from(index) * 1_000_000_000 / u64::from(request.fps),
+                    );
+                wait_sample(&main, &state, closed, tick, active).await?;
+                let sample = started.elapsed();
+                let nominal = tick.saturating_duration_since(started);
+                if sample.saturating_sub(nominal)
+                    > Duration::from_nanos(1_000_000_000 / u64::from(request.fps) + 50_000_000)
+                {
+                    return Err(CaptureError::NativeTimeout);
+                }
+                let (frame, generation) = {
+                    let state = state.borrow();
+                    (state.frame.clone().ok_or_else(failed)?, state.decoded)
+                };
+                if previous == generation {
+                    repeated += 1;
+                }
+                previous = generation;
+                // Reuse the one retained frame; the encoder consumes packed BGRA.
+                let mut bytes = frame.as_raw().clone();
+                for pixel in bytes.chunks_exact_mut(4) {
+                    for channel in 0..3 {
+                        pixel[channel] =
+                            ((u16::from(pixel[channel]) * u16::from(pixel[3]) + 127) / 255) as u8;
+                    }
+                    pixel.swap(0, 2);
+                    pixel[3] = 255;
+                }
+                bounded(
+                    active,
+                    future::or(
+                        async {
+                            let mut left = bytes.as_slice();
+                            while !left.is_empty() {
+                                let count = sink
+                                    .write_with(|socket| {
+                                        (&*socket).write(&left[..left.len().min(65536)])
+                                    })
+                                    .await
+                                    .map_err(|_| failed())?;
+                                if count == 0 {
+                                    return Err(failed());
+                                }
+                                left = &left[count..];
+                            }
+                            Ok(())
+                        },
+                        async {
+                            closed.next().await;
+                            Err(CaptureError::PermissionDenied)
+                        },
+                    ),
+                )
+                .await?;
+                last_sample = sample;
+            }
+            drop(sink);
+            let summary = app_core::PortalVideoSummary {
+                frames: expected,
+                decoded_frames: state.borrow().decoded,
+                repeated_frames: repeated,
+                sample_span_ns: last_sample.as_nanos().try_into().map_err(|_| failed())?,
+            };
+            summary.validate(request)?;
+            Output::Video(summary)
+        }
+        Mode::Scroll(request) => {
+            let started = Instant::now();
+            let active = overall.min(started + Duration::from_secs(65));
+            let first = (*state.borrow().frame.clone().ok_or_else(failed)?).clone();
+            let mut assembly = app_core::ScrollAssembler::new(
+                first,
+                app_core::ScrollMatchOptions {
+                    minimum_overlap: request.minimum_overlap,
+                    tolerance: 0,
+                    trim_top: 0,
+                    trim_bottom: 0,
+                },
+            )
+            .map_err(|_| failed())?;
+            for index in 1..request.frames {
+                let tick = started
+                    + Duration::from_millis(u64::from(index) * u64::from(request.interval_ms));
+                wait_sample(&main, &state, closed, tick, active).await?;
+                let frame = (*state.borrow().frame.clone().ok_or_else(failed)?).clone();
+                assembly
+                    .push(frame, || Instant::now() >= active)
+                    .map_err(|_| failed())?;
+            }
+            let summary = app_core::PortalScrollSummary {
+                captured_frames: request.frames,
+                vertical_advances: assembly.advances().to_vec(),
+            };
+            let pixels = assembly.finish().map_err(|_| failed())?;
+            summary.validate(request, pixels.width(), pixels.height())?;
+            Output::Scroll(pixels, summary)
+        }
+    };
+    state.borrow_mut().finished = true;
+    stream.set_active(false).map_err(|_| failed())?;
     done.set(false);
     pending.set(Some(core.sync(0).map_err(|_| failed())?));
-    drive(&main, &state, || done.get(), closed, until).await?;
-    state.borrow_mut().frame.take().ok_or_else(failed)
+    drive(
+        &main,
+        &state,
+        || done.get(),
+        closed,
+        overall.min(Instant::now() + Duration::from_secs(3)),
+    )
+    .await?;
+    Ok(output)
 }
+// Active finite sampling only: PipeWire readiness, portal closure, or the next sample deadline.
+async fn wait_sample(
+    main: &pw::main_loop::MainLoopRc,
+    state: &Rc<RefCell<State>>,
+    closed: &mut (impl Stream + Unpin),
+    tick: Instant,
+    until: Instant,
+) -> Result<(), CaptureError> {
+    bounded(
+        until,
+        future::or(drive(main, state, || false, closed, until), async {
+            async_io::Timer::at(tick).await;
+            Ok(())
+        }),
+    )
+    .await?;
+    if main.loop_().iterate(pw::loop_::Timeout::None) < 0 {
+        return Err(failed());
+    }
+    state.borrow_mut().check()
+}
+
 unsafe fn inspect_buffer(buffer: *mut pw::sys::pw_buffer) -> Result<usize, CaptureError> {
     if buffer.is_null() {
         return Err(pixels::unsupported());
@@ -585,65 +997,27 @@ fn serialize(object: spa::pod::Object) -> Result<Vec<u8>, CaptureError> {
     .map(|value| value.0.into_inner())
     .map_err(|_| failed())
 }
-fn format_parameters() -> Result<Vec<u8>, CaptureError> {
-    serialize(spa::pod::object!(
-        spa::utils::SpaTypes::ObjectParamFormat,
-        spa::param::ParamType::EnumFormat,
-        spa::pod::property!(
-            spa::param::format::FormatProperties::MediaType,
-            Id,
-            spa::param::format::MediaType::Video
-        ),
-        spa::pod::property!(
-            spa::param::format::FormatProperties::MediaSubtype,
-            Id,
-            spa::param::format::MediaSubtype::Raw
-        ),
-        spa::pod::property!(
-            spa::param::format::FormatProperties::VideoFormat,
-            Choice,
-            Enum,
-            Id,
-            spa::param::video::VideoFormat::BGRx,
-            spa::param::video::VideoFormat::BGRx,
-            spa::param::video::VideoFormat::RGBx,
-            spa::param::video::VideoFormat::BGRA,
-            spa::param::video::VideoFormat::RGBA
-        ),
-        spa::pod::property!(
-            spa::param::format::FormatProperties::VideoSize,
-            Choice,
-            Range,
-            Rectangle,
-            spa::utils::Rectangle {
-                width: 1920,
-                height: 1080
-            },
-            spa::utils::Rectangle {
-                width: 1,
-                height: 1
-            },
-            spa::utils::Rectangle {
-                width: 16384,
-                height: 16384
-            }
-        ),
-        spa::pod::property!(
-            spa::param::format::FormatProperties::VideoFramerate,
-            Choice,
-            Range,
-            Fraction,
-            spa::utils::Fraction { num: 30, denom: 1 },
-            spa::utils::Fraction { num: 0, denom: 1 },
-            spa::utils::Fraction { num: 240, denom: 1 }
-        )
-    ))
+fn header_parameter() -> Result<Vec<u8>, CaptureError> {
+    serialize(spa::pod::Object {
+        type_: spa::utils::SpaTypes::ObjectParamMeta.as_raw(),
+        id: spa::param::ParamType::Meta.as_raw(),
+        properties: vec![
+            spa::pod::Property::new(
+                spa::sys::SPA_PARAM_META_type,
+                spa::pod::Value::Id(spa::utils::Id(spa::sys::SPA_META_Header)),
+            ),
+            spa::pod::Property::new(
+                spa::sys::SPA_PARAM_META_size,
+                spa::pod::Value::Int(std::mem::size_of::<spa::sys::spa_meta_header>() as i32),
+            ),
+        ],
+    })
 }
 fn buffer_parameters(format: pixels::Format) -> Result<Vec<u8>, CaptureError> {
     let size = format
         .width
         .checked_mul(format.height)
-        .and_then(|value| value.checked_mul(4))
+        .and_then(|value| value.checked_mul(format.packing.bytes_per_pixel() as u32))
         .ok_or(CaptureError::MemoryLimit)?;
     serialize(spa::pod::Object {
         type_: spa::utils::SpaTypes::ObjectParamBuffers.as_raw(),
@@ -667,7 +1041,9 @@ fn buffer_parameters(format: pixels::Format) -> Result<Vec<u8>, CaptureError> {
             ),
             spa::pod::Property::new(
                 spa::sys::SPA_PARAM_BUFFERS_stride,
-                spa::pod::Value::Int((format.width * 4) as i32),
+                spa::pod::Value::Int(
+                    (format.width * format.packing.bytes_per_pixel() as u32) as i32,
+                ),
             ),
             spa::pod::Property::new(
                 spa::sys::SPA_PARAM_BUFFERS_dataType,
@@ -754,5 +1130,33 @@ mod tests {
         assert!(unsafe { inspect_buffer(&mut buffer) }.is_err());
         raw.n_metas = 17;
         assert!(unsafe { inspect_buffer(&mut buffer) }.is_err());
+    }
+}
+
+#[cfg(test)]
+mod freshness_tests {
+    use super::*;
+    #[test]
+    fn queued_monotonic_old_pts_never_establish_source_freshness() {
+        let mut clock = VideoClock::default();
+        assert!(clock.admit(Some(100), 100).unwrap());
+        clock.start = Some(VideoStart { cutoff_ns: 150 });
+        for pts in 101..=150 {
+            assert!(!clock.admit(Some(pts), 200).unwrap());
+        }
+        assert!(!clock.fresh);
+        assert!(clock.admit(Some(151), 200).unwrap());
+        assert!(clock.fresh);
+        assert!(clock.admit(Some(150), 200).is_err());
+    }
+    #[test]
+    fn missing_unknown_future_and_regressing_pts_fail_closed() {
+        for pts in [None, Some(i64::MIN), Some(-1), Some(0), Some(201)] {
+            assert!(VideoClock::default().admit(pts, 200).is_err());
+        }
+        let mut clock = VideoClock::default();
+        assert!(clock.admit(Some(100), 200).unwrap());
+        assert!(clock.admit(Some(100), 200).is_err());
+        assert!(clock.admit(Some(99), 200).is_err());
     }
 }
