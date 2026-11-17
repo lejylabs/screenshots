@@ -19,6 +19,8 @@ static bool bridge_attached;
 static bool expected_busy;
 static PayloadCounters source_baseline;
 static LONG mutation_baseline;
+static LONG registration_epoch;
+static HANDLE registration_probe_event;
 static void mutation_applied(unsigned id) {
     auto& mutation=state->source_mutation;
     if (InterlockedCompareExchange(&mutation.id,id,0)==0) {mutation.actor=0;mutation.pid=GetCurrentProcessId();mutation.tid=GetCurrentThreadId();mutation.guard=state->pump_guard_active;mutation.sequence=state->pump_sequence;mutation.armed=state->controller_armed_sequence;}
@@ -47,6 +49,7 @@ static void initialize_events(bool create) {
     };
     ready_event = event(L"-ready", true); done_event = event(L"-done", true); stop_event = event(L"-stop", true);
     pump_enter_event = event(L"-pump-enter", false); pump_armed_event = event(L"-pump-armed", false); pump_done_event = event(L"-pump-done", false);
+    registration_probe_event = event(L"-registration-probe", false);
 }
 extern "C" __declspec(dllexport) void __cdecl acceptance_begin(const wchar_t* context, const wchar_t* source_exe, const wchar_t* selected_case, HWND owner) {
     bridge_context = context; bridge_source = source_exe; bridge_case = selected_case;
@@ -56,6 +59,7 @@ extern "C" __declspec(dllexport) void __cdecl acceptance_begin(const wchar_t* co
     require(context_mapping && GetLastError() != ERROR_ALREADY_EXISTS, "fresh owned acceptance mapping");
     state = static_cast<Shared*>(MapViewOfFile(context_mapping, FILE_MAP_ALL_ACCESS, 0, 0, sizeof(Shared))); require(state != nullptr, "acceptance mapping");
     initialize_events(true);
+    state->admission_epoch=1;
     if (!wcsncmp(bridge_case.c_str(),L"noop-",5)) {const auto* spec=expected_injection();require(spec!=nullptr,"no-op control needs a mandatory injection");state->omit_injection=spec->id;}
     state->owner_pid = GetCurrentProcessId();
     wchar_t desktop_owner[32]{}; require(GetEnvironmentVariableW(L"SCREENSHOTS_DROP_ACCEPTANCE_DESKTOP_OWNER",desktop_owner,32)>0,"owned controller identity"); state->controller_pid = wcstoul(desktop_owner,nullptr,10); state->owner_tid = GetCurrentThreadId(); state->owner_hwnd = reinterpret_cast<UINT_PTR>(owner);
@@ -95,7 +99,14 @@ extern "C" __declspec(dllexport) void __cdecl acceptance_hook(unsigned code, uns
         HGLOBAL data{}; require_hr(GetHGlobalFromStream(exported_target, &data), "actual target global");
         void* bytes = GlobalLock(data); require(bytes != nullptr, "actual target bytes");
         memcpy(state->marshal, bytes, info.cbSize.LowPart); GlobalUnlock(data); state->marshal_bytes = info.cbSize.LowPart; state->registration = S_OK;
-        if (state->source_pid) SetEvent(ready_event);
+        registration_epoch=InterlockedCompareExchange(&state->admission_epoch,0,0);
+        if (registration_epoch>1 && !wcscmp(scenario,L"same-hwnd-reclaim")) {
+            // Prove a real registration wake cannot release the next source before ALLOW.
+            state->registration_probe_pid=GetCurrentProcessId();
+            InterlockedExchange(&state->registration_probe_epoch,registration_epoch);
+            SetEvent(ready_event);
+            require(WaitForSingleObject(registration_probe_event,3000)==WAIT_OBJECT_0,"registration wake rejection handshake");
+        }
     } else if (code == 5) {
         state->enter_pid = GetCurrentProcessId(); state->enter_tid = GetCurrentThreadId(); InterlockedExchange(&state->native_stage, 1);
     } else if (code == 6) {
@@ -113,6 +124,8 @@ extern "C" __declspec(dllexport) void __cdecl acceptance_hook(unsigned code, uns
     } else if (code == 11) {
         state->get_result = static_cast<LONG>(sequence);
     } else if (code == 9) {
+        state->allow_pid=GetCurrentProcessId();state->allow_tid=GetCurrentThreadId();
+        InterlockedExchange(&state->allow_epoch,registration_epoch);
         SetEvent(ready_event);
     }
 }
@@ -194,7 +207,32 @@ static int finish_drive(HANDLE source_job,DWORD helper,DWORD helper_tid,LONG pri
 
 }
 extern "C" __declspec(dllexport) int __cdecl acceptance_drive() {
-    if (!expected_busy) require(bridge_wait(ready_event, 7000), "actual helper ALLOW ready"); ResetEvent(ready_event);
+    bool startup_fault=!wcscmp(scenario,L"startup-stall") || !wcscmp(scenario,L"register-stall");
+    if (!expected_busy) {
+        if (startup_fault) require(bridge_wait(ready_event,7000),"actual helper startup fault ready");
+        else {
+            ULONGLONG until=GetTickCount64()+7000;
+            auto admitted=[] {
+                LONG epoch=InterlockedCompareExchange(&state->admission_epoch,0,0);
+                return epoch>0 && InterlockedCompareExchange(&state->allow_epoch,0,0)==epoch && state->allow_pid==state->receiver_pid && state->allow_tid==state->receiver_tid;
+            };
+            bool rejected_registration=false;
+            while (!admitted()) {
+                ResetEvent(ready_event);
+                if (admitted()) break;
+                LONG epoch=InterlockedCompareExchange(&state->admission_epoch,0,0);
+                if (!rejected_registration && epoch>1 && InterlockedCompareExchange(&state->registration_probe_epoch,0,0)==epoch && state->registration_probe_pid==state->receiver_pid) {
+                    rejected_registration=true;
+                    std::printf("{\"registration_wake_rejected_before_allow\":true,\"epoch\":%ld,\"receiver_pid\":%lu}\n",epoch,state->receiver_pid);std::fflush(stdout);
+                    SetEvent(registration_probe_event);
+                }
+                ULONGLONG now=GetTickCount64();require(now<until && bridge_wait(ready_event,static_cast<DWORD>(until-now)),"actual current helper ALLOW ready");
+            }
+            require(admitted(),"current receiver ALLOW stamp");
+            std::printf("{\"current_receiver_admitted\":true,\"epoch\":%ld,\"receiver_pid\":%lu,\"allow_pid\":%lu,\"allow_tid\":%lu}\n",state->admission_epoch,state->receiver_pid,state->allow_pid,state->allow_tid);std::fflush(stdout);
+        }
+    }
+    ResetEvent(ready_event);
     LONG prior_queries=state->query_calls,prior_data=state->data_calls;
     source_baseline=state->payload;mutation_baseline=state->source_mutation.applied;
     state->returned_enter=0;state->returned_enter_effect=0;state->returned_drop=0;state->returned_drop_effect=0;state->returned_drop_hresult=E_PENDING;state->source_cleanup_done=0;state->raw_ole_returned=0;state->source_adapter_applied=0;
@@ -234,7 +272,7 @@ extern "C" __declspec(dllexport) int __cdecl acceptance_drive() {
 extern "C" __declspec(dllexport) void __cdecl acceptance_end() {
     if (exact_receiver) { CloseHandle(exact_receiver); exact_receiver = nullptr; }
     UnmapViewOfFile(state); state = nullptr; CloseHandle(context_mapping);
-    for (HANDLE handle : {ready_event, done_event, stop_event, pump_enter_event, pump_armed_event, pump_done_event}) CloseHandle(handle);
+    for (HANDLE handle : {ready_event, done_event, stop_event, pump_enter_event, pump_armed_event, pump_done_event, registration_probe_event}) CloseHandle(handle);
 }
 extern "C" __declspec(dllexport) void __cdecl acceptance_input(HWND owner, const wchar_t* path, const char* url, int x, int y) {
     state->owner_hwnd = reinterpret_cast<UINT_PTR>(owner);
@@ -311,6 +349,7 @@ extern "C" __declspec(dllexport) HRESULT __cdecl acceptance_helper(IDropTargetHe
 }
 extern "C" __declspec(dllexport) void __cdecl acceptance_rearm(HWND owner) {
     ResetEvent(ready_event); ResetEvent(done_event); ResetEvent(stop_event);
+    require(InterlockedIncrement(&state->admission_epoch)>0,"bounded positive admission epoch");
     state->ordered_enter_waiting=0;state->source_cleanup_done=0;state->returned_enter=0;state->returned_drop=0;
     state->owner_hwnd = reinterpret_cast<UINT_PTR>(owner); state->enter_pid = 0; state->native_stage = 0;
 }
