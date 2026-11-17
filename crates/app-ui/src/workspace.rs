@@ -290,7 +290,12 @@ impl Render for CaptureWorkspace {
             .bg(colors.background)
             .text_color(colors.foreground)
             .can_drop(move |value, _, cx| (value.is::<gpui::ExternalPaths>()||value.is::<gpui::ExternalImageDrop>()||value.is::<gpui::ExternalUrlDrop>())
-                && drop_owner.upgrade().is_some_and(|owner| !owner.read(cx).image_input_busy()))
+                && drop_owner.upgrade().is_some_and(|owner| {
+                    let busy = owner.read(cx).image_input_busy();
+                    #[cfg(all(target_os = "windows", screenshots_native_drop_acceptance))]
+                    if busy { gpui_windows::native_drop_acceptance_busy_admission(); }
+                    !busy
+                }))
             .on_drop(cx.listener(|this, paths: &gpui::ExternalPaths, _, cx| {
                 this.open_dropped_image(paths.paths(), cx);
             }))

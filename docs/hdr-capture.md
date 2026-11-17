@@ -6,6 +6,11 @@ HDR file preservation, mastering reconstruction or physical display matching.
 
 macOS modern screenshots request tagged extended sRGB. ColorSync converts into
 a bounded linear float context with native tone mapping explicitly disabled.
+The context sets EDR target headroom to zero (unknown), then uses ordinary
+`CGContextDrawImage`; its setter is resolved dynamically and must succeed for
+HDR. This preserves the extended linear values for the single application SDR
+rendition. `CGToneMappingNone` is not used: the macOS 15 SDK describes SDR
+clipping for that mode, and actual native tests rejected unknown source headroom.
 Native region cropping precedes conversion while the complete original backing
 and actual stride remain charged. Unchanged SDR RGB8 retains its byte path;
 SDR P3/profile input retains native profile conversion. Unknown/device profiles
@@ -56,6 +61,16 @@ Windows R2 and the later Linux packet. Metadata and portable math do not prove
 native acquisition. Native macOS CG fixture/SDK/link, WGC device/fault/runtime,
 HDR/P3/SDR/mirror hardware, mixed DPI/topology/permission/cursor, cancellation,
 CPU/private/GPU memory, latency and idle/soak gates remain open.
+
+Actual ARM macOS snapshot `98c9bff` failed the original native float fixture;
+that failure is retained. A separate owned C/CoreGraphics diagnostic on both
+macOS 15 ARM and Intel confirms zero target headroom preserves every synthetic
+float component, including 12.5, for source headroom zero and 16. Target headroom
+one demonstrably maps the tagged highlights instead. The corrected production
+Rust fixture additionally checks source headrooms zero, two and 16, full images
+and native crops; its fresh native CI result is pending. The diagnostic uses
+only constructed images and does not request screen/clipboard access. Exact
+logs and SDK header contracts are retained under the HDR integration artifacts.
 
 The integrated Linux adapter extends proven SPA color metadata while preserving
 legacy RGB8 negotiation. Portable RGB, installed-SPA filtering and real private

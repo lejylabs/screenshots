@@ -1,5 +1,5 @@
 //! Still capture output is straight RGBA8 sRGB; HDR is explicitly compressed to SDR.
-#[cfg(any(target_os = "macos", target_os = "windows", test))]
+#[cfg(any(target_os = "macos", test))]
 use crate::{image_cancel::ImageWork, validate_image_size};
 use anyhow::{Result, ensure};
 
@@ -130,7 +130,7 @@ pub(crate) fn half(bits: u16) -> f32 {
 
 /// Locked/mapped little-endian RGBA16 float with explicit scRGB reference white.
 /// Decode directly into output: no additional image-sized float expansion.
-#[cfg(any(target_os = "windows", test))]
+#[cfg(test)]
 pub(crate) fn half_rgba_to_sdr(
     width: u32,
     height: u32,
@@ -208,9 +208,184 @@ fn decode_half_pixel(pixel: &[u8], white: f32) -> [f32; 4] {
     rgba
 }
 
+#[cfg(any(target_os = "windows", test))]
+pub(crate) struct HalfRows<'a> {
+    width: u32,
+    height: u32,
+    stride: usize,
+    bytes: &'a [u8],
+    white: f32,
+}
+#[cfg(any(target_os = "windows", test))]
+impl<'a> HalfRows<'a> {
+    pub fn new(
+        width: u32,
+        height: u32,
+        stride: usize,
+        bytes: &'a [u8],
+        white: u32,
+    ) -> std::result::Result<Self, crate::CaptureError> {
+        crate::validate_image_size(width, height)?;
+        let row = width as usize * 8;
+        let charge = stride
+            .checked_mul(height as usize)
+            .ok_or(crate::CaptureError::MemoryLimit)?;
+        let needed = (height as usize - 1)
+            .checked_mul(stride)
+            .and_then(|v| v.checked_add(row))
+            .ok_or(crate::CaptureError::MemoryLimit)?;
+        if !(1000..=100_000).contains(&white)
+            || stride < row
+            || charge > crate::MAX_CAPTURE_BYTES as usize
+            || bytes.len() > crate::MAX_CAPTURE_BYTES as usize
+            || needed > bytes.len()
+        {
+            return Err(crate::CaptureError::MemoryLimit);
+        }
+        Ok(Self {
+            width,
+            height,
+            stride,
+            bytes,
+            white: white as f32 / 1000.,
+        })
+    }
+    /// No output allocation; the caller combines these decisions over one held frame.
+    pub fn has_hdr(
+        &self,
+        check: &crate::NativeCaptureCheck<'_>,
+    ) -> std::result::Result<bool, crate::CaptureError> {
+        check()?;
+        for row in self.bytes.chunks(self.stride).take(self.height as usize) {
+            check()?;
+            for block in row[..self.width as usize * 8].chunks(64 * 1024) {
+                check()?;
+                for pixel in block.chunks_exact(8) {
+                    let p = decode_half_pixel(pixel, self.white);
+                    if p.iter().any(|v| !v.is_finite()) || !(0.0..=1.0).contains(&p[3]) {
+                        return Err(crate::CaptureError::Unsupported(
+                            "Invalid native floating color component",
+                        ));
+                    }
+                    if p[3] > 0.
+                        && (0.2126 * f64::from(p[0])
+                            + 0.7152 * f64::from(p[1])
+                            + 0.0722 * f64::from(p[2]))
+                            / f64::from(p[3])
+                            > 1. + 1. / 1024.
+                    {
+                        check()?;
+                        return Ok(true);
+                    }
+                }
+            }
+        }
+        check()?;
+        Ok(false)
+    }
+    /// Write only copied pixels into a private final raster; no temporary RGBA tile.
+    pub fn write_sdr(
+        &self,
+        hdr: bool,
+        target: &mut [u8],
+        target_stride: usize,
+        check: &crate::NativeCaptureCheck<'_>,
+    ) -> std::result::Result<(), crate::CaptureError> {
+        let row = self.width as usize * 4;
+        let needed = (self.height as usize - 1)
+            .checked_mul(target_stride)
+            .and_then(|v| v.checked_add(row))
+            .ok_or(crate::CaptureError::MemoryLimit)?;
+        if target_stride < row
+            || target.len() > crate::MAX_CAPTURE_BYTES as usize
+            || needed > target.len()
+        {
+            return Err(crate::CaptureError::MemoryLimit);
+        }
+        check()?;
+        for (source, target) in self
+            .bytes
+            .chunks(self.stride)
+            .take(self.height as usize)
+            .zip(target.chunks_mut(target_stride))
+        {
+            check()?;
+            for (block, out) in source[..self.width as usize * 8]
+                .chunks(64 * 1024)
+                .zip(target[..row].chunks_mut(32 * 1024))
+            {
+                check()?;
+                for (pixel, out) in block.chunks_exact(8).zip(out.chunks_exact_mut(4)) {
+                    out.copy_from_slice(
+                        &linear_pixel(decode_half_pixel(pixel, self.white), hdr).map_err(|_| {
+                            crate::CaptureError::Unsupported(
+                                "Invalid native floating color component",
+                            )
+                        })?,
+                    );
+                }
+            }
+        }
+        check()?;
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn tile_rows_preserve_target_gaps_allow_no_trailing_padding_and_validate_before_write() {
+        let words = [
+            0x3800u16, 0x3400, 0x3000, 0x3c00, 0x3c00, 0x3c00, 0x3c00, 0x3c00,
+        ];
+        let row = words
+            .into_iter()
+            .flat_map(u16::to_le_bytes)
+            .collect::<Vec<_>>();
+        let mut bytes = row.clone();
+        bytes.extend([199; 4]);
+        bytes.extend(&row);
+        let source = HalfRows::new(2, 2, 20, &bytes, 1000).unwrap();
+        let mut target = [199u8; 24];
+        source
+            .write_sdr(false, &mut target, 16, &|| Ok(()))
+            .unwrap();
+        assert_eq!(&target[..8], &[188, 137, 99, 255, 255, 255, 255, 255]);
+        assert_eq!(&target[8..16], &[199; 8]);
+        assert_eq!(&target[16..], &target[..8]);
+        let mut short = [199u8; 23];
+        assert!(source.write_sdr(false, &mut short, 16, &|| Ok(())).is_err());
+        assert_eq!(short, [199; 23]);
+        assert!(HalfRows::new(2, 2, 15, &bytes, 1000).is_err());
+        assert!(HalfRows::new(2, 2, usize::MAX, &bytes, 1000).is_err());
+        assert!(HalfRows::new(2, 2, 20, &bytes[..35], 1000).is_err());
+    }
+    #[test]
+    fn conversion_checks_late_nonfinite_and_row_cancellation_after_scan_activation() {
+        let mut bytes = [0u8; 16];
+        for (i, v) in [0x4000u16, 0x4000, 0x4000, 0x3c00, 0x7e01, 0, 0, 0x3c00]
+            .into_iter()
+            .enumerate()
+        {
+            bytes[i * 2..i * 2 + 2].copy_from_slice(&v.to_le_bytes());
+        }
+        let rows = HalfRows::new(2, 1, 16, &bytes, 1000).unwrap();
+        assert!(rows.has_hdr(&|| Ok(())).unwrap());
+        assert!(rows.write_sdr(true, &mut [0; 8], 8, &|| Ok(())).is_err());
+        let data = vec![0u8; 4 * 8];
+        let rows = HalfRows::new(1, 4, 8, &data, 1000).unwrap();
+        let calls = std::cell::Cell::new(0);
+        let result = rows.write_sdr(false, &mut [0; 16], 4, &|| {
+            calls.set(calls.get() + 1);
+            if calls.get() == 6 {
+                Err(crate::CaptureError::NativeCanceled)
+            } else {
+                Ok(())
+            }
+        });
+        assert!(matches!(result, Err(crate::CaptureError::NativeCanceled)));
+    }
     #[test]
     fn mapped_half_rows_match_independent_binary16_decimal_oracle() {
         type Case = (u32, u32, usize, Vec<u8>, bool, u32, Vec<u8>);

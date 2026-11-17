@@ -115,6 +115,8 @@ pub use capture_rgb::{
     decode_native_rgb_with_cancel,
 };
 #[cfg(any(target_os = "windows", test))]
+mod capture_half_tiles;
+#[cfg(any(target_os = "windows", test))]
 mod capture_windows_admission;
 mod clipboard;
 mod clipboard_input;

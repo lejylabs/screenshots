@@ -425,6 +425,7 @@ pub(super) fn capture_window(
     window: &xcap::Window,
     options: &CaptureOptions,
     admission: &Admission,
+    cancel: &crate::NativeCaptureCheck<'_>,
 ) -> Result<RgbaImage> {
     let _dpi = DpiScope::new()?;
     let check = || -> Result<()> {
@@ -432,6 +433,7 @@ pub(super) fn capture_window(
             .verify(&window_proof(window)?)
             .map_err(anyhow::Error::from)
     };
+    cancel()?;
     check()?;
     let Proof::Window {
         geometry: before,
@@ -443,7 +445,7 @@ pub(super) fn capture_window(
     };
     let before = *before;
     let mut image = if let Some(color) = color.selected {
-        hdr::window(window, before.0, color, &check)?
+        hdr::window(window, before.0, color, &check, cancel)?
     } else {
         window.capture_image()?
     };
@@ -484,6 +486,7 @@ pub(super) fn capture_window(
         geometry(window)? == before,
         "Native window moved, resized or changed process during capture"
     );
+    cancel()?;
     Ok(image)
 }
 
@@ -522,27 +525,31 @@ pub(super) fn capture_display(
     monitor: &xcap::Monitor,
     _: &CaptureOptions,
     admission: &Admission,
+    cancel: &crate::NativeCaptureCheck<'_>,
 ) -> Result<RgbaImage> {
-    capture_area(monitor, None, admission)
+    capture_area(monitor, None, admission, cancel)
 }
 pub(super) fn capture_region(
     monitor: &xcap::Monitor,
     area: crate::PixelRegion,
     _: &CaptureOptions,
     admission: &Admission,
+    cancel: &crate::NativeCaptureCheck<'_>,
 ) -> Result<RgbaImage> {
-    capture_area(monitor, Some(area), admission)
+    capture_area(monitor, Some(area), admission, cancel)
 }
 fn capture_area(
     monitor: &xcap::Monitor,
     area: Option<crate::PixelRegion>,
     admission: &Admission,
+    cancel: &crate::NativeCaptureCheck<'_>,
 ) -> Result<RgbaImage> {
     let check = || -> Result<()> {
         admission
             .verify(&display_proof(monitor, area)?)
             .map_err(anyhow::Error::from)
     };
+    cancel()?;
     check()?;
     let Proof::Display {
         geometry, color, ..
@@ -558,9 +565,10 @@ fn capture_area(
     });
     // Route by the immutable admitted proof, never by a fresh live color query.
     let output = match color {
-        Some(color) => hdr::display(monitor, area, *color, &check)?,
+        Some(color) => hdr::display(monitor, area, *color, &check, cancel)?,
         None => monitor.capture_region(area.x, area.y, area.width, area.height)?,
     };
     check()?;
+    cancel()?;
     Ok(output)
 }
