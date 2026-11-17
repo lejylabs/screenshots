@@ -1,4 +1,5 @@
 //! Still capture output is straight RGBA8 sRGB; HDR is explicitly compressed to SDR.
+#[cfg(any(target_os = "macos", target_os = "windows", test))]
 use crate::{image_cancel::ImageWork, validate_image_size};
 use anyhow::{Result, ensure};
 
@@ -107,7 +108,6 @@ pub(crate) fn linear_rgba_to_sdr(
 
 /// IEEE 754 binary16 including subnormals, signed zero and non-finite values.
 /// Invalid values are rejected by linear_pixel rather than silently quantized.
-#[cfg(any(target_os = "windows", test))]
 pub(crate) fn half(bits: u16) -> f32 {
     let sign = u32::from(bits & 0x8000) << 16;
     let exponent = u32::from((bits >> 10) & 31);

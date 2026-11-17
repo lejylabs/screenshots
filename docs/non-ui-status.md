@@ -19,6 +19,18 @@ negative control. Windows GNU metadata, five exact retained Date-Picker interact
 observations remain separate checks.
 [Maintenance details](dependency-maintenance.md).
 
+Finite Linux portal recording/audio and manual-scroll CLI/Task routes are
+integrated. Portable/preflight, installed SPA and real private PipeWire/codec/
+freshness cases pass, including five native managed-color formats and SDR
+fallback. A synthetic 4K run measures p95 46 ms capture / 91.31 ms CLI; it is not
+real-compositor or reference-hardware acceptance. [Exact scope](wayland-finite-capture.md).
+
+Native macOS/Windows HDR acquisition and a declared SDR rendition are now
+integrated in development source. Optimized Linux and Windows GNU metadata,
+89 affected capture controls (four opt-ins ignored) and Clippy pass. Native SDK/
+frame/runtime/hardware/resource gates and the larger Windows tiled extension
+remain separate. [HDR contract](hdr-capture.md).
+
 Windows incoming native file/image/URL data now uses the isolated non-agile
 receiver source for all eligible windows. Linux and GNU workspace/vendor-test
 metadata, 122 optimized existing consumers, three deadline controls, Clippy and

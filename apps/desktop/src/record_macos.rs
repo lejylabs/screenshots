@@ -1,7 +1,9 @@
-//! Parent-owned publication/encoding; native video is a fixed-display raw source.
+//! Parent-owned publication/encoding shared by fixed-display macOS and portal-selected Linux video.
 use super::{Options, OutputFormat};
 use anyhow::{Context, Result, ensure};
-use app_core::{CaptureError, MacVideoRequest, PixelRegion};
+use app_core::CaptureError;
+#[cfg(target_os = "macos")]
+use app_core::{MacVideoRequest, PixelRegion};
 use std::{
     ffi::OsString,
     fs::File,
@@ -12,34 +14,65 @@ use std::{
 
 pub(super) fn record(options: Options<'_>, args: Vec<OsString>) -> Result<()> {
     let cancellation = super::unix::Cancellation::new()?;
-    let deadline = Instant::now() + Duration::from_secs(u64::from(options.seconds) + 10);
+    let deadline = Instant::now()
+        + Duration::from_secs(
+            u64::from(options.seconds)
+                + if options.mode.starts_with("portal-") {
+                    150
+                } else {
+                    10
+                },
+        );
     let destination = std::path::absolute(options.destination)?;
     let parent = destination
         .parent()
         .context("Recording output has no parent")?;
     let staging = super::unix::Staging::new(parent, options.format)?;
     let stage = staging.file.clone();
-    let request = MacVideoRequest {
-        display: options
-            .display
-            .context("Native screen recording requires --display")?,
-        region: PixelRegion {
-            x: options.x,
-            y: options.y,
-            width: options.width,
-            height: options.height,
+    #[cfg(target_os = "macos")]
+    let request = app_core::NativeCaptureCall::MacVideo {
+        request: MacVideoRequest {
+            display: options
+                .display
+                .context("Native screen recording requires --display")?,
+            region: PixelRegion {
+                x: options.x,
+                y: options.y,
+                width: options.width,
+                height: options.height,
+            },
+            seconds: options.seconds,
+            fps: options.fps,
+            cursor: options.cursor.unwrap_or(false),
+            microphone: options
+                .audio
+                .is_some_and(|audio| audio.mode == "avfoundation"),
         },
-        seconds: options.seconds,
-        fps: options.fps,
-        cursor: options.cursor.unwrap_or(false),
-        microphone: options
-            .audio
-            .is_some_and(|audio| audio.mode == "avfoundation"),
+    };
+    #[cfg(target_os = "linux")]
+    let request = app_core::NativeCaptureCall::PortalVideo {
+        request: app_core::PortalVideoRequest {
+            stream: app_core::PortalStreamSource {
+                source: match options.mode {
+                    "portal-display" => app_core::PortalCaptureSource::Display,
+                    "portal-window" => app_core::PortalCaptureSource::Window,
+                    _ => anyhow::bail!("Native source unavailable"),
+                },
+                cursor: if options.cursor.unwrap_or(false) {
+                    app_core::PortalCaptureCursor::Include
+                } else {
+                    app_core::PortalCaptureCursor::Exclude
+                },
+                width: options.width,
+                height: options.height,
+            },
+            seconds: options.seconds,
+            fps: options.fps,
+        },
     };
     request.validate()?;
-    let plan = crate::capture_worker::video::Plan::new(
-        request,
-        Box::new(move |group, input, flag, deadline, ready| {
+    let peers: crate::capture_worker::video::Peers = Box::new(
+        move |group, input, flag, deadline, ready| {
             let result = (|| -> Result<()> {
                 let options = super::options(&args)?;
                 let cancellation = super::unix::Cancellation::with_flag(flag)?;
@@ -155,18 +188,49 @@ pub(super) fn record(options: Options<'_>, args: Vec<OsString>) -> Result<()> {
                     "Native recording encoder/probe failed; no recording was published".into(),
                 )
             })
-        }),
-    )?;
+        },
+    );
+    #[cfg(target_os = "macos")]
+    let plan = {
+        let app_core::NativeCaptureCall::MacVideo { request } = request.clone() else {
+            unreachable!()
+        };
+        crate::capture_worker::video::Plan::new(request, peers)?
+    };
+    #[cfg(target_os = "linux")]
+    let plan = {
+        let app_core::NativeCaptureCall::PortalVideo { request } = request.clone() else {
+            unreachable!()
+        };
+        crate::capture_worker::video::Plan::portal(request, peers)?
+    };
     let result = (|| -> Result<_> {
-        let summary = crate::capture_worker::video::execute(plan, &|| {
+        let check = || {
             if Instant::now() >= deadline {
                 return Err(CaptureError::NativeTimeout);
             }
             cancellation
                 .check(deadline)
                 .map_err(|_| CaptureError::NativeCanceled)
-        })?;
-        summary.validate(request)?;
+        };
+        #[cfg(target_os = "macos")]
+        let summary = crate::capture_worker::video::execute(plan, &check)?;
+        #[cfg(target_os = "linux")]
+        let summary = crate::capture_worker::video::execute_portal(plan, &check)?;
+        #[cfg(target_os = "macos")]
+        {
+            let app_core::NativeCaptureCall::MacVideo { request } = request.clone() else {
+                unreachable!()
+            };
+            summary.validate(request)?;
+        }
+        #[cfg(target_os = "linux")]
+        {
+            let app_core::NativeCaptureCall::PortalVideo { request } = request.clone() else {
+                unreachable!()
+            };
+            summary.validate(request)?;
+        }
         let metadata = staging.file.symlink_metadata()?;
         ensure!(
             metadata.is_file() && metadata.len() <= 256 * 1024 * 1024,
@@ -180,11 +244,27 @@ pub(super) fn record(options: Options<'_>, args: Vec<OsString>) -> Result<()> {
             .sync_all()
             .context("Recording was published, but directory durability could not be confirmed")?;
         let mut report = options.summary(metadata.len());
-        report["display_id"] = request.display.into();
-        report["native_source_frames"] = summary.frames.into();
-        report["native_source_span_ms"] = (summary.last_pts_ns - summary.first_pts_ns)
-            .div_ceil(1_000_000)
-            .into();
+        #[cfg(target_os = "macos")]
+        {
+            let app_core::NativeCaptureCall::MacVideo { request } = request.clone() else {
+                unreachable!()
+            };
+            report["display_id"] = request.display.into();
+            report["native_source_frames"] = summary.frames.into();
+            report["native_source_span_ms"] = (summary.last_pts_ns - summary.first_pts_ns)
+                .div_ceil(1_000_000)
+                .into();
+        }
+        #[cfg(target_os = "linux")]
+        {
+            let app_core::NativeCaptureCall::PortalVideo { request } = request.clone() else {
+                unreachable!()
+            };
+            report["source"] = request.stream.source.identifier().into();
+            report["decoded_source_frames"] = summary.decoded_frames.into();
+            report["repeated_frames"] = summary.repeated_frames.into();
+            report["sample_span_ms"] = summary.sample_span_ns.div_ceil(1_000_000).into();
+        }
         Ok(report)
     })();
     let cleanup = staging.cleanup();

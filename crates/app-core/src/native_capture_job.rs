@@ -53,6 +53,12 @@ impl NativeCaptureCancellation {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "operation", rename_all = "snake_case", deny_unknown_fields)]
 pub enum NativeCaptureCall {
+    PortalVideo {
+        request: crate::PortalVideoRequest,
+    },
+    PortalScroll {
+        request: crate::PortalScrollRequest,
+    },
     MacScroll {
         request: crate::MacScrollRequest,
     },
@@ -99,6 +105,13 @@ pub enum NativeCaptureCall {
     },
 }
 pub enum NativeCaptureReply {
+    PortalVideo {
+        summary: crate::PortalVideoSummary,
+    },
+    PortalScroll {
+        image: CapturedImage,
+        summary: crate::PortalScrollSummary,
+    },
     MacScroll {
         image: CapturedImage,
         summary: crate::MacScrollSummary,
@@ -142,7 +155,8 @@ impl NativeCaptureCall {
             | Self::Portal { .. }
             | Self::ImageUrl { .. }
             | Self::ClipboardImage { .. }
-            | Self::MacScroll { .. } => Some(1),
+            | Self::MacScroll { .. }
+            | Self::PortalScroll { .. } => Some(1),
             _ => None,
         }
     }
@@ -190,6 +204,16 @@ impl NativeCaptureCall {
         match self {
             Self::Desktop { .. } => {
                 if index != 0 || display != "desktop" || window.is_some() || geometry.is_some() {
+                    return Err(invalid());
+                }
+            }
+            Self::PortalScroll { request } => {
+                if index != 0
+                    || display != request.stream.source.identifier()
+                    || window.is_some()
+                    || width != request.stream.width
+                    || geometry.is_some()
+                {
                     return Err(invalid());
                 }
             }
@@ -304,6 +328,8 @@ impl NativeCaptureCall {
     }
     pub fn validate(&self) -> Result<(), CaptureError> {
         match self {
+            Self::PortalVideo { request } => request.validate()?,
+            Self::PortalScroll { request } => request.validate()?,
             Self::MacScroll { request } => request.validate().map_err(|_| invalid())?,
             Self::MacVideo { request } => request.validate().map_err(|_| invalid())?,
             Self::Inventory
@@ -425,9 +451,12 @@ impl NativeCaptureCall {
             return Err(invalid());
         }
         self.validate()?;
-        if matches!(self, Self::MacVideo { .. }) {
+        if matches!(
+            self,
+            Self::MacVideo { .. } | Self::PortalVideo { .. } | Self::PortalScroll { .. }
+        ) {
             return Err(CaptureError::Unsupported(
-                "Mac video requires the owned streaming controller and raw sink",
+                "Portal and video capture require the owned native controller",
             ));
         }
         if let Self::MacScroll { request } = &self {
@@ -587,7 +616,9 @@ impl NativeCaptureCall {
             Self::MacScroll { .. } => {
                 unreachable!("Mac scrolling was handled before native metadata")
             }
-            Self::MacVideo { .. } => unreachable!("Mac video requires the streaming controller"),
+            Self::MacVideo { .. } | Self::PortalVideo { .. } | Self::PortalScroll { .. } => {
+                unreachable!("Portal and video require the owned streaming controller")
+            }
         };
         #[cfg(target_os = "windows")]
         topology
@@ -603,6 +634,24 @@ impl NativeCaptureCall {
 
     pub fn validate_reply(&self, reply: &NativeCaptureReply) -> Result<(), CaptureError> {
         match (self, reply) {
+            (Self::PortalVideo { request }, NativeCaptureReply::PortalVideo { summary }) => {
+                summary.validate(*request)
+            }
+            (
+                Self::PortalScroll { request },
+                NativeCaptureReply::PortalScroll { image, summary },
+            ) => {
+                summary.validate(*request, image.width, image.height)?;
+                validate_frames(std::slice::from_ref(image))?;
+                self.validate_frame_metadata(
+                    0,
+                    &image.display_id,
+                    image.window_id.as_deref(),
+                    image.width,
+                    image.height,
+                    image.display_geometry,
+                )
+            }
             (Self::MacVideo { request }, NativeCaptureReply::MacVideo { summary }) => {
                 summary.validate(*request).map_err(|_| invalid())
             }

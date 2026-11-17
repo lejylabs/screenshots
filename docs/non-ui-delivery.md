@@ -2154,3 +2154,29 @@ execution. The separately authored cfg native fixture and all native COM/OLE,
 fault/editor/lifecycle/private-GPU/resource acceptance remain open. Details and
 precise original-source/C++ prerequisite limits follow the
 [drop contract](clipboard-import-output.md#integrated-windows-receiver-source-2026-11-17).
+
+## Native HDR source precision and SDR rendition (2026-11-17)
+
+Modern macOS tagged-float and Windows WGC FP16 source paths now retain precision
+until explicit color conversion into the existing RGBA8 sRGB document. Frozen
+source/geometry/reference-white/native-byte reservations precede acquisition;
+SDR mirrors and proven legacy behavior remain distinct from unknown HDR states.
+Linux/Windows GNU metadata, 89 optimized affected capture controls (four opt-ins
+ignored) and Clippy pass. This is portable/type evidence; actual CG/WGC, HDR/P3/
+SDR hardware and PLAN resource/latency acceptance remain open. The separately
+prepared Linux metadata/format adapter and Windows tiled extension must supply
+their own evidence. [Precise policy and limits](hdr-capture.md).
+
+## Finite Wayland source and managed-color integration (2026-11-17)
+
+Explicit portal display/window recording, existing audio routing and finite
+manual scrolling now reach the actual native worker and typed Task path. Native
+post-encoder source timestamps, restricted FD/serial, exact raster and bounded
+buffers retain source identity and refuse stale/unknown data. Managed-color
+format alternatives require explicit SPA proofs while preserving legacy SDR.
+
+Optimized portable/preflight, actual C SPA filtering and private real-PipeWire/
+CLI/worker/codec/freshness/color/negotiation/refusal controls pass. The software
+4K observation reports capture/CLI timing separately; physical hardware and
+compositor/input/audio/resource/soak gates remain open. Source review convergence
+and exact native outcomes follow [the contract](wayland-finite-capture.md).

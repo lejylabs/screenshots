@@ -70,6 +70,12 @@ pub(super) fn handshake(output: &mut impl Write, kind: u32, nonce: &[u8; 16]) ->
 }
 pub(super) fn expect_handshake(input: &mut impl Read, kind: u32, nonce: &[u8; 16]) -> Result<()> {
     let (actual, length, pixels) = header(input)?;
+    if actual == ERROR {
+        ensure!(length == 1 && pixels == 0, "Invalid native error reply");
+        let mut code = [0];
+        input.read_exact(&mut code)?;
+        return Err(error_from_code(code[0])?.into());
+    }
     ensure!(
         actual == kind && length == 16 && pixels == 0,
         "Native worker handshake failed"
@@ -102,7 +108,7 @@ pub(super) fn read_request(input: &mut impl Read) -> Result<NativeCaptureCall> {
         Some("focused_window" | "focused_display" | "desktop") => &["operation", "options"],
         Some("template") => &["operation", "template", "options"],
         Some("mac_scroll") => &["operation", "request"],
-        Some("mac_video") => &["operation", "request"],
+        Some("mac_video" | "portal_video" | "portal_scroll") => &["operation", "request"],
         Some("portal") => &["operation", "source", "cursor"],
         Some("image_url") => &["operation", "source"],
         Some("clipboard_image") => &["operation", "backend"],
@@ -179,6 +185,20 @@ pub(super) fn read_request(input: &mut impl Read) -> Result<NativeCaptureCall> {
             "Native template must be an object"
         );
     }
+    if matches!(
+        shape.get("operation").and_then(|value| value.as_str()),
+        Some("portal_video" | "portal_scroll")
+    ) {
+        ensure!(
+            shape
+                .get("request")
+                .is_some_and(|request| request.is_object()
+                    && request
+                        .get("stream")
+                        .is_some_and(serde_json::Value::is_object)),
+            "Portal stream request must be an object"
+        );
+    }
     let call: NativeCaptureCall = object(&bytes)?;
     if matches!(
         call,
@@ -205,6 +225,13 @@ pub(super) fn read_request(input: &mut impl Read) -> Result<NativeCaptureCall> {
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 enum Meta {
+    PortalVideo {
+        summary: app_core::PortalVideoSummary,
+    },
+    PortalScroll {
+        count: usize,
+        summary: app_core::PortalScrollSummary,
+    },
     MacVideo {
         summary: app_core::MacVideoSummary,
     },
@@ -249,6 +276,10 @@ struct Frame {
 }
 pub(super) fn reply(output: &mut impl Write, reply: NativeCaptureReply) -> Result<()> {
     let (value, frames) = match reply {
+        NativeCaptureReply::PortalVideo { summary } => (Meta::PortalVideo { summary }, Vec::new()),
+        NativeCaptureReply::PortalScroll { image, summary } => {
+            (Meta::PortalScroll { count: 1, summary }, vec![image])
+        }
         NativeCaptureReply::MacVideo { summary } => (Meta::MacVideo { summary }, Vec::new()),
         NativeCaptureReply::MacScroll { image, summary } => {
             (Meta::MacScroll { count: 1, summary }, vec![image])
@@ -416,7 +447,10 @@ pub(super) fn read_reply_with_eof(
         }
     }
     let value: Meta = object(&bytes)?;
-    if matches!(value, Meta::MacVideo { .. }) {
+    if matches!(
+        value,
+        Meta::MacVideo { .. } | Meta::PortalVideo { .. } | Meta::PortalScroll { .. }
+    ) {
         ensure!(
             shape
                 .get("summary")
@@ -437,6 +471,23 @@ pub(super) fn read_reply_with_eof(
             "Invalid native scroll advances"
         );
     }
+    let portal_scroll = match &value {
+        Meta::PortalScroll { count, summary } => {
+            ensure!(
+                *count == 1 && summary.vertical_advances.len() <= 128,
+                "Invalid portal scroll frame/summary bound"
+            );
+            let NativeCaptureCall::PortalScroll { request } = call else {
+                anyhow::bail!("Unexpected portal scroll reply");
+            };
+            ensure!(
+                summary.captured_frames == request.frames,
+                "Invalid portal scroll frame count"
+            );
+            Some(summary.clone())
+        }
+        _ => None,
+    };
     let scroll = match &value {
         Meta::MacScroll { count, summary } => {
             ensure!(
@@ -476,6 +527,7 @@ pub(super) fn read_reply_with_eof(
         "Native macOS desktop omitted its output grid metadata"
     );
     let reply = match value {
+        Meta::PortalVideo { summary } => NativeCaptureReply::PortalVideo { summary },
         Meta::MacVideo { summary } => NativeCaptureReply::MacVideo { summary },
         Meta::Clipboard { snapshot } => {
             snapshot.validate()?;
@@ -510,7 +562,8 @@ pub(super) fn read_reply_with_eof(
             count,
             desktop_layout: _,
         }
-        | Meta::MacScroll { count, summary: _ } => {
+        | Meta::MacScroll { count, summary: _ }
+        | Meta::PortalScroll { count, summary: _ } => {
             ensure!(
                 (1..=32).contains(&count) && call.frame_count() == Some(count),
                 "Native frame count exceeds its bound or differs from its request"
@@ -540,6 +593,11 @@ pub(super) fn read_reply_with_eof(
                 if let (Some(summary), NativeCaptureCall::MacScroll { request }) = (&scroll, call) {
                     summary.validate(request, frame.width, frame.height)?;
                 }
+                if let (Some(summary), NativeCaptureCall::PortalScroll { request }) =
+                    (&portal_scroll, call)
+                {
+                    summary.validate(*request, frame.width, frame.height)?;
+                }
                 if let Some(layout) = &desktop_layout {
                     ensure!(
                         (frame.width, frame.height) == (layout.width, layout.height),
@@ -568,7 +626,12 @@ pub(super) fn read_reply_with_eof(
                     display_geometry: frame.display_geometry,
                 });
             }
-            if let Some(summary) = scroll {
+            if let Some(summary) = portal_scroll {
+                NativeCaptureReply::PortalScroll {
+                    image: frames.pop().context("Portal scrolling frame missing")?,
+                    summary,
+                }
+            } else if let Some(summary) = scroll {
                 NativeCaptureReply::MacScroll {
                     image: frames.pop().context("Native scrolling frame missing")?,
                     summary,
@@ -987,5 +1050,48 @@ mod tests {
         }
         assert_eq!(original.desktop_layout.as_ref().unwrap().width, 2);
         assert_eq!(original.pixels.dimensions(), (2, 1));
+    }
+}
+
+#[cfg(test)]
+mod portal_stream_tests {
+    use super::*;
+    #[test]
+    fn portal_video_reply_and_pre_ready_denial_keep_their_typed_contract() {
+        let request = app_core::PortalVideoRequest {
+            stream: app_core::PortalStreamSource {
+                source: app_core::PortalCaptureSource::Window,
+                cursor: app_core::PortalCaptureCursor::Exclude,
+                width: 16,
+                height: 12,
+            },
+            seconds: 1,
+            fps: 5,
+        };
+        let call = NativeCaptureCall::PortalVideo { request };
+        let mut bytes = Vec::new();
+        reply(
+            &mut bytes,
+            NativeCaptureReply::PortalVideo {
+                summary: app_core::PortalVideoSummary {
+                    frames: 5,
+                    decoded_frames: 1,
+                    repeated_frames: 4,
+                    sample_span_ns: 800_000_000,
+                },
+            },
+        )
+        .unwrap();
+        assert!(
+            matches!(read_reply(&mut bytes.as_slice(), &call).unwrap(), NativeCaptureReply::PortalVideo { summary } if summary.frames == 5)
+        );
+        assert!(read_reply(&mut bytes.as_slice(), &NativeCaptureCall::Displays).is_err());
+        let mut denied = Vec::new();
+        failure(&mut denied, &app_core::CaptureError::PermissionDenied).unwrap();
+        let error = expect_handshake(&mut denied.as_slice(), VIDEO_READY, &[1; 16]).unwrap_err();
+        assert!(matches!(
+            error.downcast_ref::<app_core::CaptureError>(),
+            Some(app_core::CaptureError::PermissionDenied)
+        ));
     }
 }

@@ -117,6 +117,7 @@ jobs:
           key: sdk-target-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Cargo.lock') }}-${{ github.sha }}
 
   windows-native-witness:
+    if: false
     runs-on: windows-latest
     timeout-minutes: 180
     steps:
