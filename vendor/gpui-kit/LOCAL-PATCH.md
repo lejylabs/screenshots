@@ -14,3 +14,12 @@ The registry package's original manifest/lock and source are preserved in this
 packet's original source snapshot. Packaged Cargo.lock/Cargo.toml.orig under
 this vendor directory are historical upstream input, not the application's
 resolved graph. Root owns final lockfile resolution, advisory and test evidence.
+
+The published crate archive omits the repository-root license file. The exact
+upstream Apache license/copyright notice is included unchanged as LICENSE-APACHE
+from commit 39ab849a93b5f15507b969164d49891db8d5b470 (the archive's VCS identity):
+<https://github.com/longbridge/gpui-kit/blob/39ab849a93b5f15507b969164d49891db8d5b470/LICENSE-APACHE>.
+Git blob: `1e9e81e7dc6d9c0a7490c9c5debd67697284ee25`; SHA-256:
+`d1b0449e5478c574ba4f686c2656df7fe77d66821a61f8b6ed3378a58ed9a811`.
+This adds 10,305 bytes of license text, no code/runtime resource. The original
+55-file archive-derived snapshot/cost remains recorded separately.

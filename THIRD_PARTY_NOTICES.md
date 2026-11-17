@@ -185,3 +185,10 @@ Kit 0.9.1 keep their original Apache-2.0 license and published source. Their
 `LOCAL-PATCH.md` files record the date API changes and archive checksums.
 Application RFC3339 validation is original boundary code preserving the
 previously accepted spellings; it does not copy or rename Chrono source.
+
+Kit's published archive omits its repository-root license file. The unchanged
+Longbridge Apache-2.0 license/copyright text is therefore retained from the exact
+archive VCS commit, 39ab849a93b5f15507b969164d49891db8d5b470, at
+`vendor/gpui-kit/LICENSE-APACHE`; provenance and exact hashes are recorded in its
+LOCAL-PATCH.md. Original archive-derived source counts are separate from this
+10,305-byte attribution file.
