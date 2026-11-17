@@ -2116,3 +2116,22 @@ negative controls pass. Native/resource and retained calendar fixture gates are
 separate; this does not close the full non-UI backlog. Exact graph/provenance,
 additional unconfigured license-check failure and limits follow
 [the maintenance evidence](dependency-maintenance.md#integrated-chrono-maintenance-migration-2026-11-17).
+
+## Unix main-app desktop service integration (2026-11-17)
+
+Scoped main startup now owns native tray and saved shortcut services, with a
+parked supervised Linux helper or thread-correct macOS callbacks. Existing
+controls are reused. Native loss/close/reopen, Save/Import rollback, recoverable
+Quit and thumbnail release preserve access and data. Actual X11 execution found
+and corrected consumed-control lost wakes and readiness ACK ordering; a fresh
+review corrected request publication before capture-gate closure. Admission is
+reserved before state mutation and published only after closing the gate.
+
+The optimized workspace passes 1,141 tests (zero failures, 73 ignored, 61 outer
+suites). Actual fresh applied-source reviews 11/12 are clean. Clippy, formatting,
+default advisories and Windows GNU metadata pass; the final six private native
+fixture modes pass with real X11/D-Bus adapters and the latest reservation code.
+Earlier failures and exact execution identities remain archived. This closes the
+local functional integration slice; main GUI, Mac runtime/physical/session,
+joint 50 MiB private memory and remaining PLAN performance gates are separate.
+[Contract and evidence](unix-native-services.md).

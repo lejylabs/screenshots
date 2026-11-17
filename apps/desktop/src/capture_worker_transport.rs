@@ -40,12 +40,49 @@ impl Prepared {
             .collect()
     }
     pub fn new(command: &mut Command) -> Result<Self> {
+        Self::new_kind(command, false)
+    }
+    #[cfg(target_os = "linux")]
+    pub fn packets(command: &mut Command) -> Result<Self> {
+        Self::new_kind(command, true)
+    }
+    fn new_kind(command: &mut Command, packets: bool) -> Result<Self> {
+        #[cfg(not(unix))]
+        let _ = packets;
         let nonce = uuid::Uuid::new_v4();
         let parent = std::process::id();
         #[cfg(unix)]
         {
             use std::os::{fd::AsRawFd, unix::process::CommandExt};
-            let (server, child) = std::os::unix::net::UnixStream::pair()?;
+            #[cfg(target_os = "linux")]
+            let (server, child) = if packets {
+                use std::os::fd::FromRawFd;
+                let mut fds = [-1; 2];
+                ensure!(
+                    unsafe {
+                        libc::socketpair(
+                            libc::AF_UNIX,
+                            libc::SOCK_SEQPACKET | libc::SOCK_CLOEXEC,
+                            0,
+                            fds.as_mut_ptr(),
+                        )
+                    } == 0,
+                    "Cannot create private native packet channel"
+                );
+                unsafe {
+                    (
+                        std::os::unix::net::UnixStream::from_raw_fd(fds[0]),
+                        std::os::unix::net::UnixStream::from_raw_fd(fds[1]),
+                    )
+                }
+            } else {
+                std::os::unix::net::UnixStream::pair()?
+            };
+            #[cfg(not(target_os = "linux"))]
+            let (server, child) = {
+                ensure!(!packets, "Native packet transport requires Linux");
+                std::os::unix::net::UnixStream::pair()?
+            };
             for stream in [&server, &child] {
                 let size = 128 * 1024i32;
                 for option in [libc::SO_SNDBUF, libc::SO_RCVBUF] {
@@ -205,6 +242,15 @@ impl Prepared {
 }
 impl Transport {
     pub fn inherited() -> Result<(Self, [u8; 16], u32)> {
+        Self::inherited_kind(false)
+    }
+    #[cfg(target_os = "linux")]
+    pub fn inherited_packets() -> Result<(Self, [u8; 16], u32)> {
+        Self::inherited_kind(true)
+    }
+    fn inherited_kind(packets: bool) -> Result<(Self, [u8; 16], u32)> {
+        #[cfg(not(unix))]
+        let _ = packets;
         let value = std::env::var(ENV).context("Private native channel is absent")?;
         ensure!(value.len() <= 256, "Invalid private native channel");
         let fields = value.split(':').collect::<Vec<_>>();
@@ -245,8 +291,13 @@ impl Transport {
                         &mut kind_length,
                     )
                 } == 0
-                    && kind == libc::SOCK_STREAM,
-                "Native channel must be a stream socket"
+                    && kind
+                        == if packets {
+                            libc::SOCK_SEQPACKET
+                        } else {
+                            libc::SOCK_STREAM
+                        },
+                "Native channel has an unexpected socket kind"
             );
             let mut address: libc::sockaddr_storage = unsafe { std::mem::zeroed() };
             let mut length = std::mem::size_of_val(&address) as libc::socklen_t;

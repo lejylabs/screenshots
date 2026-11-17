@@ -244,19 +244,30 @@ pub use clipboard::{
     load_png_thumbnail, load_saved_png,
 };
 
-#[cfg(target_os = "windows")]
+mod capture_command;
+#[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
 mod hotkey;
-#[cfg(target_os = "windows")]
-pub use hotkey::{CaptureCommand, CaptureHotkey};
+mod tray_command;
+pub use capture_command::CaptureCommand;
+#[cfg(any(target_os = "windows", target_os = "macos"))]
+pub use hotkey::CaptureHotkey;
+pub use tray_command::TrayCommand;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+mod unix_desktop_services;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub use unix_desktop_services::{
+    UnixDesktopAction, UnixDesktopEvent, UnixDesktopServices, UnixShortcutOperation,
+    UnixShortcutReport,
+};
 
 #[cfg(target_os = "windows")]
 mod native_appearance;
 #[cfg(target_os = "windows")]
 pub use native_appearance::apply_native_menus;
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "macos"))]
 mod tray;
-#[cfg(target_os = "windows")]
-pub use tray::{SpikeTray, TrayCommand};
+#[cfg(any(target_os = "windows", target_os = "macos"))]
+pub use tray::SpikeTray;
 
 #[cfg(target_os = "windows")]
 mod desktop_window;
@@ -277,3 +288,16 @@ pub use capture::{
 pub fn version() -> &'static str {
     env!("CARGO_PKG_VERSION")
 }
+
+#[cfg(target_os = "linux")]
+#[doc(hidden)]
+pub use unix_desktop_services::{
+    X11ShortcutRegistrar, shortcut_portal_owner, shortcut_portal_request,
+};
+
+#[cfg(target_os = "linux")]
+#[doc(hidden)]
+pub use unix_desktop_services::{
+    LinuxDesktopProcess, LinuxDesktopProcessOwner, LinuxTaskPortal, install_linux_desktop_spawner,
+    serve_linux_desktop_child,
+};

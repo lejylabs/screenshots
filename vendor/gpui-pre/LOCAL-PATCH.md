@@ -38,3 +38,13 @@ The existing Apache-2.0 source/license and earlier local patches remain intact.
 Activation, optimized regression tests, five native-target metadata checks and
 default advisory-policy verification belong to the root integration gate; this
 held source packet alone establishes none of those passing results.
+
+## Test-only minimization model (2026-11-17)
+
+TestPlatform now models minimize as Hidden and activation as Visible. A single
+queued foreground callback observes final visibility outside the caller's
+entity/window borrow; active-window clearing only affects that exact window.
+This replaces the former unimplemented test operation and lets the real control
+thumbnail-atlas release/reopen regression execute. Production platforms and
+renderers are unchanged; the model is confined to test/test-support code and
+adds one flag plus at most one coalesced test callback, with no idle timer.

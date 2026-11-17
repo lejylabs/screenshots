@@ -5,17 +5,7 @@ use tray_icon::{
     menu::{Menu, MenuEvent, MenuItem},
 };
 
-#[derive(Debug, PartialEq, Eq)]
-pub enum TrayCommand {
-    Capture,
-    Region,
-    EditRegion,
-    ActiveWindow,
-    ActiveDisplay,
-    RepeatRegion,
-    Show,
-    Quit,
-}
+pub use crate::tray_command::TrayCommand;
 
 pub struct SpikeTray {
     _icon: TrayIcon,
@@ -31,6 +21,7 @@ pub struct SpikeTray {
 
 impl SpikeTray {
     pub fn new() -> Result<Self> {
+        #[cfg(target_os = "windows")]
         crate::apply_native_menus(crate::UiTheme::Default.is_dark());
         let menu = Menu::new();
         let capture = MenuItem::new("Capture primary", true, None);
@@ -136,7 +127,7 @@ impl SpikeTray {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, target_os = "windows"))]
 mod tests {
     use super::*;
 

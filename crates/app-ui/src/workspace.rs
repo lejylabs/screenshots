@@ -214,7 +214,7 @@ impl Render for CaptureWorkspace {
             self.exact_region_inputs = None;
             self.region_preset_name = None;
         }
-        #[cfg(target_os = "windows")]
+        #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
         if self.page == ControlPage::Settings
             && !self.settings_loading
             && self.hotkey_inputs.is_none()
@@ -232,7 +232,7 @@ impl Render for CaptureWorkspace {
                 })
             }));
         }
-        #[cfg(target_os = "windows")]
+        #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
         if self.page != ControlPage::Settings {
             self.hotkey_inputs = None;
         }
@@ -1253,25 +1253,34 @@ impl Render for CaptureWorkspace {
 }
 impl CaptureWorkspace {
     fn hotkey_settings(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
-        #[cfg(not(target_os = "windows"))]
+        #[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
         let _ = cx;
         let panel = div().flex_none().p_5().flex().flex_col().gap_3().child(
             div()
                 .font_weight(gpui::FontWeight::SEMIBOLD)
                 .child("Global shortcuts"),
         );
-        #[cfg(not(target_os = "windows"))]
+        #[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
         {
             panel.child("Global shortcut configuration is currently available on Windows only. Use your desktop's shortcut settings where supported.").into_any_element()
         }
-        #[cfg(target_os = "windows")]
+        #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
         {
             let disabled = self.settings_loading
                 || self.settings_saving
                 || self.quitting
-                || self.hotkey.is_none()
+                || {
+                    #[cfg(target_os = "windows")]
+                    {
+                        self.hotkey.is_none()
+                    }
+                    #[cfg(any(target_os = "linux", target_os = "macos"))]
+                    {
+                        self.unix_services.is_none() || self.unix_shortcuts_busy
+                    }
+                }
                 || self.output_directory.is_none();
-            panel.child(div().text_sm().child("Use Ctrl, Alt, Shift or Super (Windows key) + a letter, digit, F1–F24 or PrintScreen. Letters/digits need Ctrl, Alt or Super. Leave empty to disable."))
+            panel.child(div().text_sm().child("Use Ctrl, Alt, Shift or Super (Command on macOS) + a letter, digit, F1–F24 or PrintScreen. Letters/digits need Ctrl, Alt or Super. Leave empty to disable."))
                 .children(self.hotkey_inputs.iter().flat_map(|inputs| inputs.iter().enumerate()).map(|(index, input)| {
                     div().flex().flex_col().gap_1()
                         .child(app_core::CaptureHotkeys::LABELS[index])
