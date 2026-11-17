@@ -109,8 +109,10 @@ timers, network runtime or added worker threads; work runs only in the explicit
 headless process and all image state is released when it finishes.
 
 Cancellation retains the existing headless process semantics: Ctrl+C or process
-termination stops the command. There is no cooperative cancellation or hard
-deadline for synchronous image or filesystem calls. Interruption before export
+termination stops the command. The CLI supplies Unix cancellation and a five-minute processing budget, with
+checks between steps and during supported image/publication work. Synchronous
+codec and native filesystem calls remain noninterruptible boundaries; the
+budget does not promise a hard wall-clock deadline through those calls. Interruption before export
 writes no image; interruption during export can leave an unpublished UUID
 `.part` file, which the explicit storage inspection command can report. A final
 file already published before termination remains a completed output. Native

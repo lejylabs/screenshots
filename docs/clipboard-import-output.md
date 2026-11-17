@@ -77,6 +77,237 @@ current XNU implementation routes RLIMIT_AS to Mach VM size limits:
 Runtime probing remains required rather than inferring support on every macOS
 release. AppKit/pasteboard calls run on the worker's native main thread.
 
+## Windows existing file-drop metadata bounds
+
+The integrated correction addresses existing CF_HDROP file references only.
+Source review rounds 6/7 were clean before application. Actual local optimized
+Linux and Windows GNU all-target metadata checks, Windows dependency-unit metadata
+and all-target workspace Clippy pass. Windows raw-image/URL drops, print and file
+drag-out remain separate implementation work.
+
+Both existing GPUI consumers now share one all-or-nothing native-path reader:
+OLE `IDropTarget::DragEnter` and the legacy GPUI `read_files` clipboard path.
+`GlobalSize` must report 22..=65,536 bytes before metadata is locked/enumerated.
+An allocation-free DROPFILES pass validates the byte offset, wide alignment,
+double terminator, at most 32 references and at most 4,096 native bytes per path.
+The whole HGLOBAL extent, including its header, list terminators and allocator
+padding, fits 64 KiB. Bytes after the double terminator are allocator padding and
+are not further file references. ANSI offers retain Shell conversion semantics;
+wide offers retain exact Windows path units, including unpaired surrogates, using
+`OsString::from_wide`, without a lossy String intermediate.
+
+Only after structural validation does `DragQueryFileW` verify the count and
+preflight every output length. Converted UTF-16 paths are at most 4,096 bytes each
+and 65,536 bytes in total, excluding terminators. Each copy must match its queried
+length, end at the expected terminator and contain no earlier NUL. Any failure
+rejects the entire list before an Entered event or clipboard entry can escape;
+valid initial files in an oversized/malformed offer are never accepted alone.
+There is no truncation. These limits deliberately reject larger file metadata.
+
+Temporary application storage is 32 stack lengths plus a fixed 2,049-unit UTF-16
+scratch buffer (4,098 bytes), with no metadata Vec growth. The returned SmallVec's
+actual capacity must be at most 32 path slots. Windows PathBuf heap capacities
+are checked independently from UTF-16 length: at most 8,192 bytes per path and
+196,608 bytes in total, reflecting WTF-8 storage/allocation capacity. A rejected
+just-created path is immediately dropped. The native HGLOBAL and the toolkit's
+existing drag clones are additional retained costs; GPUI currently keeps a path
+clone for drag identity and the original for its drag view. No image buffers,
+threads, workers, runtimes, queues, caches, dependencies, timers or idle work are
+added. Per-target generation/phase/closed cells and a helper-open flag retain no
+extra path clone for termination. Each open native Windows window now creates
+its own IDropTargetHelper COM instance; the platform-wide singleton is removed.
+The extra native object per open window is a demonstrated ownership cost, with
+its opaque COM allocation/visual resources still unmeasured. FileDropState moves
+inline into WindowsWindowInner and is shared through its existing Rc, with no
+new state allocation. Native-destruction, close-request and explicit registration-lease state are inline
+cells.
+
+OLE acquires one guarded STGMEDIUM and releases it on every successful-GetData
+exit, including invalid type/handle, malformed data and reentrant cancellation.
+It checks `tymed` before reading the HGLOBAL union member and passes the movable
+handle, rather than a locked pointer, to Shell. Rejected Enter stays NONE during
+Over/Drop; only an admitted generation can submit. Leave retires the native
+phase and emits GPUI Exited before calling the foreign helper. Drop keeps the
+Accepted phase visible while its helper runs; a nested Enter must emit Exited
+for A before installing B. Only an unchanged generation is retired/submitted
+after helper return. Reentrant Enter/Leave cannot leave A attached to B, and an
+outer stale callback cannot clear or submit B. New Enter also terminates any
+previous helper lease before opening its own.
+
+The helper-open flag is consumed before a terminal helper callback, so a nested
+Enter can keep its own flag without an outer callback clearing it. An entered
+rejected offer still calls helper Drop with NONE; missing data uses helper Leave
+and never submits GPUI data. The terminal callback does not rely on a later OLE
+Leave after Drop. Duplicate terminal notifications have no helper lease left.
+No toolkit borrow spans source/helper COM calls; callbacks check generation and
+the existing owner-close flag after those calls and medium release. Copy is
+selected only if the source permits it. The existing file-drop feature and the
+application's one-file/busy/decode admission remain in place.
+
+The helper instance and drop state now have the same window lifetime. Closing a
+window consumes its helper lease synchronously, invalidates its native drag
+phase and permanently refuses later Enter/Leave/Drop work. Its existing deferred
+teardown task holds that window/helper through an explicit final helper Leave,
+dialog-idle wait, RevokeDragDrop and DestroyWindow. Revoke is used for its target
+Release contract; no implicit DragLeave callback is assumed. A different window
+creates a different helper instance, so delayed A cleanup and late A callbacks
+cannot consume B's helper state. Close during helper Enter or a terminal helper
+callback consumes the lease only once.
+
+Accepted WM_CLOSE requests run the existing GPUI close callback and suppress
+DefWindowProc's immediate DestroyWindow path. GPUI queues removal, which reaches
+the same owned teardown while the HWND is valid for Revoke. A Cell flag suppresses
+reentrant close requests while the veto callback runs; veto and later close
+remain supported. The owner is closed before notifying the accepted-close
+callback, so duplicate close cannot default-destroy the window early. Before a
+close callback is installed, the original default-procedure fallback remains.
+
+WM_DESTROY retires native input/helper ownership before source callbacks and
+revokes the registered target while its HWND is still valid. WM_NCDESTROY is also
+a final input/helper retirement seam. A claimed helper Leave is queued on the
+existing foreground executor after native/state borrows unwind: at most one
+operation task for unexpected native destruction, not a new queue or service.
+Normal app/requested close uses its existing teardown task.
+
+Registration has an explicit Absent/Registered/Revoking lease. It is recorded
+before RegisterDragDrop's AddRef call and rolled back on registration failure.
+Both normal teardown and WM_DESTROY use the same one-shot revocation seam;
+Revoking is recorded before calling OLE so duplicate/reentrant destruction cannot
+issue another Release. Successful/known-absent revocation clears the lease. A
+native revocation error keeps the lease recorded and prevents normal teardown
+from destroying the window or claiming release; actual native-error recovery
+acceptance remains open. The WindowsWindow wrapper is established before
+registration, so registration or later initialization errors also reach owned
+teardown. No undocumented OS auto-revocation is assumed.
+
+A native-destruction flag is set at WM_DESTROY, before revocation, and at
+WM_NCDESTROY as a fallback. The initial ShowWindowAsync hide, normal Revoke and
+Destroy paths are all skipped once destruction starts. The flag is rechecked
+after foreign calls, so queued removal after unexpected native destruction
+cannot hide, revoke or destroy a later B that reuses the HWND. No state lock or
+RefCell borrow spans source/helper calls; no new timer/thread/runtime is added.
+Native COM creation, API failure/ordering, allocation and visual cleanup still
+require actual Windows acceptance.
+
+Incoming GPUI payloads now also carry one private inline origin: the incoming
+target WindowId or internal source WindowId. All four AnyDrag constructors are
+updated. A new incoming path/image/URL offer may replace older incoming metadata;
+it does not replace an internal drag. Window removal drops only a payload owned
+by that window, including its view. File Pending/Submit require the target owner,
+and Exited retires only that target's incoming payload. Removed windows refuse
+input before dispatch. The generational WindowId, rather than a reused native
+handle, identifies the owner. Late A callbacks/removal cannot clear or submit B.
+
+Outgoing promotion transfers the internal origin to its native source window.
+Restored-drag handoff verifies that origin; an outgoing terminal only clears its
+own restored internal payload. Ending/removing a suspended outgoing source cannot
+clear a newer incoming target. Explicit native-drop cancellation uses incoming
+origin rather than payload type, preserving an internal drag whose value happens
+to be ExternalPaths. This adds one enum containing a WindowId/tag per active or
+suspended drag, without another payload clone, background service or idle work.
+All in-repository construction sites are covered; AnyDrag's new ownership field
+is private to this vendored toolkit.
+
+The pending-native-drop seam remains separate. Window removal does not invoke a
+global native cancellation that could cancel B. Wayland already checks the closed
+window identity in drop_window before invalidating its native offer/reader; X11,
+Windows and macOS ingress use the shared GPUI consumer. Windows owner closure
+suppresses input dispatch from native callbacks; App window removal remains the
+authoritative release of its incoming GPUI payload. Helper ownership is retired
+explicitly through the window's shared drop state and deferred cleanup above,
+without requiring a later OS Leave callback. The closed-target fixtures do not
+prove native Shell callback ordering on window close.
+
+The 64 KiB check is **post-acquisition**. Source `QueryGetData`/`GetData`, release
+callbacks and drag-image helper calls remain synchronous COM/native operations.
+`GetData` can allocate an arbitrarily large native medium or block before this
+reader sees its extent; rejecting that returned medium does not undo that peak.
+No hard native acquisition time/memory bound, foreground latency acceptance or
+complete Windows clipboard/drop integration is claimed for this correction.
+
+The next acquisition slice must trace COM apartments with a controlled source,
+then move delayed rendering to one operation-owned, correctly marshaled STA
+consumer, retaining its admission lease through delivery/discard. The candidate
+hard-containment path is a lazily started helper with a Windows Job memory limit
+installed before native acquisition and an externally enforced five-second kill
+deadline. It must first prove that marshaled calls do not execute back on GPUI's
+foreground apartment. Raw IDataObject pointers cannot be moved across threads.
+`IDataObjectAsyncCapability` is optional; unsupported sources need a tested
+compatibility path. `GetDataHere` permits a consumer-sized HGLOBAL but is not
+universally supported and does not itself supply a time bound. Query, marshaling,
+release and drag-image helper calls also require review; moving only GetData is
+insufficient. If ordinary OLE proxies still route blocking calls through the
+foreground, the receiver's apartment/process boundary needs a fresh design before
+that gate can pass; adding another timed-out thread is not a fallback.
+
+Regression sources include seven private pure structural/generation fixtures,
+four private per-window helper factory/endpoint fixtures, four private
+registration/resource-retention fixtures, four Windows-only
+private HGLOBAL fixtures, three private COM/medium lifetime fixtures, three
+private native-close routing fixtures, seven Windows-lifecycle GPUI headless
+consumer fixtures and five shared GPUI incoming-ownership fixtures. They cover all-or-nothing
+refusal, count/path/extent edges, malformed headers/termination, ANSI conversion,
+exact native Unicode units, actual retained capacities, generation replacement/
+retirement/exhaustion and both STGMEDIUM release ownership forms, including a
+provider release that reenters a newer generation.
+
+The GPUI fixtures invoke the exact production begin/Leave/Drop lifecycle methods
+with injected helper notifications and the real Window::dispatch_event,
+active_drag and on_drop consumer. They verify normal Drop, Enter A -> Leave/helper
+reentry -> Enter B -> Drop B, Drop-helper reentry through Enter B or Leave only,
+rejected offers, missing data and a rejected helper reentering accepted B. A must
+not remain retained or be submitted as B, and every entered helper gets one
+terminal notification. The private lifecycle module is included as test source
+in GPUI; production crates gain no dependency or public API. The ownership
+fixtures verify two-window close/reopen with weak payload release and only B
+submitted, old A events/removal preserving live B, image/URL-body release,
+internal ExternalPaths preservation during cancellation/other-window removal,
+and suspended outgoing-source close while incoming B remains live.
+
+No fixture opens or changes the user's clipboard or windows. Actual optimized
+execution passed 15 standalone pure fixtures, five GPUI ownership fixtures and
+22 GPUI Windows-consumer fixtures; the latter include those same 15 pure cases
+and are not 22 additional consumer cases. Seven SVG/font regressions and three
+style assertion tests also pass. The complete workspace run passed 1,065 regular
+tests across 60 outer suites, with zero failures and 71 opt-ins excluded. Child
+harness summaries are excluded from that total. Formatting and diff checks pass.
+Logs and exact test-binary identity are under
+`target/verification/windows-drop-integration/`. Native Windows execution and
+resource acceptance remain open.
+The factory/endpoint fixtures verify distinct helper identities, close with no
+later OS Leave, deferred A cleanup after B Enter, late/duplicate A terminals,
+close during helper Enter/Leave/Drop and destruction while close-Leave reenters.
+The close-routing fixtures invoke the actual WM_CLOSE routing function with
+private callbacks and an inert HWND, including veto/reentrant/duplicate cases.
+The registration fixtures use the production lease and a fake native registry
+holding real Rc resources until revoke. They verify unexpected destruction with
+no queued window Drop releases that resource, duplicate/reentrant revoke never
+releases twice, an already-destroyed A's queued teardown performs no hide/revoke/
+destroy on a reused B handle, and registration/revocation failures retain or roll
+back the resource lease truthfully.
+The injected helper fixtures do not invoke an actual IDropTarget COM entry point,
+CoCreateInstance or the Shell helper. Native apartment/drag-helper reentrancy, real Explorer
+negotiation, presentation/CPU/private-memory measurements and full platform
+acceptance remain unrun. These source fixtures are not runtime or hardware
+acceptance evidence.
+
+Native basis: [DROPFILES layout and encoding](https://learn.microsoft.com/en-us/windows/win32/api/shlobj_core/ns-shlobj_core-dropfiles),
+[DragQueryFileW count/length/termination](https://learn.microsoft.com/en-us/windows/win32/api/shellapi/nf-shellapi-dragqueryfilew),
+[GlobalSize allocation extent](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-globalsize),
+[GetData medium ownership](https://learn.microsoft.com/en-us/windows/win32/api/objidl/nf-objidl-idataobject-getdata),
+[ReleaseStgMedium ownership](https://learn.microsoft.com/en-us/windows/win32/api/ole2/nf-ole2-releasestgmedium),
+[DragEnter allowed effects](https://learn.microsoft.com/en-us/windows/win32/api/oleidl/nf-oleidl-idroptarget-dragenter),
+[DoDragDrop terminal callbacks](https://learn.microsoft.com/en-us/windows/win32/api/ole2/nf-ole2-dodragdrop),
+[RegisterDragDrop target AddRef](https://learn.microsoft.com/en-us/windows/win32/api/ole2/nf-ole2-registerdragdrop),
+[RevokeDragDrop target release](https://learn.microsoft.com/en-us/windows/win32/api/ole2/nf-ole2-revokedragdrop),
+[WM_DESTROY notification](https://learn.microsoft.com/en-us/windows/win32/winmsg/wm-destroy),
+[WM_CLOSE default destruction](https://learn.microsoft.com/en-us/windows/win32/winmsg/wm-close),
+[CoCreateInstance object creation](https://learn.microsoft.com/en-us/windows/win32/api/combaseapi/nf-combaseapi-cocreateinstance),
+[IDropTargetHelper notifications and source calls](https://learn.microsoft.com/en-us/windows/win32/api/shobjidl_core/nn-shobjidl_core-idroptargethelper),
+[COM interface marshaling](https://learn.microsoft.com/en-us/windows/win32/api/combaseapi/nf-combaseapi-comarshalinterthreadinterfaceinstream),
+[optional asynchronous data extraction](https://learn.microsoft.com/en-us/windows/win32/api/shldisp/nn-shldisp-idataobjectasynccapability)
+and [consumer-provided storage](https://learn.microsoft.com/en-us/windows/win32/api/objidl/nf-objidl-idataobject-getdatahere).
+
 ## Focused Wayland paste and drops
 
 Standard Wayland selection is delivered only with keyboard focus; a headless CLI
@@ -204,7 +435,7 @@ into the user's desktop. Private native helpers must establish their private
 context before any native clipboard or print call. Bounds cover transfer and
 metadata before decoder admission; a decoder cap alone is insufficient evidence.
 
-## Current compiling slice checkpoint
+## Integrated clipboard/Paste checkpoint (updated 2026-11-16)
 
 Implemented so far: isolated native ClipboardImage/ClipboardInspect calls,
 bounded native X11/Windows/macOS readers and parsers, explicit clipboard CLI,
@@ -214,12 +445,13 @@ raw/URI drop transport. The remaining X11/Windows/macOS raw/URL payload adapters
 print and file drag-out integration are still implementation work; the overall
 family is not declared complete at this checkpoint.
 
-The next native-integration ledger also includes descriptor-only Wayland GPUI
-startup: the connection may consume `WAYLAND_SOCKET` before graphical-environment
-backend detection, which currently considers only `DISPLAY`/`WAYLAND_DISPLAY`
-and can then select X11. This is separate from the already refused Automatic
-clipboard CLI context. It must be corrected before the entire integration family
-is complete; it is not claimed fixed by the clipboard contract/test correction.
+The earlier ledger's descriptor-only Wayland startup defect is corrected in the
+separate [startup integration](linux-wayland-startup.md). It snapshots authority
+before descriptor consumption and retains it through GUI/native operations.
+All 19 owned native startup/headless cases pass on the integrated optimized
+executable. Automatic clipboard CLI refusal remains a separate early boundary;
+actual X11-focused Paste follows the connected client. Physical clipboard/input,
+remaining native payload adapters, printing and app drag-out remain open.
 
 Native acquisition is 96 MiB growth for encoded clipboard formats; Windows DIB
 size is checked first and may raise the copy phase to 256 MiB +64 KiB +16 MiB
@@ -351,7 +583,9 @@ The seventh and eighth fresh source reviews both completed with no Blocker,
 Major or Nit findings; all 20 frozen source hashes matched in each. This gives
 source-review convergence for the compiling clipboard/Paste/Wayland-drop slice.
 It does not close native platform/resource acceptance or implement the remaining
-native payload adapters, descriptor-only GUI startup, printing and drag-out.
+native payload adapters, printing and drag-out. Descriptor-only GUI startup
+was subsequently integrated and independently verified in the linked contract;
+those original clipboard reviews alone did not establish that result.
 The private native evidence and the explicit opaque-X11 queue boundary above
 retain their stated scope. These reviews ran read-only without user clipboard,
 printer, device, account or native application calls.

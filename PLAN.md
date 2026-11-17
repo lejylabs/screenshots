@@ -13,9 +13,22 @@ image/QR/OCR tools, storage maintenance, native credential adapters and packagin
 are separate slices; they do not close platform, editor workflow, resource or
 ShareX-parity acceptance gates. The complete requested backlog remains open.
 
+Latest non-UI checkpoint (2026-11-17): chronological capture/upload history
+queries now order exact fractional UTC timestamps with independent keyset cursors.
+Seventeen targeted core and two real CLI cases, two explicit optimized cost/
+allocator probes, 156 separate executable cost/memory requests, optimized Clippy,
+Windows GNU metadata and formatting pass. The preceding Windows file-drop
+correction `f2f03a4` passed 1,065 regular workspace tests (71 opt-ins excluded)
+and focused GPUI regressions. Native COM acquisition containment remains a code
+gap; physical/reference-hardware and release acceptance remain separate.
+Read the [current checklist](docs/non-ui-status.md),
+[history contract](docs/history-queries.md) and
+[drop contract](docs/clipboard-import-output.md) for exact scope and source
+provenance. The full non-UI backlog remains open.
+
 ## Session handoff — start here (2026-11-12)
 
-This section is the current continuation brief. The numbered sections below contain architecture, release requirements and detailed implementation evidence; their original bootstrap sequence is historical. Development has progressed through functional slices of Phases 1–5 while the cross-platform/performance release gates remain open. Do not restart the spike or treat implemented features as production acceptance.
+This section records the UI continuation brief from 2026-11-12. Current non-UI scope and verification follow [the delivery plan](docs/non-ui-delivery.md), with new UI controls and final design excluded by the user's later instruction. The numbered sections below contain architecture, release requirements and detailed implementation evidence; their original bootstrap sequence is historical. Development has progressed through functional slices of Phases 1–5 while the cross-platform/performance release gates remain open. Do not restart the spike or treat implemented features as production acceptance.
 
 ### User decisions to preserve
 
@@ -1218,7 +1231,7 @@ row. Native keyboard/IME/accessibility, GPU reclamation, unavailable storage
 and full process/GPU/resource acceptance remain open; no new performance
 measurement is claimed for this bounded decode.
 
-Thumbnail cancellation follow-up (2026-11-15, in progress): the existing
+Historical thumbnail implementation checkpoint (2026-11-15; later verified): the existing
 reduction call checks cancellation only before and after its pixel work. The
 [bounded cancellation plan](docs/image-cancellation.md) adds checks during
 reduction while retaining exact pinned-thumbnail pixels. It also retains an
@@ -1229,7 +1242,7 @@ without UI design changes, new controls, workers or timers. Verification is
 pending; earlier thumbnail fixtures and measurements do not validate the new
 path. PNG decoding and native I/O remain noninterruptible within their calls.
 
-Saved-PNG admission follow-up (2026-11-15, implementation awaiting verification):
+Historical saved-PNG implementation checkpoint (2026-11-15; later verified):
 `load_saved_png` now checks regular-file type/size before and after opening,
 uses Unix nonblocking open to reject FIFO substitution, and streams through one
 fixed-length handle with a 64 KiB buffer. The encoded whole-file limit is
@@ -1246,6 +1259,12 @@ The [saved-PNG contract](docs/saved-png-admission.md) defines the compatibility
 and pending checks. Direct editor input and sanitized history export retain
 their separate 32 MiB admission and orientation behavior; byte-copy export is
 unchanged. Historical measurements above do not validate this new path.
+
+Both follow-ups above are integrated and covered by later optimized checks;
+see [current status](docs/non-ui-status.md). Generic saved JPEG/WebP and
+managed sanitization/conversion now follow [format policy](docs/capture-library-formats.md);
+narrow PNG compatibility APIs retain their documented behavior. Historical
+measurements are not relabeled current or native acceptance.
 
 #### Current feature slice: configurable Windows global hotkeys
 
@@ -1726,6 +1745,20 @@ The initial polling loops and file-based frame handoffs have been replaced with 
 
 Windows implementation: normal startup uses SID/session-scoped named kernel objects with Windows default token security. A second launch sends only a bounded/coalesced Show signal, then exits before GPUI/tray/hotkey initialization. The listener starts after event delivery is installed and waits natively without polling. Ownership survives until GPUI shutdown completes. Resource cost: one parked native waiter with a 256 KiB requested stack and a small fixed handle set; updated idle measurements are not claimed here. The kernel-object handoff/restart test and a real two-process release smoke check passed: the secondary exited and native window enumeration confirmed a visible control window in the original process. The smoke processes exited on their diagnostic deadlines with no stderr errors. Cross-platform IPC, foreground-activation policy and shutdown/session/elevation races remain verification work.
 
+
+Linux/macOS main-app ownership and Show/reopen are implemented in the
+[Unix lifecycle slice](docs/unix-app-lifecycle.md), with verification pending.
+An ordinary launch acquires worker-free user/session ownership before platform
+and logger startup; one bounded native Unix listener begins only once startup
+environment is consumed and the existing control window exists. File-editor
+`--open` and resource probes bypass Show-only ownership. Unknown stable authority
+retains a truthful visible-only fallback with global services disabled. The
+existing Unix Close-to-quit window remains the accessible fallback; main-app
+native tray and capture hotkeys remain follow-ups. macOS uses GPUI native reopen.
+Quit stops launch admission and ownership survives GPUI teardown. Cost is one
+parked 256 KiB requested-stack waiter, five owned fds and one coalescing token;
+no idle polling or performance acceptance is claimed. Native runtime, platform
+focus/session behavior and measured budgets remain separate gates.
 
 A capture tool should run as a single instance. A second launch forwards its request to the running instance and exits. Two instances would register the same hotkeys and write the same history.
 
@@ -2889,7 +2922,7 @@ C/C++ may be used selectively for native integrations when there is a demonstrab
 
 ## 16. First Development Steps
 
-This is the historical bootstrap sequence, retained to explain the technical gates. The current continuation task is the UI/UX work in the session handoff at the top; do not repeat these steps from scratch or stop that authorized UI work because release gates remain open.
+This is the historical bootstrap sequence, retained to explain the technical gates. Current work follows [the non-UI delivery plan](docs/non-ui-delivery.md); preserve the earlier product decisions while applying the user's later UI exclusion. Do not repeat these steps from scratch or treat open release gates as completed implementation.
 
 Original starting order:
 

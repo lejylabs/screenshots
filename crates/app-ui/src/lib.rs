@@ -5,6 +5,7 @@ use gpui_kit as gpui;
 use gpui_kit::platform as gpui_platform;
 mod assets;
 mod caption;
+mod format_catalog;
 #[cfg(all(test, target_os = "linux"))]
 mod native_probe;
 #[cfg(test)]
@@ -155,6 +156,8 @@ pub struct CaptureWorkspace {
     backend: XcapBackend,
     #[cfg(test)]
     test_capture_capabilities: Option<app_core::CaptureCapabilities>,
+    #[cfg(test)]
+    test_library_load_cancel: Option<(Arc<std::sync::atomic::AtomicUsize>, usize)>,
     native_capture_cancel: Option<app_core::NativeCaptureCancellation>,
     native_sources_cancel: Option<app_core::NativeCaptureCancellation>,
     xcap_displays: Vec<DisplayInfo>,
@@ -170,6 +173,7 @@ pub struct CaptureWorkspace {
     output_profile: CaptureOutputProfile,
     jpeg_quality: u8,
     export_format: app_core::ImageExportFormat,
+    format_catalog: format_catalog::FormatCatalog,
     export_size: app_core::ExportSize,
     export_dimension_input: Option<gpui::Entity<gpui::component::input::InputState>>,
     export_height_input: Option<gpui::Entity<gpui::component::input::InputState>>,
@@ -264,6 +268,30 @@ pub struct CaptureWorkspace {
     tray_status: String,
 }
 
+fn native_capture_context(cx: &App) -> app_core::NativeCaptureContext {
+    #[cfg(target_os = "linux")]
+    return app_core::NativeCaptureContext {
+        wayland_session: cx.compositor_name() == "Wayland"
+            || cx
+                .graphical_environment()
+                .is_some_and(|environment| environment.wayland_session),
+    };
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = cx;
+        app_core::NativeCaptureContext::default()
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn focused_clipboard_backend(native_read: bool, client: &str) -> app_core::NativeClipboardBackend {
+    if !native_read && client == "X11" {
+        app_core::NativeClipboardBackend::FocusedX11
+    } else {
+        app_core::NativeClipboardBackend::Automatic
+    }
+}
+
 struct CaptureSaveAttempt {
     capture: CapturedImage,
     result: Result<(), String>,
@@ -289,6 +317,10 @@ impl CaptureWorkspace {
                 match result {
                     Ok(()) => {
                         this.graphics = true;
+                        this.backend = this
+                            .backend
+                            .clone()
+                            .with_native_context(native_capture_context(cx));
                         #[cfg(all(test, target_os = "windows"))]
                         if let Some(probe) = cx.try_global::<RegionLatencyProbe>() {
                             probe.mark("graphics_ready");
@@ -604,7 +636,8 @@ impl CaptureWorkspace {
                 Some("CaptureWorkspace"),
             ),
         ]);
-        let backend = XcapBackend::new(app_core::capture_output_dir());
+        let backend = XcapBackend::new(app_core::capture_output_dir())
+            .with_native_context(native_capture_context(cx));
         let caps = backend.capabilities();
         tracing::info!(
             list_displays = caps.list_displays,
@@ -628,6 +661,8 @@ impl CaptureWorkspace {
             backend,
             #[cfg(test)]
             test_capture_capabilities: None,
+            #[cfg(test)]
+            test_library_load_cancel: None,
             native_capture_cancel: None,
             native_sources_cancel: None,
             xcap_displays: Vec::new(),
@@ -648,6 +683,7 @@ impl CaptureWorkspace {
             output_profile: CaptureOutputProfile::default(),
             jpeg_quality: app_core::DEFAULT_JPEG_QUALITY,
             export_format: app_core::ImageExportFormat::default(),
+            format_catalog: format_catalog::FormatCatalog::default(),
             export_size: app_core::ExportSize::Original,
             export_dimension_input: None,
             export_height_input: None,
@@ -781,7 +817,8 @@ impl CaptureWorkspace {
                         this.output_task_profiles = settings.output_task_profiles;
                         this.strip_metadata_on_upload = settings.strip_metadata_on_upload;
                         theme::apply(settings.theme, cx);
-                        this.backend = XcapBackend::new(&settings.output_directory);
+                        this.backend = XcapBackend::new(&settings.output_directory)
+                            .with_native_context(native_capture_context(cx));
                         this.output_directory = Some(settings.output_directory);
                         this.try_open_pending_image(cx);
                     }
@@ -994,7 +1031,8 @@ impl CaptureWorkspace {
                 this.settings_saving = false;
                 match result {
                     Ok(Some(path)) => {
-                        this.backend = XcapBackend::new(&path);
+                        this.backend =
+                            XcapBackend::new(&path).with_native_context(native_capture_context(cx));
                         this.output_directory = Some(path);
                         this.settings_status = "Save folder updated".into();
                     }
@@ -1037,6 +1075,7 @@ impl CaptureWorkspace {
         let upload_task_defaults = self.upload_task_defaults.clone();
         let output_task_profiles = self.output_task_profiles;
         let strip_metadata_on_upload = self.strip_metadata_on_upload;
+        let format_catalog = self.format_catalog.clone();
         cx.spawn(async move |this, cx| {
             let chosen = match dialog.await {
                 Ok(Ok(path)) => path,
@@ -1084,7 +1123,7 @@ impl CaptureWorkspace {
                         .with_filename_template(filename_template)?
                         .with_capture_delay(capture_delay_seconds)?
                         .with_upload_task_defaults(upload_task_defaults)?.with_output_task_profiles(output_task_profiles).with_strip_metadata_on_upload(strip_metadata_on_upload)
-                        .export(&path)?;
+                        .export_with_formats(&path, format_catalog.load()?)?;
                     Ok::<_, anyhow::Error>(path)
                 })
                 .await;
@@ -1166,7 +1205,7 @@ impl CaptureWorkspace {
             };
             let parsed = cx
                 .background_spawn(async move {
-                    app_core::CaptureSettings::import(&path, fallback)
+                    app_core::CaptureSettings::import_with_formats(&path, fallback)
                 })
                 .await;
             let applied = this.update(cx, |this, cx| {
@@ -1175,7 +1214,7 @@ impl CaptureWorkspace {
                     this.finish_quit_if_idle(cx);
                     return None;
                 }
-                let (settings, folder_kept) = match parsed {
+                let (settings, folder_kept, formats) = match parsed {
                     Ok(value) => value,
                     Err(error) => {
                         this.settings_saving = false;
@@ -1207,9 +1246,9 @@ impl CaptureWorkspace {
                 };
                 #[cfg(not(target_os = "windows"))]
                 let prepared = false;
-                Some((settings, folder_kept, prepared))
+                Some((settings, folder_kept, prepared, formats, this.format_catalog.clone()))
             });
-            let Ok(Some((settings, folder_kept, prepared))) = applied else {
+            let Ok(Some((settings, folder_kept, prepared, formats, format_catalog))) = applied else {
                 return;
             };
             #[cfg(not(target_os = "windows"))]
@@ -1218,8 +1257,10 @@ impl CaptureWorkspace {
             let result = cx
                 .background_spawn(async move {
                     app_core::CaptureSettings::ensure_output_directory(&persisted.output_directory)?;
-                    persisted.save()?;
-                    Ok::<_, anyhow::Error>(())
+                    let previous_formats = formats.as_ref().and_then(|_| format_catalog.observe().ok());
+                    format_catalog.persist_main(&persisted)?;
+                    let format_warning = formats.and_then(|desired| format_catalog.restore(&desired, previous_formats.as_ref()));
+                    Ok::<_, anyhow::Error>(format_warning)
                 })
                 .await;
             this.update(cx, |this, cx| {
@@ -1232,8 +1273,9 @@ impl CaptureWorkspace {
                 this.settings_saving = false;
                 if !this.quitting {
                     this.settings_status = match result {
-                        Ok(()) => {
-                            this.backend = XcapBackend::new(&settings.output_directory);
+                        Ok(format_warning) => {
+                            this.backend = XcapBackend::new(&settings.output_directory)
+                                .with_native_context(native_capture_context(cx));
                             this.output_directory = Some(settings.output_directory.clone());
                             this.hotkey_bindings = settings.hotkeys;
                             this.output_profile = settings.output_profile;
@@ -1274,6 +1316,8 @@ impl CaptureWorkspace {
                             let status = format!(
                                 "Settings imported · {folder} · upload destinations, history, images and secrets were not in this file"
                             );
+                            let mut status = status;
+                            if let Some(error) = format_warning { status.push_str(&format!(" · Main settings applied · {error}")); }
                             status
                         }
                         Err(error) => {
@@ -2893,15 +2937,7 @@ impl CaptureWorkspace {
         self.show_page(ControlPage::Captures, cx);
         let read = cx.read_image_from_clipboard_async();
         #[cfg(target_os = "linux")]
-        let backend = if read.is_none()
-            && cx
-                .graphical_environment()
-                .is_some_and(|environment| environment.x11_display.is_some())
-        {
-            app_core::NativeClipboardBackend::FocusedX11
-        } else {
-            app_core::NativeClipboardBackend::Automatic
-        };
+        let backend = focused_clipboard_backend(read.is_some(), cx.compositor_name());
         #[cfg(not(target_os = "linux"))]
         let backend = app_core::NativeClipboardBackend::Automatic;
         self.open_redaction_source_with_read(EditorImage::Clipboard(backend), read, cx);
@@ -3023,6 +3059,8 @@ impl CaptureWorkspace {
             .clone()
             .expect("Image admission owns cancellation");
         let delivery_cancel = cancellation.clone();
+        #[cfg(test)]
+        let test_library_load_cancel = self.test_library_load_cancel.clone();
         self.capture_status = "Opening image editor…".into();
         cx.spawn(async move |this, cx| {
             let source = if let Some(read) = read {
@@ -3050,7 +3088,23 @@ impl CaptureWorkspace {
                             }
                             file => {
                                 let pixels = match file {
-                                    EditorImage::SavedPng(path) => app_core::load_saved_png(&path),
+                                    EditorImage::SavedPng(path) => {
+                                        app_core::load_saved_image(&path, || {
+                                            #[cfg(test)]
+                                            if let Some((checks, after)) = &test_library_load_cancel
+                                            {
+                                                if checks.fetch_add(
+                                                    1,
+                                                    std::sync::atomic::Ordering::AcqRel,
+                                                ) + 1
+                                                    >= *after
+                                                {
+                                                    cancellation.cancel();
+                                                }
+                                            }
+                                            cancellation.check().is_err()
+                                        })
+                                    }
                                     EditorImage::File(path) => {
                                         app_core::load_editor_image_with_cancel(&path, &|| {
                                             cancellation.check().is_err()
@@ -3480,7 +3534,7 @@ impl CaptureWorkspace {
             let flag = cancel.clone();
             let result = cx
                 .background_spawn(async move {
-                    app_core::load_png_thumbnail(&path, || {
+                    app_core::load_image_thumbnail(&path, || {
                         flag.load(std::sync::atomic::Ordering::Relaxed)
                     })
                     .map(thumbnail_render_image)
@@ -3591,7 +3645,7 @@ impl CaptureWorkspace {
             let flag = cancel.clone();
             let result = cx
                 .background_spawn(async move {
-                    app_core::load_png_thumbnail(&path, || {
+                    app_core::load_image_thumbnail(&path, || {
                         flag.load(std::sync::atomic::Ordering::Relaxed)
                     })
                     .map(thumbnail_render_image)
@@ -3733,7 +3787,7 @@ impl CaptureWorkspace {
                     clipboard
                         .lock()
                         .map_err(|error| error.to_string())?
-                        .copy_saved_png(&path)
+                        .copy_saved_image(&path)
                         .map_err(|error| format!("{error:#}"))
                 })
                 .await;
@@ -3865,7 +3919,7 @@ impl CaptureWorkspace {
             files: true,
             directories: false,
             multiple: true,
-            prompt: Some("Add PNG images to history (up to 100)".into()),
+            prompt: Some("Add PNG, JPEG or WebP images to history (up to 100)".into()),
         });
         cx.spawn(async move |this, cx| {
             let selected = match dialog.await {
@@ -3952,12 +4006,12 @@ impl CaptureWorkspace {
         };
         self.history_mutating = true;
         self.history_action_status =
-            "Choose the PNG for this history entry. Image files stay unchanged.".into();
+            "Choose a PNG, JPEG or WebP for this history entry. Image files stay unchanged.".into();
         let dialog = cx.prompt_for_paths(gpui::PathPromptOptions {
             files: true,
             directories: false,
             multiple: false,
-            prompt: Some("Relink history entry to a PNG image".into()),
+            prompt: Some("Relink history entry to a PNG, JPEG or WebP image".into()),
         });
         cx.spawn(async move |this, cx| {
             let selection = dialog.await;
@@ -3977,7 +4031,8 @@ impl CaptureWorkspace {
                             this.history_action_status = match other {
                                 Ok(Ok(None)) => "Relink canceled. History unchanged.".into(),
                                 Ok(Ok(Some(_))) => {
-                                    "Select exactly one PNG. History unchanged.".into()
+                                    "Select exactly one PNG, JPEG or WebP image. History unchanged."
+                                        .into()
                                 }
                                 error => format!("Image selection failed: {error:?}"),
                             };
@@ -4039,13 +4094,15 @@ impl CaptureWorkspace {
         cx: &mut Context<Self>,
     ) {
         debug_assert!(self.saving && self.history_export_cancel.is_none());
+        let format_catalog = self.format_catalog.clone();
         let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
         self.history_export_cancel = Some(cancel.clone());
         self.save_status = format!("Exporting {} selected images…", sources.len());
         cx.spawn(async move |this, cx| {
             let result = cx
                 .background_spawn(async move {
-                    app_core::export_saved_pngs(&sources, &directory, || {
+                    let policy = format_catalog.load()?.library_export;
+                    app_core::export_saved_images(&sources, &directory, policy, false, || {
                         cancel.load(std::sync::atomic::Ordering::Relaxed)
                     })
                 })
@@ -4055,10 +4112,15 @@ impl CaptureWorkspace {
                     Ok(report) => {
                         let mut status = format!(
                             "Exported {} · Failed {} · Not exported {}. Originals kept.",
-                            report.exported,
+                            report.outputs.len(),
                             report.failures.len(),
                             report.not_exported
                         );
+                        if report.outputs.iter().any(|output| output.lossy) {
+                            status.push_str(" Explicit lossy conversion applied.");
+                        } else if report.outputs.iter().any(|output| output.reencoded) {
+                            status.push_str(" Explicit lossless conversion applied.");
+                        }
                         for (path, error) in report.failures.iter().take(3) {
                             status.push_str(&format!(
                                 "\n{}: {error}",
@@ -4110,7 +4172,7 @@ impl CaptureWorkspace {
             files: false,
             directories: true,
             multiple: false,
-            prompt: Some("Export selected PNGs to a folder (existing files are kept)".into()),
+            prompt: Some("Export selected images to a folder (existing files are kept)".into()),
         });
         cx.spawn(async move |this, cx| {
             let selection = dialog.await;
@@ -4610,9 +4672,9 @@ impl CaptureWorkspace {
                         Ok(()) => {
                             this.strip_metadata_on_upload = strip;
                             if strip {
-                                "Uploads re-encode PNG pixels and drop ancillary metadata. Original files stay unchanged.".into()
+                                "Uploads decode saved images to metadata-free PNG. Original files stay unchanged.".into()
                             } else {
-                                "Uploads send stored PNG bytes, including existing metadata.".into()
+                                "Uploads send stored image bytes with their actual format, including existing metadata.".into()
                             }
                         }
                         Err(error) => format!("Metadata policy unchanged: {error:#}"),
@@ -5597,11 +5659,11 @@ impl CaptureWorkspace {
                         }
                         this.upload_status = if progress.prepared == progress.total {
                             format!(
-                                "{progress_filename} · PNG data prepared · Awaiting server response"
+                                "{progress_filename} · Image data prepared · Awaiting server response"
                             )
                         } else {
                             format!(
-                                "{progress_filename} · Upload request: {} / {} PNG bytes",
+                                "{progress_filename} · Upload request: {} / {} image bytes",
                                 progress.prepared, progress.total
                             )
                         };
@@ -5622,7 +5684,7 @@ impl CaptureWorkspace {
                     match source {
                         Some(path) => {
                             let outcome = if strip {
-                                let png = app_core::png_without_metadata(&path)
+                                let png = app_core::saved_image_png_without_metadata(&path, || cancel.is_canceled())
                                     .map_err(|error| format!("{error:#}"))?;
                                 app_core::upload_png_bytes_with_progress(
                                     &destination,
@@ -5632,7 +5694,7 @@ impl CaptureWorkspace {
                                 )
                                 .map_err(|error| format!("{error:#}"))?
                             } else {
-                                app_core::upload_png_with_progress(
+                                app_core::upload_saved_image_with_progress(
                                     &destination,
                                     &path,
                                     cancel,
@@ -5882,11 +5944,15 @@ impl CaptureWorkspace {
                         let report = if let Some(shot) = shot.as_ref() {
                             app_core::save_capture_with_history(database, shot, &path, || false)?
                         } else {
-                            app_core::copy_saved_png_with_history(database, &source, &path, || false)?
+                            if app_core::inspect_saved_image(&source)?.format == app_core::ImageExportFormat::Png {
+                                app_core::copy_saved_png_with_history(database, &source, &path, || false)?
+                            } else {
+                                app_core::save_saved_image_with_history_policy(database, &source, &path, app_core::CaptureFormatPolicy::Png, || false)?
+                            }
                         };
                         Ok((report.path, format, report.warning))
                     } else {
-                        let format = if let Some(shot) = shot { shot.save_image_as(&path, jpeg_quality, size)? } else { app_core::export_saved_png_as(&source, &path, jpeg_quality, size)? };
+                        let format = if let Some(shot) = shot { shot.save_image_as(&path, jpeg_quality, size)? } else { if app_core::inspect_saved_image(&source)?.format == app_core::ImageExportFormat::Png { app_core::export_saved_png_as(&source, &path, jpeg_quality, size)? } else { app_core::export_saved_image_as(&source, &path, jpeg_quality, size)? } };
                         Ok((path, format, None))
                     }
                 })();
@@ -6003,6 +6069,8 @@ impl CaptureWorkspace {
             cx.notify();
             return;
         }
+        let explicit_png_retry = names.is_some();
+        let format_catalog = self.format_catalog.clone();
         let filename_template = if saves.is_empty() {
             String::new()
         } else {
@@ -6034,7 +6102,7 @@ impl CaptureWorkspace {
             self.save_status = if copy {
                 "Save: pending clipboard completion"
             } else {
-                "Saving PNG…"
+                "Saving image…"
             }
             .into();
         }
@@ -6049,7 +6117,7 @@ impl CaptureWorkspace {
                         let mut clipboard = clipboard.lock().map_err(|error| error.to_string())?;
                         match pixels {
                             Some(pixels) => clipboard.copy_image(&pixels),
-                            None => clipboard.copy_saved_png(&path),
+                            None => clipboard.copy_saved_image(&path),
                         }
                         .map_err(|error| format!("{error:#}"))
                     })
@@ -6081,6 +6149,11 @@ impl CaptureWorkspace {
                     .flatten();
                 let (results, failed_render) = cx
                     .background_spawn(async move {
+                        let capture_policy = if explicit_png_retry {
+                            Ok(app_core::CaptureFormatPolicy::Png)
+                        } else {
+                            format_catalog.load().map(|settings| settings.capture)
+                        };
                         let results: Vec<CaptureSaveAttempt> = saves
                             .into_iter()
                             .map(|mut shot| {
@@ -6089,13 +6162,18 @@ impl CaptureWorkspace {
                                         if let Some(name) = name {
                                             shot.png_path.set_file_name(name);
                                         }
+                                        let policy = *capture_policy
+                                            .as_ref()
+                                            .map_err(|error| anyhow::anyhow!("{error:#}"))?;
+                                        shot.png_path = policy.destination(&shot.png_path);
                                         let database = history_database.as_ref().context(
-                                            "History storage is unavailable; PNG was not saved",
+                                            "History storage is unavailable; image was not saved",
                                         )?;
-                                        let report = app_core::save_capture_with_history(
+                                        let report = app_core::save_capture_with_history_policy(
                                             database,
                                             &shot,
                                             &shot.png_path,
+                                            policy,
                                             || false,
                                         )?;
                                         shot.png_path = report.path;
@@ -6162,7 +6240,7 @@ impl CaptureWorkspace {
             self.last_capture = None;
             self.failed_capture_saves = Vec::new();
             tracing::info!(count = total, "capture outputs saved");
-            format!("Save: {total} PNG(s) saved")
+            format!("Save: {total} image(s) saved")
         } else {
             self.failed_capture_saves = Vec::from(
                 results
@@ -6184,7 +6262,7 @@ impl CaptureWorkspace {
             }
             tracing::error!(errors = %errors.join("; "), "capture output save failed");
             format!(
-                "Save failed: {} · {}/{} PNG(s) saved; {} unsaved screenshot(s) kept in memory. Save as PNG at Original size retries all.",
+                "Save failed: {} · {}/{} image(s) saved; {} unsaved screenshot(s) kept in memory. Save as PNG at Original size retries all.",
                 errors.join("; "),
                 total - self.failed_capture_saves.len(),
                 total,
@@ -6194,7 +6272,7 @@ impl CaptureWorkspace {
         if !history_errors.is_empty() {
             self.save_status.push_str(" · History update failed");
             self.history_status = format!(
-                "PNG saved, but history was not updated: {}",
+                "Image saved, but history was not updated: {}",
                 history_errors.join("; ")
             );
         } else if self.history_visible {
@@ -6866,6 +6944,10 @@ fn overlay_options(
 }
 
 fn close_application(cx: &mut App) {
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    if let Some(control) = cx.try_global::<UnixLaunchControl>() {
+        control.0.lock().unwrap().stop_accepting();
+    }
     cx.cancel_image_clipboard_read();
     cx.cancel_pending_native_drop();
     if cx.has_global::<ResidentController>() {
@@ -6953,13 +7035,169 @@ fn close_application(cx: &mut App) {
 /// A file-opening process has no tray/hotkey owner and never forwards only Show.
 /// All file I/O and decode still go through the existing editor worker.
 pub fn run_open_image(path: PathBuf) {
-    run_image_window(Some(path), false);
+    run_desktop(Some(path), || ());
 }
 
-fn run_image_window(path: Option<PathBuf>, native_services: bool) {
-    let platform = gpui_platform::current_platform(false);
+/// Enters the desktop after native-worker and CLI admission. Linux takes its startup
+/// environment before either GPUI's own threads or the supplied services can start.
+pub fn run_desktop<S>(open_image: Option<PathBuf>, start_services: impl FnOnce() -> S) {
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    let instance = {
+        let probe = std::env::args_os().any(|arg| {
+            arg == "--resource-probe" || arg.as_encoded_bytes().starts_with(b"--resource-probe=")
+        });
+        match admit_unix_main(
+            open_image.is_some(),
+            probe,
+            app_core::UnixSingleInstance::acquire,
+        ) {
+            Ok(UnixMainAdmission::Run(instance)) => {
+                instance.map(|instance| Arc::new(Mutex::new(instance)))
+            }
+            Ok(UnixMainAdmission::Exit) => return,
+            Err(error) => {
+                eprintln!("screenshots: Could not establish launch ownership: {error:#}");
+                std::process::exit(1);
+            }
+        }
+    };
+    with_desktop_startup(
+        || {
+            #[cfg(any(target_os = "linux", target_os = "freebsd"))]
+            let platform = Some(gpui_platform::current_platform(false));
+            #[cfg(not(any(target_os = "linux", target_os = "freebsd")))]
+            let platform = None;
+            platform
+        },
+        start_services,
+        move |platform| {
+            if let Some(path) = open_image {
+                run_image_window(
+                    Some(path),
+                    false,
+                    platform,
+                    #[cfg(any(target_os = "linux", target_os = "macos"))]
+                    None,
+                );
+            } else {
+                run_prepared(
+                    platform,
+                    #[cfg(any(target_os = "linux", target_os = "macos"))]
+                    instance,
+                );
+            }
+        },
+    );
+}
+
+fn with_desktop_startup<P, S>(
+    prepare: impl FnOnce() -> P,
+    start_services: impl FnOnce() -> S,
+    run: impl FnOnce(P),
+) {
+    let platform = prepare();
+    let _services = start_services();
+    run(platform);
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+type UnixLaunchOwner = Arc<Mutex<app_core::UnixSingleInstance>>;
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+struct UnixLaunchControl(UnixLaunchOwner);
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+impl gpui::Global for UnixLaunchControl {}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+enum UnixMainAdmission {
+    Run(Option<app_core::UnixSingleInstance>),
+    Exit,
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn admit_unix_main(
+    open_image: bool,
+    resource_probe: bool,
+    acquire: impl FnOnce() -> anyhow::Result<app_core::UnixInstanceAdmission>,
+) -> anyhow::Result<UnixMainAdmission> {
+    if open_image || resource_probe {
+        return Ok(UnixMainAdmission::Run(None));
+    }
+    match acquire()? {
+        app_core::UnixInstanceAdmission::Owner(owner) => Ok(UnixMainAdmission::Run(Some(owner))),
+        app_core::UnixInstanceAdmission::Forwarded => Ok(UnixMainAdmission::Exit),
+        app_core::UnixInstanceAdmission::WindowedOnly(reason) => {
+            eprintln!("screenshots: {reason}");
+            Ok(UnixMainAdmission::Run(None))
+        }
+    }
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn reopen_unix_windows(cx: &mut App) {
+    // Defer native reopening: Cocoa can deliver this while dispatching a native event.
+    cx.defer(|cx| {
+        for handle in cx.windows() {
+            if let Some(handle) = WindowHandle::<CaptureWorkspace>::from_handle(handle, cx) {
+                handle.update(cx, |this, _, cx| this.show_control(cx)).ok();
+            }
+        }
+        cx.activate(true);
+    });
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn listen_unix_reopen(
+    owner: gpui::Entity<CaptureWorkspace>,
+    instance: Option<UnixLaunchOwner>,
+    cx: &mut App,
+) {
+    let Some(instance) = instance else {
+        return;
+    };
+    cx.set_global(UnixLaunchControl(instance.clone()));
+    let result = instance.lock().unwrap().listen();
+    match result {
+        Ok(mut events) => {
+            let owner = owner.downgrade();
+            cx.spawn(async move |cx| {
+                while events.recv().await.is_some() {
+                    if owner
+                        .update(cx, |this, cx| {
+                            if !this.quitting {
+                                this.show_control(cx);
+                                cx.activate(true);
+                            }
+                        })
+                        .is_err()
+                    {
+                        break;
+                    }
+                }
+                cx.update(close_application);
+            })
+            .detach();
+        }
+        Err(error) => {
+            tracing::error!(%error, "Could not start launch listener; closing the app");
+            cx.defer(close_application);
+        }
+    }
+}
+
+fn run_image_window(
+    path: Option<PathBuf>,
+    native_services: bool,
+    platform: Option<std::rc::Rc<dyn gpui::Platform>>,
+    #[cfg(any(target_os = "linux", target_os = "macos"))] instance: Option<UnixLaunchOwner>,
+) {
+    let platform = platform.unwrap_or_else(|| gpui_platform::current_platform(false));
     let fonts = caption::CaptionFonts(platform.text_system());
     let app = gpui::Application::with_platform(platform).with_assets(assets::AppAssets);
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    app.on_reopen(reopen_unix_windows);
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    let listener = instance.clone();
     #[cfg(target_os = "macos")]
     let receiver = std::rc::Rc::new(std::cell::RefCell::new(
         None::<(gpui::Entity<CaptureWorkspace>, gpui::AsyncApp)>,
@@ -7044,6 +7282,10 @@ fn run_image_window(path: Option<PathBuf>, native_services: bool) {
                 }
             })
             .ok();
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        handle
+            .update(cx, |_, _, cx| listen_unix_reopen(cx.entity(), listener, cx))
+            .ok();
         #[cfg(target_os = "macos")]
         handle
             .update(cx, |_, window, cx| {
@@ -7055,6 +7297,8 @@ fn run_image_window(path: Option<PathBuf>, native_services: bool) {
             .ok();
         cx.activate(true);
     });
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    drop(instance); // Keep ownership through GPUI/native teardown.
 }
 
 #[cfg(any(test, target_os = "macos"))]
@@ -7097,66 +7341,93 @@ fn file_open_url(url: &str) -> anyhow::Result<PathBuf> {
 }
 
 pub fn run() {
+    run_desktop(None, || ());
+}
+
+fn run_prepared(
+    platform: Option<std::rc::Rc<dyn gpui::Platform>>,
+    #[cfg(any(target_os = "linux", target_os = "macos"))] instance: Option<UnixLaunchOwner>,
+) {
     #[cfg(target_os = "macos")]
     {
-        run_image_window(None, true);
+        run_image_window(None, instance.is_some(), platform, instance);
         return;
     }
+    #[cfg(not(target_os = "macos"))]
     if let Some(mode) =
         std::env::args().find_map(|arg| arg.strip_prefix("--resource-probe=").map(str::to_owned))
     {
-        run_resource_probe(&mode);
+        run_resource_probe(&mode, platform);
         return;
     }
     #[cfg(target_os = "windows")]
     {
+        drop(platform);
         run_resident();
         return;
     }
-    #[cfg(not(target_os = "windows"))]
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
     {
         tracing::info!(
             version = app_core::version(),
             "starting overlay + capture spike"
         );
 
-        let platform = gpui_platform::current_platform(false);
+        let platform = platform.unwrap_or_else(|| gpui_platform::current_platform(false));
         let fonts = caption::CaptionFonts(platform.text_system());
-        gpui::Application::with_platform(platform)
-            .with_assets(assets::AppAssets)
-            .run(move |cx: &mut App| {
-                cx.set_global(fonts);
-                redaction_editor::bind_keys(cx);
-                cx.on_action(|_: &Quit, cx| cx.defer(close_application));
-                cx.bind_keys([
-                    KeyBinding::new("escape", CloseOverlay, None),
-                    KeyBinding::new("ctrl-shift-o", OpenProbeOverlays, Some("CaptureWorkspace")),
-                    KeyBinding::new(
-                        "ctrl-shift-f",
-                        OpenFullscreenOverlays,
-                        Some("CaptureWorkspace"),
-                    ),
-                    KeyBinding::new("ctrl-shift-c", CapturePrimary, Some("CaptureWorkspace")),
-                    KeyBinding::new(
-                        if cfg!(target_os = "macos") {
-                            "cmd-q"
-                        } else {
-                            "ctrl-q"
-                        },
-                        Quit,
-                        None,
-                    ),
-                ]);
+        let app = gpui::Application::with_platform(platform).with_assets(assets::AppAssets);
+        #[cfg(target_os = "linux")]
+        app.on_reopen(reopen_unix_windows);
+        #[cfg(target_os = "linux")]
+        let listener = instance.clone();
+        #[cfg(target_os = "linux")]
+        let native_services = instance.is_some();
+        #[cfg(not(target_os = "linux"))]
+        let native_services = true;
+        app.run(move |cx: &mut App| {
+            cx.set_global(fonts);
+            redaction_editor::bind_keys(cx);
+            cx.on_action(|_: &Quit, cx| cx.defer(close_application));
+            cx.bind_keys([
+                KeyBinding::new("escape", CloseOverlay, None),
+                KeyBinding::new("ctrl-shift-o", OpenProbeOverlays, Some("CaptureWorkspace")),
+                KeyBinding::new(
+                    "ctrl-shift-f",
+                    OpenFullscreenOverlays,
+                    Some("CaptureWorkspace"),
+                ),
+                KeyBinding::new("ctrl-shift-c", CapturePrimary, Some("CaptureWorkspace")),
+                KeyBinding::new(
+                    if cfg!(target_os = "macos") {
+                        "cmd-q"
+                    } else {
+                        "ctrl-q"
+                    },
+                    Quit,
+                    None,
+                ),
+            ]);
 
-                let bounds = Bounds::centered(None, size(px(1060.0), px(760.0)), cx);
-                cx.open_kit_window(
+            let bounds = Bounds::centered(None, size(px(1060.0), px(760.0)), cx);
+            let handle = cx
+                .open_kit_window(
                     WindowOptions {
                         window_min_size: Some(size(px(680.), px(480.))),
                         window_bounds: Some(WindowBounds::Windowed(bounds)),
                         ..app_window_options("screenshots")
                     },
                     |window, cx| {
-                        let shell = cx.new(|cx| CaptureWorkspace::new(window, cx));
+                        let shell = cx.new(|cx| {
+                            if native_services {
+                                CaptureWorkspace::new(window, cx)
+                            } else {
+                                CaptureWorkspace::with_native_services(
+                                    Some(window.window_handle()),
+                                    false,
+                                    cx,
+                                )
+                            }
+                        });
                         window.on_window_should_close(cx, |_, cx| {
                             cx.defer(close_application);
                             false
@@ -7167,8 +7438,16 @@ pub fn run() {
                     },
                 )
                 .expect("failed to open spike window");
-                cx.activate(true);
-            });
+            #[cfg(target_os = "linux")]
+            handle
+                .update(cx, |_, _, cx| listen_unix_reopen(cx.entity(), listener, cx))
+                .ok();
+            #[cfg(not(target_os = "linux"))]
+            let _ = handle;
+            cx.activate(true);
+        });
+        #[cfg(target_os = "linux")]
+        drop(instance); // Keep ownership through GPUI/native teardown.
     }
 }
 
@@ -7246,7 +7525,7 @@ fn run_resident() {
 }
 
 /// Explicit diagnostic mode, never enabled by an ordinary application launch.
-fn run_resource_probe(mode: &str) {
+fn run_resource_probe(mode: &str, platform: Option<std::rc::Rc<dyn gpui::Platform>>) {
     assert!(
         matches!(mode, "headless" | "empty"),
         "unknown resource probe mode"
@@ -7269,7 +7548,8 @@ fn run_resource_probe(mode: &str) {
                 .child(div().flex_1().bg(rgb(0x1a1a1a)))
         }
     }
-    let application = gpui_platform::application().with_assets(assets::AppAssets);
+    let platform = platform.unwrap_or_else(|| gpui_platform::current_platform(false));
+    let application = gpui::Application::with_platform(platform).with_assets(assets::AppAssets);
     let application = if mode == "headless" {
         application.with_windowing(gpui::WindowingRequest::Headless)
     } else {
@@ -9881,3 +10161,11 @@ mod private_wayland_clipboard_fixture {
             .unwrap();
     }
 }
+
+#[cfg(all(test, target_os = "linux"))]
+#[path = "linux_session_context_tests.rs"]
+mod linux_session_context_tests;
+
+#[cfg(test)]
+#[path = "desktop_startup_tests.rs"]
+mod desktop_startup_tests;

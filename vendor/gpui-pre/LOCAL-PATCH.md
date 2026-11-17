@@ -14,3 +14,13 @@ clipboard input, bounded pending native drop payloads, cancellation and test
 hooks used by existing Paste/Drop actions. These are functional input changes;
 no new controls, visual design or eager runtime is added. Native role/lease and
 private-context checks are described in `docs/clipboard-import-output.md`.
+
+## Standalone test fixtures
+
+The published package omits the workspace fonts and `util_macros::perf` used by
+its unit tests. Test-only font includes now use local test-assets containing the
+exact IBM Plex Sans and Lilex files and original OFL texts from pinned Zed revision
+`d2a4fb6ded7c470be25d1541281da3882495b65b`; Git blob identities were verified
+against that upstream revision. They are not loaded into production. The three
+style assertion functions use standard `#[test]` instead of the unavailable
+workspace performance attribute, preserving their complete assertions.

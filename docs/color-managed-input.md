@@ -12,8 +12,10 @@ as sRGB by this implementation.
 ## Working pixels and entry points
 
 Opened editor files and encoded clipboard/drop/URL image bytes share
-`managed_color::decode`. A file is read once from the retained, identity-checked
-handle into its bounded snapshot. Byte input is borrowed. The existing 32 MiB
+`managed_color::decode`. A bounded snapshot is filled from the retained regular
+file's admitted extent. Identity-guarded callers additionally verify the expected
+object/version; ordinary explicit file loading does not promise immutable content
+under concurrent writes. Supplied byte input is borrowed. The existing 32 MiB
 encoded input cap and caller's decoded-source cap (at most 256 MiB) remain.
 
 The result is tightly packed **8-bit, straight-alpha SDR sRGB RGBA**. Supported
@@ -32,10 +34,15 @@ EXIF orientations 1–8 are applied once while writing the output raster. Expect
 `source_size` is checked against oriented header dimensions before decoding pixels.
 Malformed/unrecognized EXIF orientation keeps the existing no-transform fallback.
 
-`load_saved_png`, thumbnails, the PNG-only metadata export loader, original library
-imports/relinks and byte-preserving library exports retain their existing contracts.
-They do not acquire the editor's new orientation or color conversion policy.
-Native capture stays in memory and never goes through an encoded import round trip.
+The narrow `load_saved_png`, `load_png_thumbnail` and PNG-specific metadata/Save-as
+wrappers retain their compatibility pixel/orientation contracts. Current generic
+saved-image loading and thumbnails use that legacy path for PNG, and managed
+orientation/color decode for JPEG/WebP. Generic explicit sanitization/conversion
+uses managed decode for PNG/JPEG/WebP before the chosen new encoding. Import and
+relink inspect magic/dimensions/MIME without decoding pixels; Preserve copies
+exact admitted bytes without applying color or orientation. See the
+[capture/Library format contract](capture-library-formats.md).
+Native capture stays in memory and never uses an encoded import round trip.
 
 ## Admitted and refused color descriptions
 

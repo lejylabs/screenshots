@@ -49,9 +49,11 @@ fn timestamp(text: &str) -> Result<()> {
 fn owned_name(path: &Path, id: &str) -> Result<()> {
     operation_id(id)?;
     path_text(path)?;
+    let format = crate::ImageExportFormat::from_path(path)?;
     ensure!(
-        path.file_name()
-            .is_some_and(|name| name == format!(".screenshots-trash-{id}.png").as_str()),
+        path.file_name().is_some_and(
+            |name| name == format!(".screenshots-trash-{id}.{}", format.extension()).as_str()
+        ),
         "Trash filename does not match its identity"
     );
     Ok(())
@@ -66,7 +68,9 @@ fn validate_record(id: &str, value: &TrashRecord) -> Result<()> {
     owned_name(&value.trash_path, id)?;
     timestamp(&value.trashed_at)?;
     ensure!(
-        value.stamp.size == value.row.file_size as u64
+        value.stamp.format == crate::capture_format::format_from_mime(&value.row.mime_type)?
+            && crate::ImageExportFormat::from_path(&value.trash_path)? == value.stamp.format
+            && value.stamp.size == value.row.file_size as u64
             && value.stamp.width == value.row.width
             && value.stamp.height == value.row.height
             && value.stamp.sha256.len() == 64
@@ -99,6 +103,10 @@ fn read_record(connection: &Connection, id: &str) -> Result<TrashRecord> {
 }
 
 pub(super) fn validate_action(payload: &Payload) -> Result<()> {
+    ensure!(
+        crate::ImageExportFormat::from_path(&payload.destination_path)? == payload.stamp.format,
+        "History destination encoding differs from its source"
+    );
     if let FileAction::Purge { trashed_at, .. } = &payload.action {
         timestamp(trashed_at)?;
     }
@@ -106,13 +114,16 @@ pub(super) fn validate_action(payload: &Payload) -> Result<()> {
         FileAction::Move => (),
         FileAction::Transfer { stage_path } => {
             path_text(stage_path)?;
+            ensure!(
+                crate::ImageExportFormat::from_path(stage_path)? == payload.stamp.format,
+                "Transfer stage encoding differs from its source"
+            );
             let name = stage_path
-                .file_name()
+                .file_stem()
                 .and_then(|name| name.to_str())
                 .context("Invalid transfer staging filename")?;
             let id = name
                 .strip_prefix(".screenshots-transfer-")
-                .and_then(|name| name.strip_suffix(".png"))
                 .context("Invalid transfer staging filename")?;
             operation_id(id)?;
             ensure!(
@@ -142,14 +153,18 @@ pub(super) fn validate_action(payload: &Payload) -> Result<()> {
                 "Invalid trash operation source"
             );
             if matches!(payload.action, FileAction::Purge { .. }) {
+                ensure!(
+                    crate::ImageExportFormat::from_path(&payload.destination_path)?
+                        == payload.stamp.format,
+                    "Purge quarantine encoding differs from its source"
+                );
                 let name = payload
                     .destination_path
-                    .file_name()
+                    .file_stem()
                     .and_then(|name| name.to_str())
                     .context("Invalid purge quarantine filename")?;
                 let id = name
                     .strip_prefix(".screenshots-purge-")
-                    .and_then(|name| name.strip_suffix(".png"))
                     .context("Invalid purge quarantine filename")?;
                 operation_id(id)?;
                 ensure!(
@@ -309,7 +324,11 @@ fn existing_directory(path: &Path) -> Result<PathBuf> {
 }
 
 fn same_contents(a: &native::FileStamp, b: &native::FileStamp) -> bool {
-    a.size == b.size && a.sha256 == b.sha256 && a.width == b.width && a.height == b.height
+    a.format == b.format
+        && a.size == b.size
+        && a.sha256 == b.sha256
+        && a.width == b.width
+        && a.height == b.height
 }
 
 fn copy_prepared(database: &Path, pending: &PendingMove, payload: &Payload) -> Result<Payload> {
@@ -346,12 +365,6 @@ pub fn transfer_history_file(database: &Path, id: i64, destination: &Path) -> Re
     ensure!(id > 0, "History capture ID must be positive");
     let destination = normalized_path(destination)?;
     ensure!(
-        destination
-            .extension()
-            .is_some_and(|extension| extension.eq_ignore_ascii_case("png")),
-        "Transfer destination must use .png"
-    );
-    ensure!(
         std::fs::symlink_metadata(&destination)
             .is_err_and(|error| error.kind() == std::io::ErrorKind::NotFound),
         "Transfer destination already exists or is unavailable"
@@ -365,9 +378,14 @@ pub fn transfer_history_file(database: &Path, id: i64, destination: &Path) -> Re
         "Transfer source and destination are identical"
     );
     let stamp = native::inspect(&source)?.context("Transfer source is missing")?;
+    ensure!(
+        crate::ImageExportFormat::from_path(&destination)? == stamp.format,
+        "Transfer destination extension does not match source contents"
+    );
     let stage_path = destination.with_file_name(format!(
-        ".screenshots-transfer-{}.png",
-        uuid::Uuid::new_v4()
+        ".screenshots-transfer-{}.{}",
+        uuid::Uuid::new_v4(),
+        stamp.format.extension()
     ));
     let (pending, payload) = prepare_action(
         database,
@@ -470,7 +488,7 @@ pub(super) fn recover_transfer(
     Ok(outcome)
 }
 
-/// Physically move one referenced PNG to the explicitly chosen existing directory.
+/// Physically move one referenced saved image to the explicitly chosen existing directory.
 pub fn trash_history_file(database: &Path, id: i64, directory: &Path) -> Result<MoveOutcome> {
     trash_checked(database, id, directory, &|| false, None)
 }
@@ -494,7 +512,11 @@ fn trash_checked(
     drop(connection);
     let source = normalized_path(Path::new(&row.file_path))?;
     let trash_id = uuid::Uuid::new_v4().to_string();
-    let destination = directory.join(format!(".screenshots-trash-{trash_id}.png"));
+    let format = crate::capture_format::format_from_mime(&row.mime_type)?;
+    let destination = directory.join(format!(
+        ".screenshots-trash-{trash_id}.{}",
+        format.extension()
+    ));
     let mut locked = native::LockedSource::open(&source, &destination)?;
     ensure!(!cancelled(), "Trash canceled before preparation");
     let action = FileAction::Trash {
@@ -542,8 +564,15 @@ pub fn restore_history_trash(
         .filter(|id| *id > 0)
         .context("No capture ID remains for restoration")?;
     drop(connection);
-    let destination =
-        normalized_path(destination.unwrap_or_else(|| Path::new(&record.row.file_path)))?;
+    let format = crate::capture_format::format_from_mime(&record.row.mime_type)?;
+    let original = Path::new(&record.row.file_path);
+    let default_destination = if crate::ImageExportFormat::from_path(original).ok() == Some(format)
+    {
+        original.to_owned()
+    } else {
+        original.with_extension(format.extension())
+    };
+    let destination = normalized_path(destination.unwrap_or(&default_destination))?;
     let source = normalized_path(&record.trash_path)?;
     ensure!(source == record.trash_path, "Trash parent path changed");
     let mut locked = native::LockedSource::open(&source, &destination)?;
@@ -598,8 +627,11 @@ fn purge_checked(
     drop(connection);
     let source = normalized_path(&record.trash_path)?;
     ensure!(source == record.trash_path, "Trash parent path changed");
-    let destination =
-        source.with_file_name(format!(".screenshots-purge-{}.png", uuid::Uuid::new_v4()));
+    let destination = source.with_file_name(format!(
+        ".screenshots-purge-{}.{}",
+        uuid::Uuid::new_v4(),
+        record.stamp.format.extension()
+    ));
     let mut locked = native::LockedSource::open(&source, &destination)?;
     ensure!(!cancelled(), "Purge canceled before preparation");
     ensure!(

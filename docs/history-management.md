@@ -2,25 +2,25 @@
 
 Status: headless metadata operations using the existing capture-history APIs.
 The original metadata commands do not change image files. Explicit
-[journaled file moves](history-file-moves.md) now rename one referenced PNG
+[journaled file moves](history-file-moves.md) now rename one referenced PNG/JPEG/WebP image
 without replacing another file, with pending-operation inspection and recovery.
 The [physical lifecycle](history-lifecycle.md) adds explicit transfer, trash,
 restore, purge and retention. Native Windows/macOS adapters are implemented;
 runtime acceptance remains separate from Linux verification.
 
 ```sh
-screenshots history-manage import DATABASE PNG [PNG...]
+screenshots history-manage import DATABASE IMAGE [IMAGE...]
 screenshots history-manage remove DATABASE ID [ID...]
-screenshots history-manage relink DATABASE ID PNG
-screenshots history-manage move DATABASE ID NEW.png
+screenshots history-manage relink DATABASE ID IMAGE
+screenshots history-manage move DATABASE ID NEW_IMAGE
 screenshots history-manage pending-move DATABASE
 screenshots history-manage recover-move DATABASE OPERATION finish|cancel
 screenshots history-manage remove-missing DATABASE ID [ID...]
 ```
 
-Import accepts 1–100 PNG paths, resolves relative inputs against the invoking
+Import accepts 1–100 PNG/JPEG/WebP paths, resolves relative inputs against the invoking
 directory and stores absolute UTF-8 references through the existing importer.
-It checks PNG headers/dimensions and records metadata; this is not a full image
+It checks actual format magic, admitted dimensions and MIME, then records metadata; this is not a full image
 decode or proof that all pixels can be decoded. Existing paths are counted as
 `existing`, new references as `added`. Individual rejected inputs are listed in
 `failures` with their paths and error messages; `failed` reports their count.
@@ -37,14 +37,14 @@ Remove and relink require an existing regular database file rather than creating
 a missing database. Existing supported schemas can be migrated by the mutation
 API. Database paths ending in a symlink are rejected.
 
-Relink accepts one positive capture ID and an existing PNG path. An indexed
+Relink accepts one positive capture ID and an existing PNG/JPEG/WebP path. An indexed
 lookup captures the current reference; the existing optimistic update rejects a
 row removed or whose path/creation timestamp changed before the update.
 Changes only to dimensions, file size or source are not version markers for this
 existing optimistic check. It keeps the ID, original creation
-time and capture/import source while replacing the path/dimensions/file-size
-metadata and invalidating the old thumbnail reference. The original and new PNG
-are unchanged. Linking to a path already referenced by another entry fails.
+time and capture/import source while replacing the path/dimensions/file-size/MIME
+metadata and invalidating the old thumbnail reference. The original and new image
+files are unchanged. Linking to a path already referenced by another entry fails.
 JSON includes the committed ID, absolute path, width and height. A failure to
 read the row after a successful update explicitly reports that the relink was
 committed. Concurrent later changes can affect the reread; the command does not
@@ -58,6 +58,12 @@ must still satisfy the existing UTF-8 storage requirement. IDs, user files and
 error details are printed only in the explicit command result, not background
 logs. Output write/flush failures report completed mutations truthfully rather
 than imply a rollback.
+
+Supported encoded kinds and matching destination extensions follow the
+[capture/Library format contract](capture-library-formats.md). Import admission
+does not decode pixels; later thumbnails, editor loading, copying and explicit
+conversion do. Generic import/relink records the inspected MIME independently
+of misleading source suffixes.
 
 ## Resources and verification
 

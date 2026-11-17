@@ -9,12 +9,17 @@ Desktop: screenshots [--show]
 Open image: screenshots --open FILE
 Headless commands (no desktop UI; outputs and uploads require explicit actions):
   screenshots --help | --version
+  screenshots formats show|set-capture POLICY_JSON|set-library POLICY_JSON [--config FILE]
+  screenshots formats validate FILE
+  screenshots formats export NEW.json|import FILE [--config FILE]
   screenshots clipboard inspect|text|files|image-info
   screenshots clipboard image NEW.png
   screenshots autostart status|enable|disable
   screenshots desktop associations status|enable|disable
   screenshots desktop notify TITLE BODY
   screenshots hash-file FILE [--expect SHA256_HEX]
+  screenshots print-image INPUT --printer NAME --paper a4|letter [--server HOST:PORT]
+      (numeric loopback IPv4 server required on Linux/macOS; one page/copy; spool acceptance only)
   screenshots image convert INPUT OUTPUT [--width N] [--height N]
       [--rotate 90|180|270] [--flip-horizontal] [--flip-vertical]
       [--jpeg-quality 1..100] [--webp-quality 1..100]
@@ -46,12 +51,12 @@ Headless commands (no desktop UI; outputs and uploads require explicit actions):
   screenshots history DATABASE [--before ID] [--search WORDS]
   screenshots history-audit DATABASE [--cursor ID]
   screenshots history-manage import|remove|remove-missing|relink DATABASE ARGUMENTS...
-  screenshots history-manage export DATABASE DIRECTORY original|strip-metadata ID...
-  screenshots history-manage move DATABASE ID NEW.png
-  screenshots history-manage transfer DATABASE ID NEW.png
+  screenshots history-manage export DATABASE DIRECTORY original|strip-metadata|configured ID... [--config FILE]
+  screenshots history-manage move DATABASE ID NEW_IMAGE
+  screenshots history-manage transfer DATABASE ID NEW_IMAGE
   screenshots history-manage trash DATABASE DIRECTORY ID... (1–100 IDs)
   screenshots history-manage trash-list DATABASE [CURSOR]
-  screenshots history-manage restore DATABASE TRASH_UUID [NEW.png]
+  screenshots history-manage restore DATABASE TRASH_UUID [NEW_IMAGE]
   screenshots history-manage purge DATABASE TRASH_UUID... (1–100 IDs)
   screenshots history-manage retention DATABASE POLICY.json preview|apply
   screenshots history-manage index-identities DATABASE [CURSOR]
@@ -60,8 +65,8 @@ Headless commands (no desktop UI; outputs and uploads require explicit actions):
   screenshots history-manage recover-save DATABASE OPERATION finish|cancel
   screenshots history-manage recover-move DATABASE OPERATION finish|cancel
   screenshots history-manage recover-file DATABASE OPERATION finish|cancel
-  screenshots history-query captures|uploads DATABASE [--order newest|oldest]
-      [--cursor ID] [--from YYYY-MM-DD] [--through YYYY-MM-DD]
+  screenshots history-query captures|uploads DATABASE [--order newest|oldest|date-newest|date-oldest]
+      [--cursor ID|TIMESTAMP/ID] [--from YYYY-MM-DD] [--through YYYY-MM-DD]
       [--search TEXT] [--source all|captures|imports]
   screenshots storage check DATABASE
   screenshots storage backup DATABASE NEW_DATABASE
@@ -129,6 +134,8 @@ pub fn run(args: Vec<OsString>) -> Result<bool> {
         return Ok(false);
     };
     match command {
+        "formats" => crate::capture_format_command::run(&args[1..])?,
+        "print-image" => crate::print_image::run(&args[1..])?,
         "--open" => {
             ensure!(
                 args.len() == 2 && !args[1].is_empty() && args[1].as_encoded_bytes().len() <= 4096,
@@ -547,6 +554,8 @@ fn history_query(args: &[OsString]) -> Result<()> {
         "Choose captures or uploads"
     );
     let mut query = app_core::HistoryQuery::default();
+    let mut chronological = false;
+    let mut cursor_value = None;
     let mut seen = std::collections::HashSet::new();
     for pair in args[2..].chunks_exact(2) {
         let option = text(&pair[0])?;
@@ -557,10 +566,18 @@ fn history_query(args: &[OsString]) -> Result<()> {
                 query.sort = match value {
                     "newest" => app_core::HistorySort::Newest,
                     "oldest" => app_core::HistorySort::Oldest,
-                    _ => bail!("Order must be newest or oldest"),
+                    "date-newest" => {
+                        chronological = true;
+                        app_core::HistorySort::Newest
+                    }
+                    "date-oldest" => {
+                        chronological = true;
+                        app_core::HistorySort::Oldest
+                    }
+                    _ => bail!("Order must be newest, oldest, date-newest or date-oldest"),
                 }
             }
-            "--cursor" => query.cursor = Some(number(&pair[1])?),
+            "--cursor" => cursor_value = Some(value),
             "--from" => query.from = Some(value.into()),
             "--through" => query.through = Some(value.into()),
             "--search" => query.text = value.into(),
@@ -575,9 +592,32 @@ fn history_query(args: &[OsString]) -> Result<()> {
             _ => bail!("Unknown history-query option"),
         }
     }
+    let date_cursor = if chronological {
+        cursor_value
+            .map(str::parse::<app_core::HistoryDateCursor>)
+            .transpose()?
+    } else {
+        query.cursor = cursor_value
+            .map(str::parse::<i64>)
+            .transpose()
+            .context("Invalid history cursor")?;
+        None
+    };
     let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let database = Path::new(&args[1]);
-    let result = if kind == "captures" {
+    let result = if chronological && kind == "captures" {
+        let page = app_core::query_capture_history_by_date(
+            database,
+            &query,
+            date_cursor.as_ref(),
+            cancel,
+        )?;
+        json!({"entries":page.entries.into_iter().map(|entry| json!({"id":entry.id,"path":entry.path,"width":entry.width,"height":entry.height,"created_at":entry.created_at})).collect::<Vec<_>>(),"has_more":page.has_more,"next_cursor":page.next_cursor.map(|cursor| cursor.to_string())})
+    } else if chronological {
+        let page =
+            app_core::query_upload_history_by_date(database, &query, date_cursor.as_ref(), cancel)?;
+        json!({"entries":page.entries.into_iter().map(|entry| json!({"id":entry.id,"filename":entry.filename,"origin":entry.origin,"url":entry.url,"created_at":entry.created_at})).collect::<Vec<_>>(),"has_more":page.has_more,"next_cursor":page.next_cursor.map(|cursor| cursor.to_string())})
+    } else if kind == "captures" {
         let page = app_core::query_capture_history(database, &query, cancel)?;
         json!({"entries":page.entries.into_iter().map(|entry| json!({"id":entry.id,"path":entry.path,"width":entry.width,"height":entry.height,"created_at":entry.created_at})).collect::<Vec<_>>(),"has_more":page.has_more,"next_cursor":page.next_cursor})
     } else {

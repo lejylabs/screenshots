@@ -12,6 +12,8 @@ use std::path::Path;
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub(super) struct FileStamp {
+    #[serde(default, skip_serializing_if = "crate::capture_format::is_png")]
+    pub format: crate::ImageExportFormat,
     pub device: u64,
     pub inode: u64,
     pub size: u64,
@@ -40,70 +42,10 @@ fn deletion_barrier_checkpoint() -> Result<()> {
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
-fn png_contents(file: &mut std::fs::File) -> Result<(std::fs::Metadata, String, u32, u32)> {
-    use anyhow::ensure;
-    use sha2_10::{Digest, Sha256};
-    use std::{
-        io::{Read, Seek},
-        time::{Duration, Instant},
-    };
-    const MAX_BYTES: u64 = 272 * 1024 * 1024;
-    let started = Instant::now();
-    let before = file.metadata()?;
-    ensure!(
-        before.is_file() && before.len() >= 33 && before.len() <= MAX_BYTES,
-        "History move source must be a regular PNG no larger than 272 MiB"
-    );
-    file.rewind()?;
-    let mut header = [0u8; 33];
-    file.read_exact(&mut header)?;
-    ensure!(
-        &header[..8] == b"\x89PNG\r\n\x1a\n"
-            && header[8..12] == [0, 0, 0, 13]
-            && &header[12..16] == b"IHDR",
-        "History move source has no valid PNG header"
-    );
-    ensure!(
-        crc32fast::hash(&header[12..29]) == u32::from_be_bytes(header[29..33].try_into().unwrap()),
-        "History move PNG header CRC failed"
-    );
-    let width = u32::from_be_bytes(header[16..20].try_into().unwrap());
-    let height = u32::from_be_bytes(header[20..24].try_into().unwrap());
-    crate::validate_image_size(width, height)?;
-    ensure!(
-        matches!(
-            (header[25], header[24]),
-            (0, 1 | 2 | 4 | 8 | 16) | (2, 8 | 16) | (3, 1 | 2 | 4 | 8) | (4 | 6, 8 | 16)
-        ) && header[26] == 0
-            && header[27] == 0
-            && header[28] <= 1,
-        "History move PNG header is unsupported"
-    );
-    file.rewind()?;
-    let mut hash = Sha256::new();
-    let mut buffer = [0u8; 64 * 1024];
-    let mut remaining = before.len();
-    while remaining > 0 {
-        ensure!(
-            started.elapsed() < Duration::from_secs(30),
-            "History move inspection exceeded 30 seconds"
-        );
-        let length = buffer.len().min(remaining as usize);
-        let count = match file.read(&mut buffer[..length]) {
-            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
-            result => result?,
-        };
-        ensure!(count > 0, "History move source changed while reading");
-        hash.update(&buffer[..count]);
-        remaining -= count as u64;
-    }
-    file.rewind()?;
-    Ok((
-        before,
-        hash.finalize().iter().map(|b| format!("{b:02x}")).collect(),
-        width,
-        height,
-    ))
+fn image_contents(
+    file: &mut std::fs::File,
+) -> Result<(std::fs::Metadata, String, crate::SavedImageInfo)> {
+    crate::saved_image::fingerprint_saved_image_file(file)
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -125,11 +67,6 @@ mod posix {
         ensure!(
             path.is_absolute() && text.len() <= 4096 && !text.chars().any(char::is_control),
             "History move path must be absolute, bounded and contain no controls"
-        );
-        ensure!(
-            path.extension()
-                .is_some_and(|e| e.eq_ignore_ascii_case("png")),
-            "History move source and destination must use .png"
         );
         Ok(())
     }
@@ -200,18 +137,19 @@ mod posix {
     }
 
     fn stamp(file: &mut File) -> Result<FileStamp> {
-        let (before, sha256, width, height) = super::png_contents(file)?;
+        let (before, sha256, info) = super::image_contents(file)?;
         ensure!(
             same_metadata(&before, &file.metadata()?),
             "History move source changed during inspection"
         );
         Ok(FileStamp {
+            format: info.format,
             device: before.dev(),
             inode: before.ino(),
             size: before.len(),
             sha256,
-            width,
-            height,
+            width: info.width,
+            height: info.height,
             file_id: None,
         })
     }
@@ -247,6 +185,10 @@ mod posix {
             let mut file =
                 open_at(&source_parent, &source_name)?.context("History move source is missing")?;
             let stamp = stamp(&mut file)?;
+            ensure!(
+                crate::ImageExportFormat::from_path(destination)? == stamp.format,
+                "History destination extension does not match source contents"
+            );
             Ok(Self {
                 file,
                 source_parent,

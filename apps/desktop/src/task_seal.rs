@@ -160,6 +160,7 @@ mod tests {
     fn synthetic_native(
         call: app_core::NativeCaptureCall,
         check: &app_core::NativeCaptureCheck<'_>,
+        _context: app_core::NativeCaptureContext,
     ) -> std::result::Result<app_core::NativeCaptureReply, app_core::CaptureError> {
         use app_core::{CaptureRequest as Q, NativeCaptureCall as C, NativeCaptureReply as R};
         check()?;
@@ -231,7 +232,12 @@ mod tests {
                 options: Default::default(),
             },
         ] {
-            let reply = synthetic_native(call.clone(), &|| Ok(())).unwrap();
+            let reply = synthetic_native(
+                call.clone(),
+                &|| Ok(()),
+                app_core::NativeCaptureContext::default(),
+            )
+            .unwrap();
             call.validate_reply(&reply).unwrap();
             let R::Frames(mut frames) = reply else {
                 panic!("expected frames")
@@ -247,7 +253,12 @@ mod tests {
             }
         }
         for call in [C::Displays, C::PixelDisplays] {
-            let reply = synthetic_native(call.clone(), &|| Ok(())).unwrap();
+            let reply = synthetic_native(
+                call.clone(),
+                &|| Ok(()),
+                app_core::NativeCaptureContext::default(),
+            )
+            .unwrap();
             call.validate_reply(&reply).unwrap();
         }
     }

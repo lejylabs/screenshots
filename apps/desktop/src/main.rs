@@ -5,6 +5,7 @@ mod autostart_macos;
 #[cfg(target_os = "windows")]
 mod autostart_windows;
 mod capture_catalog;
+mod capture_format_command;
 mod capture_portal;
 mod capture_regions;
 mod capture_scheduling;
@@ -31,6 +32,7 @@ mod ocr;
 #[cfg(target_os = "windows")]
 mod ocr_windows;
 mod png_metadata;
+mod print_image;
 mod qr;
 mod record;
 #[cfg(target_os = "windows")]
@@ -59,35 +61,53 @@ mod workflow;
 
 fn main() {
     let arguments: Vec<_> = std::env::args_os().skip(1).collect();
-    match capture_worker::try_child(&arguments) {
-        Ok(true) => return,
-        Ok(false) => {}
-        Err(error) => {
-            eprintln!("screenshots: {error:#}");
-            std::process::exit(1);
-        }
-    }
-    if let Err(error) = capture_worker::install() {
+    let result = launch(
+        arguments,
+        |arguments| {
+            if print_image::try_child(arguments)? {
+                return Ok(true);
+            }
+            capture_worker::try_child(arguments)
+        },
+        capture_worker::install,
+        cli::run,
+        || {
+            let mut args = std::env::args_os().skip(1);
+            let open_image = if args.next().is_some_and(|arg| arg == "--open") {
+                Some(
+                    std::path::absolute(args.next().unwrap())
+                        .expect("Could not resolve image path"),
+                )
+            } else {
+                None
+            };
+            app_ui::run_desktop(open_image, file_logging::init);
+        },
+    );
+    if let Err(error) = result {
         eprintln!("screenshots: {error:#}");
         std::process::exit(1);
     }
-    match cli::run(arguments) {
-        Ok(true) => return,
-        Err(error) => {
-            eprintln!("screenshots: {error:#}");
-            std::process::exit(1);
-        }
-        Ok(false) => {}
-    }
-
-    let _logging = file_logging::init();
-
-    let mut args = std::env::args_os().skip(1);
-    if args.next().is_some_and(|arg| arg == "--open") {
-        app_ui::run_open_image(
-            std::path::absolute(args.next().unwrap()).expect("Could not resolve image path"),
-        );
-    } else {
-        app_ui::run();
-    }
 }
+
+fn launch(
+    arguments: Vec<std::ffi::OsString>,
+    try_child: impl FnOnce(&[std::ffi::OsString]) -> anyhow::Result<bool>,
+    install: impl FnOnce() -> anyhow::Result<()>,
+    cli: impl FnOnce(Vec<std::ffi::OsString>) -> anyhow::Result<bool>,
+    run_desktop: impl FnOnce(),
+) -> anyhow::Result<()> {
+    if try_child(&arguments)? {
+        return Ok(());
+    }
+    install()?;
+    if cli(arguments)? {
+        return Ok(());
+    }
+    run_desktop();
+    Ok(())
+}
+
+#[cfg(test)]
+#[path = "desktop_startup_tests.rs"]
+mod desktop_startup_tests;

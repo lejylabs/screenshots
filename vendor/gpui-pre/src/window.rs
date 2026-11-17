@@ -5864,6 +5864,9 @@ impl Window {
     /// Dispatch a mouse, keyboard, or touch event on the window.
     #[profiling::function]
     pub fn dispatch_event(&mut self, event: PlatformInput, cx: &mut App) -> DispatchEventResult {
+        if self.removed {
+            return DispatchEventResult::default();
+        }
         #[cfg(feature = "profiler")]
         self.window_profiler.begin_input(event.kind_name());
         let update_count_before = self.invalidator.update_count();
@@ -5932,8 +5935,13 @@ impl Window {
                 FileDropEvent::Entered { position, paths } => {
                     self.mouse_position = position;
                     let source_window = self.handle.window_id();
-                    if !cx.restore_platform_drag(source_window) && cx.active_drag.is_none() {
+                    if !cx.restore_platform_drag(source_window)
+                        && cx.active_drag.as_ref().is_none_or(|drag| {
+                            matches!(drag.origin, crate::app::DragOrigin::Incoming(_))
+                        })
+                    {
                         cx.active_drag = Some(AnyDrag {
+                            origin: crate::app::DragOrigin::Incoming(self.handle.window_id()),
                             value: Arc::new(paths.clone()),
                             view: cx.new(|_| paths).into(),
                             cursor_offset: position,
@@ -5949,12 +5957,11 @@ impl Window {
                 }
                 FileDropEvent::ImageEntered { position, image } => {
                     self.mouse_position = position;
-                    if cx
-                        .active_drag
-                        .as_ref()
-                        .is_none_or(|drag| drag.value.is::<crate::ExternalImageDrop>())
-                    {
+                    if cx.active_drag.as_ref().is_none_or(|drag| {
+                        matches!(drag.origin, crate::app::DragOrigin::Incoming(_))
+                    }) {
                         cx.active_drag = Some(AnyDrag {
+                            origin: crate::app::DragOrigin::Incoming(self.handle.window_id()),
                             value: Arc::new(image.clone()),
                             view: cx.new(|_| image).into(),
                             cursor_offset: position,
@@ -5970,8 +5977,11 @@ impl Window {
                 }
                 FileDropEvent::UrlEntered { position, url } => {
                     self.mouse_position = position;
-                    if cx.active_drag.is_none() {
+                    if cx.active_drag.as_ref().is_none_or(|drag| {
+                        matches!(drag.origin, crate::app::DragOrigin::Incoming(_))
+                    }) {
                         cx.active_drag = Some(AnyDrag {
+                            origin: crate::app::DragOrigin::Incoming(self.handle.window_id()),
                             value: Arc::new(url.clone()),
                             view: cx.new(|_| url).into(),
                             cursor_offset: position,
@@ -5986,26 +5996,42 @@ impl Window {
                     })
                 }
                 FileDropEvent::Pending { position } => {
-                    self.mouse_position = position;
-                    PlatformInput::MouseMove(MouseMoveEvent {
-                        position,
-                        pressed_button: Some(MouseButton::Left),
-                        modifiers: Modifiers::default(),
-                    })
+                    if cx
+                        .active_drag
+                        .as_ref()
+                        .is_some_and(|drag| drag.origin.window_id() == self.handle.window_id())
+                    {
+                        self.mouse_position = position;
+                        PlatformInput::MouseMove(MouseMoveEvent {
+                            position,
+                            pressed_button: Some(MouseButton::Left),
+                            modifiers: Modifiers::default(),
+                        })
+                    } else {
+                        PlatformInput::FileDrop(FileDropEvent::Pending { position })
+                    }
                 }
                 FileDropEvent::Submit { position } => {
-                    cx.activate(true);
-                    self.mouse_position = position;
-                    PlatformInput::MouseUp(MouseUpEvent {
-                        button: MouseButton::Left,
-                        position,
-                        modifiers: Modifiers::default(),
-                        click_count: 1,
-                    })
+                    if cx
+                        .active_drag
+                        .as_ref()
+                        .is_some_and(|drag| drag.origin.window_id() == self.handle.window_id())
+                    {
+                        cx.activate(true);
+                        self.mouse_position = position;
+                        PlatformInput::MouseUp(MouseUpEvent {
+                            button: MouseButton::Left,
+                            position,
+                            modifiers: Modifiers::default(),
+                            click_count: 1,
+                        })
+                    } else {
+                        PlatformInput::FileDrop(FileDropEvent::Submit { position })
+                    }
                 }
                 FileDropEvent::Exited => {
                     if !cx.hand_restored_drag_to_platform(self.handle.window_id()) {
-                        cx.active_drag.take();
+                        cx.retire_incoming_drag(self.handle.window_id());
                     }
                     self.refresh();
                     PlatformInput::FileDrop(FileDropEvent::Exited)
@@ -10716,3 +10742,11 @@ mod inspector_tests {
         .expect("closed inspector has no bookkeeping and no style overrides");
     }
 }
+
+#[cfg(test)]
+#[path = "windows_file_drop_consumer_tests.rs"]
+mod windows_file_drop_consumer_tests;
+
+#[cfg(test)]
+#[path = "incoming_drop_ownership_tests.rs"]
+mod incoming_drop_ownership_tests;

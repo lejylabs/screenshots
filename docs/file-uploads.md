@@ -1,5 +1,12 @@
 # Explicit arbitrary-file uploads
 
+Modern versioned `.sxcu` files use the bounded [modern runtime](sharex-runtime.md),
+including its admitted methods/bodies, destination flags and `ErrorMessage`
+handling. The multipart/PUT-only, JSON-body and error-template restrictions
+below describe the legacy/versionless native importer. They do not restrict
+modern SXCU execution. Very old unsupported versions and provider/account
+acceptance remain explicit limits.
+
 `screenshots upload-file PROFILE FILE` uploads one regular file without
 decoding, converting, inspecting its extension or changing its bytes. Empty
 files are accepted. The maximum size is 64 MiB. Relative input paths resolve
@@ -13,20 +20,20 @@ of at most 16 KiB, including symlinks to regular files. The profile's optional
 name is ignored; loading it creates no saved profile, history or credentials.
 Credential-management commands remain native-JSON-only.
 
-The command supports multipart POST and raw binary PUT. Both use
+The legacy native transport supports multipart POST and raw binary PUT. Both use
 `application/octet-stream`; multipart uses the generic filename `file.bin`,
 preserving the privacy of the source filename/path.
 POST form fields, custom nonsecret headers/query parameters, HTTPS defaults,
 origin-scoped credentials and existing response parsers remain available.
 Image-specific JSON/base64 request bodies are rejected before the upload runtime
-starts. A `.sxcu` profile must include `FileUploader` or the previously supported
+starts. A legacy-imported `.sxcu` profile must include `FileUploader` or the previously supported
 `ImageUploader` token and use HTTPS. The explicit file commands accept
 FileUploader-only profiles; image commands and UI import still require
 ImageUploader. JSON bodies are rejected even when both destination tokens are
 present. The profile parser, secret rejection and transport limits remain the
 same bounded subset, not full ShareX/FileUploader compatibility.
 
-Configured `.sxcu` `ErrorMessage` templates are rejected before network access;
+Legacy native-importer `.sxcu` `ErrorMessage` templates are rejected before network access;
 absent, null or empty/whitespace strings are accepted. The app does not silently
 discard a requested error parser or expose its potentially sensitive template.
 
@@ -41,6 +48,10 @@ stream reads at most that original length, so a growing file cannot increase
 the request. A shrinking file can fail the transfer. Concurrent in-place changes
 can change the bytes being sent; callers that need immutable input must avoid
 modifying it while uploading. No local file copy or full-file buffer is created.
+The current retained-source guard also verifies complete admitted consumption
+and unchanged source identity/version before returning a successful link. An
+early response, mutation or cancellation fails locally even if the server may
+already have received bytes; no remote rollback is claimed.
 The existing 64 KiB file/stream buffers, per-operation HTTP runtime and client
 are reused, with the same 5-second connection and 60-second operation deadlines.
 No resident service, timer, cache or extra worker pool is added.

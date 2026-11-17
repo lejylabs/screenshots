@@ -309,23 +309,67 @@ pub(crate) struct LinuxPlatform {
 /// threads, and are only meaningful for the connection made then.
 #[derive(Default)]
 struct StartupEnvironment {
+    environment: GraphicalEnvironment,
+    #[cfg(not(feature = "wayland"))]
+    wayland_socket_present: bool,
     #[cfg(feature = "wayland")]
     activation_token: Option<String>,
     /// The socket `WAYLAND_SOCKET` names: a connection to the compositor that the process which
     /// started us already opened.
     #[cfg(feature = "wayland")]
-    wayland_socket: Option<std::os::unix::net::UnixStream>,
+    wayland_socket: Option<anyhow::Result<std::os::unix::net::UnixStream>>,
+}
+
+impl StartupEnvironment {
+    fn take() -> Self {
+        Self {
+            // Snapshot authority before consuming the process's inherited descriptor name.
+            environment: GraphicalEnvironment::detect(),
+            #[cfg(not(feature = "wayland"))]
+            wayland_socket_present: std::env::var_os("WAYLAND_SOCKET").is_some(),
+            #[cfg(feature = "wayland")]
+            activation_token: crate::linux::take_startup_activation_token_from_environment(),
+            #[cfg(feature = "wayland")]
+            wayland_socket: crate::linux::take_wayland_socket_from_environment(),
+        }
+    }
+
+    fn backend(
+        &self,
+        modes: WindowingModes,
+        environment: &GraphicalEnvironment,
+    ) -> anyhow::Result<Option<Backend>> {
+        #[cfg(not(feature = "wayland"))]
+        anyhow::ensure!(
+            !self.wayland_socket_present,
+            "WAYLAND_SOCKET requires a Wayland backend"
+        );
+        #[cfg(feature = "wayland")]
+        if let Some(socket) = &self.wayland_socket {
+            socket.as_ref().map_err(|error| anyhow!("{error:#}"))?;
+            anyhow::ensure!(
+                modes.contains(WindowingModes::WAYLAND),
+                "WAYLAND_SOCKET requires an allowed Wayland backend"
+            );
+            return Ok(Some(Backend::Wayland));
+        }
+        Ok(select_backend(modes, environment))
+    }
+
+    fn initial_request(&self, modes: WindowingModes) -> WindowingRequest {
+        // Public headless constructors do not supply an explicit initial request.
+        if modes == WindowingModes::HEADLESS {
+            WindowingRequest::Headless
+        } else {
+            WindowingRequest::Windowed(self.environment.clone())
+        }
+    }
 }
 
 impl LinuxPlatform {
     /// Creates the platform, headless until `run` connects it in its initial mode.
     pub(crate) fn new(allowed_modes: WindowingModes) -> Self {
-        let startup = StartupEnvironment {
-            #[cfg(feature = "wayland")]
-            activation_token: crate::linux::take_startup_activation_token_from_environment(),
-            #[cfg(feature = "wayland")]
-            wayland_socket: crate::linux::take_wayland_socket_from_environment(),
-        };
+        let startup = StartupEnvironment::take();
         let event_loop = EventLoop::try_new().expect("failed to create Linux event loop");
         let (common, main_receiver, power_receiver) = LinuxCommon::new(event_loop.get_signal());
         let common = Rc::new(RefCell::new(common));
@@ -353,23 +397,26 @@ impl LinuxPlatform {
     /// be reached, since the app can't start. A windowed initial mode whose environment names no
     /// allowed display server starts headless when that's allowed.
     fn connect_initially(&self) {
-        let request = self
-            .initial_windowing
-            .borrow_mut()
-            .take()
-            .unwrap_or_else(|| WindowingRequest::Windowed(GraphicalEnvironment::detect()));
         // Dropped unused when starting headless, closing any inherited `WAYLAND_SOCKET`.
         let startup = self
             .startup_environment
             .borrow_mut()
             .take()
             .unwrap_or_default();
+        let mut request = self
+            .initial_windowing
+            .borrow_mut()
+            .take()
+            .unwrap_or_else(|| startup.initial_request(self.allowed_modes));
+        if let WindowingRequest::Windowed(environment) = &mut request {
+            environment.wayland_session |= startup.environment.wayland_session;
+        }
         let backend = match &request {
             WindowingRequest::Headless => None,
-            WindowingRequest::Windowed(environment) => {
-                select_backend(self.allowed_modes, environment)
-                    .map(|backend| (backend, environment))
-            }
+            WindowingRequest::Windowed(environment) => startup
+                .backend(self.allowed_modes, environment)
+                .unwrap_or_else(|error| panic!("{error:#}"))
+                .map(|backend| (backend, environment)),
         };
         match backend {
             Some((backend, environment)) => {
@@ -421,7 +468,7 @@ impl LinuxPlatform {
                         loop_handle,
                         common,
                         environment,
-                        startup.wayland_socket,
+                        startup.wayland_socket.transpose()?,
                         activation_token,
                     )?,
                 ))
@@ -2293,6 +2340,7 @@ mod display_mode_tests {
             .env(SCENARIO_ENV, name)
             .env("WAYLAND_DISPLAY", MISSING_WAYLAND_DISPLAY)
             .env_remove("DISPLAY")
+            .env_remove("WAYLAND_SOCKET")
             .output()
             .expect("run the scenario in a child process");
         let stdout = String::from_utf8_lossy(&output.stdout);
@@ -2311,3 +2359,7 @@ mod display_mode_tests {
         );
     }
 }
+
+#[cfg(all(test, feature = "wayland", feature = "x11"))]
+#[path = "wayland_startup_tests.rs"]
+mod wayland_startup_tests;

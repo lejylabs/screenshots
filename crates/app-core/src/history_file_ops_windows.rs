@@ -100,11 +100,6 @@ fn check_path(path: &Path) -> Result<()> {
                 && matches!(reserved.as_bytes()[3], b'1'..=b'9')),
         "History move refuses device names or alternate streams"
     );
-    ensure!(
-        path.extension()
-            .is_some_and(|extension| extension.eq_ignore_ascii_case("png")),
-        "History move source and destination must use .png"
-    );
     Ok(())
 }
 
@@ -145,19 +140,20 @@ fn parent(path: &Path) -> Result<(File, PathBuf)> {
 
 fn stamp(file: &mut File) -> Result<FileStamp> {
     let before = information(file)?;
-    let (metadata, sha256, width, height) = super::png_contents(file)?;
+    let (metadata, sha256, info) = super::image_contents(file)?;
     ensure!(
         information(file)? == before && before.length == metadata.len(),
         "History move source changed during inspection"
     );
     Ok(FileStamp {
+        format: info.format,
         device: before.volume,
         inode: u64::from_le_bytes(before.file[..8].try_into().unwrap()),
         file_id: Some(before.file),
         size: before.length,
         sha256,
-        width,
-        height,
+        width: info.width,
+        height: info.height,
     })
 }
 
@@ -201,6 +197,10 @@ impl LockedSource {
         );
         let mut file = opened(source, false)?;
         let stamp = stamp(&mut file)?;
+        ensure!(
+            crate::ImageExportFormat::from_path(destination)? == stamp.format,
+            "History destination extension does not match source contents"
+        );
         Ok(Self {
             file,
             source: source.to_owned(),

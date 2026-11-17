@@ -5,6 +5,9 @@ use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use serde::{Deserialize, Serialize};
 use std::path::{Component, Path, PathBuf};
 
+#[cfg(test)]
+#[path = "history_format_lifecycle_tests.rs"]
+mod format_tests;
 #[path = "history_lifecycle.rs"]
 mod lifecycle;
 #[path = "history_file_ops_native.rs"]
@@ -162,15 +165,14 @@ fn validate_row(row: &CaptureRow) -> Result<()> {
             .is_none_or(|path| path.len() <= 4096 && !path.chars().any(char::is_control)),
         "Invalid thumbnail reference"
     );
+    let format = crate::capture_format::format_from_mime(&row.mime_type)?;
     ensure!(
-        row.mime_type == "image/png"
-            && bounded_text(&row.created_at, 64)
-            && bounded_text(&row.source, 64),
+        bounded_text(&row.created_at, 64) && bounded_text(&row.source, 64),
         "Invalid capture row metadata"
     );
     app_dimensions(row.width, row.height)?;
     ensure!(
-        (8..=(crate::MAX_CAPTURE_BYTES + 16 * 1024 * 1024) as i64).contains(&row.file_size),
+        (8..=crate::capture_format::encoded_limit(format) as i64).contains(&row.file_size),
         "Capture file size exceeds move admission"
     );
     Ok(())
@@ -239,7 +241,8 @@ fn read_pending(connection: &Connection) -> Result<Option<(PendingMove, Payload)
     );
     let stamp = &payload.stamp;
     ensure!(
-        stamp.size == payload.row.file_size as u64
+        stamp.format == crate::capture_format::format_from_mime(&payload.row.mime_type)?
+            && stamp.size == payload.row.file_size as u64
             && stamp.width == payload.row.width
             && stamp.height == payload.row.height
             && stamp.sha256.len() == 64
@@ -334,7 +337,9 @@ fn prepare_action_checked(
     cancelled: &dyn Fn() -> bool,
 ) -> Result<(PendingMove, Payload)> {
     ensure!(
-        stamp.width == row.width
+        stamp.format == crate::capture_format::format_from_mime(&row.mime_type)?
+            && crate::ImageExportFormat::from_path(&destination)? == stamp.format
+            && stamp.width == row.width
             && stamp.height == row.height
             && stamp.size == row.file_size as u64,
         "Source image no longer matches its capture row"
@@ -494,17 +499,11 @@ fn supported() -> Result<()> {
     Ok(())
 }
 
-/// Move one PNG after persisting a recoverable intent. Call off the foreground executor.
+/// Move one saved image after persisting a recoverable intent. Call off the foreground executor.
 pub fn move_history_file(database: &Path, id: i64, destination: &Path) -> Result<MoveOutcome> {
     supported()?;
     ensure!(id > 0, "History capture ID must be positive");
     let destination = normalized_path(destination)?;
-    ensure!(
-        destination
-            .extension()
-            .is_some_and(|ext| ext.eq_ignore_ascii_case("png")),
-        "History move destination must have a PNG extension"
-    );
     let connection = crate::storage::open_read_only(database)?;
     let row = capture_row(&connection, id)?;
     drop(connection);

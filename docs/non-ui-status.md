@@ -1,10 +1,41 @@
 # Non-UI delivery: current checklist
 
-Date: 2026-11-16
+Date: 2026-11-17
 Scope: the user's complete major-feature list, with final GPUI redesign and new
 UI controls excluded. The workstation stays on. The full backlog is **open**.
 
-Verification base: branch `feat/non-ui-delivery`, pushed `32398b6`, including the
+The renderer now skips fresh path render targets for scenes with no paths.
+The old behavior fails the targeted allocation assertion; the corrected source
+passes all 47 optimized package tests and an identical-workload memory probe.
+The single memory pair shows no meaningful private-memory saving. Actual shell
+and reference-hardware budgets remain open. [Renderer evidence](../vendor/gpui-pre-wgpu/LOCAL-PATCH.md).
+
+Explicit isolated image printing is integrated. Three optimized core and six
+desktop tests, the real CLI/private IPP end-to-end fixture, Linux/Windows GNU
+metadata, optimized Clippy and formatting pass. Windows native GDI/fault,
+macOS runtime and resource gates remain open. [Printing](image-printing.md).
+
+Chronological capture/upload history sorting is now integrated in core and CLI,
+with exact fractional UTC ordering and self-contained timestamp/ID cursors.
+The targeted optimized run passes 17 core and two actual CLI cases; both new
+opt-in cost/allocator probes also pass. The isolated executable completes 150
+timed and six separately memory-sampled requests against 10,000 capture plus
+10,000 upload metadata rows with unchanged database bytes. All-target optimized
+Clippy, Windows GNU metadata and formatting pass. [Query contract](history-queries.md).
+
+The preceding Windows file-drop/window-ownership correction is committed as
+`f2f03a4284e6d0318ecc1efa0363bd490c41b07b`. Its complete optimized workspace run
+passed **1,065 regular tests**, zero failures, with 71 opt-ins excluded across 60
+outer suites. Linux/Windows GNU all-target metadata, Windows dependency-unit
+metadata, optimized Clippy and focused pure/GPUI/font/style regressions pass.
+Native COM acquisition containment remains an implementation gap; Windows native
+COM/resource acceptance remains open. [Drop contract](clipboard-import-output.md#windows-existing-file-drop-metadata-bounds).
+The earlier format/Wayland source is committed as
+`fd98138633de4a15b028b62b54c0a2a9af301ec9`; its 1,044-test/private CLI/Wayland
+results remain a separate checkpoint. These totals are different source snapshots,
+and are not added together or claimed as full non-UI acceptance.
+
+Earlier pushed baseline: branch `feat/non-ui-delivery`, `247f419`, including the
 reviewed persistence, logging, managed-color and portable packaging follow-ups.
 Committed follow-ups include native defaults/templates and process isolation,
 Library lifecycle/reservations, bounded image cancellation, modern SXCU execution,
@@ -18,7 +49,7 @@ integrated; their current-source native SDK/hardware gates remain open. Other
 native input/output work is still open.
 Delivered backend paths do not close excluded UI or real native acceptance gates.
 
-The current integrated implementation passed **996 optimized tests**, with 69 explicit
+The prior Mac-coordinate/parser checkpoint passed **996 optimized tests**, with 69 explicit
 opt-ins excluded across 59 outer suites and zero failures. This includes the
 bounded logger, journaled capture saves and managed-color input with the exact
 same-version moxcms correction, Mac coordinate consumers and structured parser
@@ -32,9 +63,9 @@ historical snapshots. Source reviews and private native fixtures are recorded
 separately in each contract. None establishes physical hardware, reference
 performance or a production release.
 
-Repository write access is restored. Completed implementation commits are pushed
-through the verification base above; exact-source native CI remains a separate
-verification gate.
+Repository write access is restored. The earlier baseline is published and the
+reviewed format/Wayland implementation is committed above. Exact-source native
+CI remains a separate verification gate.
 No password request or permission change was needed.
 
 CI `8fdbc78` found unformatted snapshot code and a nanosecond-clock temp-name
@@ -98,12 +129,16 @@ remains powered on; no shutdown will be performed.
   release/package checks passed; the complete run passed 523 regular tests and
   all doctests, with 53 opt-in cases excluded. The new timing-only opt-in test
   also passed separately. [Contract](saved-png-admission.md).
-- [ ] Native SDK/private fixtures for exact committed source `32398b6` are
-  scheduled in [run 43946653508](https://github.com/lejylabs/screenshots/actions/runs/43946653508).
-  Its auxiliary snapshot `ab7b99c` changes only the workflow; no held feature
-  files are included. The run was queued when recorded, so it supplies no
-  completed result yet. Physical hardware and permission acceptance remain
-  separate from SDK/private-process checks.
+- [ ] Exact current-source native acceptance remains open. The Mac video-family
+  completion guard is committed as `b8e4e9a98285d3485bb6bac47aee4ca7d5599ff1`.
+  Its workflow-only auxiliary snapshot passed native ARM macOS, Intel macOS and
+  Windows in [run 44028548810](https://github.com/lejylabs/screenshots/actions/runs/44028548810),
+  including the new owned family-completion regressions on both Macs. This fixes
+  the source-level parent-loss race; one green run does not identify every cause
+  of the older ARM failure or prove physical capture/TCC/hardware acceptance.
+  Linux/macOS ownership/reopen is committed as `1755943`; its newer native CI and
+  the current Windows drop integration remain separate exact-source gates.
+
 - [x] Maintained native font/SVG and D-Bus families: active production graph
   passes default `cargo deny check advisories` without ignores. Actual private
   D-Bus AccessKit activation/actions/update/reactivation, SVG/text and Windows
@@ -129,15 +164,15 @@ separates new headless/core coverage from the remaining workflows below.
 | Family | Existing bounded implementation and evidence |
 | --- | --- |
 | Everyday capture | Windows primary/chosen/active display, selected/active window, exact/repeat region; six configurable capture bindings; saved 1–60-second UI countdown, output profiles and per-task overrides; up to 16 named rectangles requiring explicit monitor choice. [PLAN implementation details](../PLAN.md#session-handoff--start-here-2026-11-12), [hotkeys](hotkeys.md). |
-| Multi-output and timing | Windows stitched desktop CLI at 100% scale; `capture-regions` takes 1–16 crops from one snapshot per selected display; finite display sequences, explicit one-shot start time, PNG/JPEG/WebP and optional lossy WebP. `capture-task` composes display/window/region → recipe → final save → optional explicit upload. [Desktop](desktop-composite.md), [regions](capture-regions.md), [sequences](capture-sequence.md), [tasks](capture-task.md). |
+| Multi-output and timing | Calibrated Windows physical desktop composition and derived Mac desktop grids; `capture-regions` takes 1–16 crops from one snapshot per selected display; finite display sequences, explicit one-shot start time, PNG/JPEG/WebP and optional lossy WebP. `capture-task` composes display/window/region → recipe → final save → optional explicit upload. [Desktop](desktop-composite.md), [regions](capture-regions.md), [sequences](capture-sequence.md), [tasks](capture-task.md). |
 | Image tools | Conversion/rotation/flips/downscale, exact nearest-neighbour upscaling, padding/background/watermark, combine/compare/split, exact row/column removal, image dimensions/pixel sampling and SHA256 hash/check. [Tools](image-tools.md), [collections](image-collection.md), [strip removal](strip-removal.md), [info](image-info.md), [hash](file-hashes.md). |
-| Image formats | Shared PNG/JPEG/WebP and narrow truecolor BMP/classic uncompressed RGB8 or straight-RGBA8 TIFF input; PNG/JPEG/lossless WebP outputs, explicit lossy WebP, CLI-only BMP and straight-alpha TIFF output. GIF assembly is play-once, 2–16 images, binary alpha with unsafe/full palette rejection. [BMP input](bmp-input.md), [BMP output](bmp-export.md), [TIFF input](tiff-input.md), [TIFF output](tiff-export.md), [lossy WebP](lossy-webp.md), [GIF](gif-assembly.md). |
+| Image formats | Shared PNG/JPEG/WebP and narrow truecolor BMP/classic uncompressed RGB8 or straight-RGBA8 TIFF input; PNG/JPEG/lossless WebP outputs, explicit lossy WebP, capture/Library format policy and byte-preserving saved formats, CLI-only BMP and straight-alpha TIFF output. GIF assembly is play-once, 2–16 images, binary alpha with unsafe/full palette rejection. [BMP input](bmp-input.md), [BMP output](bmp-export.md), [TIFF input](tiff-input.md), [TIFF output](tiff-export.md), [lossy WebP](lossy-webp.md), [GIF](gif-assembly.md). |
 | Shared editing foundation | Crop, drawing/text/pen/number/highlight/spotlight, blur/pixelation/redaction, bounded metadata undo, selection/movement/resize/duplicate/drawing order, and rotation/flips before annotations. Text has multiline, discrete sizes and Bold/Italic; monochrome text emoji are not inserted emoji objects. [PLAN editor details](../PLAN.md#phase-4--image-editor). |
 | Sharing | Generic bounded POST/PUT, image and arbitrary-file sequential batches, named profiles and per-task destination defaults, explicit finalized-pixel upload, supported `.sxcu` subset, bounded JSON/text/header/regex/XML results and thumbnail/deletion links. S3-compatible signed create-only single-object PUT exists, including R2-style endpoint/region configuration. Standalone `link` formats one upload-result object as plain/Markdown/HTML or saves its URL as QR; it performs no upload or clipboard action. [Image batches](upload-batch.md), [file uploads](file-uploads.md), [S3](s3-uploads.md), [link results](upload-results.md). |
-| Privacy and library | Pixel-only edited exports/uploads, opt-in PNG metadata stripping, bounded PNG/JPEG/WebP structural inventory; capture/upload date/order/text queries, missing-reference audit, import/relink/metadata removal/export, portable journaled moves/transfers and trash/restore/purge with explicit finish/cancel recovery and retention. Existing UI has visible-page thumbnails and page-local actions. [Metadata](image-metadata.md), [PNG inventory](png-metadata.md), [sanitized export](sanitized-export.md), [queries](history-queries.md), [audit](history-audit.md), [management](history-management.md), [moves](history-file-moves.md). |
+| Privacy and library | Pixel-only edited exports/uploads, opt-in managed PNG/JPEG/WebP sanitization to PNG, bounded structural inventory; capture/upload date/order/text queries, missing-reference audit, import/relink/metadata removal/export, portable journaled moves/transfers and trash/restore/purge with explicit finish/cancel recovery and retention. Existing UI has visible-page thumbnails and page-local actions. [Metadata](image-metadata.md), [PNG inventory](png-metadata.md), [sanitized export](sanitized-export.md), [queries](history-queries.md), [audit](history-audit.md), [management](history-management.md), [moves](history-file-moves.md). |
 | OCR, QR and workflows | File QR generation/scanning, optional installed-Tesseract file OCR on Unix/Windows, CLI region OCR/QR using in-memory pixels under strict session/scale limits, exact supplied-image scroll assembly, and bounded nine-operation offline recipes. [QR](qr.md), [OCR](ocr.md), [Windows OCR](windows-ocr.md), [region analysis](region-analysis.md), [scroll assembly](scroll-stitch.md), [recipes](workflows.md). |
 | Recording | Optional installed FFmpeg/ffprobe: finite Unix X11 or Windows gdigrab video/GIF, synthetic mode, cursor show/hide, output verification and bounded process/staging cleanup. This is neither audio nor a full recording workflow. [Unix recorder](recording.md), [Windows recorder](recording-windows.md). |
-| Desktop, storage, release | Explicit Linux/Windows/macOS autostart management; Windows resident/tray/Show-only single-instance lifecycle; native secret adapters and CLI setup; SQLite read-only check, WAL-aware backup to a new path and bounded unfinished-file inspection; pinned Rust/lockfile, native CI matrix, portable archives/checksums/notices and manual update instructions. [Autostart](autostart.md), [Windows](autostart-windows.md), [macOS](autostart-macos.md), [credentials](upload-authentication.md), [storage](storage-recovery.md), [packaging](packaging.md). |
+| Desktop, storage, release | Explicit Linux/Windows/macOS autostart management; Windows resident/tray/Show-only lifecycle and [Linux/macOS main-app ownership/reopen](unix-app-lifecycle.md) with the existing visible-window fallback; native secret adapters and CLI setup; SQLite read-only check, WAL-aware backup to a new path and bounded unfinished-file inspection; pinned Rust/lockfile, native CI matrix, portable archives/checksums/notices and manual update instructions. [Autostart](autostart.md), [Windows](autostart-windows.md), [macOS](autostart-macos.md), [credentials](upload-authentication.md), [storage](storage-recovery.md), [packaging](packaging.md). |
 
 ## Remaining implementation
 
@@ -168,15 +203,21 @@ completion is listed separately.
   remain in the separate matrix. [Contract](editor-document.md).
 - [ ] **Import/output:** explicit URL CLI/Task input, bounded native clipboard
   and existing cross-platform Paste are committed. Remaining native raw image/URL
-  drops, descriptor-only Wayland GUI startup, print and drag-out need integration.
+  drops and drag-out need integration. Explicit isolated image printing is now
+  integrated and passes optimized pure/process and real private IPP checks; native
+  Windows GDI output/fault injection, macOS runtime and resource acceptance remain
+  open. [Printing contract](image-printing.md). Descriptor-only Wayland GUI startup
+  and capture/Library format policy are integrated with local functional checks
+  passed and source/document review completed in the committed delivery.
   Open With/file associations are implemented. Managed RGB matrix/TRC and SDR
   CICP imports are implemented with independent color oracles and truthful HDR
-  refusal. Capture/Library format preference and broader codec variants remain
-  distinct work; native HDR capture/presentation is not established by import.
-- [ ] **Sharing:** reconcile very old SXCU importer/version compatibility and
-  remaining workflow inputs/link templates/shortening. Modern pinned-version
-  methods/bodies/templates/parsers, HTTP/S3/SFTP/FTP, public-client OAuth,
-  image/file batches and explicit Task Link/QR/clipboard chains are implemented.
+  refusal. Broader codec variants remain distinct work; native HDR capture/presentation is not established by import.
+- [ ] **Sharing:** complete unsupported workflow-input/provider capabilities from
+  their explicit contracts. Modern versioned methods/bodies/templates/parsers,
+  TextUploader, URLShortener and URLSharingService destination flags, HTTP/S3/
+  SFTP/FTP, public-client OAuth, image/file batches and explicit Task SXCU/Link/
+  QR/clipboard actions are implemented. Very old versions remain intentionally
+  refused; this is not an unimplemented modern shortener or text-upload path.
   Real accounts/native credential denial/rotation and provider-specific optional
   multipart/STS behavior remain explicit provider limits. No blanket arbitrary-
   version SXCU parity is claimed. [Runtime](sharex-runtime.md),
@@ -196,7 +237,10 @@ completion is listed separately.
   combine/compare/split tools remain completed subsets. Pin windows and new
   recording/OCR/QR interaction controls are excluded UI work.
 - [ ] **Desktop/release:** atomic startup across optional Windows workers is
-  committed; finish non-Windows main-app resident/single-instance integration,
+  committed; [non-Windows main-app ownership/reopen](unix-app-lifecycle.md)
+  has passed optimized private Linux integration checks; native macOS and resource
+  acceptance remain open. Finish main-app
+  Linux/macOS tray/global-hotkey services, native fallback/focus/session acceptance,
   real signing/notarization, standard-user install/upgrade/uninstall,
   permissions/IME/accessibility, physical hotkeys/tray/clipboard and failure/
   performance matrices. User installs, native package layouts, notifications,
@@ -300,12 +344,19 @@ themes and editor controls are preserved, not redesigned.
   the [delivery request](non-ui-delivery.md#request-and-constraints) and PLAN's
   performance/privacy contract.
 
-Coverage update: the latest hidden-path sweep inventories **160 Markdown files**
-(94 project and 66 vendor), excluding target and .git. Its snapshot hashes,
+Coverage update: the earlier hidden-path sweep inventoried **160 Markdown files**
+(94 project and 66 vendor), excluding target and .git. The subsequently authored
+and reviewed Unix lifecycle contract increases the current source inventory to
+163 (96 project and 67 vendor) after the independently reviewed image-printing
+contract and the renderer provenance/evidence note were integrated. The earlier 161-file count included the Unix lifecycle
+contract; original snapshot hashes remain historical. Its snapshot hashes,
 requirement/status extracts and exact per-file reading depth are recorded in the
-local reconciliation reports. Full semantic review of historical long documents
-and upstream vendor prose is continuing; inventory/hash coverage does not
-claim otherwise. Current code checks include the PLAN performance, phase and
-Definition-of-Done requirements and revealed additional logging/fuzz/resident
-work above. Historical evidence remains dated; this checklist does not declare
+local reconciliation reports. All 160 complete bodies have now been semantically read (94 project, 66
+vendor), with exact per-file hashes and full-body read reports in
+`target/verification/all-markdown-full-read-complete.json`. Later corrections
+are reviewed explicit documentation deltas with new hashes; the original
+snapshot hashes are not relabeled current. This is full prose review, not a
+whole-code audit or implementation/native/performance acceptance. Current code checks include the PLAN performance, phase and
+Definition-of-Done requirements; logging/fuzz follow-ups are implemented,
+while the remaining resident/platform work above stays open. Historical evidence remains dated; this checklist does not declare
 the backlog, Phase 0, native gates or ShareX parity complete.

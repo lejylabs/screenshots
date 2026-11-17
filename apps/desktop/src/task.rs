@@ -845,6 +845,7 @@ mod tests {
     fn snapshot_capture(
         call: app_core::NativeCaptureCall,
         check: &app_core::NativeCaptureCheck<'_>,
+        _context: app_core::NativeCaptureContext,
     ) -> std::result::Result<app_core::NativeCaptureReply, app_core::CaptureError> {
         check()?;
         let app_core::NativeCaptureCall::Template { template, options } = call else {

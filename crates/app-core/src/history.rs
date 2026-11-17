@@ -13,8 +13,10 @@ mod directory;
 mod save;
 pub(crate) use directory::ensure_storage_directory;
 pub use save::{
-    CaptureSaveOutcome, PendingCaptureSave, copy_saved_png_with_history, pending_capture_save,
-    recover_capture_save, save_capture_with_history,
+    CaptureSaveOutcome, PendingCaptureSave, copy_saved_image_with_history,
+    copy_saved_png_with_history, pending_capture_save, recover_capture_save,
+    save_capture_with_history, save_capture_with_history_policy,
+    save_saved_image_with_history_policy,
 };
 
 #[path = "history_file_ops.rs"]
@@ -52,21 +54,22 @@ pub struct ImportReport {
     pub failures: Vec<(PathBuf, String)>,
 }
 
-fn image_info(path: &Path) -> Result<(u32, u32, i64)> {
+fn image_info(path: &Path) -> Result<(u32, u32, i64, &'static str)> {
     ensure!(path.is_absolute(), "Image path must be absolute");
-    path.to_str()
+    let text = path
+        .to_str()
         .context("Image path cannot be stored as UTF-8")?;
-    let mut reader = image::ImageReader::with_format(
-        std::io::BufReader::new(std::fs::File::open(path)?),
-        image::ImageFormat::Png,
+    ensure!(
+        text.len() <= 4096 && !text.chars().any(char::is_control),
+        "History image path must contain at most 4096 bytes without controls"
     );
-    let mut limits = image::Limits::default();
-    limits.max_alloc = Some(crate::MAX_CAPTURE_BYTES);
-    reader.limits(limits);
-    let (width, height) = reader.into_dimensions()?;
-    crate::validate_image_size(width, height)?;
-    let size = i64::try_from(std::fs::metadata(path)?.len()).context("Image file is too large")?;
-    Ok((width, height, size))
+    let info = crate::inspect_saved_image(path)?;
+    Ok((
+        info.width,
+        info.height,
+        i64::try_from(info.encoded_bytes)?,
+        info.mime_type(),
+    ))
 }
 
 #[cfg(target_os = "windows")]
@@ -130,7 +133,7 @@ fn existing_windows_spelling(
 fn insert_capture(
     transaction: &rusqlite::Transaction<'_>,
     path: &Path,
-    info: (u32, u32, i64),
+    info: (u32, u32, i64, &'static str),
     source: &str,
 ) -> Result<usize> {
     #[cfg(target_os = "windows")]
@@ -139,14 +142,15 @@ fn insert_capture(
     let path = existing.as_deref().unwrap_or(path);
     Ok(transaction.execute(
         "INSERT INTO captures (file_path,mime_type,width,height,file_size,created_at,source)
-        VALUES (?1,'image/png',?2,?3,?4,?5,?6) ON CONFLICT(file_path) DO NOTHING",
+        VALUES (?1,?7,?2,?3,?4,?5,?6) ON CONFLICT(file_path) DO NOTHING",
         params![
             path.to_str().context("Invalid image path")?,
             info.0,
             info.1,
             info.2,
             chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
-            source
+            source,
+            info.3
         ],
     )?)
 }
@@ -155,7 +159,7 @@ fn insert_capture(
 pub fn import_capture_files(database: &Path, paths: &[PathBuf]) -> Result<ImportReport> {
     ensure!(
         paths.len() <= 100,
-        "Select at most 100 PNG images at a time"
+        "Select at most 100 PNG, JPEG or WebP images at a time"
     );
     let mut connection = open(database)?;
     let transaction = connection.transaction()?;
@@ -565,7 +569,7 @@ pub fn relink_history_entry(database: &Path, entry: &HistoryEntry, path: &Path) 
     );
     let updated = transaction
         .execute(
-            "UPDATE captures SET file_path=?1,width=?2,height=?3,file_size=?4,thumbnail_path=NULL
+            "UPDATE captures SET file_path=?1,width=?2,height=?3,file_size=?4,thumbnail_path=NULL,mime_type=?8
          WHERE id=?5 AND file_path=?6 AND created_at=?7",
             params![
                 path.to_str().context("Invalid image path")?,
@@ -574,7 +578,8 @@ pub fn relink_history_entry(database: &Path, entry: &HistoryEntry, path: &Path) 
                 info.2,
                 entry.id,
                 entry.path.to_str().context("Invalid original image path")?,
-                entry.created_at
+                entry.created_at,
+                info.3
             ],
         )
         .context(
