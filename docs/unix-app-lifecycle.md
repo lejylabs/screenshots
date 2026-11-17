@@ -229,3 +229,14 @@ All-target optimized workspace Clippy and Windows GNU metadata compilation also
 passed. Source reviews reached two clean rounds; the test-only unsafe-directory
 fixture now sets its intended 0755 permissions explicitly rather than depending
 on the invoking shell umask. Full current native macOS execution remains pending.
+
+## Listener retirement ordering correction (2026-11-17)
+
+`b3f0a27` closes the native listener and shutdown reader before dropping the
+Show sender. Observing channel EOF therefore cannot race a still-connectable
+listener. Ownership still remains held through application teardown. The strict
+existing regression first failed in the full optimized workspace run; after the
+production correction its 16 focused controls and 32 fresh exact-case repeats
+pass. The later complete core run passes 523 cases (53 ignored), with optimized
+all-target Clippy and formatting passing. No polling or new worker is added;
+this is ordering of the same owned resources, not a hardware/idle measurement.

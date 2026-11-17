@@ -18,6 +18,16 @@ installed-runtime fixture pass. Clippy, Windows GNU metadata and formatting pass
 The fixture uses its own bus/keyring/CA, never the user's keyring or clipboard.
 [Current sharing evidence](sharex-runtime.md#corrected-parser-source-and-result-integration-2026-11-17).
 
+Two integration regressions are corrected in `b3f0a27` and `cc38b9c`: Unix
+listener EOF now follows socket retirement, and save-intent comparisons accept
+semantically identical JSON layouts while retaining exact observed-byte CAS.
+The optimized core run passes **523 tests, zero failures, 53 ignored**; 29 save/
+recovery controls, the listener controls and 32 fresh retirement repeats pass.
+All-target optimized Clippy and formatting pass. The earlier full-workspace run
+failed the listener case; the subsequent core-only run exposed the JSON-layout
+case. Both failed logs are retained, and neither is reported as a passing full
+workspace run. Proof: `target/verification/sharex-review6-integration/`.
+
 The renderer now skips fresh path render targets for scenes with no paths.
 The old behavior fails the targeted allocation assertion; the corrected source
 passes all 47 optimized package tests and an identical-workload memory probe.
@@ -26,8 +36,11 @@ and reference-hardware budgets remain open. [Renderer evidence](../vendor/gpui-p
 
 Explicit isolated image printing is integrated. Three optimized core and six
 desktop tests, the real CLI/private IPP end-to-end fixture, Linux/Windows GNU
-metadata, optimized Clippy and formatting pass. Windows native GDI/fault,
-macOS runtime and resource gates remain open. [Printing](image-printing.md).
+metadata, optimized Clippy and formatting pass. Native ARM macOS snapshot
+`b85db926` (application source `9f2e135`) now also passes fresh-process memory
+limit enforcement, three core/six desktop print controls and the actual private
+IPP CLI fixture. Intel execution is pending; Windows native GDI output/fault
+and resource gates remain open. [Printing](image-printing.md).
 
 Chronological capture/upload history sorting is now integrated in core and CLI,
 with exact fractional UTC ordering and self-contained timestamp/ID cursors.
