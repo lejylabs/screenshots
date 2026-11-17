@@ -117,3 +117,47 @@ fn run_failure_drops_the_owned_platform_before_the_logger_guard() {
         ["platform_dropped", "logger_guard_dropped"]
     );
 }
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[test]
+fn file_editor_and_resource_probe_bypass_main_ownership_without_consuming_a_request() {
+    for (open_image, probe) in [(true, false), (false, true), (true, true)] {
+        let admission = super::admit_unix_main(open_image, probe, || {
+            panic!("standalone files and probes must not turn into Show-only forwarding")
+        })
+        .unwrap();
+        assert!(matches!(admission, super::UnixMainAdmission::Run(None)));
+    }
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[test]
+fn secondary_launch_exits_before_native_platform_and_services_and_scope_fallback_remains_visible() {
+    let trace = RefCell::new(Vec::new());
+    let admission = super::admit_unix_main(false, false, || {
+        trace.borrow_mut().push("show_forwarded");
+        Ok(app_core::UnixInstanceAdmission::Forwarded)
+    })
+    .unwrap();
+    if let super::UnixMainAdmission::Run(_) = admission {
+        with_desktop_startup(
+            || trace.borrow_mut().push("native_platform"),
+            || trace.borrow_mut().push("services"),
+            |_| trace.borrow_mut().push("run"),
+        );
+    }
+    assert_eq!(*trace.borrow(), ["show_forwarded"]);
+    let fallback = super::admit_unix_main(false, false, || {
+        Ok(app_core::UnixInstanceAdmission::WindowedOnly(
+            "private fixture fallback",
+        ))
+    })
+    .unwrap();
+    assert!(matches!(fallback, super::UnixMainAdmission::Run(None)));
+    assert!(
+        super::admit_unix_main(false, false, || Err(anyhow::anyhow!(
+            "private fixture conflict"
+        )))
+        .is_err()
+    );
+}

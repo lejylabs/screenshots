@@ -120,6 +120,10 @@ mod single_instance;
 pub use desktop_events::{DesktopEvent, desktop_events, request_reopen};
 #[cfg(target_os = "windows")]
 pub use single_instance::SingleInstance;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+mod single_instance_unix;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub use single_instance_unix::{UnixInstanceAdmission, UnixSingleInstance};
 mod blur;
 mod bmp_export;
 mod bmp_input;
