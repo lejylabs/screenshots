@@ -11,6 +11,17 @@ use std::{
 const USAGE: &str = "Usage: screenshots link format plain|markdown|html [--label TEXT]; screenshots link qr OUTPUT.png (upload-result JSON on stdin)";
 const MAX_TEXT: usize = 16 * 1024;
 const MAX_JSON: usize = 32 * 1024;
+const MAX_NATIVE_RESULT: usize = 8192;
+const MAX_EVENTS: usize = 16;
+const MAX_EVENT_TITLE: usize = 256;
+const MAX_EVENT_TEXT: usize = 4096;
+const MAX_ERROR_TEXT: usize = 4096;
+const MAX_LINK: usize = 2048;
+// One string byte can serialize as a six-byte JSON escape; include every field/event.
+const MAX_SHAREX_RESULT: usize = 6 * (3 * MAX_LINK + MAX_ERROR_TEXT
+    + MAX_EVENTS * (MAX_EVENT_TITLE + MAX_EVENT_TEXT))
+    + r#"{"success":false,"status":65535,"url":"","thumbnail":"","deletion":"","error_message":"","events":[]}"#.len()
+    + MAX_EVENTS * r#"{"title":"","text":""},"#.len();
 
 enum Action<'a> {
     Format { format: &'a str, label: &'a str },
@@ -97,15 +108,15 @@ fn read_result() -> Result<app_core::UploadOutcome> {
         !std::io::stdin().is_terminal(),
         "Supply upload-result JSON on nonterminal stdin"
     );
-    let mut bytes = Vec::with_capacity(8193);
+    let mut bytes = Vec::with_capacity(MAX_NATIVE_RESULT + 1);
     std::io::stdin()
         .lock()
-        .take(8193)
+        .take((MAX_SHAREX_RESULT + 1) as u64)
         .read_to_end(&mut bytes)
         .map_err(|_| anyhow::anyhow!("Could not read upload-result JSON"))?;
     ensure!(
-        !bytes.is_empty() && bytes.len() <= 8192,
-        "Upload-result JSON must contain 1–8192 bytes"
+        !bytes.is_empty() && bytes.len() <= MAX_SHAREX_RESULT,
+        "Upload-result JSON exceeds its bounded supported result size"
     );
     ensure!(
         bytes
@@ -118,20 +129,27 @@ fn read_result() -> Result<app_core::UploadOutcome> {
     let input: ResultInput = serde_json::from_slice(&bytes)
         .map_err(|_| anyhow::anyhow!("Invalid upload-result JSON"))?;
     let input = match input {
-        ResultInput::Native(input) => input,
+        ResultInput::Native(input) => {
+            ensure!(
+                bytes.len() <= MAX_NATIVE_RESULT,
+                "Native upload-result JSON must contain 1–8192 bytes"
+            );
+            input
+        }
         ResultInput::ShareX(input) => {
             ensure!(
                 input.success
-                    && input.status < 400
-                    && input.events.len() <= 16
+                    && (200..=299).contains(&input.status)
+                    && input.events.len() <= MAX_EVENTS
                     && input
                         .error_message
                         .as_ref()
-                        .is_none_or(|value| value.len() <= 4096)
+                        .is_none_or(|value| value.len() <= MAX_ERROR_TEXT)
                     && input
                         .events
                         .iter()
-                        .all(|event| event.title.len() <= 4096 && event.text.len() <= 4096),
+                        .all(|event| event.title.len() <= MAX_EVENT_TITLE
+                            && event.text.len() <= MAX_EVENT_TEXT),
                 "Upload result has no confirmed shareable link"
             );
             Input {

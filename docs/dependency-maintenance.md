@@ -1,5 +1,17 @@
 # Maintained native dependency families
 
+Current audit update (2026-11-17): default `cargo deny check advisories` now
+fails on Chrono 0.4.45 after RUSTSEC-2026-0543 surfaced. The
+[official advisory](https://github.com/RustSec/advisory-db/blob/main/crates/chrono/RUSTSEC-2026-0543.md)
+marks all Chrono versions unmaintained with no patched version; the
+[maintainer announcement](https://github.com/chronotope/chrono/issues/1768)
+describes the maintenance withdrawal. This is a maintenance gate, not a newly
+asserted memory-safety vulnerability. The prior passing snapshots below remain
+historical. Full active-graph migration is required without ignores or
+misrepresenting a renamed/version-altered fork; current date/schedule/naming
+formats and chronological precision must remain compatible.
+
+
 2026-11-15. Remove the abandoned crates without advisory ignores or disabling
 fonts, accessibility, portals, native credential stores or supported targets.
 

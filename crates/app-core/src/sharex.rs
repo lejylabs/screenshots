@@ -1,5 +1,6 @@
 //! Explicit official SXCU execution. The legacy native importer remains separate.
 use crate::sharex_process::RuntimeBundle;
+use crate::upload::upload_source::{TrackedUploadReader, UploadSourceGuard, verify_transfer};
 use anyhow::{Context, Result, ensure};
 use base64::Engine;
 use serde::{
@@ -297,13 +298,63 @@ fn query_credentials(url: &reqwest::Url) -> Result<Vec<Zeroizing<String>>> {
     Ok(values)
 }
 
+// Advances in the same order as serde's numeric visits; strict JSON keys are quoted.
+struct JsonNumbers<'a> {
+    text: &'a str,
+    offset: usize,
+}
+impl<'a> JsonNumbers<'a> {
+    fn next(&mut self) -> Option<&'a str> {
+        let source = self.text.as_bytes();
+        while self.offset < source.len() {
+            if source[self.offset] == b'"' {
+                self.offset += 1;
+                while self.offset < source.len() {
+                    if source[self.offset] == b'\\' {
+                        self.offset += 2;
+                    } else if source[self.offset] == b'"' {
+                        self.offset += 1;
+                        break;
+                    } else {
+                        self.offset += 1;
+                    }
+                }
+            } else if source[self.offset] == b'-' || source[self.offset].is_ascii_digit() {
+                let start = self.offset;
+                self.offset += 1;
+                while self.offset < source.len()
+                    && (source[self.offset].is_ascii_digit()
+                        || matches!(source[self.offset], b'.' | b'e' | b'E' | b'+' | b'-'))
+                {
+                    self.offset += 1;
+                }
+                return Some(&self.text[start..self.offset]);
+            } else {
+                self.offset += 1;
+            }
+        }
+        None
+    }
+}
 #[derive(Default)]
-struct BodyAuth {
+struct BodyAuth<'a> {
     values: Vec<Zeroizing<String>>,
     bytes: usize,
     limited: bool,
+    numbers: Option<JsonNumbers<'a>>,
 }
-impl BodyAuth {
+impl BodyAuth<'_> {
+    fn add_number(&mut self, value: &str, auth: bool) -> Result<()> {
+        let Some(raw) = self.numbers.as_mut().and_then(JsonNumbers::next) else {
+            self.limited = true;
+            anyhow::bail!("SXCU numeric authentication token position is unavailable");
+        };
+        if auth {
+            self.add(value)?;
+            self.add(raw)?;
+        }
+        Ok(())
+    }
     fn add_named(&mut self, name: &str, value: &str) -> Result<()> {
         let mut values = Vec::new();
         add_auth_secret(&mut values, name, value)?;
@@ -325,13 +376,13 @@ impl BodyAuth {
         Ok(())
     }
 }
-struct BodySeed<'a> {
-    state: &'a mut BodyAuth,
+struct BodySeed<'a, 'text> {
+    state: &'a mut BodyAuth<'text>,
     auth: bool,
     cookie: u8,
     depth: usize,
 }
-impl<'de> DeserializeSeed<'de> for BodySeed<'_> {
+impl<'de> DeserializeSeed<'de> for BodySeed<'_, '_> {
     type Value = ();
     fn deserialize<D: serde::Deserializer<'de>>(
         self,
@@ -344,8 +395,8 @@ impl<'de> DeserializeSeed<'de> for BodySeed<'_> {
         deserializer.deserialize_any(BodyVisitor(self))
     }
 }
-struct BodyVisitor<'a>(BodySeed<'a>);
-impl<'de> Visitor<'de> for BodyVisitor<'_> {
+struct BodyVisitor<'a, 'text>(BodySeed<'a, 'text>);
+impl<'de> Visitor<'de> for BodyVisitor<'_, '_> {
     type Value = ();
     fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         f.write_str("bounded configured body")
@@ -375,13 +426,22 @@ impl<'de> Visitor<'de> for BodyVisitor<'_> {
         self.visit_str(if value { "true" } else { "false" })
     }
     fn visit_i64<E: de::Error>(self, value: i64) -> std::result::Result<(), E> {
-        self.visit_str(&value.to_string())
+        self.0
+            .state
+            .add_number(&value.to_string(), self.0.auth)
+            .map_err(|_| E::custom("body authentication limit"))
     }
     fn visit_u64<E: de::Error>(self, value: u64) -> std::result::Result<(), E> {
-        self.visit_str(&value.to_string())
+        self.0
+            .state
+            .add_number(&value.to_string(), self.0.auth)
+            .map_err(|_| E::custom("body authentication limit"))
     }
     fn visit_f64<E: de::Error>(self, value: f64) -> std::result::Result<(), E> {
-        self.visit_str(&value.to_string())
+        self.0
+            .state
+            .add_number(&value.to_string(), self.0.auth)
+            .map_err(|_| E::custom("body authentication limit"))
     }
     fn visit_unit<E: de::Error>(self) -> std::result::Result<(), E> {
         Ok(())
@@ -427,6 +487,7 @@ fn body_credentials(text: &str) -> Result<Vec<Zeroizing<String>>> {
     let mut state = BodyAuth::default();
     let trimmed = text.trim_start();
     if trimmed.starts_with(['{', '[']) {
+        state.numbers = Some(JsonNumbers { text, offset: 0 });
         let mut decoder = serde_json::Deserializer::from_str(text);
         let parsed = BodySeed {
             state: &mut state,
@@ -466,17 +527,52 @@ fn body_credentials(text: &str) -> Result<Vec<Zeroizing<String>>> {
                     let auth = node
                         .ancestors()
                         .any(|parent| parent.is_element() && sensitive(parent.tag_name().name()));
+                    let cookie = node
+                        .ancestors()
+                        .filter(|parent| parent.is_element())
+                        .find_map(|parent| {
+                            let name = parent.tag_name().name();
+                            if name.eq_ignore_ascii_case("Cookie") {
+                                Some("Cookie")
+                            } else if name.eq_ignore_ascii_case("Set-Cookie") {
+                                Some("Set-Cookie")
+                            } else {
+                                None
+                            }
+                        });
                     if auth {
-                        let value = Zeroizing::new(
-                            node.descendants()
-                                .filter_map(|child| child.is_text().then(|| child.text()).flatten())
-                                .collect::<String>(),
-                        );
-                        state.add_named(node.tag_name().name(), &value)?;
+                        if let Some(cookie) = cookie {
+                            // Individual text values are headers; never concatenate sibling elements.
+                            for text in node
+                                .children()
+                                .filter(|child| child.is_text())
+                                .filter_map(|child| child.text())
+                            {
+                                if !text.trim().is_empty() {
+                                    state.add_named(cookie, text)?;
+                                }
+                            }
+                        } else {
+                            let value = Zeroizing::new(
+                                node.descendants()
+                                    .filter_map(|child| {
+                                        child.is_text().then(|| child.text()).flatten()
+                                    })
+                                    .collect::<String>(),
+                            );
+                            state.add_named(node.tag_name().name(), &value)?;
+                        }
                     }
                     for attribute in node.attributes() {
                         if auth || sensitive(attribute.name()) {
-                            state.add_named(attribute.name(), attribute.value())?;
+                            let name = if attribute.name().eq_ignore_ascii_case("Cookie") {
+                                "Cookie"
+                            } else if attribute.name().eq_ignore_ascii_case("Set-Cookie") {
+                                "Set-Cookie"
+                            } else {
+                                cookie.unwrap_or(attribute.name())
+                            };
+                            state.add_named(name, attribute.value())?;
                         }
                     }
                 }
@@ -1382,7 +1478,12 @@ impl Payload {
             Self::Bytes(bytes) => bytes.len() as u64,
         }
     }
-    fn body(self, count: Arc<std::sync::atomic::AtomicU64>) -> reqwest::Body {
+    fn body(
+        self,
+        count: Arc<std::sync::atomic::AtomicU64>,
+        cancel: crate::UploadCancellation,
+    ) -> reqwest::Body {
+        let length = self.length();
         let reader: Box<dyn tokio::io::AsyncRead + Unpin + Send> = match self {
             Self::File(file, length) => {
                 let mut file = tokio::fs::File::from_std(file);
@@ -1392,29 +1493,9 @@ impl Payload {
             Self::Bytes(bytes) => Box::new(std::io::Cursor::new(bytes)),
         };
         reqwest::Body::wrap_stream(tokio_util::io::ReaderStream::with_capacity(
-            TrackedReader { reader, count },
-            65536,
+            TrackedUploadReader::new(reader, length, count, cancel),
+            length.clamp(1, 65536) as usize,
         ))
-    }
-}
-struct TrackedReader {
-    reader: Box<dyn tokio::io::AsyncRead + Unpin + Send>,
-    count: Arc<std::sync::atomic::AtomicU64>,
-}
-impl tokio::io::AsyncRead for TrackedReader {
-    fn poll_read(
-        self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-        buffer: &mut tokio::io::ReadBuf<'_>,
-    ) -> std::task::Poll<std::io::Result<()>> {
-        let this = self.get_mut();
-        let before = buffer.filled().len();
-        let result = std::pin::Pin::new(&mut this.reader).poll_read(cx, buffer);
-        if matches!(result, std::task::Poll::Ready(Ok(()))) {
-            this.count
-                .fetch_add((buffer.filled().len() - before) as u64, Ordering::Relaxed);
-        }
-        result
     }
 }
 impl ShareXPrepared {
@@ -1445,6 +1526,7 @@ impl ShareXPrepared {
             Some(Payload::Bytes(png)),
             Zeroizing::new(String::new()),
             name,
+            None,
             cancel,
             permit,
         )
@@ -1464,7 +1546,9 @@ impl ShareXPrepared {
             65536
         };
         let (file, length) = opened(path, limit, "SXCU input")?;
+        let admitted = crate::FileIdentity::from_file(&file)?;
         cancel.verify_source_file(&file)?;
+        let source_guard = UploadSourceGuard::new(&file, admitted, length)?;
         let name = self.0.options.filename.clone().unwrap_or_else(|| {
             if matches!(kind, ShareXInputKind::Url | ShareXInputKind::UrlSharing) {
                 return String::new();
@@ -1486,6 +1570,7 @@ impl ShareXPrepared {
                 Some(Payload::File(file, length)),
                 Zeroizing::new(String::new()),
                 name,
+                Some(source_guard),
                 cancel,
                 permit,
             )
@@ -1516,7 +1601,7 @@ impl ShareXPrepared {
                     text.to_owned()
                 },
             );
-            self.run(None, input, name, cancel, permit)
+            self.run(None, input, name, Some(source_guard), cancel, permit)
         }
     }
     fn run(
@@ -1524,6 +1609,7 @@ impl ShareXPrepared {
         mut payload: Option<Payload>,
         input: Zeroizing<String>,
         name: String,
+        source_guard: Option<UploadSourceGuard>,
         cancel: crate::UploadCancellation,
         _permit: Permit,
     ) -> Result<ShareXOutcome> {
@@ -1684,7 +1770,7 @@ impl ShareXPrepared {
         let response=runtime.block_on(async{
             tokio::select!{biased;
                 _=cancel.wait()=>anyhow::bail!("SXCU upload canceled; a remote object may remain and no retry was attempted"),
-                value=tokio::time::timeout(Duration::from_secs(60),http(&request,url,headers,payload,data,&name))=>value.context("SXCU request exceeded sixty seconds; a remote object may remain and no retry was attempted")?,
+                value=tokio::time::timeout(Duration::from_secs(60),http(&request,url,headers,payload,data,&name,source_guard,cancel.clone()))=>value.context("SXCU request exceeded sixty seconds; a remote object may remain and no retry was attempted")?,
             }
         }).context("SXCU transfer could not be confirmed; a remote object may remain and no retry was attempted")?;
         drop(runtime);
@@ -1792,6 +1878,8 @@ struct HttpResponse {
     headers: BTreeMap<String, Vec<String>>,
     bytes: Zeroizing<Vec<u8>>,
 }
+// Keep the admitted request and retained source proof explicit without another wrapper.
+#[allow(clippy::too_many_arguments)]
 async fn http(
     request: &Request,
     url: reqwest::Url,
@@ -1799,6 +1887,8 @@ async fn http(
     mut payload: Option<Payload>,
     data: Zeroizing<Vec<u8>>,
     filename: &str,
+    source_guard: Option<UploadSourceGuard>,
+    cancel: crate::UploadCancellation,
 ) -> Result<HttpResponse> {
     let client = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
@@ -1820,12 +1910,21 @@ async fn http(
     let mut builder = client.request(method, url);
     let transferred = Arc::new(std::sync::atomic::AtomicU64::new(0));
     let mut expected = None;
+    let mut argument_counts = Vec::with_capacity(request.arguments.0.len());
     match request.body.as_str() {
         "None" => {}
         "MultipartFormData" => {
             let mut form = reqwest::multipart::Form::new();
             for (key, value) in &request.arguments.0 {
-                form = form.text(key.clone(), value.clone());
+                let length = value.len() as u64;
+                let consumed = Arc::new(std::sync::atomic::AtomicU64::new(0));
+                let body = Payload::Bytes(value.as_bytes().to_vec())
+                    .body(consumed.clone(), cancel.clone());
+                form = form.part(
+                    key.clone(),
+                    reqwest::multipart::Part::stream_with_length(body, length),
+                );
+                argument_counts.push((consumed, length));
             }
             if request.attach_file {
                 let payload = payload
@@ -1834,7 +1933,7 @@ async fn http(
                 let length = payload.length();
                 expected = Some(length);
                 let part = reqwest::multipart::Part::stream_with_length(
-                    payload.body(transferred.clone()),
+                    payload.body(transferred.clone(), cancel.clone()),
                     length,
                 )
                 .file_name(filename.to_owned())
@@ -1844,15 +1943,17 @@ async fn http(
             builder = builder.multipart(form);
         }
         "FormURLEncoded" => {
+            expected = Some(data.len() as u64);
             builder = builder
                 .header(
                     reqwest::header::CONTENT_TYPE,
                     "application/x-www-form-urlencoded",
                 )
                 .header(reqwest::header::CONTENT_LENGTH, data.len())
-                .body(data.to_vec())
+                .body(Payload::Bytes(data.to_vec()).body(transferred.clone(), cancel.clone()))
         }
         "JSON" | "XML" => {
+            expected = Some(data.len() as u64);
             builder = builder
                 .header(
                     reqwest::header::CONTENT_TYPE,
@@ -1863,7 +1964,7 @@ async fn http(
                     },
                 )
                 .header(reqwest::header::CONTENT_LENGTH, data.len())
-                .body(data.to_vec())
+                .body(Payload::Bytes(data.to_vec()).body(transferred.clone(), cancel.clone()))
         }
         "Binary" => {
             let payload = payload
@@ -1874,7 +1975,7 @@ async fn http(
             builder = builder
                 .header(reqwest::header::CONTENT_TYPE, media(filename))
                 .header(reqwest::header::CONTENT_LENGTH, length)
-                .body(payload.body(transferred.clone()));
+                .body(payload.body(transferred.clone(), cancel.clone()));
         }
         _ => anyhow::bail!("Invalid admitted SXCU body mode"),
     }
@@ -1923,11 +2024,18 @@ async fn http(
         );
         bytes.extend_from_slice(&chunk);
     }
-    ensure!(
-        !(200..=299).contains(&status)
-            || expected.is_none_or(|expected| transferred.load(Ordering::Relaxed) == expected),
-        "SXCU server responded before the admitted input was fully consumed; a remote object may remain"
-    );
+    if (200..=299).contains(&status) {
+        let expected_arguments: u64 = argument_counts.iter().map(|(_, length)| *length).sum();
+        let consumed_arguments: u64 = argument_counts
+            .iter()
+            .map(|(count, _)| count.load(Ordering::Acquire))
+            .sum();
+        ensure!(
+            consumed_arguments == expected_arguments,
+            "SXCU multipart arguments were not fully consumed; a remote object may remain and no retry was attempted"
+        );
+        verify_transfer(source_guard, transferred, expected.unwrap_or(0), &cancel).await?;
+    }
     Ok(HttpResponse {
         status,
         url,
@@ -2391,6 +2499,214 @@ mod tests {
         );
     }
     #[test]
+    fn numeric_body_authentication_masks_raw_and_canonical_tokens_within_one_bound() {
+        for (raw, canonical) in [
+            ("1e5", "100000"),
+            ("1.25E+4", "12500"),
+            ("-2.5e-3", "-0.0025"),
+            ("1.000", "1"),
+            ("-0", "-0"),
+        ] {
+            let body = format!("{{\"credentials\":{{\"values\":[{raw}]}}}}");
+            let values = body_credentials(&body).unwrap();
+            let mask = SecretMask::new(&values).unwrap();
+            assert_eq!(mask.mask(raw, 4096), "[redacted]", "{raw}");
+            assert_eq!(mask.mask(canonical, 4096), "[redacted]", "{canonical}");
+            assert!(link(&format!("https://example.invalid/share?v={raw}"), &mask).is_err());
+        }
+        assert!(body_credentials(r#"{"caption":[1e5]}"#).unwrap().is_empty());
+        let strings = body_credentials(r#"{"password":"100000","caption":1e5}"#).unwrap();
+        assert!(!strings.iter().any(|value| value.as_str() == "1e5"));
+        let numbers = (0..65)
+            .map(|value| format!("{value}e0"))
+            .collect::<Vec<_>>()
+            .join(",");
+        assert!(body_credentials(&format!("{{\"password\":[{numbers}]}}")).is_err());
+    }
+    #[test]
+    fn numeric_authentication_projects_only_its_actual_sensitive_tokens() {
+        let public = (1..=127)
+            .map(|count| format!("100000.{}", "0".repeat(count)))
+            .collect::<Vec<_>>()
+            .join(",");
+        let body = format!("{{\"password\":1e5,\"caption\":[{public}]}}");
+        let values = body_credentials(&body).unwrap();
+        assert_eq!(values.len(), 2);
+        assert!(values.iter().any(|value| value.as_str() == "1e5"));
+        assert!(values.iter().any(|value| value.as_str() == "100000"));
+        assert!(!values.iter().any(|value| value.as_str() == "100000.00"));
+        let mixed = body_credentials(r#"{"caption":100000.00,"password":"first","nested":{"id":20000.0},"password":1e5,"password":10e4,"credentials":[2e4]}"#).unwrap();
+        for raw in ["1e5", "10e4", "2e4"] {
+            assert!(mixed.iter().any(|value| value.as_str() == raw), "{raw}");
+        }
+        for public in ["100000.00", "20000.0"] {
+            assert!(
+                !mixed.iter().any(|value| value.as_str() == public),
+                "{public}"
+            );
+        }
+    }
+    #[test]
+    fn body_cookie_kind_survives_containers_and_explicit_descendants_override_it() {
+        for (body, expected, ignored) in [
+            (
+                r#"{"Cookie":{"nested":{"value":"sid=opaque-cookie-private=="}},"caption":"sid=public-outside=="}"#,
+                vec!["opaque-cookie-private=="],
+                vec!["public-outside=="],
+            ),
+            (
+                r#"{"Cookie":{"nested":[{"value":"sid=\"opaque+quoted==\"; second=secondary-private=="}]}}"#,
+                vec!["opaque+quoted==", "secondary-private=="],
+                vec![],
+            ),
+            (
+                r#"{"Set-Cookie":{"nested":[{"value":"sid=\"opaque-set-cookie==\"; Path=/; SameSite=None"}]}}"#,
+                vec!["opaque-set-cookie=="],
+                vec!["/", "None"],
+            ),
+            (
+                r#"{"Cookie":{"nested":{"Set-Cookie":{"value":"first=explicit-set==; next=public-attribute"},"sibling":{"value":"sid=parent-cookie==; second=parent-second=="}}}}"#,
+                vec!["explicit-set==", "parent-cookie==", "parent-second=="],
+                vec!["public-attribute"],
+            ),
+            (
+                r#"{"Set-Cookie":{"nested":{"Cookie":[{"value":"first=explicit-cookie==; next=explicit-second=="}],"sibling":{"value":"sid=parent-set==; extra=public-set-attribute"}}}}"#,
+                vec!["explicit-cookie==", "explicit-second==", "parent-set=="],
+                vec!["public-set-attribute"],
+            ),
+            (
+                r#"{"Authorization":{"nested":[{"value":"Bearer nested-bearer=="}]},"credentials":{"value":"Basic dXNlcjpwdw=="},"caption":"Bearer public-outside=="}"#,
+                vec!["nested-bearer==", "dXNlcjpwdw=="],
+                vec!["public-outside=="],
+            ),
+        ] {
+            let values = body_credentials(body).unwrap();
+            for value in expected {
+                assert!(
+                    values.iter().any(|secret| secret.as_str() == value),
+                    "{value}"
+                );
+            }
+            for value in ignored {
+                assert!(
+                    !values.iter().any(|secret| secret.as_str() == value),
+                    "{value}"
+                );
+            }
+        }
+    }
+    #[test]
+    fn xml_cookie_kind_covers_attributes_text_overrides_and_siblings_without_joining_values() {
+        for (body, expected, ignored) in [
+            (
+                r#"<Cookie><nested value="sid=opaque-xml-cookie-private=="/></Cookie>"#,
+                vec!["opaque-xml-cookie-private=="],
+                vec![],
+            ),
+            (
+                r#"<Cookie><first>sid=xml-first==</first><second>other=xml-second==</second></Cookie>"#,
+                vec!["xml-first==", "xml-second=="],
+                vec![
+                    "xml-first==other=xml-second==",
+                    "sid=xml-first==other=xml-second==",
+                ],
+            ),
+            (
+                r#"<Set-Cookie><nested value='sid="xml-quoted=="; Path=/; SameSite=None'/></Set-Cookie>"#,
+                vec!["xml-quoted=="],
+                vec!["/", "None"],
+            ),
+            (
+                r#"<Cookie><Set-Cookie><nested value="sid=xml-explicit-set==; next=public-attribute"/></Set-Cookie><sibling value="sid=xml-parent-cookie==; second=xml-parent-second=="/></Cookie>"#,
+                vec![
+                    "xml-explicit-set==",
+                    "xml-parent-cookie==",
+                    "xml-parent-second==",
+                ],
+                vec!["public-attribute"],
+            ),
+            (
+                r#"<Set-Cookie><Cookie><nested>sid=xml-explicit-cookie==; second=xml-explicit-second==</nested></Cookie><sibling value="sid=xml-parent-set==; next=public-attribute"/></Set-Cookie>"#,
+                vec![
+                    "xml-explicit-cookie==",
+                    "xml-explicit-second==",
+                    "xml-parent-set==",
+                ],
+                vec!["public-attribute"],
+            ),
+            (
+                r#"<r><nested Cookie="sid=xml-attribute=="/><caption value="sid=public-outside=="/></r>"#,
+                vec!["xml-attribute=="],
+                vec!["public-outside=="],
+            ),
+            (
+                r#"<Cookie><nested Set-Cookie="sid=xml-explicit-attribute==; next=public-attribute" value="sid=xml-sibling-cookie==; second=xml-sibling-second=="/></Cookie>"#,
+                vec![
+                    "xml-explicit-attribute==",
+                    "xml-sibling-cookie==",
+                    "xml-sibling-second==",
+                ],
+                vec!["public-attribute"],
+            ),
+            (
+                r#"<Set-Cookie><nested Cookie="sid=xml-explicit-attr-cookie==; next=xml-explicit-attr-second==" value="sid=xml-sibling-set==; next=public-attribute"/></Set-Cookie>"#,
+                vec![
+                    "xml-explicit-attr-cookie==",
+                    "xml-explicit-attr-second==",
+                    "xml-sibling-set==",
+                ],
+                vec!["public-attribute"],
+            ),
+            (
+                r#"<r><credentials><Authorization><value>Bearer xml-bearer==</value></Authorization><nested value="Basic eG1sOnB3=="/></credentials><caption value="Bearer public-outside=="/></r>"#,
+                vec!["xml-bearer==", "eG1sOnB3=="],
+                vec!["public-outside=="],
+            ),
+        ] {
+            let values = body_credentials(body).unwrap();
+            let mask = SecretMask::new(&values).unwrap();
+            for value in expected {
+                assert!(
+                    values.iter().any(|secret| secret.as_str() == value),
+                    "{value}"
+                );
+                assert_eq!(mask.mask(value, 4096), "[redacted]");
+                assert!(link(&format!("https://example.invalid/share?v={value}"), &mask).is_err());
+            }
+            for value in ignored {
+                assert!(
+                    !values.iter().any(|secret| secret.as_str() == value),
+                    "{value}"
+                );
+            }
+        }
+    }
+    #[test]
+    fn repeated_numeric_and_cross_context_values_keep_unique_complete_masks() {
+        let numbers = std::iter::repeat_n("1e5", 128)
+            .collect::<Vec<_>>()
+            .join(",");
+        let values = body_credentials(&format!("{{\"password\":[{numbers}]}}")).unwrap();
+        assert_eq!(values.len(), 2);
+        for value in ["100000", "1e5"] {
+            assert!(values.iter().any(|secret| secret.as_str() == value));
+        }
+        for body in [
+            r#"{"credentials":"sid=context-first==; next=context-second==","Set-Cookie":{"nested":"sid=context-first==; next=context-second=="},"Cookie":{"nested":"sid=context-first==; next=context-second=="}}"#,
+            r#"<r><credentials value="sid=context-first==; next=context-second=="/><Set-Cookie><nested value="sid=context-first==; next=context-second=="/></Set-Cookie><Cookie><nested value="sid=context-first==; next=context-second=="/></Cookie></r>"#,
+        ] {
+            let values = body_credentials(body).unwrap();
+            for value in ["context-first==", "context-second=="] {
+                assert!(values.iter().any(|secret| secret.as_str() == value));
+            }
+            let unique = values
+                .iter()
+                .map(|value| value.as_str())
+                .collect::<HashSet<_>>();
+            assert_eq!(values.len(), unique.len());
+        }
+    }
+    #[test]
     fn outgoing_cookie_values_are_redacted_and_cannot_be_exposed_as_links() {
         let mut secrets = Vec::new();
         add_auth_secret(
@@ -2558,18 +2874,293 @@ mod tests {
         assert!(serde_json::from_str::<Pairs>(r#"{"z":"first","z":"second"}"#).is_err());
     }
     #[test]
+    fn sxcu_http_rechecks_opened_versions_after_headers_for_binary_and_multipart() -> Result<()> {
+        use std::{
+            io::{Read, Write},
+            net::TcpListener,
+        };
+        for body in ["Binary", "MultipartFormData"] {
+            for sealed in [false, true] {
+                for mutation in [0u8, 1, 2] {
+                    let fixture = Fixture::new();
+                    let path = fixture.path("source.bin");
+                    let original = vec![b's'; 128 * 1024];
+                    std::fs::write(&path, &original)?;
+                    let (file, length) = opened(&path, 64 * 1024 * 1024, "fixture")?;
+                    let admitted = crate::FileIdentity::from_file(&file)?;
+                    let cancel = if sealed {
+                        crate::UploadCancellation::default().with_source_identity(admitted.clone())
+                    } else {
+                        crate::UploadCancellation::default()
+                    };
+                    cancel.verify_source_file(&file)?;
+                    let guard = UploadSourceGuard::new(&file, admitted, length)?;
+                    let listener = TcpListener::bind("127.0.0.1:0")?;
+                    listener.set_nonblocking(true)?;
+                    let url = format!("http://{}/upload", listener.local_addr()?);
+                    let changed = path.clone();
+                    let worker = std::thread::spawn(move || {
+                        let until = std::time::Instant::now() + Duration::from_secs(3);
+                        let mut stream = loop {
+                            match listener.accept() {
+                                Ok((stream, _)) => break stream,
+                                Err(error)
+                                    if error.kind() == std::io::ErrorKind::WouldBlock
+                                        && std::time::Instant::now() < until =>
+                                {
+                                    std::thread::sleep(Duration::from_millis(1))
+                                }
+                                error => panic!("Private SXCU accept failed: {error:?}"),
+                            }
+                        };
+                        stream
+                            .set_read_timeout(Some(Duration::from_secs(3)))
+                            .unwrap();
+                        stream
+                            .set_write_timeout(Some(Duration::from_secs(3)))
+                            .unwrap();
+                        let mut headers = Vec::new();
+                        let mut byte = [0];
+                        while !headers.ends_with(b"\r\n\r\n") {
+                            assert!(headers.len() < 8192);
+                            stream.read_exact(&mut byte).unwrap();
+                            headers.push(byte[0]);
+                        }
+                        let text = std::str::from_utf8(&headers).unwrap();
+                        let mut remaining: usize = text
+                            .lines()
+                            .find_map(|line| {
+                                let (name, value) = line.split_once(':')?;
+                                name.eq_ignore_ascii_case("content-length")
+                                    .then(|| value.trim().parse().unwrap())
+                            })
+                            .unwrap();
+                        assert!(remaining < 512 * 1024);
+                        // Native metadata/version changes occur after admission and before the 200.
+                        if mutation != 0 {
+                            let mut source = std::fs::OpenOptions::new()
+                                .write(true)
+                                .open(changed)
+                                .unwrap();
+                            source.write_all(b"x").unwrap();
+                            if mutation == 2 {
+                                source.set_len(length + 1).unwrap();
+                            }
+                            source.sync_all().unwrap();
+                        }
+                        let mut bytes = [0; 64 * 1024];
+                        while remaining != 0 {
+                            let count = remaining.min(bytes.len());
+                            stream.read_exact(&mut bytes[..count]).unwrap();
+                            remaining -= count;
+                        }
+                        let response = b"https://example.invalid/confirmed";
+                        write!(
+                            stream,
+                            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                            response.len()
+                        )
+                        .unwrap();
+                        stream.write_all(response).unwrap();
+                    });
+                    let request = Request {
+                        url: url.clone(),
+                        method: "POST".into(),
+                        body: body.into(),
+                        file_field: "file".into(),
+                        attach_file: body == "MultipartFormData",
+                        headers: Pairs::default(),
+                        arguments: Pairs::default(),
+                        data: String::new(),
+                        events: Vec::new(),
+                        secrets: Vec::new(),
+                    };
+                    let runtime = tokio::runtime::Builder::new_current_thread()
+                        .enable_all()
+                        .max_blocking_threads(1)
+                        .build()?;
+                    let result = runtime.block_on(http(
+                        &request,
+                        reqwest::Url::parse(&url)?,
+                        reqwest::header::HeaderMap::new(),
+                        Some(Payload::File(file, length)),
+                        Zeroizing::new(Vec::new()),
+                        "public.bin",
+                        Some(guard),
+                        cancel,
+                    ));
+                    worker.join().unwrap();
+                    if mutation == 0 {
+                        assert_eq!(result?.status, 200);
+                        assert_eq!(std::fs::read(&path)?, original);
+                    } else {
+                        let error = format!(
+                            "{:#}",
+                            result.err().expect("Changed SXCU source was confirmed")
+                        );
+                        assert!(
+                            error.contains("changed") && error.contains("server may"),
+                            "{error}"
+                        );
+                        assert_eq!(
+                            std::fs::metadata(&path)?.len(),
+                            length + u64::from(mutation == 2)
+                        );
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+    #[test]
+    fn multipart_tracks_each_argument_and_file_with_exact_limits_and_refuses_early_2xx()
+    -> Result<()> {
+        use std::{
+            io::{Read, Write},
+            net::TcpListener,
+        };
+        for attach_file in [false, true] {
+            for early in [false, true] {
+                let listener = TcpListener::bind("127.0.0.1:0")?;
+                listener.set_nonblocking(true)?;
+                let url = format!("http://{}/upload", listener.local_addr()?);
+                let worker = std::thread::spawn(move || {
+                    let until = std::time::Instant::now() + Duration::from_secs(3);
+                    let mut stream = loop {
+                        match listener.accept() {
+                            Ok((stream, _)) => break stream,
+                            Err(error)
+                                if error.kind() == std::io::ErrorKind::WouldBlock
+                                    && std::time::Instant::now() < until =>
+                            {
+                                std::thread::sleep(Duration::from_millis(1))
+                            }
+                            error => panic!("Private multipart accept failed: {error:?}"),
+                        }
+                    };
+                    stream
+                        .set_read_timeout(Some(Duration::from_secs(3)))
+                        .unwrap();
+                    stream
+                        .set_write_timeout(Some(Duration::from_secs(3)))
+                        .unwrap();
+                    let mut headers = Vec::new();
+                    let mut byte = [0];
+                    while !headers.ends_with(b"\r\n\r\n") {
+                        assert!(headers.len() < 8192);
+                        stream.read_exact(&mut byte).unwrap();
+                        headers.push(byte[0]);
+                    }
+                    let text = std::str::from_utf8(&headers).unwrap();
+                    let length: usize = text
+                        .lines()
+                        .find_map(|line| {
+                            let (name, value) = line.split_once(':')?;
+                            name.eq_ignore_ascii_case("content-length")
+                                .then(|| value.trim().parse().unwrap())
+                        })
+                        .unwrap();
+                    assert!(length < 65536);
+                    let mut body = Vec::new();
+                    if !early {
+                        body.resize(length, 0);
+                        stream.read_exact(&mut body).unwrap();
+                    }
+                    let response = b"https://example.invalid/confirmed";
+                    write!(
+                        stream,
+                        "HTTP/1.1 201 Created\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        response.len()
+                    )
+                    .unwrap();
+                    stream.write_all(response).unwrap();
+                    body
+                });
+                let request = Request {
+                    url: url.clone(),
+                    method: "POST".into(),
+                    body: "MultipartFormData".into(),
+                    file_field: if attach_file {
+                        "file".into()
+                    } else {
+                        String::new()
+                    },
+                    attach_file,
+                    headers: Pairs::default(),
+                    arguments: Pairs(vec![
+                        ("first".into(), "one".into()),
+                        ("second".into(), "longer café".into()),
+                        ("empty".into(), String::new()),
+                    ]),
+                    data: String::new(),
+                    events: Vec::new(),
+                    secrets: Vec::new(),
+                };
+                let _pause = early.then(crate::upload::upload_source::pause_next_body_for_test);
+                let payload =
+                    attach_file.then(|| Payload::Bytes(b"file-with-different-length".to_vec()));
+                let runtime = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .max_blocking_threads(1)
+                    .build()?;
+                let result = runtime.block_on(http(
+                    &request,
+                    reqwest::Url::parse(&url)?,
+                    reqwest::header::HeaderMap::new(),
+                    payload,
+                    Zeroizing::new(Vec::new()),
+                    "public.bin",
+                    None,
+                    crate::UploadCancellation::default(),
+                ));
+                let body = worker.join().unwrap();
+                if early {
+                    let error = format!(
+                        "{:#}",
+                        result
+                            .err()
+                            .expect("Paused multipart argument produced a successful response")
+                    );
+                    assert!(
+                        error.contains("not fully consumed") && error.contains("remote object"),
+                        "{error}"
+                    );
+                    assert!(body.is_empty());
+                    // http returns no success to interpret/publish, so caller `?` cannot reach Link/QR.
+                } else {
+                    assert_eq!(result?.status, 201);
+                    for bytes in [
+                        b"name=\"first\"\r\n\r\none\r\n".as_slice(),
+                        "name=\"second\"\r\n\r\nlonger café\r\n".as_bytes(),
+                        b"name=\"empty\"\r\n\r\n\r\n".as_slice(),
+                    ] {
+                        assert!(body.windows(bytes.len()).any(|part| part == bytes));
+                    }
+                    assert_eq!(
+                        body.windows(b"file-with-different-length".len())
+                            .any(|part| part == b"file-with-different-length"),
+                        attach_file
+                    );
+                }
+            }
+        }
+        Ok(())
+    }
+    #[test]
     fn admitted_memory_body_counts_consumption_without_another_image_copy() {
         let count = Arc::new(std::sync::atomic::AtomicU64::new(0));
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
             .unwrap();
-        let mut reader = TrackedReader {
-            reader: Box::new(std::io::Cursor::new(
-                b"finalized synthetic PNG bytes".to_vec(),
-            )),
-            count: count.clone(),
-        };
+        let bytes = b"finalized synthetic PNG bytes".to_vec();
+        let length = bytes.len() as u64;
+        let mut reader = TrackedUploadReader::new(
+            std::io::Cursor::new(bytes),
+            length,
+            count.clone(),
+            crate::UploadCancellation::default(),
+        );
         let mut actual = Vec::new();
         runtime.block_on(async {
             reader.read_to_end(&mut actual).await.unwrap();

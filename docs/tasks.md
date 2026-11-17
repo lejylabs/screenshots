@@ -80,6 +80,13 @@ rollback deletion or silent restart follows. Successful remote upload followed
 by a link/parser/stdout error may still leave that remote object. Final-output
 publication retains the existing atomic no-replace behavior, including races.
 
+SXCU file uploads retain the exact opened-file version through helper preparation
+and HTTP acknowledgment. The shared upload source guard checks complete tracked payload
+consumption and the retained identity/length before any successful result reaches
+Link, QR or clipboard actions. Same-size in-place changes and growth fail with
+remote-object uncertainty; scheduled raw-file uploads keep their existing prepared
+source identity check as well. No retry or automatic remote cleanup follows.
+
 Memory is one current image, optional one clipboard representation, the existing
 encoder/upload buffers and a bounded profile/action list. Recipe operations
 release the previous raster. No resident runtime, background task graph, timer,
@@ -108,3 +115,12 @@ repeating UTC sequences with these source/action profiles. It seals the actual
 prepared configuration, pauses changed profiles/references and never retries
 an uncertain Task or upload. Scheduled receipts omit action payloads and URLs;
 standalone `task run` receipts retain their documented behavior.
+
+
+Source-verification update (2026-11-17): the actual private HTTPS fixture now
+mutates sealed raw-file sources after request headers, exercises real schedule
+add/serve/list, and verifies an uncertain run with no automatic retry and no
+later Link/QR output. Unchanged actual file/memory/recipe chains still pass.
+The 137-request run uses an isolated synthetic Secret Service and loopback TLS;
+no user clipboard or real provider account is involved. See
+[the current SXCU evidence](sharex-runtime.md#corrected-parser-source-and-result-integration-2026-11-17).

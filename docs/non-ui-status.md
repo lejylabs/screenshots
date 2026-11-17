@@ -4,6 +4,20 @@ Date: 2026-11-17
 Scope: the user's complete major-feature list, with final GPUI redesign and new
 UI controls excluded. The workstation stays on. The full backlog is **open**.
 
+Current dependency gate (2026-11-17): a newly surfaced default audit now fails
+on Chrono 0.4.45, advisory RUSTSEC-2026-0543 (all Chrono versions unmaintained).
+The [official advisory](https://github.com/RustSec/advisory-db/blob/main/crates/chrono/RUSTSEC-2026-0543.md)
+provides no safe Chrono upgrade. Migration to maintained date/time APIs is open;
+no ignore, version spoof or renamed shim is used. Earlier passing audits below
+remain dated evidence, not a current passing graph.
+
+The corrected modern SXCU/source/result pipeline is integrated. Fresh source
+reviews 13/14 are clean; 33 focused Rust, three shared-source and 11 actual CLI
+cases, 357 helper assertions and the full 137-request private HTTPS/Task/schedule/
+installed-runtime fixture pass. Clippy, Windows GNU metadata and formatting pass.
+The fixture uses its own bus/keyring/CA, never the user's keyring or clipboard.
+[Current sharing evidence](sharex-runtime.md#corrected-parser-source-and-result-integration-2026-11-17).
+
 The renderer now skips fresh path render targets for scenes with no paths.
 The old behavior fails the targeted allocation assertion; the corrected source
 passes all 47 optimized package tests and an identical-workload memory probe.
@@ -253,7 +267,7 @@ completion is listed separately.
   acceptance remain. Structured coordinate/uploader mutation smoke now covers
   16,618 seed/mutation cases, 24 boundaries and independent exact oracles; a
   coverage-guided/sanitizer campaign remains separate.
-- [x] **Dependency maintenance:** maintained font/SVG and D-Bus active families
+- [ ] **Dependency maintenance:** maintained font/SVG and D-Bus active families
   and focused regression coverage are implemented. Recheck the exact final graph;
   dormant upstream optional-backend lock entries and the default-branch GLib alert
   remain separate facts. [Current scope](dependency-maintenance.md).
