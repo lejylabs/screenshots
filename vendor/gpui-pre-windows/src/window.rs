@@ -1172,7 +1172,7 @@ impl accesskit::ActionHandler for A11yActionHandler {
     }
 }
 
-#[implement(IDropTarget)]
+#[implement(IDropTarget, Agile = false)]
 struct WindowsDragDropHandler(pub Rc<WindowsWindowInner>);
 
 impl WindowsDragDropHandler {
