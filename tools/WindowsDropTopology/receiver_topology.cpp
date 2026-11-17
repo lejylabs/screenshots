@@ -11,6 +11,7 @@
 #include <cstring>
 #include <cwchar>
 #include <string>
+#include <memory>
 #include <vector>
 
 constexpr SIZE_T growth = 96 * 1024 * 1024;
@@ -66,7 +67,7 @@ static HWND owner_window() {
     WNDCLASSW cls{}; cls.lpfnWndProc = owner_proc; cls.hInstance = GetModuleHandleW(nullptr); cls.lpszClassName = L"ScreenshotsPrivateDropProbe";
     require(RegisterClassW(&cls) != 0, "private window class");
     // This desktop is never selected as the input desktop or shown to the user.
-    HWND window = CreateWindowExW(0, cls.lpszClassName, L"owned synthetic receiver", WS_POPUP | WS_VISIBLE, -16000, -16000, 32767, 32767, nullptr, nullptr, cls.hInstance, nullptr);
+    HWND window = CreateWindowExW(0, cls.lpszClassName, L"owned synthetic receiver", WS_POPUP | WS_VISIBLE, 0, 0, 128, 128, nullptr, nullptr, cls.hInstance, nullptr);
     require(window != nullptr, "private owner window");
     return window;
 }
@@ -120,7 +121,7 @@ struct Source final : IDataObject {
     HRESULT STDMETHODCALLTYPE QueryGetData(FORMATETC* format) override {
         state->query_pid = GetCurrentProcessId(); state->query_tid = GetCurrentThreadId();
         RPC_CALL_ATTRIBUTES_V2_W attributes{}; attributes.Version = 2; attributes.Flags = RPC_QUERY_CLIENT_PID;
-        if (RpcServerInqCallAttributesW(nullptr, &attributes) == RPC_S_OK)
+        if (!baseline && RpcServerInqCallAttributesW(nullptr, &attributes) == RPC_S_OK)
             state->query_client_pid = static_cast<DWORD>(reinterpret_cast<UINT_PTR>(attributes.ClientPID));
         InterlockedIncrement(&state->query_calls);
         SetEvent(ready_event);
@@ -183,6 +184,10 @@ struct Target final : IDropTarget {
     ULONG STDMETHODCALLTYPE Release() override { LONG n = InterlockedDecrement(&refs); if (!n) delete this; return n; }
     HRESULT STDMETHODCALLTYPE DragEnter(IDataObject* source, DWORD, POINTL, DWORD* effect) override {
         state->enter_pid = GetCurrentProcessId(); state->enter_tid = GetCurrentThreadId();
+        // The failure control executes an owned source directly on the HWND's
+        // foreground STA; remote COM waits may pump window messages themselves.
+        std::unique_ptr<Source> local_baseline(baseline ? new Source : nullptr);
+        if (local_baseline) source = local_baseline.get();
         *effect = DROPEFFECT_NONE;
         FORMATETC format{CF_HDROP, nullptr, DVASPECT_CONTENT, -1, TYMED_HGLOBAL};
         state->query_result = source->QueryGetData(&format);
@@ -335,8 +340,8 @@ int wmain(int argc, wchar_t** argv) {
     DWORD receiver_exit = STILL_ACTIVE, source_exit = STILL_ACTIVE;
     require(GetExitCodeProcess(receiver_process.hProcess, &receiver_exit), "receiver exit code");
     if (source_process.hProcess) require(GetExitCodeProcess(source_process.hProcess, &source_exit), "source exit code");
-    bool topology = state->enter_pid == state->receiver_pid && state->enter_tid == state->receiver_tid && state->query_pid == state->source_pid && state->query_tid == state->source_tid;
-    std::printf("{\"scope\":\"%s\",\"baseline_foreground\":%s,\"owner_ping_within_50ms\":%s,\"registration\":%ld,\"ready\":%s,\"delivered\":%s,\"cleaned\":%s,\"topology\":%s,\"native_bound\":%ld,\"small_probe\":%ld,\"large_probe\":%ld,\"baseline_private\":%llu,\"growth_bytes\":%llu,\"copied\":%ld,\"query_calls\":%ld,\"data_calls\":%ld,\"medium_releases\":%ld,\"elapsed_ms\":%llu,\"owner_messages\":%lu,\"controller_pid\":%lu,\"owner_pid\":%lu,\"receiver_pid\":%lu,\"enter_pid\":%lu,\"source_pid\":%lu,\"query_pid\":%lu,\"query_client_pid\":%lu,\"query_client_pid_available\":%s,\"query_result\":%ld,\"get_result\":%ld,\"source_data_result\":%ld,\"offered_bytes\":%llu,\"cleanup_result\":%ld,\"receiver_exit\":%lu,\"source_exit\":%lu,\"failure_pid\":%lu,\"failure_win32_error\":%lu,\"failure_hresult\":%ld,\"failure_stage\":\"%s\",\"all_children_reaped\":true}\n", ole_route ? "private-DoDragDrop" : "private-direct-COM-proxy", baseline ? "true" : "false", ping ? "true" : "false", state->registration, ready ? "true" : "false", delivered ? "true" : "false", cleaned ? "true" : "false", topology ? "true" : "false", state->native_bound, state->small_probe, state->large_probe, state->private_baseline, static_cast<ULONGLONG>(growth), state->copied, state->query_calls, state->data_calls, state->medium_releases, GetTickCount64() - begin, dispatched, GetCurrentProcessId(), state->owner_pid, state->receiver_pid, state->enter_pid, state->source_pid, state->query_pid, state->query_client_pid, state->query_client_pid ? "true" : "false", state->query_result, state->get_result, state->source_data_result, state->offered_bytes, state->cleanup_result, receiver_exit, source_exit, state->failure_pid, state->failure_win32_error, state->failure_hresult, state->failure_stage);
+    bool topology = state->enter_pid == state->receiver_pid && state->enter_tid == state->receiver_tid && (baseline ? state->query_pid == state->owner_pid && state->query_tid == state->owner_tid : state->query_pid == state->source_pid && state->query_tid == state->source_tid);
+    std::printf("{\"scope\":\"%s\",\"baseline_foreground\":%s,\"baseline_uses_local_owned_source\":%s,\"owner_ping_within_50ms\":%s,\"registration\":%ld,\"ready\":%s,\"delivered\":%s,\"cleaned\":%s,\"topology\":%s,\"native_bound\":%ld,\"small_probe\":%ld,\"large_probe\":%ld,\"baseline_private\":%llu,\"growth_bytes\":%llu,\"copied\":%ld,\"query_calls\":%ld,\"data_calls\":%ld,\"medium_releases\":%ld,\"elapsed_ms\":%llu,\"owner_messages\":%lu,\"controller_pid\":%lu,\"owner_pid\":%lu,\"receiver_pid\":%lu,\"enter_pid\":%lu,\"source_pid\":%lu,\"query_pid\":%lu,\"query_client_pid\":%lu,\"query_client_pid_available\":%s,\"query_result\":%ld,\"get_result\":%ld,\"source_data_result\":%ld,\"offered_bytes\":%llu,\"cleanup_result\":%ld,\"receiver_exit\":%lu,\"source_exit\":%lu,\"failure_pid\":%lu,\"failure_win32_error\":%lu,\"failure_hresult\":%ld,\"failure_stage\":\"%s\",\"all_children_reaped\":true}\n", ole_route ? "private-DoDragDrop" : "private-direct-COM-proxy", baseline ? "true" : "false", baseline ? "true" : "false", ping ? "true" : "false", state->registration, ready ? "true" : "false", delivered ? "true" : "false", cleaned ? "true" : "false", topology ? "true" : "false", state->native_bound, state->small_probe, state->large_probe, state->private_baseline, static_cast<ULONGLONG>(growth), state->copied, state->query_calls, state->data_calls, state->medium_releases, GetTickCount64() - begin, dispatched, GetCurrentProcessId(), state->owner_pid, state->receiver_pid, state->enter_pid, state->source_pid, state->query_pid, state->query_client_pid, state->query_client_pid ? "true" : "false", state->query_result, state->get_result, state->source_data_result, state->offered_bytes, state->cleanup_result, receiver_exit, source_exit, state->failure_pid, state->failure_win32_error, state->failure_hresult, state->failure_stage);
     bool expected = ready && state->registration == S_OK && state->native_bound && state->small_probe && state->large_probe && state->query_calls == 1 && (baseline ? state->owner_pid == state->receiver_pid : state->owner_pid != state->receiver_pid);
     if (state->query_client_pid) expected = expected && state->query_client_pid == state->receiver_pid;
     if (!std::wcscmp(scenario, L"normal")) expected = expected && topology && delivered && cleaned && state->copied && state->medium_releases == 1 && state->data_calls == 1 && state->get_result == S_OK && state->cleanup_result == S_OK && (!ole_route || state->enter_result == DRAGDROP_S_DROP);

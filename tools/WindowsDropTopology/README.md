@@ -31,7 +31,15 @@ prerequisite; never substitute the direct-proxy result or switch to the user's
 input desktop. The fixture's deterministic IDropSource drops after observing
 the target's first actual callback. No physical mouse/keyboard state is needed.
 
-The baseline target owns its own HWND on its foreground STA. The contained
+All private windows have fixed 128×128 geometry at the posted test coordinate;
+there is no full-desktop/large backing surface or real desktop capture.
+
+The baseline target owns its own HWND on its foreground STA and invokes an owned
+synthetic IDataObject directly there. That deliberate failure control avoids
+relying on which messages Windows might pump during an outgoing remote COM wait.
+The separate source process drives the target/OLE call; baseline QueryGetData's
+recorded PID/TID must be the HWND's foreground PID/TID. It does not represent a
+measurement of every ordinary external source's COM wait behavior. The contained
 target runs in a different process from the HWND-owning foreground STA. A posted
 ping to the owned HWND during blocked QueryGetData must miss 50 ms in baseline
 and complete within 50 ms in contained mode. This is a synthetic failure control,
