@@ -2154,3 +2154,15 @@ execution. The separately authored cfg native fixture and all native COM/OLE,
 fault/editor/lifecycle/private-GPU/resource acceptance remain open. Details and
 precise original-source/C++ prerequisite limits follow the
 [drop contract](clipboard-import-output.md#integrated-windows-receiver-source-2026-11-17).
+
+## Native HDR source precision and SDR rendition (2026-11-17)
+
+Modern macOS tagged-float and Windows WGC FP16 source paths now retain precision
+until explicit color conversion into the existing RGBA8 sRGB document. Frozen
+source/geometry/reference-white/native-byte reservations precede acquisition;
+SDR mirrors and proven legacy behavior remain distinct from unknown HDR states.
+Linux/Windows GNU metadata, 89 optimized affected capture controls (four opt-ins
+ignored) and Clippy pass. This is portable/type evidence; actual CG/WGC, HDR/P3/
+SDR hardware and PLAN resource/latency acceptance remain open. The separately
+prepared Linux metadata/format adapter and Windows tiled extension must supply
+their own evidence. [Precise policy and limits](hdr-capture.md).

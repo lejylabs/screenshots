@@ -19,6 +19,12 @@ negative control. Windows GNU metadata, five exact retained Date-Picker interact
 observations remain separate checks.
 [Maintenance details](dependency-maintenance.md).
 
+Native macOS/Windows HDR acquisition and a declared SDR rendition are now
+integrated in development source. Optimized Linux and Windows GNU metadata,
+89 affected capture controls (four opt-ins ignored) and Clippy pass. Native SDK/
+frame/runtime/hardware/resource gates and the larger Windows tiled extension
+remain separate. [HDR contract](hdr-capture.md).
+
 Windows incoming native file/image/URL data now uses the isolated non-agile
 receiver source for all eligible windows. Linux and GNU workspace/vendor-test
 metadata, 122 optimized existing consumers, three deadline controls, Clippy and

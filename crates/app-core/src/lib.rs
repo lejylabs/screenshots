@@ -104,6 +104,10 @@ pub use file_identity::FileIdentity;
 mod filenames;
 pub use arrows::ArrowAnnotation;
 pub use filenames::{capture_file_name, validate_capture_name_template};
+#[cfg(any(target_os = "macos", target_os = "windows", test))]
+mod capture_color;
+#[cfg(any(target_os = "windows", test))]
+mod capture_windows_admission;
 mod clipboard;
 mod clipboard_input;
 #[cfg(target_os = "windows")]

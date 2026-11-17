@@ -1,3 +1,4 @@
+use crate::capture_windows_admission::{Admission, Proof};
 use crate::{
     CaptureCursor, CaptureMonitorBinding, CaptureMonitorIdentity, CaptureOptions,
     CaptureWindowFrame, DisplayInfo, capture_options::CaptureCursorImage,
@@ -13,6 +14,8 @@ use windows_sys::Win32::{
 };
 #[path = "capture_native_windows_geometry.rs"]
 mod geometry;
+#[path = "capture_native_windows_hdr.rs"]
+mod hdr;
 pub(super) use geometry::{TopologyGuard, monitor_geometry};
 
 pub(crate) struct DpiScope(DPI_AWARENESS_CONTEXT);
@@ -418,10 +421,32 @@ fn geometry(window: &xcap::Window) -> Result<([i32; 4], [i32; 4], u32)> {
         window.pid()?,
     ))
 }
-pub(super) fn capture_window(window: &xcap::Window, options: &CaptureOptions) -> Result<RgbaImage> {
+pub(super) fn capture_window(
+    window: &xcap::Window,
+    options: &CaptureOptions,
+    admission: &Admission,
+) -> Result<RgbaImage> {
     let _dpi = DpiScope::new()?;
-    let before = geometry(window)?;
-    let mut image = window.capture_image()?;
+    let check = || -> Result<()> {
+        admission
+            .verify(&window_proof(window)?)
+            .map_err(anyhow::Error::from)
+    };
+    check()?;
+    let Proof::Window {
+        geometry: before,
+        color,
+        ..
+    } = admission.proof()
+    else {
+        anyhow::bail!("Native window reservation type changed");
+    };
+    let before = *before;
+    let mut image = if let Some(color) = color.selected {
+        hdr::window(window, before.0, color, &check)?
+    } else {
+        window.capture_image()?
+    };
     let full = before.0;
     ensure!(
         i64::from(full[2]) - i64::from(full[0]) == i64::from(image.width())
@@ -454,9 +479,88 @@ pub(super) fn capture_window(window: &xcap::Window, options: &CaptureOptions) ->
     if options.cursor == CaptureCursor::Include {
         apply_cursor(&mut image, origin.0, origin.1)?;
     }
+    check()?;
     ensure!(
         geometry(window)? == before,
         "Native window moved, resized or changed process during capture"
     );
     Ok(image)
+}
+
+pub(super) fn display_proof(
+    monitor: &xcap::Monitor,
+    area: Option<crate::PixelRegion>,
+) -> Result<Proof> {
+    let _dpi = DpiScope::new()?;
+    Ok(Proof::Display {
+        id: monitor.id()?,
+        name: monitor.name()?,
+        geometry: monitor_geometry(monitor)?,
+        area,
+        color: hdr::color(monitor)?,
+    })
+}
+pub(super) fn window_proof(window: &xcap::Window) -> Result<Proof> {
+    let _dpi = DpiScope::new()?;
+    let geometry = geometry(window)?;
+    Ok(Proof::Window {
+        id: window.id()?,
+        geometry,
+        color: hdr::window_color(geometry.0)?,
+    })
+}
+pub(super) fn prepare_display_admission(
+    monitor: &xcap::Monitor,
+    area: Option<crate::PixelRegion>,
+) -> Result<Admission> {
+    Admission::new(display_proof(monitor, area)?).map_err(anyhow::Error::from)
+}
+pub(super) fn prepare_window_admission(window: &xcap::Window) -> Result<Admission> {
+    Admission::new(window_proof(window)?).map_err(anyhow::Error::from)
+}
+pub(super) fn capture_display(
+    monitor: &xcap::Monitor,
+    _: &CaptureOptions,
+    admission: &Admission,
+) -> Result<RgbaImage> {
+    capture_area(monitor, None, admission)
+}
+pub(super) fn capture_region(
+    monitor: &xcap::Monitor,
+    area: crate::PixelRegion,
+    _: &CaptureOptions,
+    admission: &Admission,
+) -> Result<RgbaImage> {
+    capture_area(monitor, Some(area), admission)
+}
+fn capture_area(
+    monitor: &xcap::Monitor,
+    area: Option<crate::PixelRegion>,
+    admission: &Admission,
+) -> Result<RgbaImage> {
+    let check = || -> Result<()> {
+        admission
+            .verify(&display_proof(monitor, area)?)
+            .map_err(anyhow::Error::from)
+    };
+    check()?;
+    let Proof::Display {
+        geometry, color, ..
+    } = admission.proof()
+    else {
+        anyhow::bail!("Native display reservation type changed");
+    };
+    let area = area.unwrap_or(crate::PixelRegion {
+        x: 0,
+        y: 0,
+        width: geometry.width,
+        height: geometry.height,
+    });
+    // Route by the immutable admitted proof, never by a fresh live color query.
+    let output = match color {
+        Some(color) => hdr::display(monitor, area, *color, &check)?,
+        None => monitor.capture_region(area.x, area.y, area.width, area.height)?,
+    };
+    check()?;
+    Ok(output)
 }
