@@ -14,6 +14,9 @@ use std::{
     },
     time::{Duration, Instant},
 };
+#[cfg(target_os = "macos")]
+#[path = "../../../crates/app-core/src/clipboard_input_budget.rs"]
+mod image_budget;
 #[path = "capture_worker_transport.rs"]
 #[allow(dead_code)] // Reuse the bounded transport without unused-operation warnings.
 mod transport;
@@ -166,11 +169,13 @@ impl Native {
         let prepared = transport::Prepared::new(&mut command)?;
         #[cfg(unix)]
         {
+            #[cfg(target_os = "linux")]
             use std::os::unix::process::CommandExt;
             command
                 .stdin(Stdio::null())
                 .stdout(Stdio::null())
                 .stderr(Stdio::null());
+            #[cfg(target_os = "linux")]
             unsafe {
                 command.pre_exec(move || {
                     let limit = libc::rlimit {
@@ -437,6 +442,12 @@ fn worker(args: &[OsString]) -> i32 {
             &handshake == HANDSHAKE && nonce == received_nonce,
             "Private print handshake failed"
         );
+        #[cfg(target_os = "macos")]
+        {
+            // Install against this fresh executable's VM, not the forked GUI's mappings.
+            let mut budget = image_budget::Budget::enter()?;
+            budget.decoding()?;
+        }
         let pixels = app_core::load_editor_image(&options.input)?;
         #[cfg(target_os = "windows")]
         let mut pixels = pixels;
