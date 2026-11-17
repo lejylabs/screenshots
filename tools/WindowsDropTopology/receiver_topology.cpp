@@ -19,12 +19,15 @@ constexpr SIZE_T growth = 96 * 1024 * 1024;
 constexpr DWORD deadline_ms = 5000;
 struct QueryTrace { DWORD format, aspect, tymed; LONG index, after_enter; DWORD pid, tid; };
 struct Shared {
+    DWORD controller_pid;
     DWORD receiver_pid, receiver_tid, source_pid, source_tid;
     DWORD enter_pid, enter_tid, query_pid, query_tid, data_pid, data_tid, query_client_pid;
     DWORD owner_pid, owner_tid; UINT_PTR owner_hwnd;
     LONG query_calls, data_calls, medium_releases, native_bound, small_probe, large_probe;
     LONG registration, enter_result, query_result, get_result, source_data_result, cleanup_result, copied, completed;
     DWORD failure_pid, failure_win32_error; LONG failure_hresult; char failure_stage[96];
+    LONG failure_claimed, input_not_owned, input_check_failures;
+    DWORD source_input_error, controller_input_error, last_input_return;
     ULONGLONG private_baseline, offered_bytes;
     LONG preflight_query_calls, preflight_get_calls, preflight_medium_releases, native_stage, enum_calls, enum_result, source_continue_calls, source_feedback_calls, private_move_calls, ci_cursor_moves, query_trace_count;
     LONG drag_call_started, mover_started, mover_stopped, cursor_window_is_owner;
@@ -46,6 +49,8 @@ static bool ole_route = false, baseline = false, ci_input = false;
 static IDataObject* source_data;
 static IDropSource* source_drop;
 static DWORD source_effect;
+static std::wstring expected_ci_desktop;
+static bool fatal_report_enabled = true, diagnostic_written = false;
 static SRWLOCK qi_trace_lock = SRWLOCK_INIT;
 static void require_owned_ci() {
     wchar_t actions[8]{}, operating_system[32]{}, runner_environment[32]{}, explicit_gate[8]{};
@@ -63,23 +68,50 @@ static const wchar_t* parse_scenario(const wchar_t* value) {
     if (!std::wcsncmp(value, L"ole-", 4)) { ole_route = true; value += 4; }
     return value;
 }
+static void record_failure(const char* what, DWORD error, HRESULT result) {
+    if (state && InterlockedCompareExchange(&state->failure_claimed, 1, 0) == 0) {
+        state->failure_pid = GetCurrentProcessId(); state->failure_win32_error = error; state->failure_hresult = result;
+        strncpy_s(state->failure_stage, what, _TRUNCATE);
+    }
+}
+static void report_fatal(const char* what, DWORD error, HRESULT result) {
+    if (!fatal_report_enabled || diagnostic_written) return;
+    std::printf("{\"partial_diagnostics\":true,\"controller_fatal_stage\":\"%s\",\"failure_stage\":\"%s\",\"failure_win32_error\":%lu,\"failure_hresult\":%ld,\"source_pid\":%lu,\"receiver_pid\":%lu,\"input_stage\":%ld,\"injected_button_downs\":%ld,\"injected_button_ups\":%ld,\"controller_button_ups\":%ld,\"input_not_owned\":%ld,\"source_input_error\":%lu,\"controller_input_error\":%lu,\"all_children_reaped\":false}\n", what, state ? state->failure_stage : what, state ? state->failure_win32_error : error, state ? state->failure_hresult : result, state ? state->source_pid : 0, state ? state->receiver_pid : 0, state ? state->input_stage : 0, state ? state->injected_button_downs : 0, state ? state->injected_button_ups : 0, state ? state->controller_button_ups : 0, state ? state->input_not_owned : 0, state ? state->source_input_error : 0, state ? state->controller_input_error : 0);
+    std::fflush(stdout); diagnostic_written = true;
+}
 static void require(bool value, const char* what) {
     if (!value) {
-        DWORD error = GetLastError();
-        if (state) {
-            state->failure_pid = GetCurrentProcessId(); state->failure_win32_error = error;
-            strncpy_s(state->failure_stage, what, _TRUNCATE);
-        }
-        std::fprintf(stderr, "%s: %lu\n", what, error); ExitProcess(90);
+        DWORD error = GetLastError(); record_failure(what, error, S_OK);
+        std::fprintf(stderr, "%s: %lu\n", what, error); report_fatal(what, error, S_OK); ExitProcess(90);
     }
 }
 static void require_hr(HRESULT result, const char* what) {
-    if (FAILED(result)) { if (state) state->failure_hresult = result; require(false, what); }
+    if (FAILED(result)) { DWORD error = GetLastError(); record_failure(what, error, result); std::fprintf(stderr, "%s: HRESULT %ld, Win32 %lu\n", what, result, error); report_fatal(what, error, result); ExitProcess(90); }
+}
+static bool exact_owned_input_desktop() {
+    HDESK input = OpenInputDesktop(0, FALSE, DESKTOP_READOBJECTS | DESKTOP_JOURNALPLAYBACK);
+    if (!input) { if (state) InterlockedIncrement(&state->input_check_failures); return false; }
+    wchar_t input_name[128]{}, thread_name[128]{}; DWORD actual = 0;
+    bool named = GetUserObjectInformationW(input, UOI_NAME, input_name, sizeof(input_name), &actual) && GetUserObjectInformationW(GetThreadDesktop(GetCurrentThreadId()), UOI_NAME, thread_name, sizeof(thread_name), &actual);
+    DWORD error = named ? ERROR_SUCCESS : GetLastError(); CloseDesktop(input);
+    if (!named) { if (state) InterlockedIncrement(&state->input_check_failures); SetLastError(error); return false; }
+    if (expected_ci_desktop.empty() || expected_ci_desktop != input_name || expected_ci_desktop != thread_name) {
+        if (state) InterlockedIncrement(&state->input_not_owned); SetLastError(ERROR_INVALID_STATE); return false;
+    }
+    return true;
 }
 static bool owned_left_button(DWORD flags) {
     require_owned_ci();
     INPUT input{}; input.type = INPUT_MOUSE; input.mi.dwFlags = flags;
-    return SendInput(1, &input, sizeof(input)) == 1;
+    UINT sent = 0; DWORD error = ERROR_SUCCESS;
+    if (exact_owned_input_desktop()) { SetLastError(ERROR_SUCCESS); sent = SendInput(1, &input, sizeof(input)); error = sent == 1 ? ERROR_SUCCESS : GetLastError(); }
+    else error = GetLastError();
+    if (state) {
+        state->last_input_return = sent;
+        if (GetCurrentProcessId() == state->source_pid) state->source_input_error = error;
+        else if (GetCurrentProcessId() == state->controller_pid) state->controller_input_error = error;
+    }
+    SetLastError(error); return sent == 1;
 }
 static int release_owned_ci_input(const wchar_t* controller_text) {
     require_owned_ci(); wchar_t* end = nullptr;
@@ -87,15 +119,17 @@ static int release_owned_ci_input(const wchar_t* controller_text) {
     unsigned long controller = std::wcstoul(controller_text, &end, 10);
     require(controller != 0 && end != controller_text && *end == 0, "owned CI release controller ID");
     std::wstring expected = L"ScreenshotsDropProbe-" + std::to_wstring(controller);
-    HDESK input = OpenInputDesktop(0, FALSE, DESKTOP_READOBJECTS | DESKTOP_WRITEOBJECTS | DESKTOP_SWITCHDESKTOP);
+    expected_ci_desktop = expected;
+    HDESK input = OpenInputDesktop(0, FALSE, DESKTOP_READOBJECTS | DESKTOP_WRITEOBJECTS | DESKTOP_SWITCHDESKTOP | DESKTOP_JOURNALPLAYBACK);
     require(input != nullptr, "owned CI external release input desktop");
     wchar_t name[128]{}; DWORD actual = 0;
     require(GetUserObjectInformationW(input, UOI_NAME, name, sizeof(name), &actual), "owned CI external release desktop identity");
-    if (expected != name) { CloseDesktop(input); std::printf("{\"released\":false,\"owned_desktop_not_current\":true}\n"); return 0; }
+    if (expected != name) { CloseDesktop(input); std::printf("{\"released\":false,\"owned_desktop_not_current\":true}\n"); diagnostic_written = true; return 0; }
     HDESK original = GetThreadDesktop(GetCurrentThreadId());
     require(SetThreadDesktop(input), "attach external release to exact owned CI desktop");
     require(owned_left_button(MOUSEEVENTF_LEFTUP), "external owned CI left-button release");
     std::printf("{\"released\":true,\"owned_desktop_not_current\":false}\n");
+    diagnostic_written = true;
     require(SetThreadDesktop(original), "restore external release thread desktop"); CloseDesktop(input); return 0;
 }
 static HANDLE from_arg(const wchar_t* text) {
@@ -107,6 +141,7 @@ static void attach(int argc, wchar_t** argv) {
     require(state != nullptr, "child mapping");
     ready_event = from_arg(argv[3]); done_event = from_arg(argv[4]); stop_event = from_arg(argv[5]);
     scenario = parse_scenario(argv[7]);
+    if (ci_input) expected_ci_desktop = L"ScreenshotsDropProbe-" + std::to_wstring(state->controller_pid);
 }
 static LRESULT CALLBACK owner_proc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam) {
     if (message == WM_APP + 2) { SetEvent(ready_event); return 0; }
@@ -371,8 +406,7 @@ static int receiver(int argc, wchar_t** argv) {
     HRESULT registered = RegisterDragDrop(owner, target);
     state->registration = registered;
     if (FAILED(registered)) {
-        state->failure_win32_error = GetLastError(); state->failure_pid = GetCurrentProcessId(); state->failure_hresult = registered;
-        strcpy_s(state->failure_stage, "RegisterDragDrop");
+        record_failure("RegisterDragDrop", GetLastError(), registered);
         SetEvent(ready_event); target->Release(); OleUninitialize(); CloseHandle(budget); return 20;
     }
     IStream* stream = nullptr;
@@ -474,13 +508,14 @@ static bool pump_until(HANDLE event, ULONGLONG limit, ULONG& dispatched) {
 }
 int wmain(int argc, wchar_t** argv) {
     if (argc == 3 && !std::wcscmp(argv[1], L"--release-owned-ci-input")) return release_owned_ci_input(argv[2]);
-    if (argc > 1 && !std::wcscmp(argv[1], L"--receiver")) return receiver(argc, argv);
-    if (argc > 1 && !std::wcscmp(argv[1], L"--source")) return source(argc, argv);
+    if (argc > 1 && !std::wcscmp(argv[1], L"--receiver")) { fatal_report_enabled = false; return receiver(argc, argv); }
+    if (argc > 1 && !std::wcscmp(argv[1], L"--source")) { fatal_report_enabled = false; return source(argc, argv); }
     bool explicit_ci_flag = argc == 3 && !std::wcscmp(argv[1], L"--owned-ci-input-desktop");
     require(argc == 2 || explicit_ci_flag, "supply one scenario, with the explicit flag only for owned hosted CI");
     const wchar_t* case_name = explicit_ci_flag ? argv[2] : argv[1]; scenario = parse_scenario(case_name);
     require(!ci_input || explicit_ci_flag, "CI input scenario requires --owned-ci-input-desktop");
     std::wstring station_name = L"ScreenshotsDropProbe-" + std::to_wstring(GetCurrentProcessId());
+    if (ci_input) expected_ci_desktop = station_name;
     HWINSTA original_station = GetProcessWindowStation(); HDESK original_desktop = GetThreadDesktop(GetCurrentThreadId());
     HWINSTA station = original_station; HDESK original_input = nullptr; POINT original_cursor{};
     std::wstring desktop_name = ci_input ? station_name : L"probe", desktop_path;
@@ -495,7 +530,7 @@ int wmain(int argc, wchar_t** argv) {
         require(station != nullptr, "private window station"); require(SetProcessWindowStation(station), "select private station");
         desktop_path = station_name + L"\\probe";
     }
-    DWORD desktop_access = DESKTOP_CREATEWINDOW | DESKTOP_READOBJECTS | DESKTOP_WRITEOBJECTS | DESKTOP_ENUMERATE | (ci_input ? DESKTOP_SWITCHDESKTOP : 0);
+    DWORD desktop_access = DESKTOP_CREATEWINDOW | DESKTOP_READOBJECTS | DESKTOP_WRITEOBJECTS | DESKTOP_ENUMERATE | (ci_input ? DESKTOP_SWITCHDESKTOP | DESKTOP_JOURNALPLAYBACK : 0);
     HDESK desktop = CreateDesktopW(desktop_name.c_str(), nullptr, nullptr, 0, desktop_access, nullptr);
     require(desktop != nullptr && SetThreadDesktop(desktop), "private desktop");
     if (ci_input) { require(SwitchDesktop(desktop), "select owned CI input desktop"); require(SetCursorPos(16, 16), "owned CI private cursor position"); }
@@ -503,6 +538,7 @@ int wmain(int argc, wchar_t** argv) {
     SECURITY_ATTRIBUTES security{sizeof(security), nullptr, TRUE};
     HANDLE mapping = CreateFileMappingW(INVALID_HANDLE_VALUE, &security, PAGE_READWRITE, 0, sizeof(Shared), nullptr);
     state = static_cast<Shared*>(MapViewOfFile(mapping, FILE_MAP_ALL_ACCESS, 0, 0, sizeof(Shared))); require(state != nullptr, "private shared metadata");
+    state->controller_pid = GetCurrentProcessId();
     state->registration = state->enter_result = state->query_result = state->get_result = state->source_data_result = state->cleanup_result = E_PENDING;
     state->enum_result = state->enum_next_result = E_PENDING;
     ready_event = CreateEventW(&security, TRUE, FALSE, nullptr); done_event = CreateEventW(&security, TRUE, FALSE, nullptr); stop_event = CreateEventW(&security, TRUE, FALSE, nullptr);
@@ -536,14 +572,18 @@ int wmain(int argc, wchar_t** argv) {
     TerminateJobObject(job, 99);
     require(WaitForSingleObject(receiver_process.hProcess, 2000) == WAIT_OBJECT_0, "receiver reaped");
     if (source_process.hProcess) require(WaitForSingleObject(source_process.hProcess, 2000) == WAIT_OBJECT_0, "source reaped");
-    if (ci_input) { require(owned_left_button(MOUSEEVENTF_LEFTUP), "owned CI controller left-button release"); InterlockedIncrement(&state->controller_button_ups); }
+    if (ci_input) {
+        if (owned_left_button(MOUSEEVENTF_LEFTUP)) InterlockedIncrement(&state->controller_button_ups);
+        else record_failure("owned CI controller left-button release", GetLastError(), S_OK);
+    }
     DWORD receiver_exit = STILL_ACTIVE, source_exit = STILL_ACTIVE;
     require(GetExitCodeProcess(receiver_process.hProcess, &receiver_exit), "receiver exit code");
     if (source_process.hProcess) require(GetExitCodeProcess(source_process.hProcess, &source_exit), "source exit code");
     bool topology = state->enter_pid == state->receiver_pid && state->enter_tid == state->receiver_tid && (baseline ? state->query_pid == state->owner_pid && state->query_tid == state->owner_tid : state->query_pid == state->source_pid && state->query_tid == state->source_tid);
     wchar_t source_iid[40]{}, drop_iid[40]{};
     StringFromGUID2(state->last_source_iid, source_iid, 40); StringFromGUID2(state->last_drop_source_iid, drop_iid, 40);
-    std::printf("{\"input_stage\":%ld,\"source_window_ready\":%ld,\"drag_call_done\":%ld,\"injected_button_downs\":%ld,\"injected_button_ups\":%ld,\"controller_button_ups\":%ld,\"source_qi_calls\":%ld,\"drop_source_qi_calls\":%ld,\"last_source_iid\":\"%ls\",\"last_drop_source_iid\":\"%ls\",\"source_gui_ok\":%ld,\"source_capture_nonzero\":%ld,\"source_active_pid\":%lu,\"source_capture_pid\":%lu,\"source_capture_class\":\"%s\",", state->input_stage, state->source_window_ready, state->drag_call_done, state->injected_button_downs, state->injected_button_ups, state->controller_button_ups, state->source_qi_calls, state->drop_source_qi_calls, source_iid, drop_iid, state->source_gui_ok, state->source_capture_nonzero, state->source_active_pid, state->source_capture_pid, state->source_capture_class);
+    std::printf("{\"input_not_owned\":%ld,\"input_check_failures\":%ld,\"source_input_error\":%lu,\"controller_input_error\":%lu,\"last_input_return\":%lu,\"first_failure_preserved\":%ld,", state->input_not_owned, state->input_check_failures, state->source_input_error, state->controller_input_error, state->last_input_return, state->failure_claimed);
+    std::printf("\"input_stage\":%ld,\"source_window_ready\":%ld,\"drag_call_done\":%ld,\"injected_button_downs\":%ld,\"injected_button_ups\":%ld,\"controller_button_ups\":%ld,\"source_qi_calls\":%ld,\"drop_source_qi_calls\":%ld,\"last_source_iid\":\"%ls\",\"last_drop_source_iid\":\"%ls\",\"source_gui_ok\":%ld,\"source_capture_nonzero\":%ld,\"source_active_pid\":%lu,\"source_capture_pid\":%lu,\"source_capture_class\":\"%s\",", state->input_stage, state->source_window_ready, state->drag_call_done, state->injected_button_downs, state->injected_button_ups, state->controller_button_ups, state->source_qi_calls, state->drop_source_qi_calls, source_iid, drop_iid, state->source_gui_ok, state->source_capture_nonzero, state->source_active_pid, state->source_capture_pid, state->source_capture_class);
     std::printf("\"drag_call_started\":%ld,\"enum_result\":%ld,\"enum_next_calls\":%ld,\"enum_next_result\":%ld,\"enum_next_fetched\":%ld,\"mover_started\":%ld,\"mover_stopped\":%ld,\"mover_pid\":%lu,\"mover_tid\":%lu,\"cursor_window_is_owner\":%ld,\"cursor_window_pid\":%lu,\"cursor_window_class\":\"%s\",", state->drag_call_started, state->enum_result, state->enum_next_calls, state->enum_next_result, state->enum_next_fetched, state->mover_started, state->mover_stopped, state->mover_pid, state->mover_tid, state->cursor_window_is_owner, state->cursor_window_pid, state->cursor_window_class);
     std::printf("\"preflight_query_calls\":%ld,\"preflight_get_calls\":%ld,\"preflight_medium_releases\":%ld,\"native_stage\":%ld,\"enum_calls\":%ld,\"source_continue_calls\":%ld,\"source_feedback_calls\":%ld,\"private_move_calls\":%ld,\"ci_cursor_moves\":%ld,\"cursor_ok\":%ld,\"cursor_error\":%lu,\"cursor_x\":%ld,\"cursor_y\":%ld,\"message_position\":%lu,\"point_zero_is_owner\":%s,\"query_trace_count\":%ld,\"query_trace\":[", state->preflight_query_calls, state->preflight_get_calls, state->preflight_medium_releases, state->native_stage, state->enum_calls, state->source_continue_calls, state->source_feedback_calls, state->private_move_calls, state->ci_cursor_moves, state->cursor_ok, state->cursor_error, state->cursor.x, state->cursor.y, state->message_position, state->point_window == state->owner_hwnd ? "true" : "false", state->query_trace_count);
     for (LONG index = 0; index < state->query_trace_count && index < 16; ++index) {
@@ -553,6 +593,7 @@ int wmain(int argc, wchar_t** argv) {
     std::printf("],");
     std::printf("\"scope\":\"%s\",\"baseline_foreground\":%s,\"baseline_uses_local_owned_source\":%s,\"owner_ping_within_50ms\":%s,\"registration\":%ld,\"ready\":%s,\"delivered\":%s,\"cleaned\":%s,\"topology\":%s,\"native_bound\":%ld,\"small_probe\":%ld,\"large_probe\":%ld,\"baseline_private\":%llu,\"growth_bytes\":%llu,\"copied\":%ld,\"query_calls\":%ld,\"data_calls\":%ld,\"medium_releases\":%ld,\"elapsed_ms\":%llu,\"owner_messages\":%lu,\"controller_pid\":%lu,\"owner_pid\":%lu,\"receiver_pid\":%lu,\"enter_pid\":%lu,\"source_pid\":%lu,\"query_pid\":%lu,\"query_client_pid\":%lu,\"query_client_pid_available\":%s,\"query_result\":%ld,\"get_result\":%ld,\"source_data_result\":%ld,\"offered_bytes\":%llu,\"cleanup_result\":%ld,\"receiver_exit\":%lu,\"source_exit\":%lu,\"failure_pid\":%lu,\"failure_win32_error\":%lu,\"failure_hresult\":%ld,\"failure_stage\":\"%s\",\"all_children_reaped\":true}\n", ci_input ? "owned-hosted-CI-input-DoDragDrop" : ole_route ? "private-DoDragDrop" : "private-direct-COM-proxy", baseline ? "true" : "false", baseline ? "true" : "false", ping ? "true" : "false", state->registration, ready ? "true" : "false", delivered ? "true" : "false", cleaned ? "true" : "false", topology ? "true" : "false", state->native_bound, state->small_probe, state->large_probe, state->private_baseline, static_cast<ULONGLONG>(growth), state->copied, state->query_calls, state->data_calls, state->medium_releases, GetTickCount64() - begin, dispatched, GetCurrentProcessId(), state->owner_pid, state->receiver_pid, state->enter_pid, state->source_pid, state->query_pid, state->query_client_pid, state->query_client_pid ? "true" : "false", state->query_result, state->get_result, state->source_data_result, state->offered_bytes, state->cleanup_result, receiver_exit, source_exit, state->failure_pid, state->failure_win32_error, state->failure_hresult, state->failure_stage);
     bool expected = ready && state->registration == S_OK && state->native_bound && state->small_probe && state->large_probe && state->query_calls == 1 && (baseline ? state->owner_pid == state->receiver_pid : state->owner_pid != state->receiver_pid);
+    diagnostic_written = true; std::fflush(stdout);
     if (state->query_client_pid) expected = expected && state->query_client_pid == state->receiver_pid;
     if (!std::wcscmp(scenario, L"normal")) expected = expected && topology && delivered && cleaned && state->copied && state->medium_releases == 1 && state->data_calls == 1 && state->get_result == S_OK && state->cleanup_result == S_OK && (!ole_route || state->enter_result == DRAGDROP_S_DROP);
     else expected = expected && topology && !state->copied && (!delivered || !std::wcscmp(scenario, L"over-memory"));

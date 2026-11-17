@@ -1,4 +1,4 @@
-# Held Windows receiver topology proof, revision 7
+# Held Windows receiver topology proof, revision 8
 
 This is source-only verification work, not production integration. The author has
 not compiled or executed this revision. Root must review the complete source and
@@ -37,6 +37,30 @@ calls DoDragDrop from that window's WM_LBUTTONDOWN handler. It preserves every
 previous outcome and adds source input, QueryInterface, enumeration Next and GUI
 capture-stage diagnostics. A failure remains a failure; no direct-proxy result
 is a substitute for actual OLE target discovery.
+
+Revision 7 run 44067178252, job 133983753282, artifact 14319993444 passes
+six direct cases but every CI case exits at controller SendInput(left-up) with
+ERROR_ACCESS_DENIED (5). That final require suppressed the source-stage JSON;
+these results establish no OLE behavior. Every external desktop/cursor restore
+succeeds. The owned desktop access mask omitted DESKTOP_JOURNALPLAYBACK (0x20),
+which is required for journal playback and needed by SendInput on that desktop.
+
+Revision 8 adds only that right to creation of the owned CI desktop and the
+external releaser's input-desktop handle. It changes no ACL, logon privilege,
+security policy or ordinary private-desktop access. Native input is still
+explicitly gated to the disposable hosted VM.
+
+Every SendInput now independently checks both the current input desktop and its
+calling thread's attached desktop against the exact generated owned desktop
+name. A mismatch records a not-owned error and sends nothing; no original CI
+input desktop is used as fallback. The mover remains pinned to its source-owned
+desktop. Source and controller input errors have separate fields, and the first
+native failure is retained with an Interlocked claim so a cleanup failure cannot
+overwrite the original cause. A failed controller release is recorded and causes
+test failure, while the controller still emits its entire bounded diagnostic
+JSON and attempts normal restoration. The existing independent release/restore
+guards remain active. Actual API rights/enforcement must still be demonstrated
+by the next native run; no successful gesture or OLE routing is claimed here.
 
 ## Explicitly different execution scopes
 
@@ -184,3 +208,9 @@ Explorer/browser compatibility, DPI/accessibility, application cancellation,
 production idle/helper startup cost or full performance acceptance. The separate
 controlled custom IMarshal draft has not run and is not part of this revision.
 Production hard containment and raw/URL adapter integration remain open.
+
+Primary native access reference: [Desktop Security and Access Rights](https://learn.microsoft.com/en-us/windows/win32/winstation/desktop-security-and-access-rights).
+The SendInput/journal-playback connection is also described by the archived
+Microsoft staff post originally published at
+https://blogs.msdn.microsoft.com/alejacma/2010/03/17/sendinput-doesnt-work-but-it-doesnt-return-an-error/ .
+This source diagnosis remains subject to the owned native runtime result.
