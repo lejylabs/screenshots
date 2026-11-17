@@ -44,7 +44,7 @@ CREATE TRIGGER captures_save_reserve_update BEFORE UPDATE OF file_path,id ON cap
 const MAX_ENCODED: u64 = 272 * 1024 * 1024;
 const MAX_PAYLOAD: usize = 16384;
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Ready {
     sha256: String,
@@ -52,14 +52,14 @@ struct Ready {
     width: u32,
     height: u32,
 }
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct CancelStamp {
     bytes: u64,
     sha256: String,
     zero_flushed: bool,
 }
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Intent {
     version: u8,
@@ -188,7 +188,7 @@ fn validate(intent: &Intent) -> Result<()> {
     }
     Ok(())
 }
-fn load(connection: &rusqlite::Connection) -> Result<Option<Intent>> {
+fn load_record(connection: &rusqlite::Connection) -> Result<Option<(Intent, String)>> {
     let value=connection.query_row("SELECT CASE WHEN length(CAST(operation_id AS BLOB))=36 THEN operation_id END,CASE WHEN length(CAST(target_path AS BLOB))<=4096 THEN target_path END,CASE WHEN length(CAST(stage_path AS BLOB))<=4096 THEN stage_path END,CASE WHEN length(CAST(payload AS BLOB))<=16384 THEN payload END FROM pending_capture_save WHERE singleton=1",[],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?,r.get::<_,String>(3)?))).optional()?;
     value
         .map(|(id, target, stage, value)| {
@@ -201,9 +201,22 @@ fn load(connection: &rusqlite::Connection) -> Result<Option<Intent>> {
                     && intent.stage == Path::new(&stage),
                 "Capture save intent columns disagree; files preserved"
             );
-            Ok(intent)
+            Ok((intent, value))
         })
         .transpose()
+}
+fn load(connection: &rusqlite::Connection) -> Result<Option<Intent>> {
+    Ok(load_record(connection)?.map(|(intent, _)| intent))
+}
+fn matching_payload(connection: &rusqlite::Connection, expected: &Intent) -> Result<String> {
+    let (current, payload) =
+        load_record(connection)?.context("Capture save intent disappeared; files preserved")?;
+    ensure!(
+        current == *expected,
+        "Capture save intent changed; files preserved"
+    );
+    // Keep the exact observed bytes for CAS; JSON layout is not journal state.
+    Ok(payload)
 }
 pub fn pending_capture_save(database: &Path) -> Result<Option<PendingCaptureSave>> {
     let connection = crate::storage::open_read_only(database)?;
@@ -225,10 +238,11 @@ pub fn pending_capture_save(database: &Path) -> Result<Option<PendingCaptureSave
     }))
 }
 fn clear(connection: &rusqlite::Connection, intent: &Intent) -> Result<()> {
+    let payload = matching_payload(connection, intent)?;
     ensure!(
         connection.execute(
             "DELETE FROM pending_capture_save WHERE singleton=1 AND operation_id=?1 AND payload=?2",
-            params![intent.operation_id, serde_json::to_string(intent)?]
+            params![intent.operation_id, payload]
         )? == 1,
         "Capture save intent changed; files preserved"
     );
@@ -245,7 +259,8 @@ fn encoded_intent(intent: &Intent) -> Result<String> {
 #[cfg(any(target_os = "windows", test))]
 fn replace_intent(database: &Path, old: &Intent, new: &Intent) -> Result<()> {
     let connection = super::open_existing(database)?;
-    ensure!(connection.execute("UPDATE pending_capture_save SET payload=?1 WHERE singleton=1 AND operation_id=?2 AND payload=?3",params![encoded_intent(new)?,old.operation_id,encoded_intent(old)?])?==1,"Capture save changed before cancellation");
+    let payload = matching_payload(&connection, old)?;
+    ensure!(connection.execute("UPDATE pending_capture_save SET payload=?1 WHERE singleton=1 AND operation_id=?2 AND payload=?3",params![encoded_intent(new)?,old.operation_id,payload])?==1,"Capture save changed before cancellation");
     Ok(())
 }
 fn canceled_outcome(intent: &Intent) -> CaptureSaveOutcome {
@@ -595,9 +610,9 @@ fn save_format(
         file.sync_all()?;
         directory.sync()?;
         let admitted = crate::FileIdentity::from_file(&file)?;
-        let old = serde_json::to_string(&intent)?;
-        intent.ready = Some(ready);
         let connection = super::open_existing(database)?;
+        let old = matching_payload(&connection, &intent)?;
+        intent.ready = Some(ready);
         ensure!(connection.execute("UPDATE pending_capture_save SET payload=?1 WHERE singleton=1 AND operation_id=?2 AND payload=?3",params![serde_json::to_string(&intent)?,intent.operation_id,old])?==1,"Capture save intent changed before publication");
         Ok(admitted)
     })();
