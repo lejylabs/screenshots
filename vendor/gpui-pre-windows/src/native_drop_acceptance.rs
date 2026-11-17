@@ -139,7 +139,7 @@ pub fn run(case: &str) -> Result<()> {
     } else {
         provider(case, window)
     };
-    if unsafe { IsWindow(window) }.as_bool() {
+    if unsafe { IsWindow(Some(window)) }.as_bool() {
         unsafe { DestroyWindow(window) }?;
     }
     result?;
@@ -198,7 +198,9 @@ impl PrivateDesktop {
                 OpenInputDesktop(
                     DESKTOP_CONTROL_FLAGS(0),
                     false,
-                    DESKTOP_SWITCHDESKTOP | DESKTOP_READOBJECTS | DESKTOP_WRITEOBJECTS,
+                    DESKTOP_ACCESS_FLAGS(
+                        DESKTOP_SWITCHDESKTOP.0 | DESKTOP_READOBJECTS.0 | DESKTOP_WRITEOBJECTS.0,
+                    ),
                 )
             }?;
             unsafe { SwitchDesktop(desktop) }?;

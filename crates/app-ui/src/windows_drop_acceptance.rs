@@ -28,7 +28,10 @@ unsafe extern "system" {
     fn GetClipboardSequenceNumber() -> u32;
 }
 fn native(window: &Window) -> Result<usize> {
-    match HasWindowHandle::window_handle(window)?.as_raw() {
+    match HasWindowHandle::window_handle(window)
+        .map_err(|error| anyhow::anyhow!("Native window handle unavailable: {error:?}"))?
+        .as_raw()
+    {
         RawWindowHandle::Win32(handle) => Ok(handle.hwnd.get() as usize),
         _ => anyhow::bail!("Acceptance needs actual Windows backend"),
     }
