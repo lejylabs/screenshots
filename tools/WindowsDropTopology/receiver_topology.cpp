@@ -1,0 +1,326 @@
+// Private COM topology probe. This is held verification source, not production.
+// Build: cl /nologo /std:c++20 /EHsc /W4 receiver_topology.cpp ole32.lib user32.lib psapi.lib
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#include <ole2.h>
+#include <psapi.h>
+#include <rpc.h>
+#include <rpcasync.h>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <cwchar>
+#include <string>
+#include <vector>
+
+constexpr SIZE_T growth = 96 * 1024 * 1024;
+constexpr DWORD deadline_ms = 5000;
+struct Shared {
+    DWORD receiver_pid, receiver_tid, source_pid, source_tid;
+    DWORD enter_pid, enter_tid, query_pid, query_tid, data_pid, data_tid, query_client_pid;
+    DWORD owner_pid, owner_tid; UINT_PTR owner_hwnd;
+    LONG query_calls, data_calls, medium_releases, native_bound, small_probe, large_probe;
+    LONG registration, enter_result, copied, completed;
+    ULONGLONG private_baseline;
+    DWORD marshal_bytes;
+    BYTE marshal[16 * 1024];
+};
+static Shared* state;
+static HANDLE ready_event, done_event, stop_event;
+static const wchar_t* scenario;
+static bool ole_route = false, baseline = false;
+static const wchar_t* parse_scenario(const wchar_t* value) {
+    if (!std::wcsncmp(value, L"baseline-", 9)) { baseline = true; value += 9; }
+    if (!std::wcsncmp(value, L"ole-", 4)) { ole_route = true; value += 4; }
+    return value;
+}
+static void require(bool value, const char* what) {
+    if (!value) { std::fprintf(stderr, "%s: %lu\n", what, GetLastError()); ExitProcess(90); }
+}
+static HANDLE from_arg(const wchar_t* text) {
+    return reinterpret_cast<HANDLE>(_wcstoui64(text, nullptr, 10));
+}
+static void attach(int argc, wchar_t** argv) {
+    require(argc == 8, "child arguments");
+    state = static_cast<Shared*>(MapViewOfFile(from_arg(argv[2]), FILE_MAP_ALL_ACCESS, 0, 0, sizeof(Shared)));
+    require(state != nullptr, "child mapping");
+    ready_event = from_arg(argv[3]); done_event = from_arg(argv[4]); stop_event = from_arg(argv[5]);
+    scenario = parse_scenario(argv[7]);
+}
+static LRESULT CALLBACK owner_proc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam) {
+    if (message == WM_APP + 2) { SetEvent(ready_event); return 0; }
+    return DefWindowProcW(hwnd, message, wparam, lparam);
+}
+static HWND owner_window() {
+    WNDCLASSW cls{}; cls.lpfnWndProc = owner_proc; cls.hInstance = GetModuleHandleW(nullptr); cls.lpszClassName = L"ScreenshotsPrivateDropProbe";
+    require(RegisterClassW(&cls) != 0, "private window class");
+    // This desktop is never selected as the input desktop or shown to the user.
+    HWND window = CreateWindowExW(0, cls.lpszClassName, L"owned synthetic receiver", WS_POPUP | WS_VISIBLE, -16000, -16000, 32767, 32767, nullptr, nullptr, cls.hInstance, nullptr);
+    require(window != nullptr, "private owner window");
+    return window;
+}
+static HANDLE contain_native() {
+    PROCESS_MEMORY_COUNTERS_EX counters{}; counters.cb = sizeof(counters);
+    require(GetProcessMemoryInfo(GetCurrentProcess(), reinterpret_cast<PROCESS_MEMORY_COUNTERS*>(&counters), sizeof(counters)), "private memory baseline");
+    state->private_baseline = counters.PrivateUsage;
+    HANDLE job = CreateJobObjectW(nullptr, nullptr); require(job != nullptr, "native job");
+    JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits{};
+    limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_PROCESS_MEMORY;
+    limits.ProcessMemoryLimit = counters.PrivateUsage + growth;
+    require(SetInformationJobObject(job, JobObjectExtendedLimitInformation, &limits, sizeof(limits)), "native job limit");
+    require(AssignProcessToJobObject(job, GetCurrentProcess()), "native job assignment");
+    state->native_bound = 1;
+    void* small = VirtualAlloc(nullptr, 4096, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+    require(small != nullptr, "small bounded commit"); VirtualFree(small, 0, MEM_RELEASE); state->small_probe = 1;
+    void* large = VirtualAlloc(nullptr, growth + 65536, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+    if (large) VirtualFree(large, 0, MEM_RELEASE);
+    require(large == nullptr, "large commit must fail before COM acquisition"); state->large_probe = 1;
+    return job;
+}
+
+struct MediumRelease final : IUnknown {
+    LONG refs = 1; HGLOBAL global;
+    explicit MediumRelease(HGLOBAL value) : global(value) {}
+    HRESULT STDMETHODCALLTYPE QueryInterface(REFIID iid, void** out) override {
+        if (!out) return E_POINTER; *out = nullptr;
+        if (iid != IID_IUnknown) return E_NOINTERFACE;
+        *out = this; AddRef(); return S_OK;
+    }
+    ULONG STDMETHODCALLTYPE AddRef() override { return InterlockedIncrement(&refs); }
+    ULONG STDMETHODCALLTYPE Release() override {
+        LONG count = InterlockedDecrement(&refs);
+        if (!count) {
+            InterlockedIncrement(&state->medium_releases);
+            if (!std::wcscmp(scenario, L"release-stall")) Sleep(INFINITE);
+            GlobalFree(global); delete this;
+        }
+        return count;
+    }
+};
+struct Source final : IDataObject {
+    LONG refs = 1;
+    HRESULT STDMETHODCALLTYPE QueryInterface(REFIID iid, void** out) override {
+        if (!out) return E_POINTER; *out = nullptr;
+        if (iid != IID_IUnknown && iid != IID_IDataObject) return E_NOINTERFACE;
+        *out = this; AddRef(); return S_OK;
+    }
+    ULONG STDMETHODCALLTYPE AddRef() override { return InterlockedIncrement(&refs); }
+    ULONG STDMETHODCALLTYPE Release() override { LONG n = InterlockedDecrement(&refs); if (!n) delete this; return n; }
+    HRESULT STDMETHODCALLTYPE QueryGetData(FORMATETC* format) override {
+        state->query_pid = GetCurrentProcessId(); state->query_tid = GetCurrentThreadId();
+        RPC_CALL_ATTRIBUTES_V2_W attributes{}; attributes.Version = 2; attributes.Flags = RPC_QUERY_CLIENT_PID;
+        if (RpcServerInqCallAttributesW(nullptr, &attributes) == RPC_S_OK)
+            state->query_client_pid = static_cast<DWORD>(reinterpret_cast<UINT_PTR>(attributes.ClientPID));
+        InterlockedIncrement(&state->query_calls);
+        SetEvent(ready_event);
+        if (!std::wcscmp(scenario, L"query-stall")) Sleep(INFINITE);
+        return format && format->cfFormat == CF_HDROP && format->tymed == TYMED_HGLOBAL ? S_OK : DV_E_FORMATETC;
+    }
+    HRESULT STDMETHODCALLTYPE GetData(FORMATETC* format, STGMEDIUM* medium) override {
+        state->data_pid = GetCurrentProcessId(); state->data_tid = GetCurrentThreadId();
+        InterlockedIncrement(&state->data_calls);
+        if (!std::wcscmp(scenario, L"get-stall")) Sleep(INFINITE);
+        if (!format || !medium) return E_POINTER;
+        SIZE_T bytes = !std::wcscmp(scenario, L"over-memory") ? 128 * 1024 * 1024 : 64;
+        HGLOBAL global = GlobalAlloc(GMEM_MOVEABLE | GMEM_ZEROINIT, bytes);
+        if (!global) return E_OUTOFMEMORY;
+        auto* data = static_cast<BYTE*>(GlobalLock(global));
+        if (!data) { GlobalFree(global); return E_OUTOFMEMORY; }
+        // Synthetic DROPFILES, including native wide terminators. Never opens this path.
+        const wchar_t path[] = L"C:\\owned-fixture.png";
+        DWORD offset = 20, wide = 1;
+        memcpy(data, &offset, sizeof(offset)); memcpy(data + 16, &wide, sizeof(wide));
+        memcpy(data + 20, path, sizeof(path)); GlobalUnlock(global);
+        medium->tymed = TYMED_HGLOBAL; medium->hGlobal = global;
+        medium->pUnkForRelease = new MediumRelease(global);
+        return S_OK;
+    }
+    HRESULT STDMETHODCALLTYPE GetDataHere(FORMATETC*, STGMEDIUM*) override { return E_NOTIMPL; }
+    HRESULT STDMETHODCALLTYPE GetCanonicalFormatEtc(FORMATETC*, FORMATETC* out) override { if (out) out->ptd = nullptr; return E_NOTIMPL; }
+    HRESULT STDMETHODCALLTYPE SetData(FORMATETC*, STGMEDIUM*, BOOL) override { return E_NOTIMPL; }
+    HRESULT STDMETHODCALLTYPE EnumFormatEtc(DWORD, IEnumFORMATETC**) override { return E_NOTIMPL; }
+    HRESULT STDMETHODCALLTYPE DAdvise(FORMATETC*, DWORD, IAdviseSink*, DWORD*) override { return OLE_E_ADVISENOTSUPPORTED; }
+    HRESULT STDMETHODCALLTYPE DUnadvise(DWORD) override { return OLE_E_ADVISENOTSUPPORTED; }
+    HRESULT STDMETHODCALLTYPE EnumDAdvise(IEnumSTATDATA**) override { return OLE_E_ADVISENOTSUPPORTED; }
+};
+struct DropSource final : IDropSource {
+    LONG refs = 1;
+    HRESULT STDMETHODCALLTYPE QueryInterface(REFIID iid, void** out) override {
+        if (!out) return E_POINTER; *out = nullptr;
+        if (iid != IID_IUnknown && iid != IID_IDropSource) return E_NOINTERFACE;
+        *out = this; AddRef(); return S_OK;
+    }
+    ULONG STDMETHODCALLTYPE AddRef() override { return InterlockedIncrement(&refs); }
+    ULONG STDMETHODCALLTYPE Release() override { LONG n = InterlockedDecrement(&refs); if (!n) delete this; return n; }
+    HRESULT STDMETHODCALLTYPE QueryContinueDrag(BOOL, DWORD) override { return state->enter_pid ? DRAGDROP_S_DROP : S_OK; }
+    HRESULT STDMETHODCALLTYPE GiveFeedback(DWORD) override { return DRAGDROP_S_USEDEFAULTCURSORS; }
+};
+static void CALLBACK private_move(HWND, UINT, UINT_PTR, DWORD) {
+    // A thread message in the private source only; no SendInput/SetCursorPos.
+    PostThreadMessageW(GetCurrentThreadId(), WM_MOUSEMOVE, MK_LBUTTON, MAKELPARAM(0, 0));
+}
+struct Target final : IDropTarget {
+    LONG refs = 1;
+    HRESULT STDMETHODCALLTYPE QueryInterface(REFIID iid, void** out) override {
+        if (!out) return E_POINTER; *out = nullptr;
+        if (iid != IID_IUnknown && iid != IID_IDropTarget) return E_NOINTERFACE;
+        *out = this; AddRef(); return S_OK;
+    }
+    ULONG STDMETHODCALLTYPE AddRef() override { return InterlockedIncrement(&refs); }
+    ULONG STDMETHODCALLTYPE Release() override { LONG n = InterlockedDecrement(&refs); if (!n) delete this; return n; }
+    HRESULT STDMETHODCALLTYPE DragEnter(IDataObject* source, DWORD, POINTL, DWORD* effect) override {
+        state->enter_pid = GetCurrentProcessId(); state->enter_tid = GetCurrentThreadId();
+        *effect = DROPEFFECT_NONE;
+        FORMATETC format{CF_HDROP, nullptr, DVASPECT_CONTENT, -1, TYMED_HGLOBAL};
+        if (source->QueryGetData(&format) != S_OK) return S_OK;
+        STGMEDIUM medium{};
+        if (FAILED(source->GetData(&format, &medium))) return S_OK;
+        // This deliberately mirrors the old reader's post-acquisition boundary.
+        bool admitted = medium.tymed == TYMED_HGLOBAL && GlobalSize(medium.hGlobal) <= 65536;
+        ReleaseStgMedium(&medium);
+        if (admitted) { state->copied = 1; *effect = DROPEFFECT_COPY; }
+        return S_OK;
+    }
+    HRESULT STDMETHODCALLTYPE DragOver(DWORD, POINTL, DWORD* effect) override { *effect = DROPEFFECT_COPY; return S_OK; }
+    HRESULT STDMETHODCALLTYPE DragLeave() override { return S_OK; }
+    HRESULT STDMETHODCALLTYPE Drop(IDataObject*, DWORD, POINTL, DWORD* effect) override { *effect = DROPEFFECT_COPY; return S_OK; }
+};
+
+static int receiver(int argc, wchar_t** argv) {
+    attach(argc, argv); state->receiver_pid = GetCurrentProcessId(); state->receiver_tid = GetCurrentThreadId();
+    HANDLE budget = contain_native();
+    require(SUCCEEDED(OleInitialize(nullptr)), "receiver OleInitialize");
+    HWND owner = reinterpret_cast<HWND>(_wcstoui64(argv[6], nullptr, 10));
+    if (baseline) owner = owner_window();
+    state->owner_hwnd = reinterpret_cast<UINT_PTR>(owner);
+    state->owner_tid = GetWindowThreadProcessId(owner, &state->owner_pid);
+    auto* target = new Target;
+    HRESULT registered = RegisterDragDrop(owner, target);
+    state->registration = registered;
+    if (FAILED(registered)) { SetEvent(ready_event); target->Release(); OleUninitialize(); CloseHandle(budget); return 20; }
+    IStream* stream = nullptr;
+    require(SUCCEEDED(CreateStreamOnHGlobal(nullptr, TRUE, &stream)), "marshal stream");
+    require(SUCCEEDED(CoMarshalInterface(stream, IID_IDropTarget, target, MSHCTX_LOCAL, nullptr, MSHLFLAGS_TABLESTRONG)), "marshal owned target");
+    HGLOBAL global = nullptr; require(SUCCEEDED(GetHGlobalFromStream(stream, &global)), "marshal extent");
+    STATSTG stat{}; require(SUCCEEDED(stream->Stat(&stat, STATFLAG_NONAME)), "marshal stat");
+    require(stat.cbSize.HighPart == 0 && stat.cbSize.LowPart <= sizeof(state->marshal), "marshal bound");
+    void* bytes = GlobalLock(global); require(bytes != nullptr, "marshal lock");
+    state->marshal_bytes = stat.cbSize.LowPart; memcpy(state->marshal, bytes, state->marshal_bytes); GlobalUnlock(global);
+    SetEvent(ready_event);
+    for (;;) {
+        DWORD wait = MsgWaitForMultipleObjects(1, &stop_event, FALSE, INFINITE, QS_ALLINPUT);
+        if (wait == WAIT_OBJECT_0) break;
+        require(wait == WAIT_OBJECT_0 + 1, "receiver wait");
+        MSG msg{}; while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) { TranslateMessage(&msg); DispatchMessageW(&msg); }
+    }
+    // These potentially foreign cleanup calls remain inside the same hard deadline.
+    state->registration = RevokeDragDrop(owner);
+    LARGE_INTEGER zero{}; stream->Seek(zero, STREAM_SEEK_SET, nullptr);
+    CoReleaseMarshalData(stream); stream->Release(); target->Release(); OleUninitialize(); CloseHandle(budget);
+    if (baseline) DestroyWindow(owner);
+    state->completed = 1; return 0;
+}
+static int source(int argc, wchar_t** argv) {
+    attach(argc, argv); state->source_pid = GetCurrentProcessId(); state->source_tid = GetCurrentThreadId();
+    require(SUCCEEDED(OleInitialize(nullptr)), "source OleInitialize");
+    auto* offered = new Source; DWORD effect = DROPEFFECT_COPY;
+    if (ole_route) {
+        auto* drag_source = new DropSource;
+        UINT_PTR timer = SetTimer(nullptr, 0, 10, private_move); require(timer != 0, "private operation timer");
+        private_move(nullptr, 0, 0, 0);
+        state->enter_result = DoDragDrop(offered, drag_source, DROPEFFECT_COPY, &effect);
+        KillTimer(nullptr, timer); drag_source->Release();
+    } else {
+        HGLOBAL global = GlobalAlloc(GMEM_MOVEABLE, state->marshal_bytes); require(global != nullptr, "unmarshal storage");
+        void* bytes = GlobalLock(global); require(bytes != nullptr, "unmarshal lock");
+        memcpy(bytes, state->marshal, state->marshal_bytes); GlobalUnlock(global);
+        IStream* stream = nullptr; require(SUCCEEDED(CreateStreamOnHGlobal(global, TRUE, &stream)), "unmarshal stream");
+        IDropTarget* target = nullptr;
+        require(SUCCEEDED(CoUnmarshalInterface(stream, IID_IDropTarget, reinterpret_cast<void**>(&target))), "unmarshal target");
+        stream->Release();
+        state->enter_result = target->DragEnter(offered, 0, POINTL{0, 0}, &effect);
+        target->DragLeave(); target->Release();
+    }
+    offered->Release();
+    // Final proxy and custom-medium rundown is deliberately observed before success.
+    OleUninitialize(); SetEvent(done_event); return 0;
+}
+static PROCESS_INFORMATION launch(const std::wstring& command, const std::wstring& desktop, HANDLE job, const std::vector<HANDLE>& inherited) {
+    SIZE_T size = 0; InitializeProcThreadAttributeList(nullptr, 2, 0, &size);
+    std::vector<BYTE> storage(size); auto* attrs = reinterpret_cast<LPPROC_THREAD_ATTRIBUTE_LIST>(storage.data());
+    require(InitializeProcThreadAttributeList(attrs, 2, 0, &size), "attribute list");
+    require(UpdateProcThreadAttribute(attrs, 0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST, const_cast<HANDLE*>(inherited.data()), inherited.size() * sizeof(HANDLE), nullptr, nullptr), "handle whitelist");
+    require(UpdateProcThreadAttribute(attrs, 0, PROC_THREAD_ATTRIBUTE_JOB_LIST, &job, sizeof(job), nullptr, nullptr), "atomic child job");
+    STARTUPINFOEXW startup{}; startup.StartupInfo.cb = sizeof(startup); startup.StartupInfo.lpDesktop = const_cast<wchar_t*>(desktop.c_str()); startup.lpAttributeList = attrs;
+    std::vector<wchar_t> mutable_command(command.begin(), command.end()); mutable_command.push_back(0);
+    PROCESS_INFORMATION child{};
+    require(CreateProcessW(nullptr, mutable_command.data(), nullptr, nullptr, TRUE, EXTENDED_STARTUPINFO_PRESENT | CREATE_SUSPENDED, nullptr, nullptr, &startup.StartupInfo, &child), "child create");
+    DeleteProcThreadAttributeList(attrs); require(ResumeThread(child.hThread) != static_cast<DWORD>(-1), "child resume"); CloseHandle(child.hThread); return child;
+}
+static bool pump_until(HANDLE event, ULONGLONG limit, ULONG& dispatched) {
+    for (;;) {
+        ULONGLONG now = GetTickCount64(); if (now >= limit) return false;
+        DWORD wait = MsgWaitForMultipleObjects(1, &event, FALSE, static_cast<DWORD>(limit - now), QS_ALLINPUT);
+        if (wait == WAIT_OBJECT_0) return true;
+        if (wait == WAIT_TIMEOUT) return false;
+        require(wait == WAIT_OBJECT_0 + 1, "owner wait");
+        MSG msg{}; while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) { ++dispatched; TranslateMessage(&msg); DispatchMessageW(&msg); }
+    }
+}
+int wmain(int argc, wchar_t** argv) {
+    if (argc > 1 && !std::wcscmp(argv[1], L"--receiver")) return receiver(argc, argv);
+    if (argc > 1 && !std::wcscmp(argv[1], L"--source")) return source(argc, argv);
+    require(argc == 2, "supply [baseline-][ole-]normal/query-stall/get-stall/over-memory/release-stall"); scenario = parse_scenario(argv[1]);
+    std::wstring station_name = L"ScreenshotsDropProbe-" + std::to_wstring(GetCurrentProcessId());
+    HWINSTA original_station = GetProcessWindowStation(); HDESK original_desktop = GetThreadDesktop(GetCurrentThreadId());
+    HWINSTA station = CreateWindowStationW(station_name.c_str(), 0, WINSTA_ALL_ACCESS, nullptr);
+    require(station != nullptr, "private window station"); require(SetProcessWindowStation(station), "select private station");
+    HDESK desktop = CreateDesktopW(L"probe", nullptr, nullptr, 0, DESKTOP_CREATEWINDOW | DESKTOP_READOBJECTS | DESKTOP_WRITEOBJECTS | DESKTOP_ENUMERATE, nullptr);
+    require(desktop != nullptr && SetThreadDesktop(desktop), "private desktop");
+    HWND window = owner_window();
+    SECURITY_ATTRIBUTES security{sizeof(security), nullptr, TRUE};
+    HANDLE mapping = CreateFileMappingW(INVALID_HANDLE_VALUE, &security, PAGE_READWRITE, 0, sizeof(Shared), nullptr);
+    state = static_cast<Shared*>(MapViewOfFile(mapping, FILE_MAP_ALL_ACCESS, 0, 0, sizeof(Shared))); require(state != nullptr, "private shared metadata");
+    ready_event = CreateEventW(&security, TRUE, FALSE, nullptr); done_event = CreateEventW(&security, TRUE, FALSE, nullptr); stop_event = CreateEventW(&security, TRUE, FALSE, nullptr);
+    require(ready_event && done_event && stop_event, "private events");
+    HANDLE job = CreateJobObjectW(nullptr, nullptr); require(job != nullptr, "outer job");
+    JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits{}; limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE | JOB_OBJECT_LIMIT_ACTIVE_PROCESS | JOB_OBJECT_LIMIT_PROCESS_MEMORY;
+    limits.BasicLimitInformation.ActiveProcessLimit = 2; limits.ProcessMemoryLimit = 512 * 1024 * 1024;
+    require(SetInformationJobObject(job, JobObjectExtendedLimitInformation, &limits, sizeof(limits)), "outer job configuration");
+    wchar_t executable[32768]; require(GetModuleFileNameW(nullptr, executable, 32768) > 0, "executable path");
+    auto command = [&](const wchar_t* mode) {
+        return L"\"" + std::wstring(executable) + L"\" " + mode + L" " + std::to_wstring(reinterpret_cast<UINT_PTR>(mapping)) + L" " + std::to_wstring(reinterpret_cast<UINT_PTR>(ready_event)) + L" " + std::to_wstring(reinterpret_cast<UINT_PTR>(done_event)) + L" " + std::to_wstring(reinterpret_cast<UINT_PTR>(stop_event)) + L" " + std::to_wstring(reinterpret_cast<UINT_PTR>(window)) + L" " + argv[1];
+    };
+    auto handles = std::vector<HANDLE>{mapping, ready_event, done_event, stop_event};
+    auto receiver_process = launch(command(L"--receiver"), station_name + L"\\probe", job, handles);
+    ULONG dispatched = 0; ULONGLONG begin = GetTickCount64();
+    bool ready = pump_until(ready_event, begin + deadline_ms, dispatched);
+    PROCESS_INFORMATION source_process{}; bool delivered = false, cleaned = false, ping = false;
+    if (ready && state->registration == S_OK) {
+        ResetEvent(ready_event);
+        source_process = launch(command(L"--source"), station_name + L"\\probe", job, handles);
+        bool queried = pump_until(ready_event, begin + deadline_ms, dispatched);
+        if (queried) {
+            ResetEvent(ready_event);
+            PostMessageW(reinterpret_cast<HWND>(state->owner_hwnd), WM_APP + 2, 0, 0);
+            ping = pump_until(ready_event, GetTickCount64() + 50, dispatched);
+        }
+        delivered = pump_until(done_event, begin + deadline_ms, dispatched);
+        SetEvent(stop_event);
+        cleaned = pump_until(receiver_process.hProcess, begin + deadline_ms, dispatched);
+    }
+    TerminateJobObject(job, 99);
+    require(WaitForSingleObject(receiver_process.hProcess, 2000) == WAIT_OBJECT_0, "receiver reaped");
+    if (source_process.hProcess) require(WaitForSingleObject(source_process.hProcess, 2000) == WAIT_OBJECT_0, "source reaped");
+    bool topology = state->enter_pid == state->receiver_pid && state->enter_tid == state->receiver_tid && state->query_pid == state->source_pid && state->query_tid == state->source_tid;
+    std::printf("{\"scope\":\"%s\",\"baseline_foreground\":%s,\"owner_ping_within_50ms\":%s,\"registration\":%ld,\"ready\":%s,\"delivered\":%s,\"cleaned\":%s,\"topology\":%s,\"native_bound\":%ld,\"small_probe\":%ld,\"large_probe\":%ld,\"baseline_private\":%llu,\"growth_bytes\":%llu,\"copied\":%ld,\"query_calls\":%ld,\"data_calls\":%ld,\"medium_releases\":%ld,\"elapsed_ms\":%llu,\"owner_messages\":%lu,\"controller_pid\":%lu,\"owner_pid\":%lu,\"receiver_pid\":%lu,\"enter_pid\":%lu,\"source_pid\":%lu,\"query_pid\":%lu,\"query_client_pid\":%lu,\"all_children_reaped\":true}\n", ole_route ? "private-DoDragDrop" : "private-direct-COM-proxy", baseline ? "true" : "false", ping ? "true" : "false", state->registration, ready ? "true" : "false", delivered ? "true" : "false", cleaned ? "true" : "false", topology ? "true" : "false", state->native_bound, state->small_probe, state->large_probe, state->private_baseline, static_cast<ULONGLONG>(growth), state->copied, state->query_calls, state->data_calls, state->medium_releases, GetTickCount64() - begin, dispatched, GetCurrentProcessId(), state->owner_pid, state->receiver_pid, state->enter_pid, state->source_pid, state->query_pid, state->query_client_pid);
+    bool expected = ready && state->native_bound && state->small_probe && state->large_probe;
+    if (!std::wcscmp(scenario, L"normal")) expected = expected && topology && delivered && cleaned && state->copied && state->medium_releases == 1;
+    else expected = expected && topology && !state->copied && (!delivered || !std::wcscmp(scenario, L"over-memory"));
+    if (!std::wcscmp(scenario, L"query-stall")) expected = expected && (baseline ? !ping : ping);
+    CloseHandle(receiver_process.hProcess); if (source_process.hProcess) CloseHandle(source_process.hProcess); CloseHandle(job);
+    UnmapViewOfFile(state); CloseHandle(mapping); CloseHandle(ready_event); CloseHandle(done_event); CloseHandle(stop_event);
+    DestroyWindow(window); UnregisterClassW(L"ScreenshotsPrivateDropProbe", GetModuleHandleW(nullptr));
+    require(SetThreadDesktop(original_desktop), "restore desktop"); require(SetProcessWindowStation(original_station), "restore station"); CloseDesktop(desktop); CloseWindowStation(station);
+    return expected ? 0 : 1;
+}
