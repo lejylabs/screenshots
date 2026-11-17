@@ -26,7 +26,7 @@ struct Shared {
     LONG registration, enter_result, query_result, get_result, source_data_result, cleanup_result, copied, completed;
     DWORD failure_pid, failure_win32_error; LONG failure_hresult; char failure_stage[96];
     ULONGLONG private_baseline, offered_bytes;
-    LONG preflight_query_calls, preflight_get_calls, preflight_medium_releases, native_stage, enum_calls, source_continue_calls, source_feedback_calls, private_move_calls, query_trace_count;
+    LONG preflight_query_calls, preflight_get_calls, preflight_medium_releases, native_stage, enum_calls, source_continue_calls, source_feedback_calls, private_move_calls, ci_cursor_moves, query_trace_count;
     QueryTrace query_trace[16];
     LONG cursor_ok; DWORD cursor_error; POINT cursor; DWORD message_position; UINT_PTR point_window;
     DWORD marshal_bytes;
@@ -206,6 +206,15 @@ struct DropSource final : IDropSource {
 static void CALLBACK private_move(HWND window, UINT, UINT_PTR, DWORD) {
     // A window message in the owned source only; never system input injection.
     InterlockedIncrement(&state->private_move_calls); state->message_position = GetMessagePos();
+    if (ci_input) {
+        // Gated hosted CI only: OLE ignores the earlier posted-move fixture.
+        // Both actual native positions lie inside the owned 128x128 target.
+        require_owned_ci();
+        int coordinate = state->private_move_calls % 2 ? 16 : 32;
+        require(SetCursorPos(coordinate, coordinate), "owned CI native drag movement");
+        InterlockedIncrement(&state->ci_cursor_moves);
+        return;
+    }
     PostMessageW(window, WM_MOUSEMOVE, MK_LBUTTON, MAKELPARAM(-256, -256));
 }
 struct Target final : IDropTarget {
@@ -403,7 +412,7 @@ int wmain(int argc, wchar_t** argv) {
     require(GetExitCodeProcess(receiver_process.hProcess, &receiver_exit), "receiver exit code");
     if (source_process.hProcess) require(GetExitCodeProcess(source_process.hProcess, &source_exit), "source exit code");
     bool topology = state->enter_pid == state->receiver_pid && state->enter_tid == state->receiver_tid && (baseline ? state->query_pid == state->owner_pid && state->query_tid == state->owner_tid : state->query_pid == state->source_pid && state->query_tid == state->source_tid);
-    std::printf("{\"preflight_query_calls\":%ld,\"preflight_get_calls\":%ld,\"preflight_medium_releases\":%ld,\"native_stage\":%ld,\"enum_calls\":%ld,\"source_continue_calls\":%ld,\"source_feedback_calls\":%ld,\"private_move_calls\":%ld,\"cursor_ok\":%ld,\"cursor_error\":%lu,\"cursor_x\":%ld,\"cursor_y\":%ld,\"message_position\":%lu,\"point_zero_is_owner\":%s,\"query_trace_count\":%ld,\"query_trace\":[", state->preflight_query_calls, state->preflight_get_calls, state->preflight_medium_releases, state->native_stage, state->enum_calls, state->source_continue_calls, state->source_feedback_calls, state->private_move_calls, state->cursor_ok, state->cursor_error, state->cursor.x, state->cursor.y, state->message_position, state->point_window == state->owner_hwnd ? "true" : "false", state->query_trace_count);
+    std::printf("{\"preflight_query_calls\":%ld,\"preflight_get_calls\":%ld,\"preflight_medium_releases\":%ld,\"native_stage\":%ld,\"enum_calls\":%ld,\"source_continue_calls\":%ld,\"source_feedback_calls\":%ld,\"private_move_calls\":%ld,\"ci_cursor_moves\":%ld,\"cursor_ok\":%ld,\"cursor_error\":%lu,\"cursor_x\":%ld,\"cursor_y\":%ld,\"message_position\":%lu,\"point_zero_is_owner\":%s,\"query_trace_count\":%ld,\"query_trace\":[", state->preflight_query_calls, state->preflight_get_calls, state->preflight_medium_releases, state->native_stage, state->enum_calls, state->source_continue_calls, state->source_feedback_calls, state->private_move_calls, state->ci_cursor_moves, state->cursor_ok, state->cursor_error, state->cursor.x, state->cursor.y, state->message_position, state->point_window == state->owner_hwnd ? "true" : "false", state->query_trace_count);
     for (LONG index = 0; index < state->query_trace_count && index < 16; ++index) {
         const auto& trace = state->query_trace[index];
         std::printf("%s{\"format\":%lu,\"aspect\":%lu,\"tymed\":%lu,\"index\":%ld,\"after_enter\":%ld,\"pid\":%lu,\"tid\":%lu}", index ? "," : "", trace.format, trace.aspect, trace.tymed, trace.index, trace.after_enter, trace.pid, trace.tid);

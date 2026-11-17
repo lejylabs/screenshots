@@ -1,4 +1,4 @@
-# Held Windows receiver topology proof, revision 4
+# Held Windows receiver topology proof, revision 5
 
 This is verification source only. It has not been compiled or executed by the
 subagent. The frozen previous native files and all earlier actual CI artifacts
@@ -17,6 +17,24 @@ The actual CRLF artifact source SHA-256 is f0eab7b43aaf3a7a17cb632f2a7230e9a78fc
 normalizing only CRLF to LF gives b5151b8759367e87e235b82c5f457fa2aadbb51c241399d65d8e8af239574c9e.
 
 ## New diagnostics and source model
+
+Actual revision 4 run 44054603220, job 133940606080, artifact 14314743711 passed
+all six direct cases again. All six CI input-desktop cases still failed before
+target entry even though GetCursorPos succeeded at (16,16), WindowFromPoint
+identified the owned target, and registration succeeded. Their source loops
+processed roughly 300 posted-move timer ticks but issued drag feedback only once.
+All six external desktop/cursor restoration guards succeeded. The old private
+cases record GetCursorPos error 1459, independently establishing that limitation.
+
+Revision 5 changes only movement in the explicitly gated hosted CI mode: its
+finite timer alternates real SetCursorPos positions (16,16) and (32,32), both
+inside the owned 128x128 target, while DoDragDrop owns native mouse capture.
+Only ordinary noninteractive cases retain the posted-move diagnostics. The CI
+branch returns after the real movement so a queued fake negative-coordinate
+message cannot replace or confuse OLE's native movement event. It reports the
+count of actual CI cursor movements separately. No mouse button/keyboard
+injection is used.
+The ordinary noninteractive cases and all previous artifacts remain unchanged.
 
 Only a target's explicit QueryGetData/GetData acquisition stages trigger fault
 injection or its ready/ping signal. OLE preflight queries, gets and medium
@@ -50,7 +68,7 @@ or another user's session. It requires all of:
 
 In that isolated VM, the controller creates a uniquely named temporary desktop
 on WinSta0 and switches the CI VM's input desktop to it. It sets only that owned
-CI cursor to (16,16), then runs actual DoDragDrop over the owned target HWND.
+CI cursor inside (16,16)..(32,32), then runs actual DoDragDrop over the owned target HWND.
 There is no system mouse/keyboard injection, user clipboard access, real browser,
 printer, screenshot or secret lookup. The source still uses the finite private
 window-message timer, and its IDropSource drops only after the real target has
