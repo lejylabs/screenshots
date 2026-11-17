@@ -4,12 +4,20 @@ Date: 2026-11-17
 Scope: the user's complete major-feature list, with final GPUI redesign and new
 UI controls excluded. The workstation stays on. The full backlog is **open**.
 
-Current dependency gate (2026-11-17): a newly surfaced default audit now fails
-on Chrono 0.4.45, advisory RUSTSEC-2026-0543 (all Chrono versions unmaintained).
-The [official advisory](https://github.com/RustSec/advisory-db/blob/main/crates/chrono/RUSTSEC-2026-0543.md)
-provides no safe Chrono upgrade. Migration to maintained date/time APIs is open;
-no ignore, version spoof or renamed shim is used. Earlier passing audits below
-remain dated evidence, not a current passing graph.
+Current dependency gate (2026-11-17): the active application graph now uses
+Jiff 0.2.43/jiff-core 0.1.5; default `cargo deny check advisories` passes again
+without ignores or version spoofing. The earlier Chrono maintenance failure
+RUSTSEC-2026-0543 is retained as historical evidence. All current timestamp/
+calendar/clock consumers and the unused rusqlite conversion feature are migrated.
+Fresh source rounds 7/8 are clean, optimized Linux all-target checking, Clippy
+and formatting pass, and the full optimized workspace passes **1,098 tests,
+zero failures, 73 ignored, 61 outer suites**. An independent published-Chrono
+oracle agrees on 80,004 parse/format/order/duration cases (13,830 admitted).
+The owned same-process timezone probe passes; exact old source fails its
+negative control. Windows GNU metadata, five exact retained Date-Picker interaction fixtures and
+31 scheduler tests also pass. Native runtime and source-specific resource
+observations remain separate checks.
+[Maintenance details](dependency-maintenance.md).
 
 The corrected modern SXCU/source/result pipeline is integrated. Fresh source
 reviews 13/14 are clean; 33 focused Rust, three shared-source and 11 actual CLI
@@ -43,7 +51,8 @@ desktop tests, the real CLI/private IPP end-to-end fixture, Linux/Windows GNU
 metadata, optimized Clippy and formatting pass. Native ARM macOS snapshot
 `b85db926` (application source `9f2e135`) now also passes fresh-process memory
 limit enforcement, three core/six desktop print controls and the actual private
-IPP CLI fixture. Intel execution is pending; Windows native GDI output/fault
+IPP CLI fixture. Intel job 134043931578 was canceled during later compilation and establishes
+no full runtime pass; Windows native GDI output/fault
 and resource gates remain open. [Printing](image-printing.md).
 
 Chronological capture/upload history sorting is now integrated in core and CLI,

@@ -2101,3 +2101,18 @@ has no patched Chrono version. This failed run is retained separately in
 are not relabeled. Maintained-API migration is a separate open implementation,
 with no advisory ignore or version spoof. Functional sharing tests above remain
 valid but do not close this global maintenance gate.
+
+## Maintained date/time graph integration (2026-11-17)
+
+The subsequent Chrono audit failure above is now corrected in the active graph
+without ignores. The integrated Jiff migration preserves exact history ordering,
+public UTC formats, leap handling, final-year schedule admission and negative
+current-clock millisecond flooring; on-demand native local conversion refreshes
+Unix timezone rules without idle activity. Actual fresh source rounds 7/8 are
+clean. The optimized workspace passes 1,098 tests (zero failures, 73 ignored,
+61 outer suites), Clippy/format/Linux metadata and default advisory checks pass.
+The independent 80,004-case legacy oracle and owned timezone positive/old-source
+negative controls pass. Native/resource and retained calendar fixture gates are
+separate; this does not close the full non-UI backlog. Exact graph/provenance,
+additional unconfigured license-check failure and limits follow
+[the maintenance evidence](dependency-maintenance.md#integrated-chrono-maintenance-migration-2026-11-17).

@@ -2,7 +2,7 @@
 
 use anyhow::{Context, Result, bail, ensure};
 use app_core::{CaptureBackend, CapturedImage, ExportSize, ImageExportFormat, XcapBackend};
-use chrono::{DateTime, SecondsFormat, Utc};
+use jiff::Timestamp;
 use std::{
     ffi::OsString,
     path::Path,
@@ -12,7 +12,7 @@ use std::{
 const MAX_START_DELAY: Duration = Duration::from_secs(7 * 24 * 60 * 60);
 
 struct ScheduledStart {
-    at: DateTime<Utc>,
+    at: shared::timestamp::Rfc3339,
     deadline: Instant,
 }
 
@@ -27,7 +27,7 @@ struct Options<'a> {
     webp_quality: Option<u8>,
 }
 
-fn options(args: &[OsString], now: DateTime<Utc>, monotonic_now: Instant) -> Result<Options<'_>> {
+fn options(args: &[OsString], now: Timestamp, monotonic_now: Instant) -> Result<Options<'_>> {
     ensure!(
         args.len() >= 3 && args.len() % 2 == 1 && args[0] == "display",
         "Usage: screenshots capture-sequence display ID DIRECTORY --count N --interval-ms MS [--start-at RFC3339] [--format png|jpeg|webp] [--jpeg-quality 1..100] [--webp-quality 1..100]"
@@ -63,14 +63,14 @@ fn options(args: &[OsString], now: DateTime<Utc>, monotonic_now: Instant) -> Res
             }
             Some("--start-at") => {
                 ensure!(start.is_none(), "Duplicate --start-at option");
-                let at = DateTime::parse_from_rfc3339(value)
-                    .context("Start time must be RFC 3339 with an explicit timezone (Z or ±HH:MM)")?
-                    .with_timezone(&Utc);
+                let at = shared::timestamp::parse_rfc3339(value).context(
+                    "Start time must be RFC 3339 with an explicit timezone (Z or ±HH:MM)",
+                )?;
                 ensure!(
                     !value.ends_with("-00:00"),
                     "Start time must use a known timezone; use Z or +00:00 for UTC"
                 );
-                // Chrono truncates extra fractional digits, which could cross the admission bound.
+                // Extra fractional digits could cross the admission bound.
                 let fraction_digits = value
                     .get(19..)
                     .and_then(|suffix| suffix.strip_prefix('.'))
@@ -81,7 +81,7 @@ fn options(args: &[OsString], now: DateTime<Utc>, monotonic_now: Instant) -> Res
                     fraction_digits <= 9,
                     "Start time supports at most 9 fractional second digits"
                 );
-                let delay = at.signed_duration_since(now).to_std().context(
+                let delay = std::time::Duration::try_from(at.duration_since(now)?).context(
                     "Scheduled start must be in the future and no more than 7 days away",
                 )?;
                 ensure!(
@@ -234,7 +234,7 @@ fn save_frame(
 }
 
 pub fn run(args: &[OsString]) -> Result<()> {
-    let now = Utc::now();
+    let now = Timestamp::now();
     let options = options(args, now, Instant::now())?;
     let files = after_scheduled_start(
         &options,
@@ -266,11 +266,11 @@ pub fn run(args: &[OsString]) -> Result<()> {
             })
         },
     )?;
-    println!("{}", summary(&options, files));
+    println!("{}", summary(&options, files)?);
     Ok(())
 }
 
-fn summary(options: &Options<'_>, files: Vec<String>) -> serde_json::Value {
+fn summary(options: &Options<'_>, files: Vec<String>) -> Result<serde_json::Value> {
     let mut result = serde_json::json!({
         "completed": files.len(),
         "interval_ms": options.interval.as_millis(),
@@ -279,7 +279,7 @@ fn summary(options: &Options<'_>, files: Vec<String>) -> serde_json::Value {
         "files": files,
     });
     if let Some(start) = &options.start {
-        result["start_at"] = start.at.to_rfc3339_opts(SecondsFormat::AutoSi, true).into();
+        result["start_at"] = start.at.utc_auto()?.into();
     }
     if let Some(format) = options.format {
         result["format"] = serde_json::to_value(format).expect("image format is serializable");
@@ -290,7 +290,7 @@ fn summary(options: &Options<'_>, files: Vec<String>) -> serde_json::Value {
     if let Some(quality) = options.webp_quality {
         result["webp_quality"] = quality.into();
     }
-    result
+    Ok(result)
 }
 
 #[cfg(test)]
@@ -334,7 +334,7 @@ mod tests {
         }
     }
 
-    fn validation_time() -> DateTime<Utc> {
+    fn validation_time() -> Timestamp {
         "2030-01-01T00:00:00Z".parse().unwrap()
     }
 
@@ -372,7 +372,7 @@ mod tests {
                 OsString::from("--count"),
                 OsString::from(count),
             ];
-            let parsed = options(&args, Utc::now(), Instant::now()).unwrap();
+            let parsed = options(&args, Timestamp::now(), Instant::now()).unwrap();
             assert_eq!(parsed.count, count.parse::<u16>().unwrap());
             assert_eq!(
                 parsed.interval,
@@ -418,7 +418,7 @@ mod tests {
                 let now = Instant::now();
                 let parsed = options(&args, validation_time(), now).unwrap();
                 assert_eq!(parsed.start.as_ref().unwrap().deadline - now, delay);
-                assert_eq!(summary(&parsed, vec![])["start_at"], normalized);
+                assert_eq!(summary(&parsed, vec![]).unwrap()["start_at"], normalized);
             }
         }
     }
@@ -529,7 +529,7 @@ mod tests {
             || Ok(vec!["fixture.png".to_owned()]),
         )
         .unwrap();
-        let result = summary(&parsed, result);
+        let result = summary(&parsed, result).unwrap();
         assert!(result.get("start_at").is_none());
         assert!(result.get("format").is_none());
         assert!(result.get("jpeg_quality").is_none());
@@ -580,7 +580,7 @@ mod tests {
             },
         )
         .unwrap_or_else(|e| panic!("{}", e.cause));
-        assert_eq!(summary(&parsed, files.clone())["webp_quality"], 20);
+        assert_eq!(summary(&parsed, files.clone()).unwrap()["webp_quality"], 20);
         for name in files {
             let decoded = image::open(directory.0.join(name)).unwrap().into_rgba8();
             assert_ne!(decoded, pixels);
@@ -646,7 +646,7 @@ mod tests {
             let parsed = options(&args, validation_time(), Instant::now()).unwrap();
             assert_eq!(parsed.format, Some(expected));
             assert_eq!(parsed.jpeg_quality, app_core::DEFAULT_JPEG_QUALITY);
-            let json = summary(&parsed, vec![]);
+            let json = summary(&parsed, vec![]).unwrap();
             assert_eq!(json["format"], format);
             assert_eq!(
                 json.get("jpeg_quality"),
@@ -660,7 +660,7 @@ mod tests {
             args.extend(["--format".into(), "jpeg".into()]);
             let parsed = options(&args, validation_time(), Instant::now()).unwrap();
             assert_eq!(parsed.jpeg_quality, quality);
-            assert_eq!(summary(&parsed, vec![])["jpeg_quality"], quality);
+            assert_eq!(summary(&parsed, vec![]).unwrap()["jpeg_quality"], quality);
         }
         for extra in [
             vec!["--format", "jpg"],

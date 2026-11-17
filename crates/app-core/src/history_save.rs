@@ -155,7 +155,7 @@ fn validate(intent: &Intent) -> Result<()> {
             && !intent.parent_identity.is_empty()
             && !intent.object_identity.is_empty()
             && intent.created_at.len() <= 64
-            && chrono::DateTime::parse_from_rfc3339(&intent.created_at).is_ok(),
+            && shared::timestamp::parse_rfc3339(&intent.created_at).is_ok(),
         "Invalid save intent identity or date"
     );
     if let Some(ready) = &intent.ready {
@@ -451,7 +451,7 @@ fn prepare_format(
         stage,
         parent_identity: directory.identity().into(),
         object_identity: native::identity(&file)?,
-        created_at: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+        created_at: shared::timestamp::utc_seconds(jiff::Timestamp::now()),
         ready: None,
         canceling: None,
     };

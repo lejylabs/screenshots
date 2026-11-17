@@ -186,7 +186,7 @@ fn lossy_webp_option_errors_precede_scheduled_wait_and_capture() {
     let fixture = Fixture::new();
     let directory = fixture.path("captures");
     std::fs::create_dir(&directory).unwrap();
-    let future = (chrono::Utc::now() + chrono::Duration::hours(1)).to_rfc3339();
+    let future = (jiff::Timestamp::now() + jiff::SignedDuration::from_hours(1)).to_string();
     for (extra, message) in [
         (vec!["--webp-quality", "0"], "WebP quality must be 1..100"),
         (vec!["--webp-quality", "101"], "WebP quality must be 1..100"),
@@ -303,7 +303,7 @@ fn invalid_schedules_fail_before_directory_checks_native_capture_or_user_state()
         ),
         "Start time supports at most 9 fractional second digits",
     );
-    let future = (chrono::Utc::now() + chrono::Duration::hours(1)).to_rfc3339();
+    let future = (jiff::Timestamp::now() + jiff::SignedDuration::from_hours(1)).to_string();
     fixture.reject(
         &args(
             &missing,
@@ -347,7 +347,7 @@ fn invalid_schedules_fail_before_directory_checks_native_capture_or_user_state()
 fn invalid_formats_and_quality_fail_before_a_scheduled_wait_or_native_access() {
     let fixture = Fixture::new();
     let missing = fixture.path("missing");
-    let future = (chrono::Utc::now() + chrono::Duration::hours(1)).to_rfc3339();
+    let future = (jiff::Timestamp::now() + jiff::SignedDuration::from_hours(1)).to_string();
     for (extra, message) in [
         (vec!["--format", "jpg"], "Format must be png, jpeg or webp"),
         (vec!["--format", "PNG"], "Format must be png, jpeg or webp"),
@@ -414,7 +414,7 @@ fn invalid_formats_and_quality_fail_before_a_scheduled_wait_or_native_access() {
 #[test]
 fn scheduled_destination_errors_return_before_the_future_wait() {
     let fixture = Fixture::new();
-    let future = (chrono::Utc::now() + chrono::Duration::hours(1)).to_rfc3339();
+    let future = (jiff::Timestamp::now() + jiff::SignedDuration::from_hours(1)).to_string();
     let options = [
         "--start-at",
         &future,
@@ -442,7 +442,7 @@ fn scheduled_wait_rechecks_changed_destination_before_native_capture() {
     let fixture = Fixture::new();
     let directory = fixture.path("scheduled");
     std::fs::create_dir(&directory).unwrap();
-    let future = (chrono::Utc::now() + chrono::Duration::seconds(2)).to_rfc3339();
+    let future = (jiff::Timestamp::now() + jiff::SignedDuration::from_secs(2)).to_string();
     let started = std::time::Instant::now();
     let mut child = fixture.spawn(&args(
         &directory,
@@ -480,7 +480,7 @@ fn scheduled_wait_can_be_terminated_without_capture_or_user_state() {
     let fixture = Fixture::new();
     let directory = fixture.path("cancelled");
     std::fs::create_dir(&directory).unwrap();
-    let future = (chrono::Utc::now() + chrono::Duration::hours(1)).to_rfc3339();
+    let future = (jiff::Timestamp::now() + jiff::SignedDuration::from_hours(1)).to_string();
     let mut child = fixture.spawn(&args(
         &directory,
         &[

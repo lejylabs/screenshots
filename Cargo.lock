@@ -226,7 +226,6 @@ dependencies = [
  "arboard",
  "base64 0.23.1",
  "block2 0.6.2",
- "chrono",
  "core-foundation 0.10.1",
  "crc32fast",
  "dbus-secret-service",
@@ -238,6 +237,7 @@ dependencies = [
  "harfrust 0.15.0",
  "hmac 0.12.1",
  "image",
+ "jiff",
  "libc",
  "libwebp-sys",
  "moxcms",
@@ -2873,7 +2873,6 @@ dependencies = [
  "anyhow",
  "ashpd 0.14.0",
  "async-channel",
- "chrono",
  "data-url",
  "futures",
  "gpui-fast",
@@ -2882,6 +2881,7 @@ dependencies = [
  "gpui-pre-sum-tree",
  "html5ever",
  "itertools 0.13.0",
+ "jiff",
  "lsp-types",
  "markdown",
  "markup5ever_rcdom",
@@ -2909,7 +2909,6 @@ name = "gpui-component"
 version = "0.9.1"
 dependencies = [
  "anyhow",
- "chrono",
  "core-text",
  "enum-iterator",
  "gpui-base",
@@ -2920,6 +2919,7 @@ dependencies = [
  "gpui-pre-macros",
  "gpui-pre-sum-tree",
  "itertools 0.13.0",
+ "jiff",
  "log",
  "lsp-types",
  "markdown",
@@ -3279,8 +3279,6 @@ dependencies = [
 [[package]]
 name = "gpui-kit"
 version = "0.9.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "aca1dedfea73645b60b5893c9c16de0b1396f2cf4251d19e5f03a295c1b61879"
 dependencies = [
  "gpui-base",
  "gpui-component",
@@ -3318,7 +3316,6 @@ dependencies = [
  "async-task",
  "backtrace",
  "bitflags 2.13.2",
- "chrono",
  "derive_more",
  "embed-resource",
  "etagere",
@@ -3339,6 +3336,8 @@ dependencies = [
  "image",
  "inventory",
  "itertools 0.14.0",
+ "jiff",
+ "js-sys",
  "libc",
  "log",
  "lyon",
@@ -3372,6 +3371,7 @@ dependencies = [
  "usvg 0.50.0",
  "uuid",
  "waker-fn",
+ "wasm-bindgen",
  "web-time",
  "windows 0.62.2",
  "zed-scap",
@@ -3665,14 +3665,12 @@ dependencies = [
 [[package]]
 name = "gpui-pre-scheduler"
 version = "0.3.12"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b1d3fa97eeb4ea233635b756684affe96db9e29fc2af8cdc269268bd7ff649fc"
 dependencies = [
  "async-task",
  "backtrace",
- "chrono",
  "flume",
  "futures",
+ "jiff",
  "parking_lot",
  "rand 0.9.5",
  "wasm_thread",
@@ -4539,6 +4537,43 @@ name = "itoa"
 version = "1.0.19"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3bd1574e617a9a6c1f8f8181bd7e841e1f20e4277607ef28945765188d6284d4"
+
+[[package]]
+name = "jiff"
+version = "0.2.43"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "26699905cc795a23e3949585cc7ba3ee8ade090872a27e4316304a777297894a"
+dependencies = [
+ "jiff-core",
+ "jiff-static",
+ "js-sys",
+ "log",
+ "portable-atomic",
+ "portable-atomic-util",
+ "serde_core",
+ "wasm-bindgen",
+]
+
+[[package]]
+name = "jiff-core"
+version = "0.1.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ffe6854081f5ac0a3046a9b223729ccd7a20b1e0e8277e44dc0660eedf67dfe2"
+dependencies = [
+ "log",
+]
+
+[[package]]
+name = "jiff-static"
+version = "0.2.43"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4b4ff49b2887190c760b86207b55cdcaabbdecaf7a0660d68aa2ed6f652abf0a"
+dependencies = [
+ "jiff-core",
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
+]
 
 [[package]]
 name = "jni"
@@ -7277,7 +7312,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "da9bba6f3506135e120a6586df05be18b48d18896600646a4bec8f993d91a594"
 dependencies = [
  "bitflags 2.13.2",
- "chrono",
  "fallible-iterator",
  "fallible-streaming-iterator",
  "hashlink",
@@ -7646,7 +7680,6 @@ dependencies = [
  "ashpd 0.14.0",
  "async-io",
  "atspi-common",
- "chrono",
  "crc32fast",
  "crossbeam-queue",
  "curl-sys",
@@ -7655,6 +7688,7 @@ dependencies = [
  "glib",
  "global-hotkey",
  "image",
+ "jiff",
  "libc",
  "pipewire",
  "qrcode",
@@ -7886,7 +7920,7 @@ name = "shared"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "chrono",
+ "jiff",
  "serde",
  "serde_json",
  "thiserror 2.0.21",

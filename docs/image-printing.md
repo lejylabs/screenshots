@@ -242,7 +242,8 @@ IPP CLI fixture pass. The fixture verifies missing-queue refusal, exact existing
 queue submission, stripped metadata, preserved source and stdout failure without
 retry. It never uses a physical printer or user queue. The log is preserved at
 `target/verification/native-b85db926-macos-arm.log`. This closes that source's
-ARM runtime check after the earlier pre-exec EINVAL failure; Intel runtime,
-Windows GDI output/driver faults, calibrated physical output and reference
+ARM runtime check after the earlier pre-exec EINVAL failure; Intel job 134043931578 was canceled during later optimized app-UI compilation
+(the cancellation reaped Cargo/rustc); it supplies no full Intel print-runtime
+pass. Windows GDI output/driver faults, calibrated physical output and reference
 hardware resource acceptance remain separate gates. Later source changes are
 not covered by this snapshot.

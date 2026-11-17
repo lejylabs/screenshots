@@ -1,7 +1,7 @@
 //! Explicit recoverable trash, restore and retention. No idle maintenance.
 
 use super::*;
-use chrono::{DateTime, Utc};
+use jiff::{SignedDuration, Timestamp, ToSpan};
 use std::time::{Duration, Instant};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -34,13 +34,9 @@ pub struct TrashPage {
 
 fn timestamp(text: &str) -> Result<()> {
     ensure!(text.len() <= 64, "Invalid trash timestamp");
-    let value = DateTime::parse_from_rfc3339(text).context("Invalid trash timestamp")?;
+    let value = shared::timestamp::parse_rfc3339(text).context("Invalid trash timestamp")?;
     ensure!(
-        value.offset().local_minus_utc() == 0
-            && value
-                .with_timezone(&Utc)
-                .to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
-                == text,
+        value.offset_seconds == 0 && value.utc_seconds()? == text,
         "Trash timestamps must use canonical UTC seconds"
     );
     Ok(())
@@ -521,7 +517,7 @@ fn trash_checked(
     ensure!(!cancelled(), "Trash canceled before preparation");
     let action = FileAction::Trash {
         trash_id,
-        trashed_at: Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+        trashed_at: shared::timestamp::utc_seconds(jiff::Timestamp::now()),
     };
     let (pending, payload) = prepare_action_checked(
         database,
@@ -791,7 +787,7 @@ fn validate_policy(policy: &RetentionPolicy) -> Result<()> {
 /// Preview bounded explicit retention; calls perform no filesystem mutations.
 pub fn plan_retention(database: &Path, policy: &RetentionPolicy) -> Result<RetentionPlan> {
     validate_policy(policy)?;
-    let now = Utc::now();
+    let now = Timestamp::now();
     let mut plan = RetentionPlan {
         capture_ids: Vec::new(),
         trash_ids: Vec::new(),
@@ -799,8 +795,9 @@ pub fn plan_retention(database: &Path, policy: &RetentionPolicy) -> Result<Reten
     };
     if let Some(days) = policy.capture_days {
         let date = now
-            .date_naive()
-            .checked_sub_days(chrono::Days::new(u64::from(days) + 1))
+            .to_zoned(jiff::tz::TimeZone::UTC)
+            .date()
+            .checked_sub((i64::from(days) + 1).days())
             .context("Retention date is outside the calendar")?;
         let mut query = crate::HistoryQuery {
             sort: crate::HistorySort::Oldest,
@@ -809,7 +806,7 @@ pub fn plan_retention(database: &Path, policy: &RetentionPolicy) -> Result<Reten
             } else {
                 super::super::HistoryFilter::Captures
             },
-            through: Some(date.format("%Y-%m-%d").to_string()),
+            through: Some(date.to_string()),
             ..Default::default()
         };
         loop {
@@ -833,10 +830,10 @@ pub fn plan_retention(database: &Path, policy: &RetentionPolicy) -> Result<Reten
         }
     }
     if let Some(days) = policy.purge_days {
-        let cutoff = now
-            .checked_sub_signed(chrono::Duration::days(i64::from(days)))
-            .context("Retention timestamp is outside the calendar")?
-            .to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+        let cutoff = shared::timestamp::utc_seconds(
+            now.checked_sub(SignedDuration::from_hours(i64::from(days) * 24))
+                .context("Retention timestamp is outside the calendar")?,
+        );
         let connection = open_trash_query(database)?;
         let mut statement = connection.prepare(
             "SELECT CASE WHEN typeof(trash_id)='text' AND length(trash_id)=36 THEN trash_id END
@@ -862,26 +859,24 @@ fn eligible_capture(database: &Path, id: i64, policy: &RetentionPolicy) -> Resul
     let connection = crate::storage::open_read_only(database)?;
     let row = capture_row(&connection, id)?;
     let created = if row.created_at.len() == 10 {
-        let parsed = chrono::NaiveDate::parse_from_str(&row.created_at, "%Y-%m-%d")?;
-        ensure!(
-            parsed.format("%Y-%m-%d").to_string() == row.created_at,
-            "Invalid capture date"
-        );
+        let parsed = row.created_at.parse::<jiff::civil::Date>()?;
+        ensure!(parsed.to_string() == row.created_at, "Invalid capture date");
         parsed
     } else {
-        let parsed = DateTime::parse_from_rfc3339(&row.created_at)?;
+        let parsed = shared::timestamp::parse_rfc3339(&row.created_at)?;
         ensure!(
-            parsed.offset().local_minus_utc() == 0,
+            parsed.offset_seconds == 0,
             "Capture retention requires UTC dates"
         );
-        parsed.date_naive()
+        parsed.local_date
     };
     let days = policy
         .capture_days
         .context("Capture retention is not configured")?;
-    let cutoff = Utc::now()
-        .date_naive()
-        .checked_sub_days(chrono::Days::new(u64::from(days)))
+    let cutoff = Timestamp::now()
+        .to_zoned(jiff::tz::TimeZone::UTC)
+        .date()
+        .checked_sub(i64::from(days).days())
         .context("Retention date is outside the calendar")?;
     ensure!(
         created < cutoff && (policy.include_imports || row.source == "capture"),
@@ -896,11 +891,13 @@ fn eligible_trash(database: &Path, id: &str, policy: &RetentionPolicy) -> Result
     let days = policy
         .purge_days
         .context("Purge retention is not configured")?;
-    let cutoff = Utc::now()
-        .checked_sub_signed(chrono::Duration::days(i64::from(days)))
+    let cutoff = Timestamp::now()
+        .checked_sub(SignedDuration::from_hours(i64::from(days) * 24))
         .context("Retention timestamp is outside the calendar")?;
     ensure!(
-        DateTime::parse_from_rfc3339(&record.trashed_at)? < cutoff,
+        shared::timestamp::parse_rfc3339(&record.trashed_at)?
+            .compare_instant(cutoff)
+            .is_lt(),
         "Selected trash no longer matches retention age; preserved"
     );
     Ok(record)

@@ -42,7 +42,7 @@ gpui-kit = "=0.9.1" # Kit pins a matching GPUI family; optional JS, speech and s
 anyhow = "1.0.104"
 base64 = "0.23.1"
 arboard = "3.7.0"
-chrono = { version = "0.4.45", features = ["serde"] }
+jiff = { version = "=0.2.43", default-features = false, features = ["std", "js"] }
 directories = "6.0.0"
 global-hotkey = "0.10.0"
 image = "0.25.10"
@@ -50,7 +50,7 @@ regex = "1.13.1"
 reqwest = { version = "0.13.5", features = ["json", "multipart", "stream"] }
 roxmltree = "0.21.2"
 rfd = "0.18.0"
-rusqlite = { version = "0.41.1", features = ["bundled", "chrono", "uuid", "hooks", "backup", "functions"] }
+rusqlite = { version = "0.41.1", features = ["bundled", "uuid", "hooks", "backup", "functions"] }
 rusqlite_migration = "2.7.0"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
@@ -78,6 +78,8 @@ xcap = "=0.9.10"
 opt-level = 1
 
 [patch.crates-io]
+gpui-kit = { path = "vendor/gpui-kit" }
+gpui-pre-scheduler = { path = "vendor/gpui-pre-scheduler" }
 gpui-pre-wgpu = { path = "vendor/gpui-pre-wgpu" }
 moxcms = { path = "vendor/moxcms" }
 harfrust = { path = "vendor/harfrust" }

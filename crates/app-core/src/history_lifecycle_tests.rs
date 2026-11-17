@@ -769,7 +769,7 @@ fn retention_revalidates_age_after_selection_before_any_file_mutation() {
             f.connection()
                 .execute(
                     "UPDATE captures SET created_at=?1",
-                    [Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true)],
+                    [shared::timestamp::utc_seconds(jiff::Timestamp::now())],
                 )
                 .unwrap();
         }
@@ -805,7 +805,7 @@ fn retention_revalidates_age_after_selection_before_any_file_mutation() {
         if !changed.replace(true) {
             let connection = f.connection();
             let mut refreshed = read_record(&connection, &id).unwrap();
-            refreshed.trashed_at = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+            refreshed.trashed_at = shared::timestamp::utc_seconds(jiff::Timestamp::now());
             connection
                 .execute(
                     "UPDATE history_trash SET trashed_at=?1,payload=?2 WHERE trash_id=?3",

@@ -150,6 +150,9 @@ jobs:
         run: cargo build --workspace --release --locked
       - name: Run optimized deterministic tests
         run: cargo test --workspace --profile release-fast --locked
+      - name: Verify on-demand native Unix timezone refresh
+        if: runner.os != 'Windows'
+        run: python3 scripts/test-local-time-refresh.py
       - name: Compile owned native Windows window fixture
         if: runner.os == 'Windows'
         timeout-minutes: 15

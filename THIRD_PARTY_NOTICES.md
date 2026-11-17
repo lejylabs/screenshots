@@ -178,3 +178,10 @@ The vendored gpui-pre-wgpu 0.3.12 retains the upstream Apache-2.0 license in
 GPU regressions are documented in `vendor/gpui-pre-wgpu/LOCAL-PATCH.md`; the
 original package inventory is retained in `UPSTREAM-SHA256.txt`. No production
 package version or dependency is added by this same-version source override.
+
+The Chrono maintenance migration uses Jiff 0.2.43, jiff-core 0.1.5 and
+resolved jiff-static 0.2.43 under their Unlicense-or-MIT terms. The newly vendored GPUI scheduler 0.3.12 and
+Kit 0.9.1 keep their original Apache-2.0 license and published source. Their
+`LOCAL-PATCH.md` files record the date API changes and archive checksums.
+Application RFC3339 validation is original boundary code preserving the
+previously accepted spellings; it does not copy or rename Chrono source.

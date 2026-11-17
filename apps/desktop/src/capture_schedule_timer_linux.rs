@@ -173,13 +173,13 @@ mod tests {
     fn real_one_shot_rearms_without_a_periodic_wakeup() -> Result<()> {
         let mut timer = Native::new(Arc::new(AtomicBool::new(false)))?;
         let before = std::time::Instant::now();
-        timer.arm(Some(chrono::Utc::now().timestamp_millis() + 40), None)?;
+        timer.arm(Some(jiff::Timestamp::now().as_millisecond() + 40), None)?;
         timer.wait()?;
         ensure!(
             before.elapsed() >= std::time::Duration::from_millis(20),
             "Timer fired before its absolute deadline"
         );
-        timer.arm(Some(chrono::Utc::now().timestamp_millis() + 30), None)?;
+        timer.arm(Some(jiff::Timestamp::now().as_millisecond() + 30), None)?;
         timer.wait()?;
         assert!(timer.alarm.is_none());
         Ok(())
