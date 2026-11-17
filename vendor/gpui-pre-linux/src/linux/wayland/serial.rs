@@ -46,6 +46,7 @@ struct Press {
 pub(crate) struct SerialTracker {
     serials: HashMap<SerialKind, Serial>,
     latest_press: Option<Press>,
+    latest_mouse_press: Option<Press>,
 }
 
 impl SerialTracker {
@@ -53,6 +54,7 @@ impl SerialTracker {
         Self {
             serials: HashMap::default(),
             latest_press: None,
+            latest_mouse_press: None,
         }
     }
 
@@ -70,6 +72,12 @@ impl SerialTracker {
     ) {
         let serial = Serial(value);
 
+        if kind == SerialKind::MousePress {
+            self.latest_mouse_press = Some(Press {
+                serial,
+                focused_surface: focused_surface.clone(),
+            });
+        }
         if matches!(&kind, SerialKind::KeyPress | SerialKind::MousePress) {
             self.latest_press = Some(Press {
                 serial,
@@ -85,6 +93,13 @@ impl SerialTracker {
     /// Returns a serial with a raw value of 0 if the kind has not been tracked.
     pub fn get(&self, kind: SerialKind) -> Serial {
         self.serials.get(&kind).copied().unwrap_or(Serial(0))
+    }
+
+    /// A drag must name the exact origin of the seat's pointer grab.
+    pub fn drag_serial(&self, surface: &wl_surface::WlSurface) -> Option<Serial> {
+        let press = self.latest_mouse_press.as_ref()?;
+        let origin = press.focused_surface.as_ref()?;
+        (origin == surface && origin.is_alive()).then_some(press.serial)
     }
 
     pub fn selection_serial(&self) -> Option<SelectionSerial> {

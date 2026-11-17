@@ -39,9 +39,12 @@ already converted frozen source.
 Actual source stride/depth counts toward the 256 MiB native-source ceiling.
 macOS source S, float context F and output E coexist only when
 S + F + E <= 2S + 2E + 32 MiB. Shadow extents and returned stride are rechecked.
-Windows retains one GPU frame and bounded staging/output. The current Windows
-slice refuses output larger than 32 MiB pending the separately prepared tiled
-readback extension; it never partially captures it. Incompatible per-display
+Windows retains one GPU frame, one reusable FP16 staging texture (at most 4 MiB
+logical, 8 MiB actual mapped pitch) and the final RGBA8 output. The tiled path
+removes the former 32 MiB output refusal while preserving source admission.
+HDR analysis and conversion read the same frozen frame; a late highlight affects
+every tile uniformly. Borrowed row spans exclude pitch padding and uncopied
+edge texels. Incompatible per-display
 reference whites cannot be guessed. Native driver/scratch allocation and GPU
 accounting remain measured gates, not exclusions from PLAN.
 
@@ -68,9 +71,21 @@ macOS 15 ARM and Intel confirms zero target headroom preserves every synthetic
 float component, including 12.5, for source headroom zero and 16. Target headroom
 one demonstrably maps the tagged highlights instead. The corrected production
 Rust fixture additionally checks source headrooms zero, two and 16, full images
-and native crops; its fresh native CI result is pending. The diagnostic uses
+and native crops. The corrected ARM macOS job for snapshot `5d12c475` passes,
+including all 32 selected native capture controls and the exact float fixture.
+Its source matches the fix committed as `a3652ed`. Intel verification remains
+pending. The diagnostic uses
 only constructed images and does not request screen/clipboard access. Exact
 logs and SDK header contracts are retained under the HDR integration artifacts.
+
+The later Windows tiled extension has two clean independent source reviews.
+Its four optimized portable controls pass, covering independent numeric vectors,
+single/multiple padded tiles, late highlights, cancellation, exact source ceilings
+and overflow/edge geometry. Instrumented Windows GNU workspace/all-target checking,
+project-policy Clippy and formatting pass. Native WARP texture/cancellation
+acceptance is queued separately; real WGC/HDR hardware, 4K before/after latency,
+private/GPU peaks and the PLAN regression budget remain unverified. Two-pass
+readback is a resource tradeoff, not a claimed performance improvement.
 
 The integrated Linux adapter extends proven SPA color metadata while preserving
 legacy RGB8 negotiation. Portable RGB, installed-SPA filtering and real private

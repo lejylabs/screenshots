@@ -16,11 +16,74 @@ pub use gpui_windows::{
 mod windows_drop_acceptance;
 #[cfg(all(target_os = "windows", screenshots_native_drop_acceptance))]
 pub use windows_drop_acceptance::run as run_windows_native_drop_editor_acceptance;
+/// Installs the existing isolated native worker for explicit Unix drop acquisition.
+/// Startup stores one function pointer and reads no selection or pasteboard.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub fn install_unix_native_drop_reader() -> anyhow::Result<()> {
+    gpui::install_native_drop_reader(|source, image, cancel| {
+        use app_core::{NativeDropMime as Mime, NativeDropSource as Source};
+        use std::sync::atomic::Ordering;
+        let source = match source {
+            gpui::NativeDropSource::X11 {
+                display,
+                source,
+                target,
+                types,
+                extended,
+                timestamp,
+            } => Source::X11 {
+                display: display.to_string(),
+                source,
+                target,
+                types,
+                extended,
+                timestamp,
+            },
+            gpui::NativeDropSource::MacPasteboard { name, change_count } => Source::MacPasteboard {
+                name: name.to_string(),
+                change_count,
+            },
+        };
+        let result = app_core::acquire_native_drop(source, image, &|| {
+            if cancel.load(Ordering::Acquire) {
+                Err(app_core::CaptureError::NativeCanceled)
+            } else {
+                Ok(())
+            }
+        })
+        .ok()?;
+        let data = if result.mime == Mime::UriList {
+            gpui::NativeDropData::UriList(Arc::new(result.bytes))
+        } else {
+            let format = match result.mime {
+                Mime::Png => gpui::ImageFormat::Png,
+                Mime::Jpeg => gpui::ImageFormat::Jpeg,
+                Mime::Webp => gpui::ImageFormat::Webp,
+                Mime::Bmp => gpui::ImageFormat::Bmp,
+                Mime::Tiff => gpui::ImageFormat::Tiff,
+                Mime::UriList => unreachable!(),
+            };
+            gpui::NativeDropData::Image {
+                format,
+                bytes: (!result.bytes.is_empty()).then(|| Arc::new(result.bytes)),
+            }
+        };
+        Some(gpui::NativeDropRead {
+            data,
+            root_offset: result.root_offset,
+        })
+    })
+}
+
 mod assets;
 mod caption;
 mod format_catalog;
+#[cfg(all(feature = "native-drop-probe", target_os = "linux"))]
+mod native_drop_probe;
 #[cfg(all(test, target_os = "linux"))]
 mod native_probe;
+#[cfg(all(feature = "native-drop-probe", target_os = "linux"))]
+pub use native_drop_probe::run_native_x11_drop_probe;
 #[cfg(test)]
 mod ui_tests;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -3147,6 +3210,11 @@ impl CaptureWorkspace {
         self.open_redaction_source(EditorImage::Encoded(bytes.clone()), cx);
     }
     fn open_dropped_url(&mut self, data: &gpui::ExternalUrlDrop, cx: &mut Context<Self>) {
+        #[cfg(all(feature = "native-drop-probe", target_os = "linux"))]
+        if std::env::var("SCREENSHOTS_NATIVE_DROP_PRIVATE").as_deref() == Ok("1") {
+            println!("DROP_PROBE url-route");
+        }
+
         if self.image_input_busy() {
             return;
         }

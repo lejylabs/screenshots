@@ -140,6 +140,9 @@ static bool bridge_wait(HANDLE watched, DWORD timeout) {
     }
 }
 static PayloadCounters payload_delta() {return {state->payload.helper_queries-source_baseline.helper_queries,state->payload.helper_positive-source_baseline.helper_positive,state->payload.helper_gets-source_baseline.helper_gets,state->payload.helper_get_success-source_baseline.helper_get_success,state->payload.helper_releases-source_baseline.helper_releases,state->payload.helper_release_ends-source_baseline.helper_release_ends,state->payload.source_selected_queries-source_baseline.source_selected_queries,state->payload.source_positive-source_baseline.source_positive,state->payload.source_gets-source_baseline.source_gets,state->payload.source_created-source_baseline.source_created,state->payload.source_released-source_baseline.source_released,state->payload.outside_positive-source_baseline.outside_positive,state->payload.outside_gets-source_baseline.outside_gets,state->payload.outside_created-source_baseline.outside_created,state->payload.outside_released-source_baseline.outside_released,state->payload.submits-source_baseline.submits,state->payload.phase_bad-source_baseline.phase_bad};}
+static bool cached_provider_query(const PayloadCounters& d) {
+    return ole_route && d.source_selected_queries==0 && d.source_positive==0 && (d.outside_positive>0 || d.outside_created>0);
+}
 static bool final_source_oracle(DWORD helper,DWORD helper_tid,bool helper_reaped,bool source_finished,DWORD source_exit,bool source_natural) {
     PayloadCounters d=payload_delta();const auto* spec=expected_injection();
     bool startup=spec && (spec->id==I_STARTUP || spec->id==I_REGISTER);
@@ -156,7 +159,7 @@ static bool final_source_oracle(DWORD helper,DWORD helper_tid,bool helper_reaped
     bool direct_reject=state->returned_drop ? (FAILED(state->returned_drop_hresult)||state->returned_drop_effect==DROPEFFECT_NONE) : state->returned_enter && (FAILED(state->enter_result)||state->returned_enter_effect==DROPEFFECT_NONE);
     bool ole_reject=state->returned_drop && (FAILED(state->returned_drop_hresult)||state->returned_drop_effect==DROPEFFECT_NONE);
     bool result=expected_busy?source_done && (ole_route?ole_refusal:direct_refusal):startup?helper_reaped && state->source_pid==0:death?source_natural && source_exit==98 && state->returned_enter==1 && state->enter_result==S_OK && state->returned_enter_effect==DROPEFFECT_COPY && !state->returned_drop:killed?helper_reaped:rejected?source_done && (ole_route?ole_reject:direct_reject):leave?source_done && state->returned_enter && state->enter_result==S_OK && state->returned_enter_effect==DROPEFFECT_COPY && !state->returned_drop:source_done && (ole_route?ole_success:direct_success);
-    bool cached_query=ole_route && d.source_selected_queries==0 && d.source_positive==0 && (d.outside_positive>0 || d.outside_created>0);
+    bool cached_query=cached_provider_query(d);
     bool cached_get=ole_route && d.source_gets==0 && d.source_created==0 && d.source_released==0 && d.outside_created>0 && d.outside_released==d.outside_created;
     bool query=d.helper_queries>=1 && d.helper_queries<=8 && d.helper_positive==1 && ((d.source_selected_queries==1 && d.source_positive==1)||cached_query);
     bool acquisition=d.helper_gets==1 && d.helper_get_success==1 && d.helper_releases==1 && d.helper_release_ends==1 && ((d.source_gets==1 && d.source_created==1 && d.source_released==1)||cached_get);
@@ -186,7 +189,7 @@ static int finish_drive(HANDLE source_job,DWORD helper,DWORD helper_tid,LONG pri
     bool custom = custom_source;
     bool first = !custom || (state->first_factory_pid == static_cast<LONG>(helper) && state->first_unmarshal_pid == static_cast<LONG>(helper) && state->first_factory_tid == helper_tid && state->first_unmarshal_tid == helper_tid && state->first_factory_guard == 1 && state->first_unmarshal_guard == 1 && state->first_factory_sequence > 0 && state->first_factory_sequence == state->first_factory_armed_sequence && state->first_unmarshal_sequence == state->first_unmarshal_armed_sequence && state->first_factory_native_stage == (ole_route ? 2 : 0) && state->first_unmarshal_native_stage == (ole_route ? 2 : 0) && state->unmarshal_release_outside_guard == 0);
     bool fault_before_entry = !std::wcscmp(scenario, L"unmarshal-stall") || !std::wcscmp(scenario, L"unmarshal-memory");
-    bool provider = fault_before_entry ? state->query_calls == 0 && state->data_calls == 0 && (ole_route ? state->enter_pid == helper : state->enter_pid == 0) : state->enter_pid == helper && state->enter_tid == helper_tid && state->query_pid == state->source_pid;
+    bool provider = fault_before_entry ? state->query_calls == 0 && state->data_calls == 0 && (ole_route ? state->enter_pid == helper : state->enter_pid == 0) : state->enter_pid == helper && state->enter_tid == helper_tid && (state->query_pid == state->source_pid || cached_provider_query(payload_delta()));
     if (expected_busy) provider = state->query_calls == prior_queries && state->data_calls == prior_data;
     bool allocation = std::wcscmp(scenario, L"unmarshal-memory") || state->unmarshal_memory_refused == 1;
     if (!std::wcscmp(scenario,L"over-memory")) allocation = state->offered_bytes == 128 * 1024 * 1024 && state->source_data_result == S_OK && FAILED(state->get_result);

@@ -200,6 +200,8 @@ impl DisplayConnection {
 
     pub(crate) fn cancel_pending_native_drop(&self) {
         match self {
+            #[cfg(feature = "x11")]
+            Self::X11(connection) => connection.cancel_pending_native_drop(),
             #[cfg(feature = "wayland")]
             Self::Wayland(connection) => connection.cancel_pending_native_drop(),
             _ => {}

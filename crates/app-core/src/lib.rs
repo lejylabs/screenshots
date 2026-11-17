@@ -69,6 +69,8 @@ pub use capture_macos_model::{
 };
 mod image_url;
 mod native_capture_job;
+mod native_drop;
+pub use native_drop::{NativeDropMime, NativeDropReply, NativeDropSource, acquire_native_drop};
 mod portal_capture;
 pub use image_url::{ImageUrlSource, MAX_IMAGE_URL_BYTES};
 pub use native_capture_job::{
@@ -114,6 +116,8 @@ pub use capture_rgb::{
     NativeRgbColor, NativeRgbPacking, NativeRgbPrimaries, NativeRgbSource, NativeRgbTransfer,
     decode_native_rgb_with_cancel,
 };
+#[cfg(any(target_os = "windows", test))]
+mod capture_half_tiles;
 #[cfg(any(target_os = "windows", test))]
 mod capture_windows_admission;
 mod clipboard;

@@ -62,6 +62,7 @@ pub(crate) fn capture_window(
     window: &xcap::Window,
     options: &CaptureOptions,
     #[cfg(target_os = "windows")] admission: &WindowsCaptureAdmission,
+    #[cfg(target_os = "windows")] cancel: &crate::NativeCaptureCheck<'_>,
 ) -> Result<RgbaImage> {
     validate_options(options, true)?;
     let native = CaptureOptions {
@@ -74,7 +75,7 @@ pub(crate) fn capture_window(
     }
     #[cfg(target_os = "windows")]
     {
-        platform::capture_window(window, &native, admission)
+        platform::capture_window(window, &native, admission, cancel)
     }
     #[cfg(not(target_os = "windows"))]
     {
@@ -93,10 +94,11 @@ pub(crate) fn capture_display(
     monitor: &xcap::Monitor,
     options: &CaptureOptions,
     #[cfg(target_os = "windows")] admission: &WindowsCaptureAdmission,
+    #[cfg(target_os = "windows")] cancel: &crate::NativeCaptureCheck<'_>,
 ) -> Result<RgbaImage> {
     #[cfg(target_os = "windows")]
     {
-        platform::capture_display(monitor, options, admission)
+        platform::capture_display(monitor, options, admission, cancel)
     }
     #[cfg(target_os = "macos")]
     {
@@ -113,10 +115,11 @@ pub(crate) fn capture_region(
     region: crate::PixelRegion,
     options: &CaptureOptions,
     #[cfg(target_os = "windows")] admission: &WindowsCaptureAdmission,
+    #[cfg(target_os = "windows")] cancel: &crate::NativeCaptureCheck<'_>,
 ) -> Result<RgbaImage> {
     #[cfg(target_os = "windows")]
     {
-        platform::capture_region(monitor, region, options, admission)
+        platform::capture_region(monitor, region, options, admission, cancel)
     }
     #[cfg(target_os = "macos")]
     {
