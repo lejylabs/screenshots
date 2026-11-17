@@ -8,10 +8,11 @@ checks passed. Full regression results are recorded in the delivery log.
 ## Problem and scope
 
 Harden `load_saved_png` without changing its historical pixel interpretation.
-It currently opens a raw `File`, constructs a PNG `ImageReader`, sets a 256 MiB
-allocation limit, decodes, and only then validates the final RGBA dimensions.
-Unlike the explicit editor loader, it has no regular-file admission or encoded
-extent cap. A FIFO, including a pathname replaced after preflight, can block at
+Before this follow-up it opened a raw `File`, constructed a PNG `ImageReader`,
+set a 256 MiB allocation limit, decoded, and only then validated final RGBA
+dimensions.
+Unlike the explicit editor loader, that original path had no regular-file
+admission or encoded extent cap. A FIFO, including a pathname replaced after preflight, can block at
 open. Grayscale or indexed pixels can fit the decoder's native output budget
 while their later RGBA representation exceeds the application budget.
 
@@ -29,7 +30,8 @@ Keep the public signature:
 pub fn load_saved_png(path: &std::path::Path) -> anyhow::Result<image::RgbaImage>;
 ```
 
-Existing callers benefit without a new UI control or runtime:
+The following records the original PNG-specific consumer map. It is a
+compatibility checkpoint, not the current generic UI consumer map:
 
 - `ImageClipboard::copy_saved_png`, used for explicit saved-image recopy.
 - `load_png_thumbnail`, used by history preview and the visible-page gallery.
@@ -37,11 +39,19 @@ Existing callers benefit without a new UI control or runtime:
 - `png_without_metadata`, used for explicit saved-image upload sanitization.
 - `export_saved_png_as` when decoding a saved PNG for another format or size.
 
-The direct editor loader keeps its separate 32 MiB encoded limit and EXIF
-orientation behavior. `load_export_png`, used by opt-in sanitized history
-export, also keeps that existing contract. Byte-preserving PNG export/import,
-raw upload admission and PNG structure inventory are not converted into pixel
-decode operations by this change.
+Current UI saved-image recopy, editor loading, thumbnails and explicit export
+use the generic [format pipeline](capture-library-formats.md): PNG keeps the
+legacy saved-PNG decode, JPEG/WebP use managed color/orientation, and generic
+sanitization/conversion uses managed decode for all three. The narrow APIs above
+retain their distinct contracts; import/relink and Preserve remain header/byte
+operations rather than pixel decoding.
+
+The direct editor loader keeps its separate 32 MiB encoded limit and managed
+orientation/color policy. The narrow `load_export_png` compatibility loader
+retains its prior 32 MiB and EXIF behavior; it is not the current generic CLI
+sanitizer. Import/relink admission, Preserve byte copies, raw upload admission
+and PNG structure inventory do not become pixel-decode operations through this
+compatibility loader change.
 
 ## File admission and readable extent
 
@@ -50,9 +60,9 @@ Use a whole-file ceiling of
 (**272 MiB**, 285,212,672 bytes). This deliberately permits application-produced
 large PNGs that exceed the editor's 32 MiB limit. It aligns with the existing
 encoded PNG upload/buffer envelope, but is a new explicit bound on this former
-uncapped saved-file reader. The byte-copy export currently counts up to 272 MiB
-after its eight-byte signature; do not silently change that separate contract
-or claim all related limits are byte-identical.
+uncapped saved-file reader. The original narrow byte-copy wrapper counted 272 MiB after its signature.
+Current generic Preserve checks the entire file against the per-kind ceiling
+(272 MiB PNG, 32 MiB JPEG/WebP); that is separate from this compatibility loader.
 
 Admission sequence:
 

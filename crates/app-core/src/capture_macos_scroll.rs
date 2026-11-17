@@ -154,7 +154,7 @@ pub fn capture_macos_scroll_with_cancel(
     let executor = crate::native_capture_job::executor().ok_or(CaptureError::Unsupported(
         "Mac scrolling requires the desktop owned native executor",
     ))?;
-    let reply = executor(call.clone(), check)?;
+    let reply = executor(call.clone(), check, crate::NativeCaptureContext::default())?;
     call.validate_reply(&reply)?;
     check()?;
     let crate::NativeCaptureReply::MacScroll { image, summary } = reply else {

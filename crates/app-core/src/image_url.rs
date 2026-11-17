@@ -58,6 +58,7 @@ impl ImageUrlSource {
                 source: self.clone(),
             },
             check,
+            crate::NativeCaptureContext::default(),
         )?;
         check()?;
         let NativeCaptureReply::Frames(mut frames) = reply else {

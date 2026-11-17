@@ -217,7 +217,7 @@ pub(crate) fn take_startup_activation_token_from_environment() -> Option<String>
 }
 
 /// Takes the Wayland connection that `WAYLAND_SOCKET` hands to this process, as libwayland does.
-pub(crate) fn take_wayland_socket_from_environment() -> Option<UnixStream> {
+pub(crate) fn take_wayland_socket_from_environment() -> Option<anyhow::Result<UnixStream>> {
     const WAYLAND_SOCKET_ENV_VAR: &str = "WAYLAND_SOCKET";
     let value = std::env::var_os(WAYLAND_SOCKET_ENV_VAR)?;
     // Removed so that programs we launch don't inherit it, as libwayland does.
@@ -228,21 +228,28 @@ pub(crate) fn take_wayland_socket_from_environment() -> Option<UnixStream> {
         .and_then(|value| value.parse::<RawFd>().ok())
         .filter(|fd| *fd >= 0)
     else {
-        log::error!("ignoring WAYLAND_SOCKET={value:?}, which is not a file descriptor");
-        return None;
+        return Some(Err(anyhow::anyhow!(
+            "WAYLAND_SOCKET is not a valid file descriptor"
+        )));
     };
     // SAFETY: the process that started us passes this descriptor for us to own. It is inherited
     // across exec, so mark it close-on-exec to keep it from programs we launch.
     unsafe {
         let flags = libc::fcntl(fd, libc::F_GETFD);
-        if flags == -1 || libc::fcntl(fd, libc::F_SETFD, flags | libc::FD_CLOEXEC) == -1 {
-            log::error!(
-                "ignoring WAYLAND_SOCKET={fd}: {}",
-                std::io::Error::last_os_error()
+        if flags == -1 {
+            return Some(
+                Err(std::io::Error::last_os_error())
+                    .context("WAYLAND_SOCKET is not an available inherited descriptor"),
             );
-            return None;
         }
-        Some(UnixStream::from_raw_fd(fd))
+        let stream = UnixStream::from_raw_fd(fd);
+        if libc::fcntl(fd, libc::F_SETFD, flags | libc::FD_CLOEXEC) == -1 {
+            return Some(
+                Err(std::io::Error::last_os_error())
+                    .context("Could not protect the inherited Wayland descriptor"),
+            );
+        }
+        Some(Ok(stream))
     }
 }
 
@@ -1243,6 +1250,7 @@ impl WaylandConnection {
             cursor,
             startup_activation_token: activation_token,
             graphical_environment: GraphicalEnvironment {
+                wayland_session: true,
                 activation_token: None,
                 ..environment.clone()
             },

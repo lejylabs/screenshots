@@ -67,9 +67,9 @@ mod native_capture_job;
 mod portal_capture;
 pub use image_url::{ImageUrlSource, MAX_IMAGE_URL_BYTES};
 pub use native_capture_job::{
-    NativeCaptureCall, NativeCaptureCancellation, NativeCaptureCheck, NativeCaptureExecutor,
-    NativeCaptureReply, NativeSourceInventory, install_native_capture_executor,
-    validate_native_frames,
+    NativeCaptureCall, NativeCaptureCancellation, NativeCaptureCheck, NativeCaptureContext,
+    NativeCaptureExecutor, NativeCaptureReply, NativeSourceInventory,
+    install_native_capture_executor, validate_native_frames,
 };
 pub use portal_capture::{PortalCaptureCursor, PortalCaptureSource, capture_portal_with_cancel};
 mod capture_options;
@@ -165,14 +165,27 @@ mod s3_credentials;
 pub use provider_credentials::{
     read_provider_credentials, remove_provider_credentials, save_provider_credentials,
 };
+mod capture_format;
 mod s3_upload;
+mod saved_image;
+pub use capture_format::{
+    CaptureFormatPolicy, CaptureFormatPresence, CaptureFormatSettings, CaptureImageQuality,
+    LibraryExportPolicy,
+};
+pub use saved_image::{
+    SavedImageExport, SavedImageExportReport, SavedImageInfo, export_saved_image_as,
+    export_saved_images, inspect_saved_image, load_image_thumbnail, load_saved_image,
+    saved_image_png_without_metadata,
+};
 mod settings;
 mod upload;
 mod upload_credentials;
 pub use history::transfer_history_file;
 pub use history::{
-    CaptureSaveOutcome, PendingCaptureSave, copy_saved_png_with_history, pending_capture_save,
-    recover_capture_save, save_capture_with_history,
+    CaptureSaveOutcome, PendingCaptureSave, copy_saved_image_with_history,
+    copy_saved_png_with_history, pending_capture_save, recover_capture_save,
+    save_capture_with_history, save_capture_with_history_policy,
+    save_saved_image_with_history_policy,
 };
 pub use history::{
     HistoryEntry, HistoryFilter, ImportReport, MoveOutcome, MoveRecovery, PendingMove,
@@ -207,6 +220,7 @@ pub use upload::{
     UploadDestination, UploadDestinationCatalog, UploadMethod, UploadOutcome, UploadProgress,
     UploadProgressReceiver, UploadProgressReporter, probe_upload, upload_file, upload_png,
     upload_png_bytes_with_progress, upload_png_with_progress, upload_progress_channel,
+    upload_saved_image_with_progress,
 };
 
 pub use clipboard::{

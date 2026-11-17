@@ -6,7 +6,9 @@ Status: implemented and locally verified; broader BMP variants remain unsupporte
 
 Allow BMP in the shared explicit image loader after immutable-snapshot preflight.
 This lets converted BMP images reenter image tools, file OCR and QR scanning.
-It adds no UI control or default and does not change PNG-only history import.
+It adds no UI control or default and does not add BMP to Library import.
+Current Library originals are PNG/JPEG/WebP; PNG-specific compatibility APIs
+remain narrow. See [format policy](capture-library-formats.md).
 All shared-loader callers gain this support, including workflows, image batches,
 image collection tools and the existing Open image worker. No new picker filter,
 button or other UI control is introduced.

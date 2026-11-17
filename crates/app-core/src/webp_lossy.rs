@@ -4,7 +4,6 @@ use crate::CaptureError;
 use image::RgbaImage;
 use libwebp_sys as webp;
 use std::{
-    fs::File,
     io::{BufWriter, Write},
     panic::{AssertUnwindSafe, catch_unwind},
     path::Path,
@@ -80,7 +79,7 @@ impl Drop for Picture {
 }
 
 struct Output<'a, F> {
-    writer: BufWriter<&'a mut File>,
+    writer: BufWriter<&'a mut dyn Write>,
     stop: &'a StopCheck<'a, F>,
     bytes: u64,
     limit: u64,
@@ -186,6 +185,44 @@ fn save_with_limit<F: Fn() -> bool>(
     cancelled: F,
     limit: u64,
 ) -> Result<(), CaptureError> {
+    validate_output_size(pixels.width(), pixels.height())?;
+    if pixels.as_raw().len() as u64 > MAX_INPUT_BYTES {
+        return Err(failure(INPUT_LIMIT_MESSAGE));
+    }
+    if !(1..=100).contains(&quality) {
+        return Err(failure("Lossy WebP quality must be between 1 and 100"));
+    }
+    if destination.try_exists()? {
+        return Err(failure("Lossy WebP output already exists"));
+    }
+    let stop = StopCheck {
+        cancelled: &cancelled,
+        deadline: Instant::now() + DEADLINE,
+    };
+    crate::capture::write_output_checked(
+        destination,
+        |file| encode_with_limit(pixels, file, quality, &cancelled, limit),
+        || stop.check().map_err(Failure::error),
+    )
+}
+
+/// Encode once into the caller's owned journal stage; no independent publication.
+pub(crate) fn encode_lossy_webp_to(
+    pixels: &RgbaImage,
+    writer: &mut dyn Write,
+    quality: u8,
+    cancelled: &impl Fn() -> bool,
+) -> Result<(), CaptureError> {
+    encode_with_limit(pixels, writer, quality, cancelled, MAX_OUTPUT_BYTES)
+}
+
+fn encode_with_limit<F: Fn() -> bool>(
+    pixels: &RgbaImage,
+    writer: &mut dyn Write,
+    quality: u8,
+    cancelled: F,
+    limit: u64,
+) -> Result<(), CaptureError> {
     let (width, height) = pixels.dimensions();
     validate_output_size(width, height)?;
     if pixels.as_raw().len() as u64 > MAX_INPUT_BYTES {
@@ -199,9 +236,6 @@ fn save_with_limit<F: Fn() -> bool>(
         deadline: Instant::now() + DEADLINE,
     };
     stop.check().map_err(Failure::error)?;
-    if destination.try_exists()? {
-        return Err(failure("Lossy WebP output already exists"));
-    }
     let mut config =
         webp::WebPConfig::new().map_err(|_| failure("Could not initialize lossy WebP encoding"))?;
     config.lossless = 0;
@@ -226,38 +260,32 @@ fn save_with_limit<F: Fn() -> bool>(
         return Err(failure("Could not prepare lossy WebP pixels"));
     }
     stop.check().map_err(Failure::error)?;
-    crate::capture::write_output_checked(
-        destination,
-        |file| {
-            let mut output = Output {
-                writer: BufWriter::with_capacity(64 * 1024, file),
-                stop: &stop,
-                bytes: 0,
-                limit,
-                failure: None,
-            };
-            output.check().map_err(Failure::error)?;
-            let context = (&mut output as *mut Output<'_, F>).cast::<std::ffi::c_void>();
-            picture.0.custom_ptr = context;
-            picture.0.user_data = context;
-            picture.0.writer = Some(write::<F>);
-            picture.0.progress_hook = Some(progress::<F>);
-            let encoded = unsafe { webp::WebPEncode(&config, &mut picture.0) };
-            picture.0.custom_ptr = std::ptr::null_mut();
-            picture.0.user_data = std::ptr::null_mut();
-            picture.0.writer = None;
-            picture.0.progress_hook = None;
-            if let Some(failure) = output.failure {
-                return Err(failure.error());
-            }
-            if encoded == 0 || output.bytes == 0 {
-                return Err(failure("Lossy WebP encoding failed"));
-            }
-            output.flush().map_err(Failure::error)?;
-            Ok(())
-        },
-        || stop.check().map_err(Failure::error),
-    )
+    let mut output = Output {
+        writer: BufWriter::with_capacity(64 * 1024, writer),
+        stop: &stop,
+        bytes: 0,
+        limit,
+        failure: None,
+    };
+    output.check().map_err(Failure::error)?;
+    let context = (&mut output as *mut Output<'_, F>).cast::<std::ffi::c_void>();
+    picture.0.custom_ptr = context;
+    picture.0.user_data = context;
+    picture.0.writer = Some(write::<F>);
+    picture.0.progress_hook = Some(progress::<F>);
+    let encoded = unsafe { webp::WebPEncode(&config, &mut picture.0) };
+    picture.0.custom_ptr = std::ptr::null_mut();
+    picture.0.user_data = std::ptr::null_mut();
+    picture.0.writer = None;
+    picture.0.progress_hook = None;
+    if let Some(failure) = output.failure {
+        return Err(failure.error());
+    }
+    if encoded == 0 || output.bytes == 0 {
+        return Err(failure("Lossy WebP encoding failed"));
+    }
+    output.flush().map_err(Failure::error)?;
+    Ok(())
 }
 
 #[cfg(test)]

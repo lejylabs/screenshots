@@ -448,6 +448,7 @@ pub struct XcapBackend {
     options: crate::CaptureOptions,
     cancellation: Option<crate::NativeCaptureCancellation>,
     originating_pid: u32,
+    native_context: crate::NativeCaptureContext,
 }
 
 impl XcapBackend {
@@ -569,7 +570,19 @@ impl XcapBackend {
             options: crate::CaptureOptions::default(),
             cancellation: None,
             originating_pid: std::process::id(),
+            native_context: crate::NativeCaptureContext::default(),
         }
+    }
+
+    /// Preserve the admitted GUI session's restrictive authority across descriptor consumption.
+    #[doc(hidden)]
+    pub fn with_native_context(mut self, context: crate::NativeCaptureContext) -> Self {
+        self.native_context = context;
+        self
+    }
+    #[cfg(target_os = "linux")]
+    fn wayland_session(&self) -> bool {
+        self.native_context.wayland_session || linux_wayland_session()
     }
 
     pub fn with_cancellation(mut self, cancellation: crate::NativeCaptureCancellation) -> Self {
@@ -610,7 +623,11 @@ impl XcapBackend {
         let executor = crate::native_capture_job::executor()
             .ok_or_else(|| backend_error("Native capture executor unavailable"))?;
         self.check_native(check)?;
-        let reply = executor(call.clone(), &|| self.check_native(check))?;
+        let reply = executor(
+            call.clone(),
+            &|| self.check_native(check),
+            self.native_context,
+        )?;
         call.validate_reply(&reply)?;
         let crate::NativeCaptureReply::Frames(frames) = reply else {
             return Err(backend_error("Unexpected native capture reply"));
@@ -681,7 +698,7 @@ impl XcapBackend {
         check: &crate::NativeCaptureCheck<'_>,
     ) -> Result<Vec<CapturedImage>, CaptureError> {
         #[cfg(target_os = "linux")]
-        if linux_wayland_session()
+        if self.wayland_session()
             && requests.iter().any(|request| {
                 !matches!(
                     request,
@@ -996,7 +1013,11 @@ impl XcapBackend {
         self.check_native(check)?;
         if let Some(executor) = crate::native_capture_job::executor() {
             let call = crate::NativeCaptureCall::Displays;
-            let reply = executor(call.clone(), &|| self.check_native(check))?;
+            let reply = executor(
+                call.clone(),
+                &|| self.check_native(check),
+                self.native_context,
+            )?;
             call.validate_reply(&reply)?;
             let crate::NativeCaptureReply::Displays(displays) = reply else {
                 return Err(backend_error("Unexpected native display reply"));
@@ -1031,7 +1052,11 @@ impl XcapBackend {
             self.check_native(check)?;
             if let Some(executor) = crate::native_capture_job::executor() {
                 let call = crate::NativeCaptureCall::PixelDisplays;
-                let reply = executor(call.clone(), &|| self.check_native(check))?;
+                let reply = executor(
+                    call.clone(),
+                    &|| self.check_native(check),
+                    self.native_context,
+                )?;
                 call.validate_reply(&reply)?;
                 let crate::NativeCaptureReply::Displays(displays) = reply else {
                     return Err(CaptureError::StaleRegion);
@@ -1081,7 +1106,11 @@ impl XcapBackend {
         self.check_native(check)?;
         if let Some(executor) = crate::native_capture_job::executor() {
             let call = crate::NativeCaptureCall::Inventory;
-            let reply = executor(call.clone(), &|| self.check_native(check))?;
+            let reply = executor(
+                call.clone(),
+                &|| self.check_native(check),
+                self.native_context,
+            )?;
             call.validate_reply(&reply)?;
             let crate::NativeCaptureReply::Inventory(inventory) = reply else {
                 return Err(backend_error("Unexpected native inventory reply"));
@@ -1105,7 +1134,11 @@ impl XcapBackend {
         }
         if let Some(executor) = crate::native_capture_job::executor() {
             let call = crate::NativeCaptureCall::Windows;
-            let reply = executor(call.clone(), &|| self.check_native(check))?;
+            let reply = executor(
+                call.clone(),
+                &|| self.check_native(check),
+                self.native_context,
+            )?;
             call.validate_reply(&reply)?;
             let crate::NativeCaptureReply::Windows(windows) = reply else {
                 return Err(backend_error("Unexpected native window reply"));
@@ -1187,7 +1220,7 @@ impl CaptureBackend for XcapBackend {
             capture_display: {
                 #[cfg(target_os = "linux")]
                 {
-                    !linux_wayland_session()
+                    !self.wayland_session()
                 }
                 #[cfg(not(target_os = "linux"))]
                 {
@@ -1198,7 +1231,7 @@ impl CaptureBackend for XcapBackend {
             capture_region: {
                 #[cfg(target_os = "linux")]
                 {
-                    !linux_wayland_session()
+                    !self.wayland_session()
                 }
                 #[cfg(not(target_os = "linux"))]
                 {
@@ -2926,3 +2959,7 @@ pub(crate) fn publish_output(temporary: &Path, destination: &Path) -> std::io::R
     // No partial-file copy fallback on filesystems that cannot publish without replacement.
     fs::hard_link(temporary, destination)
 }
+
+#[cfg(all(test, target_os = "linux"))]
+#[path = "capture_session_context_tests.rs"]
+mod capture_session_context_tests;

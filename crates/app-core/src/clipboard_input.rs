@@ -309,7 +309,7 @@ pub fn capture_clipboard_image_with_cancel(
     let executor = crate::native_capture_job::executor().ok_or(
         crate::CaptureError::Unsupported("Clipboard import requires the isolated desktop executor"),
     )?;
-    let reply = executor(call.clone(), check)?;
+    let reply = executor(call.clone(), check, crate::NativeCaptureContext::default())?;
     call.validate_reply(&reply)?;
     check()?;
     let crate::NativeCaptureReply::Frames(mut frames) = reply else {
@@ -335,7 +335,7 @@ pub fn inspect_clipboard_with_cancel(
         crate::native_capture_job::executor().ok_or(crate::CaptureError::Unsupported(
             "Clipboard inspection requires the isolated desktop executor",
         ))?;
-    let reply = executor(call.clone(), check)?;
+    let reply = executor(call.clone(), check, crate::NativeCaptureContext::default())?;
     call.validate_reply(&reply)?;
     check()?;
     let crate::NativeCaptureReply::Clipboard(value) = reply else {

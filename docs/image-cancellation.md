@@ -1,6 +1,11 @@
 # Cooperative cancellation during history thumbnail reduction
 
-## Continuation: operation-owned raster work (implemented; final integration pending)
+## Integrated operation-owned raster work
+
+Current integration is implemented and passes the local optimized workspace.
+Earlier focused counts and measurements below remain dated checkpoint evidence;
+see [current status](non-ui-status.md). Native codec/I/O, physical and
+reference-hardware acceptance remain separate.
 
 Extend the existing callback contract to ordered rendering, export reduction,
 strip removal and Task recipes. Legacy entry points retain their behavior and
@@ -86,8 +91,8 @@ fixtures do not fill a real disk or establish power-loss acceptance.
 
 The earlier full core run at its intermediate snapshot passed 258 cases, 43 opt-ins
 excluded; affected image/workflow/Task executable fixtures also passed. The
-subsequent encoder/latching and native-worker integration requires the final
-frozen-tree repeat. Standalone workflows use a cooperative five-minute processing
+subsequent encoder/latching and native-worker integration was covered by later
+coordinated optimized checks; current totals are linked above. Standalone workflows use a cooperative five-minute processing
 budget; kernel/codec internals still have the limits above. Task commands receive
 up to 250 ms for cooperative owned-child cleanup before forced termination;
 a real independent-process-group fixture passed alongside the 11 Task cases.
@@ -97,7 +102,7 @@ Date: 2026-11-15
 Status: implemented; focused core/lifecycle checks and measurements passed.
 Final workspace and artifact evidence is recorded in the delivery log.
 
-## Smallest complete slice
+## Original thumbnail-only slice (historical checkpoint)
 
 Make the existing history thumbnail reduction observe its existing cancellation
 callback during pixel work. `load_png_thumbnail` currently checks before PNG
@@ -121,7 +126,8 @@ marker and cancel that job, so Quit waits for the same completion guard as
 `finish_quit_if_idle`. Do not treat revision changes as identity-stale early
 returns that would prevent the next page from starting.
 
-This slice does not claim general image-job cancellation. Blur previews and
+Original thumbnail-only scope (before the integrated continuation above):
+this slice did not claim general image-job cancellation. Blur previews and
 pixelation preparation already poll their effect cancellation callback. Final
 editor rendering, export downscaling, PNG decode/encode, workflow operations,
 native I/O and several copy loops need separate work. `export_redaction` closes
@@ -218,9 +224,10 @@ actual optimized peak memory and timings rather than claiming the allocation
 model is measured evidence. The [PLAN performance contract](../PLAN.md#performance-contract--all-versions-and-features)
 and thumbnail priority/admission rules stay unchanged.
 
-The existing `load_saved_png` path still relies on its installed PNG decoder and
-its existing image limits; this work does not repair all file-open, encoded-byte,
-metadata-allocation or native-stall concerns in that older loader. Do not expand
+That original thumbnail checkpoint did not repair the older saved-PNG loader.
+The later [saved-PNG admission](saved-png-admission.md) now supplies regular-file,
+fixed-extent and predecode byte admission; decoder scratch and native stalls
+still have the separately stated limits. Do not expand
 format support or quietly claim the new helper bounds decoding itself.
 
 ## Files and verification

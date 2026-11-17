@@ -359,3 +359,27 @@ memory and reduced parent CPU. The added active cost buys safe family cleanup
 without reusing a live job's admission, leaving an idle worker or weakening the
 PID/group reservation. This records the cause, remediation and decision for
 PLAN's greater-than-10-percent review gate; it does not relax the latency target.
+
+
+## Video-family completion after unexpected control EOF (2026-11-17)
+
+A video source now retains a local family-completion guard from immediately before
+`VIDEO_READY` until authenticated `VIDEO_FINISH`. An unexpected return terminates
+its own still-reserved process group before the outer lifeline can cancel its
+watcher. Generic still-capture supervision and pre-READY typed failures remain
+unchanged. This adds one operation-local boolean, with no new dependency, thread,
+allocation, timer, queue or idle work.
+
+Optimized Linux fixtures passed all three new encoder/probe EOF and typed-error
+cases, then 47 capture-worker controls (zero failures, two explicit opt-ins
+excluded). Omitting only the completion guard made both EOF controls fail while
+the parent stayed alive and deferred its own cleanup; restoring the reviewed
+guard made them pass. These tests use exclusively owned synthetic processes and
+small in-memory frames, without screen, clipboard, microphone or credential access.
+
+The earlier native ARM failure and subsequently observed orphan motivated this
+correction. Its original event ordering is still unproven. Native macOS ARM/Intel
+old-fails/new-passes runs, the unchanged five-second owner-loss check and normal
+video completion controls remain required before native acceptance. The updated
+private diagnostics report only owned process identities/status, never arguments,
+environment values, capability tokens or pixels.

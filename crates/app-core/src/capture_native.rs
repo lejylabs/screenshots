@@ -22,7 +22,11 @@ pub(crate) fn display_identities(displays: &[DisplayInfo]) -> Result<Vec<Capture
             displays: displays.to_vec(),
         };
         call.validate()?;
-        let reply = executor(call.clone(), &|| Ok(()))?;
+        let reply = executor(
+            call.clone(),
+            &|| Ok(()),
+            crate::NativeCaptureContext::default(),
+        )?;
         call.validate_reply(&reply)?;
         let crate::NativeCaptureReply::Identities(identities) = reply else {
             anyhow::bail!("Unexpected native identity reply");

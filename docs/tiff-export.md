@@ -14,7 +14,8 @@ for shared-loader operations only while it fits the 32 MiB encoded input limit.
 It accepts one uncompressed RGB8 or explicit straight-RGBA8 image in top-left
 chunky strips, with strict directory/range checks; compression, profiles, other
 orientations and multiple pages remain unsupported. Input acceptance does not
-add TIFF to editor/capture output defaults or PNG-only history import. The
+add TIFF to editor/capture output defaults or Library history import, whose
+current originals are PNG/JPEG/WebP. Narrow PNG compatibility APIs stay separate. The
 output verification recorded below is not evidence for the new input path.
 
 Use the already locked `tiff 0.11.3` package directly to write one uncompressed

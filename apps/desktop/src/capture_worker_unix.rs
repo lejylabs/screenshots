@@ -174,23 +174,64 @@ pub(super) fn live_members(group: i32) -> io::Result<Vec<i32>> {
 }
 
 #[cfg(all(test, target_os = "macos"))]
-pub(super) fn process_live(pid: i32) -> bool {
+#[derive(Debug)]
+pub(super) struct ProcessState {
+    pub requested: i32,
+    pub count: i32,
+    pub expected: i32,
+    pub errno: Option<i32>,
+    pub pid: Option<u32>,
+    pub parent: Option<u32>,
+    pub group: Option<u32>,
+    pub status: Option<u32>,
+    pub flags: Option<u32>,
+    pub started: Option<(u64, u64)>,
+}
+#[cfg(all(test, target_os = "macos"))]
+impl ProcessState {
+    pub fn live(&self) -> bool {
+        if self.count == self.expected {
+            self.status != Some(libc::SZOMB)
+        } else {
+            self.errno != Some(libc::ESRCH)
+        }
+    }
+}
+#[cfg(all(test, target_os = "macos"))]
+pub(super) fn process_state(pid: i32) -> ProcessState {
     let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
-    let expected = std::mem::size_of_val(&info);
+    let expected = std::mem::size_of_val(&info) as i32;
     let count = unsafe {
         proc_pidinfo(
             pid,
             libc::PROC_PIDTBSDINFO,
             0,
             (&mut info as *mut libc::proc_bsdinfo).cast(),
-            expected as i32,
+            expected,
         )
     };
-    if count == expected as i32 {
-        info.pbi_status != libc::SZOMB
+    let errno = if count == expected {
+        None
     } else {
-        io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH)
+        std::io::Error::last_os_error().raw_os_error()
+    };
+    let valid = count == expected;
+    ProcessState {
+        requested: pid,
+        count,
+        expected,
+        errno,
+        pid: valid.then_some(info.pbi_pid),
+        parent: valid.then_some(info.pbi_ppid),
+        group: valid.then_some(info.pbi_pgid),
+        status: valid.then_some(info.pbi_status),
+        flags: valid.then_some(info.pbi_flags),
+        started: valid.then_some((info.pbi_start_tvsec, info.pbi_start_tvusec)),
     }
+}
+#[cfg(all(test, target_os = "macos"))]
+pub(super) fn process_live(pid: i32) -> bool {
+    process_state(pid).live()
 }
 
 /// Block on exit readiness, never on a periodic pending-cleanup timer.

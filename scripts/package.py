@@ -32,6 +32,13 @@ def license_files(item):
     files = [path for path in source.iterdir() if path.is_file() and path.name.upper().startswith(("LICENSE", "LICENCE", "COPYING", "NOTICE", "PATENTS"))]
     if item.get("license_file"):
         files.append(source / item["license_file"])
+    if item["name"] in {"accesskit_unix", "accesskit_atspi_common"}:
+        # Their published crates omit the workspace licenses restored in vendor/.
+        for name in ["LICENSE-MIT", "LICENSE-APACHE"]:
+            path = source / name
+            if not path.is_file() or path.is_symlink():
+                raise ValueError("Vendored AccessKit license text is missing")
+            files.append(path)
     if item["name"] == "libwebp-sys":
         # The statically compiled C library's notices live below the Rust wrapper.
         for name in ["COPYING", "PATENTS"]:

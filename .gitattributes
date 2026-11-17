@@ -3,3 +3,6 @@
 /vendor/moxcms/** -text whitespace=blank-at-eol,blank-at-eof,space-before-tab,cr-at-eol
 # The published README includes a trailing space; retain its exact upstream bytes.
 /vendor/moxcms/README.md whitespace=-blank-at-eol,blank-at-eof,space-before-tab,cr-at-eol
+# Keep restored upstream notices byte-identical on Windows checkouts too.
+/vendor/accesskit_unix/LICENSE-* -text
+/vendor/accesskit_atspi_common/LICENSE-* -text

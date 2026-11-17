@@ -1,4 +1,6 @@
 use super::*;
+#[path = "format_catalog_ui_tests.rs"]
+mod format_catalog_tests;
 use gpui::test::{TestQueryExt, TestWindowExt};
 use gpui::{AppContext, TestAppContext, px, rgb};
 
@@ -154,7 +156,7 @@ fn failed_capture_batch_keeps_every_source_and_save_as_retries_all(cx: &mut Test
         .update(cx, |this, _, _| {
             assert!(this.failed_capture_saves.is_empty() && this.last_capture.is_none());
             assert!(!this.saving && !this.copying);
-            assert_eq!(this.save_status, "Save: 2 PNG(s) saved");
+            assert_eq!(this.save_status, "Save: 2 image(s) saved");
             assert_eq!(this.last_saved.as_ref(), Some(&chosen));
             assert_eq!(this.clipboard_status, "Clipboard unchanged (Save only)");
         })
@@ -241,7 +243,7 @@ fn partial_capture_batch_releases_saved_pixels_and_retries_only_unsaved_source(
                 [71, 73, 79, 255]
             );
             assert!(weak[0].upgrade().is_some() && weak[1].upgrade().is_none());
-            assert!(this.save_status.contains("1/2 PNG(s) saved"));
+            assert!(this.save_status.contains("1/2 image(s) saved"));
             this.save_capture_as(cx);
         })
         .unwrap();
@@ -1014,7 +1016,7 @@ fn automatic_saves_use_custom_names_and_track_the_published_last_path(cx: &mut T
         let state = handle.read(cx).unwrap();
         assert!(!state.saving && state.last_capture.is_none());
         assert_eq!(state.clipboard_status, "No capture yet");
-        assert_eq!(state.save_status, "Save: 2 PNG(s) saved");
+        assert_eq!(state.save_status, "Save: 2 image(s) saved");
         state.last_saved.clone().unwrap()
     });
     assert_eq!(saved.parent().unwrap(), root);

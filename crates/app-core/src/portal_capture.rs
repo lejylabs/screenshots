@@ -98,7 +98,7 @@ pub fn capture_portal_with_cancel(
         let executor = crate::native_capture_job::executor().ok_or(CaptureError::Unsupported(
             "Portal capture requires the desktop process executor",
         ))?;
-        let reply = executor(call.clone(), check)?;
+        let reply = executor(call.clone(), check, crate::NativeCaptureContext::default())?;
         call.validate_reply(&reply)?;
         check()?;
         let NativeCaptureReply::Frames(mut frames) = reply else {

@@ -1,7 +1,8 @@
 # Bounded editor document and renderer
 
-Status: implemented backend, focused verification/source review in progress,
-2026-11-16. The parent/Elephant approved this contract before implementation.
+Status: implemented backend; focused source convergence and local execution
+results are recorded below (2026-11-16). Earlier pending checkpoints are
+historical. The parent/Elephant approved this contract before implementation.
 Scope: the remaining editor data/render backend from the user's list. New GPUI
 controls and final product design are excluded. A headless consumer verifies the
 shared backend; it does not establish that those controls exist in the editor.
@@ -805,7 +806,9 @@ converged. Both verified the frozen repository/vendor/proof hashes and actual
 runtime-harness fixture/dependency identities. The corrected source passed all
 38 editor core cases in the integrated run; that run stopped at an unrelated
 legacy test still expecting history schema 9 instead of the new 10. The stale
-expectation is corrected; the next full workspace run remains separate.
+expectation is corrected. Later coordinated workspace checks passed; current
+combined totals are in [current status](non-ui-status.md). This does not
+relabel the stopped checkpoint as a complete pass.
 
 The optimized executable passed 37 successful render cases plus refusal,
 no-overwrite, input-provenance and cancellation checks, including normalized

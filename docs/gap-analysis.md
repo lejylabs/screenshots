@@ -1,11 +1,18 @@
 # Functional gap analysis: screenshots and ShareX
 
+Current source reconciliation: capture/Library formats support PNG/JPEG/WebP,
+including exact Preserve and explicit Convert; descriptor-only Wayland startup
+is integrated. Current local verification and remaining non-UI/native/UI scope
+are recorded in [the current checklist](non-ui-status.md). All dated capability
+bullets/tables below retain their original checkpoint, including old PNG-only
+Library and unimplemented-feature claims; they are not current blanket limits.
+
 ## Historical reconciliation: feature branch, 2026-11-15
 
-The [current checklist](non-ui-status.md) reconciles all project Markdown and
-the complete requested feature list; this file retains the historical detail.
+The [current checklist](non-ui-status.md) tracks the complete requested feature
+list and Markdown-review coverage; this file retains the historical detail.
 
-The current continuation commits native defaults/templates and isolation,
+The later continuation commits native defaults/templates and isolation,
 portable Library lifecycle/retention, bounded raster cancellation, modern SXCU,
 private-runtime packaging, durable schedules, atomic Windows workers, in-memory
 portal capture, URL input and reviewed native capture/clipboard foundations.

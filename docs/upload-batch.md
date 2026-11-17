@@ -8,7 +8,14 @@ history or settings. Duplicate paths are allowed and upload again in argument
 order. Relative paths resolve against the caller's current directory; native
 non-UTF-8 paths remain usable where the OS supports them.
 
-`PROFILE` selects the [documented ShareX ImageUploader subset](../README.md#capture-home)
+Modern versioned `.sxcu` files are dispatched to the bounded
+[modern runtime](sharex-runtime.md), including its admitted methods, bodies,
+destination flags and `ErrorMessage` handling. The native importer restrictions
+below describe the legacy/versionless profile path only; they are not blanket
+restrictions on modern SXCU execution. Unsupported very old versions and real
+provider/account acceptance remain separate limits.
+
+For legacy/versionless profiles, `PROFILE` selects the [documented ShareX ImageUploader subset](../README.md#capture-home)
 when its extension is `.sxcu`, ignoring ASCII case (`.SXCU` also works). Every
 other extension selects native destination JSON; contents are not auto-detected.
 The same extension selection applies to `upload`; `upload-file` and `upload-files` additionally
@@ -26,9 +33,9 @@ ShareX image/file uploaders support multipart or binary input; its text uploader
 uses a string `Data` template. This implementation preserves the local extension
 for existing image profiles, while file uploads reject JSON bodies.
 
-An explicitly configured `ErrorMessage` template is unsupported and rejected
+In the legacy native importer, an explicitly configured `ErrorMessage` template is unsupported and rejected
 before connecting. Missing/null/empty values remain compatible. This applies
-to both image and file profile imports.
+to both legacy image and file profile imports.
 
 The complete argument count, destination profile and each input's regular-file
 metadata/32 MiB size limit are checked before the first request. Image contents

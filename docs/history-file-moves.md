@@ -5,9 +5,9 @@ Date: 2026-11-15
 Status: Linux implementation verified; native macOS/Windows adapters added.
 Native acceptance is tracked separately in [Library lifecycle](history-lifecycle.md).
 
-Add `history-manage move DATABASE ID NEW.png`, `history-manage pending-move
+Add `history-manage move DATABASE ID NEW_IMAGE`, `history-manage pending-move
 DATABASE`, and `history-manage recover-move DATABASE OPERATION finish|cancel`.
-Move one referenced PNG on the same filesystem without replacing another file.
+Move one referenced PNG/JPEG/WebP image on the same filesystem without replacing another file.
 This is an explicit physical-file operation; existing remove stays metadata-only.
 macOS uses held POSIX descriptors with `renameatx_np(RENAME_EXCL)`. Windows uses
 128-bit native identities, reparse-point refusal and no-replace write-through
@@ -33,8 +33,8 @@ triggers reserve the pending ID and both paths against ordinary import/relink/
 remove updates. A new move is refused until the pending operation is recovered.
 
 Linux opens the source without following a final symlink, with nonblocking file
-admission, validates PNG header/dimensions and hashes at most 272 MiB in 64 KiB
-chunks with a 30-second cooperative deadline. Retain the handle and source/dest
+admission, validates actual image magic/dimensions and hashes at most 272 MiB
+for PNG or 32 MiB for JPEG/WebP in 64 KiB chunks with a 30-second cooperative deadline. Retain the handle and source/dest
 directory handles. Rename through `renameat2(RENAME_NOREPLACE)` on the same
 filesystem, then verify destination identity/hash and sync both parent directories.
 Commit the new capture path and remove the journal together, conditional on the
@@ -82,7 +82,7 @@ a symlink. The journal retains the exact original database row as well as the
 resolved operation paths; a rebound parent alias causes recovery to fail closed.
 
 No cross-device copy/delete fallback. Input paths are at most 4096 UTF-8 bytes;
-PNG bytes/dimensions retain existing admission limits. Each fingerprint pass has
+PNG/JPEG/WebP bytes and dimensions retain their format-specific admission limits. Each fingerprint pass has
 a 30-second cooperative budget; repeated verification may hash the same file
 several times, so this is not a 30-second whole-move deadline. One file/hash buffer,
 bounded journal and synchronous headless work add no resident threads/timers.
@@ -91,10 +91,17 @@ post-rename identity verification prevents a wrong database update but cannot
 promise arbitrary external writers never move a replacement file. Parent path
 changes and kernel stalls remain explicit native limits. This is recoverability,
 not a filesystem-wide transaction or guaranteed resistance to malicious writers.
-Reservations compare exact stored path strings; aliases or hardlinks in other
-history entries are not discovered or rewritten. The selected row's canonical
+The first schema-5 delivery compared stored path strings. Current reservations
+also use bounded native identity and indexed candidate checks for aliases and
+hardlinks, as described in [Library lifecycle](history-lifecycle.md); they do
+not rewrite other references or promise hostile-writer atomicity. The selected row's canonical
 parent is recorded for file operations while its original path remains part of
 the database comparison.
+
+The current [format contract](capture-library-formats.md) extends the same
+move/recovery protocol to JPEG/WebP. Fingerprints retain the actual kind,
+destinations keep a matching extension, and legacy stamps default to PNG.
+Source compressed bytes remain unchanged; moving never converts an image.
 
 Core `history_file_ops.rs` is nested under history for private DB helpers and
 `history_file_ops_native.rs` for native identity/open/rename/sync/hash. Modify

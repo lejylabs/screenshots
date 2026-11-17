@@ -345,7 +345,7 @@ impl Render for CaptureWorkspace {
                             ControlPage::Captures => "Capture, edit and save screenshots.",
                             ControlPage::History => "Search and manage saved images.",
                             ControlPage::Sources => "Choose a display or window.",
-                            ControlPage::Uploads => "Upload saved PNGs to your configured destination.",
+                            ControlPage::Uploads => "Upload saved images to your configured destination.",
                             ControlPage::Settings => "Appearance and storage.",
                         }))))
                     .child(quiet_button(cx, "appearance-shortcut", theme::name(theme::selected(cx)), false, false,
@@ -579,7 +579,7 @@ impl Render for CaptureWorkspace {
                             .child("Manual destination · no authentication · use a profile for advanced settings")
                             .child("Endpoint URL")
                             .child(gpui::component::input::Input::new(&inputs[0]).id("upload-setup-url").aria_label("Upload endpoint URL").disabled(disabled))
-                            .child(RadioGroup::new("upload-setup-method").children(["POST multipart", "PUT PNG body"])
+                            .child(RadioGroup::new("upload-setup-method").children(["POST multipart", "PUT image body"])
                                 .selected_index(Some(if self.upload_form_method == app_core::UploadMethod::Post { 0 } else { 1 })).disabled(disabled)
                                 .on_change(cx.listener(|this, index, _, cx| { this.upload_form_method = if *index == 0 { app_core::UploadMethod::Post } else { app_core::UploadMethod::Put }; cx.notify(); })))
                             .child("POST file field")
@@ -703,9 +703,9 @@ impl Render for CaptureWorkspace {
                             .unwrap_or_else(|| "Capture, copy or save a screenshot first, or choose an image from your library.".into())))
                     .child(div().text_sm().text_color(colors.muted_foreground).child(
                         if self.strip_metadata_on_upload {
-                            "Strip metadata re-encodes saved PNG pixels before upload and drops ancillary chunks such as tEXt and eXIf. The original file is unchanged. Editor and unsaved captures already send pixels only. Library export still copies stored bytes."
+                            "Strip metadata decodes saved images to metadata-free PNG before upload. The original file is unchanged. Editor and unsaved captures already send pixels only. Library export follows its separate saved format preference."
                         } else {
-                            "Saved-file uploads send stored PNG bytes, including existing metadata. Enable Strip metadata to re-encode pixels first. Editor and unsaved captures already send pixels only."
+                            "Saved-file uploads send stored image bytes with their actual format, including existing metadata. Enable Strip metadata to create a PNG from pixels first. Editor and unsaved captures already send pixels only."
                         }))
                     .child(gpui::component::checkbox::Checkbox::new("strip-upload-metadata").label("Strip metadata on upload")
                         .checked(self.strip_metadata_on_upload)
@@ -926,7 +926,7 @@ impl Render for CaptureWorkspace {
                             cx.listener(|this, _, _, cx| this.open_image(cx))))
                         .child(quiet_button(cx,
                             "import-history-images",
-                            "Add PNGs…",
+                            "Add images…",
                             busy || self.history_loading,
                             false, cx.listener(|this, _, _, cx| this.import_history_images(cx)),
                         ))
@@ -995,7 +995,7 @@ impl Render for CaptureWorkspace {
                         .when(!self.history_loading && self.history_entries.is_empty(), |view| view.child(
                             div().p_6().rounded(px(theme.panel_radius)).border_1().border_color(colors.border).bg(colors.group_box)
                                 .child(div().text_lg().child("No images to show"))
-                                .child(div().mt_2().text_sm().text_color(colors.muted_foreground).child("Take a screenshot, add PNGs, or try a different search."))))
+                                .child(div().mt_2().text_sm().text_color(colors.muted_foreground).child("Take a screenshot, add images, or try a different search."))))
                         .child(
                             div()
                                 .id("capture-history-list")
@@ -1186,10 +1186,10 @@ impl Render for CaptureWorkspace {
                     .on_change(cx.listener(|this, index, _, cx| {
                         if let Some(format) = app_core::ImageExportFormat::ALL.get(*index) { this.choose_export_format(*format, cx); }
                     })))
-                .child(div().text_sm().child("Changes are saved automatically. Save as suggests this format and uses it when the filename has no extension. An explicit extension overrides it. Direct Save and quick captures still use PNG.")))
+                .child(div().text_sm().child("Changes are saved automatically. Save as suggests this format and uses it when the filename has no extension. An explicit extension overrides it. Direct Save and quick captures follow the capture format preference (PNG by default).")))
             .child(div().flex_none().p_5().when(theme.workbench, |panel| panel.p_3()).rounded(px(theme.panel_radius)).bg(colors.group_box).flex().flex_col().gap_3()
                 .child(div().font_weight(gpui::FontWeight::SEMIBOLD).child("Capture filename template"))
-                .child(div().text_sm().child("Automatic PNG saves only, including edited captures. Use letters, digits, spaces, - or _, and {date} / {time} for UTC save time. A unique suffix and .png are always added. Leave empty for default names; Save as keeps its manually chosen name."))
+                .child(div().text_sm().child("Automatic captures, including edited captures. Use letters, digits, spaces, - or _, and {date} / {time} for UTC save time. A unique suffix and the selected capture format extension are added. Leave empty for default names; Save as keeps its manually chosen name."))
                 .child(div().text_sm().child(if self.filename_template.is_empty() { "Active: default names".to_owned() } else { format!("Active: {}", self.filename_template) }))
                 .children(self.filename_template_input.iter().map(|input| gpui::component::input::Input::new(input)
                     .id("capture-filename-template").aria_label("Capture filename template").disabled(unavailable || self.preview_active)))
@@ -1636,11 +1636,11 @@ impl CaptureWorkspace {
                     #[cfg(target_os = "windows")]
                     ("Copy file", HistoryCommand::CopyFile, !available.0),
                     (
-                        "Upload PNG",
+                        "Upload image",
                         HistoryCommand::Upload,
                         !available.0 || !available.1,
                     ),
-                    ("Relink PNG…", HistoryCommand::Relink, !available.0),
+                    ("Relink image…", HistoryCommand::Relink, !available.0),
                     ("Remove from library", HistoryCommand::Remove, !available.0),
                 ]
                 .into_iter()

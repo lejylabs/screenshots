@@ -220,7 +220,7 @@ pub fn run(args: &[OsString]) -> Result<()> {
         "restore" => {
             ensure!(
                 (3..=4).contains(&args.len()),
-                "Usage: screenshots history-manage restore DATABASE TRASH_UUID [NEW.png]"
+                "Usage: screenshots history-manage restore DATABASE TRASH_UUID [NEW_IMAGE]"
             );
             let id = trash_id(&args[2])?;
             let destination = args.get(3).map(absolute_path).transpose()?;
@@ -308,7 +308,7 @@ pub fn run(args: &[OsString]) -> Result<()> {
         "move" | "transfer" => {
             ensure!(
                 args.len() == 4,
-                "Usage: screenshots history-manage move DATABASE ID NEW.png"
+                "Usage: screenshots history-manage move DATABASE ID NEW_IMAGE"
             );
             let database = bounded_path(&args[1])?;
             existing_database(database)?;
@@ -392,14 +392,34 @@ pub fn run(args: &[OsString]) -> Result<()> {
             )
         }
         "export" => {
+            let (args, config) = if args.len() >= 3 && args[args.len() - 2] == "--config" {
+                ensure!(
+                    args.get(3).is_some_and(|policy| policy == "configured"),
+                    "--config applies only to configured Library export"
+                );
+                (
+                    &args[..args.len() - 2],
+                    Some(absolute_path(&args[args.len() - 1])?),
+                )
+            } else {
+                (args, None)
+            };
             ensure!(
                 (5..=104).contains(&args.len()),
-                "Usage: screenshots history-manage export DATABASE DIRECTORY original|strip-metadata ID... (1–100 IDs)"
+                "Usage: screenshots history-manage export DATABASE DIRECTORY original|strip-metadata|configured ID... [--config FILE] (1–100 IDs)"
             );
-            let strip = match args[3].to_str() {
-                Some("original") => false,
-                Some("strip-metadata") => true,
-                _ => bail!("Export policy must be original or strip-metadata"),
+            let (strip, policy) = match args[3].to_str() {
+                Some("original") => (false, app_core::LibraryExportPolicy::Preserve),
+                Some("strip-metadata") => (true, app_core::LibraryExportPolicy::Preserve),
+                Some("configured") => (
+                    false,
+                    match config {
+                        Some(path) => app_core::CaptureFormatSettings::load_at(&path)?,
+                        None => app_core::CaptureFormatSettings::load()?,
+                    }
+                    .library_export,
+                ),
+                _ => bail!("Export policy must be original, strip-metadata or configured"),
             };
             let ids = args[4..]
                 .iter()
@@ -417,27 +437,31 @@ pub fn run(args: &[OsString]) -> Result<()> {
                 })
                 .collect::<Result<Vec<_>>>()?;
             let mut exported = 0;
+            let mut outputs = Vec::new();
             let mut not_exported = 0;
             let mut failures = Vec::new();
             for chunk in sources.chunks(20) {
                 let report =
-                    app_core::export_saved_pngs_with_metadata(chunk, &directory, strip, || false)
+                    app_core::export_saved_images(chunk, &directory, policy, strip, || false)
                         .with_context(|| {
-                        format!("{exported} files already exported; published files remain")
-                    })?;
-                exported += report.exported;
+                            format!("{exported} files already exported; published files remain")
+                        })?;
+                exported += report.outputs.len();
+                outputs.extend(report.outputs);
                 not_exported += report.not_exported;
                 failures.extend(report.failures.into_iter().map(|(path,error)|json!({"path":path.to_string_lossy(),"error":bounded_error(error)})));
             }
-            print_result(
-                json!({"exported":exported,"failed":failures.len(),"not_exported":not_exported,"failures":failures,"metadata_policy":if strip {"strip-metadata"}else{"original"},"path_encoding":"lossy-native"}),
-                "History export completed; published files remain",
-            )
+            let configured = args[3] == "configured";
+            let mut result = json!({"exported":exported,"failed":failures.len(),"not_exported":not_exported,"failures":failures,"outputs":outputs,"metadata_policy":if configured {"configured"}else if strip {"strip-metadata"}else{"original"},"path_encoding":"lossy-native"});
+            if configured {
+                result["library_export_policy"] = json!(policy);
+            }
+            print_result(result, "History export completed; published files remain")
         }
         "import" => {
             ensure!(
                 (3..=102).contains(&args.len()),
-                "Usage: screenshots history-manage import DATABASE PNG [PNG...] (1–100 inputs)"
+                "Usage: screenshots history-manage import DATABASE IMAGE [IMAGE...] (1–100 inputs)"
             );
             let database = bounded_path(&args[1])?;
             let paths: Vec<_> = args[2..].iter().map(absolute_path).collect::<Result<_>>()?;
@@ -470,7 +494,7 @@ pub fn run(args: &[OsString]) -> Result<()> {
         "relink" => {
             ensure!(
                 args.len() == 4,
-                "Usage: screenshots history-manage relink DATABASE ID PNG"
+                "Usage: screenshots history-manage relink DATABASE ID IMAGE"
             );
             let id = positive_id(&args[2])?;
             let path = absolute_path(&args[3])?;

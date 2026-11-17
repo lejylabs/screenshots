@@ -13,9 +13,20 @@ image/QR/OCR tools, storage maintenance, native credential adapters and packagin
 are separate slices; they do not close platform, editor workflow, resource or
 ShareX-parity acceptance gates. The complete requested backlog remains open.
 
+Latest non-UI checkpoint (2026-11-17): capture/Library PNG/JPEG/WebP policy and
+descriptor-only Wayland startup are integrated. The unchanged execution source
+passes 1,044 optimized regular tests (71 opt-ins excluded), 54 independent
+private CLI requests, 19 actual private Wayland checks, Clippy, Windows GNU
+metadata and default advisories. Fresh consecutive source/document reviews
+14/15 are clean; reviewed execution code is committed as
+`fd98138633de4a15b028b62b54c0a2a9af301ec9`. See the focused
+[format](docs/capture-library-formats.md) and
+[Wayland](docs/linux-wayland-startup.md) contracts for measured scope; no
+physical/reference-hardware or full-backlog acceptance is claimed.
+
 ## Session handoff — start here (2026-11-12)
 
-This section is the current continuation brief. The numbered sections below contain architecture, release requirements and detailed implementation evidence; their original bootstrap sequence is historical. Development has progressed through functional slices of Phases 1–5 while the cross-platform/performance release gates remain open. Do not restart the spike or treat implemented features as production acceptance.
+This section records the UI continuation brief from 2026-11-12. Current non-UI scope and verification follow [the delivery plan](docs/non-ui-delivery.md), with new UI controls and final design excluded by the user's later instruction. The numbered sections below contain architecture, release requirements and detailed implementation evidence; their original bootstrap sequence is historical. Development has progressed through functional slices of Phases 1–5 while the cross-platform/performance release gates remain open. Do not restart the spike or treat implemented features as production acceptance.
 
 ### User decisions to preserve
 
@@ -1218,7 +1229,7 @@ row. Native keyboard/IME/accessibility, GPU reclamation, unavailable storage
 and full process/GPU/resource acceptance remain open; no new performance
 measurement is claimed for this bounded decode.
 
-Thumbnail cancellation follow-up (2026-11-15, in progress): the existing
+Historical thumbnail implementation checkpoint (2026-11-15; later verified): the existing
 reduction call checks cancellation only before and after its pixel work. The
 [bounded cancellation plan](docs/image-cancellation.md) adds checks during
 reduction while retaining exact pinned-thumbnail pixels. It also retains an
@@ -1229,7 +1240,7 @@ without UI design changes, new controls, workers or timers. Verification is
 pending; earlier thumbnail fixtures and measurements do not validate the new
 path. PNG decoding and native I/O remain noninterruptible within their calls.
 
-Saved-PNG admission follow-up (2026-11-15, implementation awaiting verification):
+Historical saved-PNG implementation checkpoint (2026-11-15; later verified):
 `load_saved_png` now checks regular-file type/size before and after opening,
 uses Unix nonblocking open to reject FIFO substitution, and streams through one
 fixed-length handle with a 64 KiB buffer. The encoded whole-file limit is
@@ -1246,6 +1257,12 @@ The [saved-PNG contract](docs/saved-png-admission.md) defines the compatibility
 and pending checks. Direct editor input and sanitized history export retain
 their separate 32 MiB admission and orientation behavior; byte-copy export is
 unchanged. Historical measurements above do not validate this new path.
+
+Both follow-ups above are integrated and covered by later optimized checks;
+see [current status](docs/non-ui-status.md). Generic saved JPEG/WebP and
+managed sanitization/conversion now follow [format policy](docs/capture-library-formats.md);
+narrow PNG compatibility APIs retain their documented behavior. Historical
+measurements are not relabeled current or native acceptance.
 
 #### Current feature slice: configurable Windows global hotkeys
 
@@ -2889,7 +2906,7 @@ C/C++ may be used selectively for native integrations when there is a demonstrab
 
 ## 16. First Development Steps
 
-This is the historical bootstrap sequence, retained to explain the technical gates. The current continuation task is the UI/UX work in the session handoff at the top; do not repeat these steps from scratch or stop that authorized UI work because release gates remain open.
+This is the historical bootstrap sequence, retained to explain the technical gates. Current work follows [the non-UI delivery plan](docs/non-ui-delivery.md); preserve the earlier product decisions while applying the user's later UI exclusion. Do not repeat these steps from scratch or treat open release gates as completed implementation.
 
 Original starting order:
 

@@ -68,6 +68,10 @@ jobs:
           cargo test --locked --profile release-fast -p screenshots --bin screenshots -j 2 capture_worker::protocol::tests:: -- --test-threads=1
           cargo test --locked --profile release-fast -p screenshots --bin screenshots -j 2 task::seal::tests::all_native_task_sources_admit_without_pixels_and_revalidate_at_execution -- --exact --test-threads=1
 
+      - name: Run owned video family completion regressions
+        run: |
+          cargo test --locked --profile release-fast -p screenshots --bin screenshots -j 2 capture_worker::video::completion_tests:: -- --test-threads=1
+
   windows-native-witness:
     runs-on: windows-latest
     timeout-minutes: 50

@@ -2,6 +2,12 @@ use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, io::Read, path::Path, sync::Arc, time::Duration};
 use tokio::io::{AsyncReadExt, AsyncSeekExt};
+#[path = "upload_source.rs"]
+mod upload_source;
+use upload_source::{TrackedUploadReader, UploadSourceGuard, verify_transfer};
+#[cfg(test)]
+#[path = "upload_source_tests.rs"]
+mod source_tests;
 
 #[derive(Clone, Copy, Default)]
 pub struct UploadProgress {
@@ -2038,6 +2044,21 @@ pub fn upload_png_with_progress(
     )
 }
 
+/// Saved Library upload with actual magic-derived MIME and byte-preserving content.
+pub fn upload_saved_image_with_progress(
+    destination: &UploadDestination,
+    path: &Path,
+    cancel: UploadCancellation,
+    progress: UploadProgressReporter,
+) -> Result<UploadOutcome> {
+    run_upload(
+        destination,
+        UploadPng::ImagePath(path.to_path_buf()),
+        cancel,
+        Some(progress),
+    )
+}
+
 /// Upload an already-encoded PNG buffer. Does not write a library file.
 pub fn upload_png_bytes_with_progress(
     destination: &UploadDestination,
@@ -2072,6 +2093,7 @@ pub fn probe_upload(
 }
 
 enum UploadPng {
+    ImagePath(std::path::PathBuf),
     Path(std::path::PathBuf),
     Bytes(Vec<u8>),
     FilePath(std::path::PathBuf),
@@ -2116,20 +2138,22 @@ async fn open_upload_source(
     maximum: u64,
     message: &'static str,
     cancel: UploadCancellation,
-) -> Result<(tokio::fs::File, u64)> {
+) -> Result<(tokio::fs::File, u64, UploadSourceGuard)> {
     ensure!(path.is_absolute(), "Upload source must be an absolute path");
-    let (file, length) = tokio::task::spawn_blocking(move || {
+    let (file, length, guard) = tokio::task::spawn_blocking(move || {
         let metadata = path.metadata().context("Could not inspect upload source")?;
         validate_upload_source(&metadata, minimum, maximum, message)?;
         let (file, length) = open_upload_source_after_preflight(&path, minimum, maximum, message)?;
         cancel.verify_source_file(&file)?;
-        Ok::<_, anyhow::Error>((file, length))
+        let admitted = crate::FileIdentity::from_file(&file)?;
+        let guard = UploadSourceGuard::new(&file, admitted, length)?;
+        Ok::<_, anyhow::Error>((file, length, guard))
     })
     .await
     .context("Upload source worker failed")??;
     let mut file = tokio::fs::File::from_std(file);
     file.set_max_buf_size(64 * 1024);
-    Ok((file, length))
+    Ok((file, length, guard))
 }
 
 fn write_probe_png(root: &Path) -> Result<std::path::PathBuf> {
@@ -2176,9 +2200,47 @@ async fn transfer(
     cancel: UploadCancellation,
 ) -> Result<UploadOutcome> {
     const PNG_SIGNATURE: [u8; 8] = [137, 80, 78, 71, 13, 10, 26, 10];
-    let (length, png, mut file, content_type, filename) = match source {
+    let (length, png, mut file, content_type, filename, source_guard) = match source {
+        UploadPng::ImagePath(path) => {
+            ensure!(
+                path.is_absolute(),
+                "Saved image upload source must be absolute"
+            );
+            let source_cancel = cancel.clone();
+            let (file, info, guard) = tokio::task::spawn_blocking(move || {
+                ensure!(
+                    path.metadata()?.is_file(),
+                    "Saved image upload source must be regular"
+                );
+                let (file, admitted) = crate::FileIdentity::open(&path)?;
+                source_cancel.verify_source_file(&file)?;
+                let info = crate::saved_image::inspect_saved_image_file(&file, &|| {
+                    source_cancel.is_canceled()
+                })?;
+                admitted.verify_file(&file)?;
+                let guard = UploadSourceGuard::new(&file, admitted, info.encoded_bytes)?;
+                Ok::<_, anyhow::Error>((file, info, guard))
+            })
+            .await
+            .context("Saved image upload inspection failed")??;
+            let mut file = tokio::fs::File::from_std(file);
+            file.set_max_buf_size(64 * 1024);
+            let filename = match info.format {
+                crate::ImageExportFormat::Png => "screenshot.png",
+                crate::ImageExportFormat::Jpeg => "screenshot.jpg",
+                crate::ImageExportFormat::WebP => "screenshot.webp",
+            };
+            (
+                info.encoded_bytes,
+                None,
+                Some(file),
+                info.mime_type(),
+                filename,
+                Some(guard),
+            )
+        }
         UploadPng::Path(path) => {
-            let (mut file, length) = open_upload_source(
+            let (mut file, length, guard) = open_upload_source(
                 path,
                 8,
                 crate::MAX_CAPTURE_BYTES + 16 * 1024 * 1024,
@@ -2191,7 +2253,14 @@ async fn transfer(
             file.read_exact(&mut signature).await?;
             ensure!(signature == PNG_SIGNATURE, "Upload source is not a PNG");
             file.rewind().await?;
-            (length, None, Some(file), "image/png", "screenshot.png")
+            (
+                length,
+                None,
+                Some(file),
+                "image/png",
+                "screenshot.png",
+                Some(guard),
+            )
         }
         UploadPng::Bytes(png) => {
             ensure!(
@@ -2208,10 +2277,11 @@ async fn transfer(
                 None,
                 "image/png",
                 "screenshot.png",
+                None,
             )
         }
         UploadPng::FilePath(path) => {
-            let (file, length) = open_upload_source(
+            let (file, length, guard) = open_upload_source(
                 path,
                 0,
                 64 * 1024 * 1024,
@@ -2226,6 +2296,7 @@ async fn transfer(
                 Some(file),
                 "application/octet-stream",
                 "file.bin",
+                Some(guard),
             )
         }
     };
@@ -2244,6 +2315,8 @@ async fn transfer(
         .build()?;
     let resource_url =
         matches!(destination.response, Some(UploadResponse::RequestUrl)).then(|| url.to_string());
+    let consumed = Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let mut body_length = length;
     let mut request = if !destination.json.is_empty() {
         let png = match png {
             Some(png) => png,
@@ -2255,6 +2328,7 @@ async fn transfer(
                 let mut buf = vec![0u8; 64 * 1024];
                 let mut remaining = length;
                 while remaining > 0 {
+                    cancel.check()?;
                     let want = buf.len().min(remaining as usize);
                     let n = file.read(&mut buf[..want]).await?;
                     ensure!(n > 0, "PNG file ended before the declared size");
@@ -2264,9 +2338,12 @@ async fn transfer(
                 png
             }
         };
+        cancel.check()?;
         let json_bytes = json_request_body(&destination.json, &png)?;
+        cancel.check()?;
         drop(png);
         let total = json_bytes.len() as u64;
+        body_length = total;
         if let Some(progress) = &progress {
             progress
                 .0
@@ -2280,7 +2357,7 @@ async fn transfer(
             last: std::time::Instant::now(),
         };
         let body = reqwest::Body::wrap_stream(tokio_util::io::ReaderStream::with_capacity(
-            reader,
+            TrackedUploadReader::new(reader, body_length, consumed.clone(), cancel.clone()),
             64 * 1024,
         ));
         client
@@ -2304,7 +2381,7 @@ async fn transfer(
                 last: std::time::Instant::now(),
             };
             reqwest::Body::wrap_stream(tokio_util::io::ReaderStream::with_capacity(
-                reader,
+                TrackedUploadReader::new(reader, body_length, consumed.clone(), cancel.clone()),
                 64 * 1024,
             ))
         } else {
@@ -2317,7 +2394,7 @@ async fn transfer(
                 last: std::time::Instant::now(),
             };
             reqwest::Body::wrap_stream(tokio_util::io::ReaderStream::with_capacity(
-                reader,
+                TrackedUploadReader::new(reader, body_length, consumed.clone(), cancel.clone()),
                 64 * 1024,
             ))
         };
@@ -2381,6 +2458,7 @@ async fn transfer(
             "PUT did not confirm resource completion (HTTP {}); no completed resource link is available",
             response.status().as_u16()
         );
+        verify_transfer(source_guard, consumed, body_length, &cancel).await?;
         return Ok(UploadOutcome {
             url: validate_link(&url)?,
             thumbnail: None,
@@ -2451,7 +2529,7 @@ async fn transfer(
             .context("Upload completed, but the configured JSON pointer contains no link")?;
         destination.result_link(&value)?
     };
-    Ok(UploadOutcome {
+    let outcome = UploadOutcome {
         url,
         thumbnail: destination
             .thumbnail
@@ -2463,7 +2541,9 @@ async fn transfer(
             .as_ref()
             .map(|parser| parser.extract(&headers, json.as_ref(), text.as_deref(), "deletion"))
             .transpose()?,
-    })
+    };
+    verify_transfer(source_guard, consumed, body_length, &cancel).await?;
+    Ok(outcome)
 }
 
 fn json_pointer_text(value: &serde_json::Value) -> Option<String> {
