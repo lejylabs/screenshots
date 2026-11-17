@@ -1,203 +1,32 @@
-name: Rust
-
+name: Private Windows OLE receiver topology
 on:
   push:
-  pull_request:
   workflow_dispatch:
-
 permissions:
   contents: read
-
 concurrency:
-  group: rust-${{ github.workflow }}-${{ github.ref }}
+  group: windows-drop-topology-${{ github.ref }}
   cancel-in-progress: true
-
-env:
-  CARGO_TERM_COLOR: always
-  CARGO_BUILD_JOBS: "2"
-  DOTNET_CLI_TELEMETRY_OPTOUT: "1"
-  DOTNET_SKIP_FIRST_TIME_EXPERIENCE: "1"
-  DOTNET_GENERATE_ASPNET_CERTIFICATE: "false"
-  DOTNET_ADD_GLOBAL_TOOLS_TO_PATH: "false"
-  DOTNET_CLI_WORKLOAD_UPDATE_NOTIFY_DISABLE: "true"
-
 jobs:
-  build:
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: ubuntu-24.04
-            target: x86_64-unknown-linux-gnu
-            rid: linux-x64
-            binary: screenshots
-          - os: ubuntu-24.04-arm
-            target: aarch64-unknown-linux-gnu
-            rid: linux-arm64
-            binary: screenshots
-          - os: windows-latest
-            target: x86_64-pc-windows-msvc
-            rid: win-x64
-            binary: screenshots.exe
-          - os: macos-15
-            target: aarch64-apple-darwin
-            rid: osx-arm64
-            binary: screenshots
-          - os: macos-15-intel
-            target: x86_64-apple-darwin
-            rid: osx-x64
-            binary: screenshots
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 90
+  topology:
+    runs-on: windows-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
-      - name: Install Linux native build dependencies
-        if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            build-essential clang cmake pkg-config libssl-dev libcurl4-openssl-dev \
-            libglib2.0-dev libgtk-3-dev libayatana-appindicator3-dev \
-            libfontconfig1-dev libfreetype6-dev libdbus-1-dev \
-            libx11-dev libxrandr-dev libxfixes-dev libxcb1-dev \
-            libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libxcb-randr0-dev \
-            libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev \
-            libvulkan-dev libegl1-mesa-dev libgbm-dev libdrm-dev \
-            libpipewire-0.3-dev
-      - name: Install pinned Rust and components
-        shell: bash
-        run: rustup show active-toolchain
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-      - uses: actions/setup-dotnet@v6
-        with:
-          dotnet-version: "10.0.404"
-      - uses: actions/cache/restore@v4
-        id: native_cache
-        if: runner.os == 'Windows' || runner.os == 'macOS'
-        with:
-          path: |
-            target/vcpkg-installed
-            target/vcpkg-downloads
-          key: native-sftp-${{ matrix.target }}-${{ hashFiles('packaging/windows/vcpkg.json') }}
-      - name: Build pinned Windows SFTP engine dependencies
-        id: win_deps
-        if: runner.os == 'Windows'
+      - name: Enter installed x64 MSVC environment
         shell: pwsh
         run: |
-          git clone --filter=blob:none --no-checkout https://github.com/microsoft/vcpkg.git target/vcpkg
-          git -C target/vcpkg checkout 8f363bdc11359ede4bc51e5eb32a2617538049c8
-          & target/vcpkg/bootstrap-vcpkg.bat -disableMetrics
-          $env:VCPKG_DOWNLOADS = Join-Path $PWD 'target/vcpkg-downloads'
-          & target/vcpkg/vcpkg.exe install --triplet x64-windows-static-md --x-manifest-root=packaging/windows --x-install-root=target/vcpkg-installed --disable-metrics
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          # vcpkg-rs 0.2.15 discovers ROOT/installed, not VCPKG_INSTALLED_ROOT.
-          New-Item -ItemType Junction -Path (Join-Path $PWD 'target/vcpkg/installed') -Target (Join-Path $PWD 'target/vcpkg-installed') | Out-Null
-          "VCPKG_ROOT=$(Join-Path $PWD 'target/vcpkg')" >> $env:GITHUB_ENV
-          "VCPKG_INSTALLED_ROOT=$(Join-Path $PWD 'target/vcpkg-installed')" >> $env:GITHUB_ENV
-          "VCPKGRS_TRIPLET=x64-windows-static-md" >> $env:GITHUB_ENV
-          "SCREENSHOTS_REQUIRE_NATIVE_CURL=1" >> $env:GITHUB_ENV
-      - name: Build pinned macOS SFTP engine dependencies
-        id: mac_deps
-        if: runner.os == 'macOS'
-        shell: bash
-        run: |
-          git clone --filter=blob:none --no-checkout https://github.com/microsoft/vcpkg.git target/vcpkg
-          git -C target/vcpkg checkout 8f363bdc11359ede4bc51e5eb32a2617538049c8
-          target/vcpkg/bootstrap-vcpkg.sh -disableMetrics
-          triplet=x64-osx
-          if [ "${{ matrix.target }}" = aarch64-apple-darwin ]; then triplet=arm64-osx; fi
-          export VCPKG_DOWNLOADS="$PWD/target/vcpkg-downloads"
-          target/vcpkg/vcpkg install --triplet "$triplet" --x-manifest-root=packaging/windows --x-install-root=target/vcpkg-installed --disable-metrics
-          echo "VCPKG_INSTALLED_ROOT=$PWD/target/vcpkg-installed" >> "$GITHUB_ENV"
-          echo "VCPKGRS_TRIPLET=$triplet" >> "$GITHUB_ENV"
-          echo "PKG_CONFIG_PATH=$PWD/target/vcpkg-installed/$triplet/lib/pkgconfig" >> "$GITHUB_ENV"
-          echo "LIBCURL_STATIC=1" >> "$GITHUB_ENV"
-      - name: Cache completed native dependency builds
-        if: ${{ always() && (runner.os == 'Windows' || runner.os == 'macOS') && (steps.win_deps.outcome == 'success' || steps.mac_deps.outcome == 'success') && steps.native_cache.outputs.cache-hit != 'true' }}
-        uses: actions/cache/save@v4
+          $VsWhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio/Installer/vswhere.exe'
+          $VsPath = & $VsWhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if (!$VsPath) { throw 'Installed MSVC compiler unavailable' }
+          & (Join-Path $VsPath 'Common7/Tools/Launch-VsDevShell.ps1') -Arch amd64 -HostArch amd64 -SkipAutomaticLocation
+          if ($LASTEXITCODE -ne 0) { throw 'MSVC environment failed' }
+          & tools/WindowsDropTopology/run_probe.ps1 -OutputDirectory (Join-Path $PWD 'target/drop-topology-proof') -OwnedHostedCiInputDesktop
+      - name: Preserve exact probe source and every result including failures
+        if: always()
+        uses: actions/upload-artifact@v4
         with:
+          name: windows-drop-topology-proof
           path: |
-            target/vcpkg-installed
-            target/vcpkg-downloads
-          key: native-sftp-${{ matrix.target }}-${{ hashFiles('packaging/windows/vcpkg.json') }}
-      - uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-          key: ${{ runner.os }}-cargo-${{ hashFiles('rust-toolchain.toml') }}-${{ hashFiles('Cargo.lock') }}
-          restore-keys: ${{ runner.os }}-cargo-${{ hashFiles('rust-toolchain.toml') }}-
-      - name: Check formatting
-        if: runner.os == 'Linux'
-        run: cargo fmt --all -- --check
-      - name: Build and verify the private native SXCU runtime
-        shell: bash
-        run: |
-          python scripts/build-sharex-helper.py --rid ${{ matrix.rid }}
-          python - <<'PY'
-          from pathlib import Path
-          import shutil
-          source = Path('target/sharex-helper/publish/${{ matrix.rid }}')
-          for profile in ['release', 'release-fast']:
-              shutil.copytree(source, Path('target') / profile / 'lib/screenshots-sxcu', dirs_exist_ok=True)
-          PY
-      - name: Lint workspace and test paths
-        if: runner.os == 'Linux'
-        run: cargo clippy --workspace --all-targets --release --locked
-      - name: Build optimized application
-        run: cargo build --workspace --release --locked
-      - name: Run optimized deterministic tests
-        run: cargo test --workspace --profile release-fast --locked
-      - name: Compile owned native Windows window fixture
-        if: runner.os == 'Windows'
-        timeout-minutes: 15
-        run: cargo test --locked --profile release-fast -p screenshots --test capture_window_windows --no-run
-      - name: Verify owned native Windows window pixels
-        if: runner.os == 'Windows'
-        timeout-minutes: 3
-        run: cargo test --locked --profile release-fast -p screenshots --test capture_window_windows decorated_window_policies_preserve_exact_dwm_frame_and_client_pixels -- --ignored --exact --test-threads=1
-      - name: Verify recoverable Library file operations
-        timeout-minutes: 5
-        run: python scripts/test-history-lifecycle.py --binary target/release/${{ matrix.binary }}
-      - name: Verify native dependency discovery metadata
-        if: runner.os == 'Linux'
-        run: python scripts/test-native-curl-discovery.py
-      - name: Verify explicit upload flows against loopback only
-        shell: bash
-        run: |
-          cargo test -p app-core --profile release-fast --locked upload::tests::upload_ -- --ignored --test-threads=1
-          cargo test -p app-core --profile release-fast --locked upload::tests::probe_upload_sends_ -- --ignored --test-threads=1
-          cargo test -p app-core --profile release-fast --locked upload::tests::request_url_mode_ -- --ignored --test-threads=1
-      - name: Verify packaging logic
-        run: python scripts/test-package.py
-      - name: Verify explicit signing plans with synthetic tools only
-        run: python scripts/test-native-signing.py
-      - name: Verify user installation and authenticated updates
-        shell: bash
-        run: |
-          openssl version
-          python scripts/test-install-user.py
-          python scripts/test-package-app.py
-      - name: Package native executable
-        run: python scripts/package.py --target ${{ matrix.target }} --binary target/release/${{ matrix.binary }}
-      - name: Smoke extracted archive without a display or user data
-        shell: bash
-        run: |
-          for archive in target/packages/*.tar.gz target/packages/*.zip; do
-            if [ -f "$archive" ]; then python scripts/test-package-smoke.py "$archive"; fi
-          done
-      - name: Build native application installer
-        shell: bash
-        run: |
-          for archive in target/packages/*.tar.gz target/packages/*.zip; do
-            if [ -f "$archive" ]; then python scripts/package-app.py --package "$archive" --output target/native-packages; fi
-          done
-      - uses: actions/upload-artifact@v4
-        with:
-          name: screenshots-${{ matrix.target }}
-          path: |
-            target/packages/*
-            target/native-packages/*
-          if-no-files-found: error
+            target/drop-topology-proof/
+            tools/WindowsDropTopology/
