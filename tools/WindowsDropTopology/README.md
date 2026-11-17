@@ -1,4 +1,4 @@
-# Held first-unmarshal proof, revision 9
+# Held first-unmarshal proof, revision 10
 
 This revision is uncompiled/unexecuted by its author and is held for root's
 review and auxiliary Windows CI. Copy all four files, including
@@ -32,6 +32,30 @@ first unmarshaled. It also does not establish a usable watchdog trigger in a
 parked receiver: starting a deadline inside DragEnter is too late for argument
 unmarshaling. Revision 9 tests both explicitly.
 
+Revision 9's actual run is 44079776901, job 134027031932, artifact 14327210694.
+All prior required cases, all three custom direct cases and the custom real OLE
+normal case pass. Both OLE custom fault cases positively record factory and
+unmarshal on the helper STA, matching active/armed sequence 3, no release outside
+the guard, responsive owner, and zero provider query/data/copy. The stall is reaped
+after five seconds; the allocation is actually refused. They fail only the
+fixture's assumption that every custom unmarshal precedes target entry.
+
+OLE wraps the offered object and lazily materializes its inner source inside the
+target's first QueryGetData call. Thus direct custom unmarshaling is stage 0
+before Target::DragEnter, while actual OLE custom unmarshaling is stage 2 inside
+the first query wrapper, before any provider QueryGetData/GetData. Revision 10
+records immutable first-factory and first-unmarshal stage snapshots and requires
+exactly 0 for direct calls and 2 for real OLE. Native stage writers/first snapshot
+reads use Interlocked operations. It preserves the failed revision 9 source and
+artifacts; those cases are not relabeled as passed.
+
+Fault assertions retain the same helper/STA/armed guard, deadline, actual memory
+refusal, owner ping, no provider query/data/copy and process cleanup. A direct
+fault must have no target entry and stage 0. An OLE fault must have target entry
+on the helper and stage 2; a memory failure must return a completed failed query
+and a stall must retain E_PENDING. This corrects the observed phase, not the
+containment boundary. Revision 10 has not been compiled or executed here.
+
 ## Controlled custom source
 
 CustomSource implements IDataObject and IMarshal. Its outer custom packet adds
@@ -53,8 +77,8 @@ than being described as acceptable marshaling.
 
 The controlled code returns an error if it observes first unmarshal in a process
 other than the receiver, instead of deliberately hanging the observer. In the
-receiver, `unmarshal-stall` actually blocks before target entry, and
-`unmarshal-memory` tries an actual 128 MiB commit before target entry. The latter
+receiver, `unmarshal-stall` actually blocks before the provider query, and
+`unmarshal-memory` tries an actual 128 MiB commit before that provider query. The latter
 must fail under the preinstalled +96 MiB limit. The original source GetData does
 not run in those two cases. No source error or callback PID substitutes for this
 first-boundary evidence.
@@ -90,15 +114,16 @@ Add three direct and three real OLE custom cases:
 
 - normal transfer with actual custom MarshalInterface, helper factory/unmarshal
   PID/TID, matching armed/active sequences, ordinary GetData and medium release;
-- first-unmarshal stall before target entry, no target query/data/copy, responsive
+- first-unmarshal stall before provider query, no provider query/data/copy, responsive
   HWND-owner ping, externally killed and reaped processes;
-- first-unmarshal allocation refusal before target entry, no target query/data/
+- first-unmarshal allocation refusal before provider query, no provider query/data/
   copy, actual failed 128 MiB commit and responsive owner.
 
 Normal custom cases additionally retain all existing data, cleanup and genuine
-DoDragDrop assertions. Custom failure cases report `enter_pid=0` truthfully and
-have a separate positive `first_unmarshal_boundary_verified` field. They may not
-pretend target entry happened. RPC client PID remains asserted only when Windows
+DoDragDrop assertions. Custom failure cases require `enter_pid=0` and stage 0 for direct calls, or
+`enter_pid=receiver_pid` and stage 2 for real OLE calls. Their positive
+`first_unmarshal_boundary_verified` also requires the immutable route-specific
+phase snapshots. Neither path may claim the provider query/data/copy ran. RPC client PID remains asserted only when Windows
 provides it. All new first-factory/unmarshal/release/sequence fields are retained
 in the JSON even when an assertion fails.
 

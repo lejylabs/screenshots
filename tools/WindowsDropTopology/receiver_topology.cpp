@@ -32,6 +32,7 @@ struct Shared {
     DWORD first_unmarshal_tid;
     LONG first_factory_pid, first_factory_guard, first_factory_sequence, first_factory_armed_sequence, unmarshal_release_outside_guard;
     DWORD first_factory_tid;
+    LONG first_factory_native_stage, first_unmarshal_native_stage;
     LONG pump_sequence, pump_guard_active, controller_armed_sequence, first_unmarshal_guard, first_unmarshal_sequence, first_unmarshal_armed_sequence;
     UINT_PTR pump_enter_handle, pump_armed_handle, pump_done_handle;
     ULONGLONG private_baseline, offered_bytes;
@@ -381,25 +382,25 @@ struct Target final : IDropTarget {
     ULONG STDMETHODCALLTYPE Release() override { LONG n = InterlockedDecrement(&refs); if (!n) delete this; return n; }
     HRESULT STDMETHODCALLTYPE DragEnter(IDataObject* source, DWORD, POINTL, DWORD* effect) override {
         state->enter_pid = GetCurrentProcessId(); state->enter_tid = GetCurrentThreadId();
-        state->native_stage = 1;
+        InterlockedExchange(&state->native_stage, 1);
         // The failure control executes an owned source directly on the HWND's
         // foreground STA; remote COM waits may pump window messages themselves.
         std::unique_ptr<Source> local_baseline(baseline ? new Source : nullptr);
         if (local_baseline) source = local_baseline.get();
         *effect = DROPEFFECT_NONE;
         FORMATETC format{CF_HDROP, nullptr, DVASPECT_CONTENT, -1, TYMED_HGLOBAL};
-        state->native_stage = 2;
+        InterlockedExchange(&state->native_stage, 2);
         state->query_result = source->QueryGetData(&format);
         if (state->query_result != S_OK) return S_OK;
         STGMEDIUM medium{};
-        state->native_stage = 3;
+        InterlockedExchange(&state->native_stage, 3);
         state->get_result = source->GetData(&format, &medium);
         if (FAILED(state->get_result)) return S_OK;
         // This deliberately mirrors the old reader's post-acquisition boundary.
         bool admitted = medium.tymed == TYMED_HGLOBAL && GlobalSize(medium.hGlobal) <= 65536;
-        state->native_stage = 4;
+        InterlockedExchange(&state->native_stage, 4);
         ReleaseStgMedium(&medium);
-        state->native_stage = 5;
+        InterlockedExchange(&state->native_stage, 5);
         if (admitted) { state->copied = 1; *effect = DROPEFFECT_COPY; }
         return S_OK;
     }
@@ -623,8 +624,10 @@ int wmain(int argc, wchar_t** argv) {
     bool topology = state->enter_pid == state->receiver_pid && state->enter_tid == state->receiver_tid && (baseline ? state->query_pid == state->owner_pid && state->query_tid == state->owner_tid : state->query_pid == state->source_pid && state->query_tid == state->source_tid);
     wchar_t source_iid[40]{}, drop_iid[40]{};
     StringFromGUID2(state->last_source_iid, source_iid, 40); StringFromGUID2(state->last_drop_source_iid, drop_iid, 40);
-    bool first_boundary = custom_source && state->first_factory_pid == static_cast<LONG>(state->receiver_pid) && state->first_factory_tid == state->receiver_tid && state->first_factory_guard == 1 && state->first_factory_sequence > 0 && state->first_factory_sequence == state->first_factory_armed_sequence && state->unmarshal_release_outside_guard == 0 && state->first_unmarshal_pid == static_cast<LONG>(state->receiver_pid) && state->first_unmarshal_tid == state->receiver_tid && state->external_unmarshal_calls >= 1 && state->custom_marshal_calls >= 1 && state->first_unmarshal_guard == 1 && state->first_unmarshal_sequence > 0 && state->first_unmarshal_sequence == state->first_unmarshal_armed_sequence;
-    std::printf("{\"first_factory_pid\":%ld,\"first_factory_tid\":%lu,\"first_factory_guard\":%ld,\"first_factory_sequence\":%ld,\"first_factory_armed_sequence\":%ld,\"unmarshal_release_outside_guard\":%ld,", state->first_factory_pid, state->first_factory_tid, state->first_factory_guard, state->first_factory_sequence, state->first_factory_armed_sequence, state->unmarshal_release_outside_guard);
+    bool phase_verified = custom_source && state->first_factory_native_stage == (ole_route ? 2 : 0) && state->first_unmarshal_native_stage == (ole_route ? 2 : 0);
+    bool first_boundary = custom_source && phase_verified && state->first_factory_pid == static_cast<LONG>(state->receiver_pid) && state->first_factory_tid == state->receiver_tid && state->first_factory_guard == 1 && state->first_factory_sequence > 0 && state->first_factory_sequence == state->first_factory_armed_sequence && state->unmarshal_release_outside_guard == 0 && state->first_unmarshal_pid == static_cast<LONG>(state->receiver_pid) && state->first_unmarshal_tid == state->receiver_tid && state->external_unmarshal_calls >= 1 && state->custom_marshal_calls >= 1 && state->first_unmarshal_guard == 1 && state->first_unmarshal_sequence > 0 && state->first_unmarshal_sequence == state->first_unmarshal_armed_sequence;
+    std::printf("{\"first_factory_native_stage\":%ld,\"first_unmarshal_native_stage\":%ld,\"route_phase_verified\":%s,", state->first_factory_native_stage, state->first_unmarshal_native_stage, phase_verified ? "true" : "false");
+    std::printf("\"first_factory_pid\":%ld,\"first_factory_tid\":%lu,\"first_factory_guard\":%ld,\"first_factory_sequence\":%ld,\"first_factory_armed_sequence\":%ld,\"unmarshal_release_outside_guard\":%ld,", state->first_factory_pid, state->first_factory_tid, state->first_factory_guard, state->first_factory_sequence, state->first_factory_armed_sequence, state->unmarshal_release_outside_guard);
     std::printf("\"custom_source\":%s,\"first_unmarshal_boundary_verified\":%s,\"first_unmarshal_pid\":%ld,\"first_unmarshal_tid\":%lu,\"external_unmarshal_calls\":%ld,\"custom_marshal_calls\":%ld,\"unmarshal_memory_refused\":%ld,\"first_unmarshal_guard\":%ld,\"first_unmarshal_sequence\":%ld,\"first_unmarshal_armed_sequence\":%ld,", custom_source ? "true" : "false", first_boundary ? "true" : "false", state->first_unmarshal_pid, state->first_unmarshal_tid, state->external_unmarshal_calls, state->custom_marshal_calls, state->unmarshal_memory_refused, state->first_unmarshal_guard, state->first_unmarshal_sequence, state->first_unmarshal_armed_sequence);
     std::printf("\"input_not_owned\":%ld,\"input_check_failures\":%ld,\"source_input_error\":%lu,\"controller_input_error\":%lu,\"last_input_return\":%lu,\"first_failure_preserved\":%ld,", state->input_not_owned, state->input_check_failures, state->source_input_error, state->controller_input_error, state->last_input_return, state->failure_claimed);
     std::printf("\"input_stage\":%ld,\"source_window_ready\":%ld,\"drag_call_done\":%ld,\"injected_button_downs\":%ld,\"injected_button_ups\":%ld,\"controller_button_ups\":%ld,\"source_qi_calls\":%ld,\"drop_source_qi_calls\":%ld,\"last_source_iid\":\"%ls\",\"last_drop_source_iid\":\"%ls\",\"source_gui_ok\":%ld,\"source_capture_nonzero\":%ld,\"source_active_pid\":%lu,\"source_capture_pid\":%lu,\"source_capture_class\":\"%s\",", state->input_stage, state->source_window_ready, state->drag_call_done, state->injected_button_downs, state->injected_button_ups, state->controller_button_ups, state->source_qi_calls, state->drop_source_qi_calls, source_iid, drop_iid, state->source_gui_ok, state->source_capture_nonzero, state->source_active_pid, state->source_capture_pid, state->source_capture_class);
@@ -655,9 +658,9 @@ int wmain(int argc, wchar_t** argv) {
     }
     if (custom_source) {
         if (!std::wcscmp(scenario, L"unmarshal-stall") || !std::wcscmp(scenario, L"unmarshal-memory")) {
-            expected = ready && state->registration == S_OK && state->native_bound && state->small_probe && state->large_probe && first_boundary && state->enter_pid == 0 && state->copied == 0 && state->query_calls == 0 && state->data_calls == 0 && ping;
-            if (!std::wcscmp(scenario, L"unmarshal-stall")) expected = expected && !delivered;
-            else expected = expected && state->unmarshal_memory_refused == 1;
+            expected = ready && state->registration == S_OK && state->native_bound && state->small_probe && state->large_probe && first_boundary && (ole_route ? state->enter_pid == state->receiver_pid && state->native_stage == 2 : state->enter_pid == 0 && state->native_stage == 0) && state->copied == 0 && state->query_calls == 0 && state->data_calls == 0 && ping;
+            if (!std::wcscmp(scenario, L"unmarshal-stall")) expected = expected && !delivered && state->query_result == E_PENDING;
+            else expected = expected && state->unmarshal_memory_refused == 1 && (ole_route ? FAILED(state->query_result) && state->query_result != E_PENDING : FAILED(state->enter_result));
             if (ci_input) { expected = expected && state->input_stage == 2 && state->injected_button_downs == 1 && state->controller_button_ups == 1 && state->mover_started == 1 && state->mover_pid == state->source_pid && state->mover_tid != state->source_tid && state->ci_cursor_moves >= 1 && state->cursor_window_is_owner == 1; if (delivered) expected = expected && state->mover_stopped == 1 && state->injected_button_ups == 1; }
         } else expected = expected && first_boundary;
     }

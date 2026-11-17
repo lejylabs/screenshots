@@ -38,6 +38,7 @@ struct OwnedUnmarshaler final : IMarshal {
             LONG previous = InterlockedCompareExchange(&state->first_unmarshal_pid, static_cast<LONG>(pid), 0);
             if (previous == 0) {
                 state->first_unmarshal_tid = GetCurrentThreadId();
+                state->first_unmarshal_native_stage = InterlockedCompareExchange(&state->native_stage, 0, 0);
                 state->first_unmarshal_guard = InterlockedCompareExchange(&state->pump_guard_active, 0, 0);
                 state->first_unmarshal_sequence = InterlockedCompareExchange(&state->pump_sequence, 0, 0);
                 state->first_unmarshal_armed_sequence = InterlockedCompareExchange(&state->controller_armed_sequence, 0, 0);
@@ -78,6 +79,7 @@ struct OwnedUnmarshalFactory final : IClassFactory {
         DWORD pid = GetCurrentProcessId();
         if (pid != state->source_pid && InterlockedCompareExchange(&state->first_factory_pid, static_cast<LONG>(pid), 0) == 0) {
             state->first_factory_tid = GetCurrentThreadId();
+            state->first_factory_native_stage = InterlockedCompareExchange(&state->native_stage, 0, 0);
             state->first_factory_guard = InterlockedCompareExchange(&state->pump_guard_active, 0, 0);
             state->first_factory_sequence = InterlockedCompareExchange(&state->pump_sequence, 0, 0);
             state->first_factory_armed_sequence = InterlockedCompareExchange(&state->controller_armed_sequence, 0, 0);
