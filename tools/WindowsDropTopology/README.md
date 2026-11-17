@@ -40,14 +40,21 @@ not a latency distribution, physical-input result or GPUI benchmark.
 Success requires real receiver/source PID/TID agreement, a normal data copy only
 after ReleaseStgMedium returns, a single custom source-medium release, helper
 memory-limit success/failure probes, and reaped source/helper handles. RPC
-client PID is reported separately: when available, it must identify the helper
-as the QueryGetData caller for the contained target. The source still executes
+client PID is reported separately and asserted when Windows supplies it: it must
+identify the receiver as the QueryGetData caller. A zero value is explicitly
+reported as unavailable and does not manufacture caller-PID evidence. The source still executes
 its implementation on its own STA; that is expected and does not put work on
 the HWND-owning foreground thread.
 
 `query-stall`, `get-stall` and `release-stall` block in the owned synthetic
 source. `over-memory` returns a 128 MiB HGLOBAL, testing receiver unmarshaling
 against its 96 MiB growth allowance before the 64 KiB returned-medium check.
+That case additionally requires exactly one source GetData, a successfully
+created 128 MiB source medium and an actual receiver memory-error HRESULT.
+A successful GetData followed only by post-acquisition extent refusal does not
+pass this memory proof. Query/GetData/cleanup HRESULTs, offered native bytes,
+owned process exit codes and fixed failure-stage/Win32-error fields remain in
+the JSON, including unsupported RegisterDragDrop results.
 All can fail without publishing a copied payload; the externally enforced
 five-second deadline covers query, GetData, native media and all cleanup. The
 helper's baseline+96 MiB committed-memory ceiling is installed and allocation

@@ -1,5 +1,5 @@
 // Private COM topology probe. This is held verification source, not production.
-// Build: cl /nologo /std:c++20 /EHsc /W4 receiver_topology.cpp ole32.lib user32.lib psapi.lib
+// Exact optimized compiler/link arguments are in run_probe.ps1.
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <ole2.h>
@@ -20,8 +20,9 @@ struct Shared {
     DWORD enter_pid, enter_tid, query_pid, query_tid, data_pid, data_tid, query_client_pid;
     DWORD owner_pid, owner_tid; UINT_PTR owner_hwnd;
     LONG query_calls, data_calls, medium_releases, native_bound, small_probe, large_probe;
-    LONG registration, enter_result, copied, completed;
-    ULONGLONG private_baseline;
+    LONG registration, enter_result, query_result, get_result, source_data_result, cleanup_result, copied, completed;
+    DWORD failure_pid, failure_win32_error; LONG failure_hresult; char failure_stage[96];
+    ULONGLONG private_baseline, offered_bytes;
     DWORD marshal_bytes;
     BYTE marshal[16 * 1024];
 };
@@ -35,7 +36,17 @@ static const wchar_t* parse_scenario(const wchar_t* value) {
     return value;
 }
 static void require(bool value, const char* what) {
-    if (!value) { std::fprintf(stderr, "%s: %lu\n", what, GetLastError()); ExitProcess(90); }
+    if (!value) {
+        DWORD error = GetLastError();
+        if (state) {
+            state->failure_pid = GetCurrentProcessId(); state->failure_win32_error = error;
+            strncpy_s(state->failure_stage, what, _TRUNCATE);
+        }
+        std::fprintf(stderr, "%s: %lu\n", what, error); ExitProcess(90);
+    }
+}
+static void require_hr(HRESULT result, const char* what) {
+    if (FAILED(result)) { if (state) state->failure_hresult = result; require(false, what); }
 }
 static HANDLE from_arg(const wchar_t* text) {
     return reinterpret_cast<HANDLE>(_wcstoui64(text, nullptr, 10));
@@ -70,8 +81,8 @@ static HANDLE contain_native() {
     require(SetInformationJobObject(job, JobObjectExtendedLimitInformation, &limits, sizeof(limits)), "native job limit");
     require(AssignProcessToJobObject(job, GetCurrentProcess()), "native job assignment");
     state->native_bound = 1;
-    void* small = VirtualAlloc(nullptr, 4096, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
-    require(small != nullptr, "small bounded commit"); VirtualFree(small, 0, MEM_RELEASE); state->small_probe = 1;
+    void* small_allocation = VirtualAlloc(nullptr, 4096, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+    require(small_allocation != nullptr, "small bounded commit"); VirtualFree(small_allocation, 0, MEM_RELEASE); state->small_probe = 1;
     void* large = VirtualAlloc(nullptr, growth + 65536, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
     if (large) VirtualFree(large, 0, MEM_RELEASE);
     require(large == nullptr, "large commit must fail before COM acquisition"); state->large_probe = 1;
@@ -122,10 +133,11 @@ struct Source final : IDataObject {
         if (!std::wcscmp(scenario, L"get-stall")) Sleep(INFINITE);
         if (!format || !medium) return E_POINTER;
         SIZE_T bytes = !std::wcscmp(scenario, L"over-memory") ? 128 * 1024 * 1024 : 64;
+        state->offered_bytes = bytes;
         HGLOBAL global = GlobalAlloc(GMEM_MOVEABLE | GMEM_ZEROINIT, bytes);
-        if (!global) return E_OUTOFMEMORY;
+        if (!global) { state->source_data_result = E_OUTOFMEMORY; return E_OUTOFMEMORY; }
         auto* data = static_cast<BYTE*>(GlobalLock(global));
-        if (!data) { GlobalFree(global); return E_OUTOFMEMORY; }
+        if (!data) { GlobalFree(global); state->source_data_result = E_OUTOFMEMORY; return E_OUTOFMEMORY; }
         // Synthetic DROPFILES, including native wide terminators. Never opens this path.
         const wchar_t path[] = L"C:\\owned-fixture.png";
         DWORD offset = 20, wide = 1;
@@ -133,6 +145,7 @@ struct Source final : IDataObject {
         memcpy(data + 20, path, sizeof(path)); GlobalUnlock(global);
         medium->tymed = TYMED_HGLOBAL; medium->hGlobal = global;
         medium->pUnkForRelease = new MediumRelease(global);
+        state->source_data_result = S_OK;
         return S_OK;
     }
     HRESULT STDMETHODCALLTYPE GetDataHere(FORMATETC*, STGMEDIUM*) override { return E_NOTIMPL; }
@@ -172,9 +185,11 @@ struct Target final : IDropTarget {
         state->enter_pid = GetCurrentProcessId(); state->enter_tid = GetCurrentThreadId();
         *effect = DROPEFFECT_NONE;
         FORMATETC format{CF_HDROP, nullptr, DVASPECT_CONTENT, -1, TYMED_HGLOBAL};
-        if (source->QueryGetData(&format) != S_OK) return S_OK;
+        state->query_result = source->QueryGetData(&format);
+        if (state->query_result != S_OK) return S_OK;
         STGMEDIUM medium{};
-        if (FAILED(source->GetData(&format, &medium))) return S_OK;
+        state->get_result = source->GetData(&format, &medium);
+        if (FAILED(state->get_result)) return S_OK;
         // This deliberately mirrors the old reader's post-acquisition boundary.
         bool admitted = medium.tymed == TYMED_HGLOBAL && GlobalSize(medium.hGlobal) <= 65536;
         ReleaseStgMedium(&medium);
@@ -189,7 +204,7 @@ struct Target final : IDropTarget {
 static int receiver(int argc, wchar_t** argv) {
     attach(argc, argv); state->receiver_pid = GetCurrentProcessId(); state->receiver_tid = GetCurrentThreadId();
     HANDLE budget = contain_native();
-    require(SUCCEEDED(OleInitialize(nullptr)), "receiver OleInitialize");
+    require_hr(OleInitialize(nullptr), "receiver OleInitialize");
     HWND owner = reinterpret_cast<HWND>(_wcstoui64(argv[6], nullptr, 10));
     if (baseline) owner = owner_window();
     state->owner_hwnd = reinterpret_cast<UINT_PTR>(owner);
@@ -197,12 +212,16 @@ static int receiver(int argc, wchar_t** argv) {
     auto* target = new Target;
     HRESULT registered = RegisterDragDrop(owner, target);
     state->registration = registered;
-    if (FAILED(registered)) { SetEvent(ready_event); target->Release(); OleUninitialize(); CloseHandle(budget); return 20; }
+    if (FAILED(registered)) {
+        state->failure_win32_error = GetLastError(); state->failure_pid = GetCurrentProcessId(); state->failure_hresult = registered;
+        strcpy_s(state->failure_stage, "RegisterDragDrop");
+        SetEvent(ready_event); target->Release(); OleUninitialize(); CloseHandle(budget); return 20;
+    }
     IStream* stream = nullptr;
-    require(SUCCEEDED(CreateStreamOnHGlobal(nullptr, TRUE, &stream)), "marshal stream");
-    require(SUCCEEDED(CoMarshalInterface(stream, IID_IDropTarget, target, MSHCTX_LOCAL, nullptr, MSHLFLAGS_TABLESTRONG)), "marshal owned target");
-    HGLOBAL global = nullptr; require(SUCCEEDED(GetHGlobalFromStream(stream, &global)), "marshal extent");
-    STATSTG stat{}; require(SUCCEEDED(stream->Stat(&stat, STATFLAG_NONAME)), "marshal stat");
+    require_hr(CreateStreamOnHGlobal(nullptr, TRUE, &stream), "marshal stream");
+    require_hr(CoMarshalInterface(stream, IID_IDropTarget, target, MSHCTX_LOCAL, nullptr, MSHLFLAGS_TABLESTRONG), "marshal owned target");
+    HGLOBAL global = nullptr; require_hr(GetHGlobalFromStream(stream, &global), "marshal extent");
+    STATSTG stat{}; require_hr(stream->Stat(&stat, STATFLAG_NONAME), "marshal stat");
     require(stat.cbSize.HighPart == 0 && stat.cbSize.LowPart <= sizeof(state->marshal), "marshal bound");
     void* bytes = GlobalLock(global); require(bytes != nullptr, "marshal lock");
     state->marshal_bytes = stat.cbSize.LowPart; memcpy(state->marshal, bytes, state->marshal_bytes); GlobalUnlock(global);
@@ -214,7 +233,7 @@ static int receiver(int argc, wchar_t** argv) {
         MSG msg{}; while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) { TranslateMessage(&msg); DispatchMessageW(&msg); }
     }
     // These potentially foreign cleanup calls remain inside the same hard deadline.
-    state->registration = RevokeDragDrop(owner);
+    state->cleanup_result = RevokeDragDrop(owner);
     LARGE_INTEGER zero{}; stream->Seek(zero, STREAM_SEEK_SET, nullptr);
     CoReleaseMarshalData(stream); stream->Release(); target->Release(); OleUninitialize(); CloseHandle(budget);
     if (baseline) DestroyWindow(owner);
@@ -222,7 +241,7 @@ static int receiver(int argc, wchar_t** argv) {
 }
 static int source(int argc, wchar_t** argv) {
     attach(argc, argv); state->source_pid = GetCurrentProcessId(); state->source_tid = GetCurrentThreadId();
-    require(SUCCEEDED(OleInitialize(nullptr)), "source OleInitialize");
+    require_hr(OleInitialize(nullptr), "source OleInitialize");
     auto* offered = new Source; DWORD effect = DROPEFFECT_COPY;
     if (ole_route) {
         auto* drag_source = new DropSource;
@@ -234,9 +253,9 @@ static int source(int argc, wchar_t** argv) {
         HGLOBAL global = GlobalAlloc(GMEM_MOVEABLE, state->marshal_bytes); require(global != nullptr, "unmarshal storage");
         void* bytes = GlobalLock(global); require(bytes != nullptr, "unmarshal lock");
         memcpy(bytes, state->marshal, state->marshal_bytes); GlobalUnlock(global);
-        IStream* stream = nullptr; require(SUCCEEDED(CreateStreamOnHGlobal(global, TRUE, &stream)), "unmarshal stream");
+        IStream* stream = nullptr; require_hr(CreateStreamOnHGlobal(global, TRUE, &stream), "unmarshal stream");
         IDropTarget* target = nullptr;
-        require(SUCCEEDED(CoUnmarshalInterface(stream, IID_IDropTarget, reinterpret_cast<void**>(&target))), "unmarshal target");
+        require_hr(CoUnmarshalInterface(stream, IID_IDropTarget, reinterpret_cast<void**>(&target)), "unmarshal target");
         stream->Release();
         state->enter_result = target->DragEnter(offered, 0, POINTL{0, 0}, &effect);
         target->DragLeave(); target->Release();
@@ -281,6 +300,7 @@ int wmain(int argc, wchar_t** argv) {
     SECURITY_ATTRIBUTES security{sizeof(security), nullptr, TRUE};
     HANDLE mapping = CreateFileMappingW(INVALID_HANDLE_VALUE, &security, PAGE_READWRITE, 0, sizeof(Shared), nullptr);
     state = static_cast<Shared*>(MapViewOfFile(mapping, FILE_MAP_ALL_ACCESS, 0, 0, sizeof(Shared))); require(state != nullptr, "private shared metadata");
+    state->registration = state->enter_result = state->query_result = state->get_result = state->source_data_result = state->cleanup_result = E_PENDING;
     ready_event = CreateEventW(&security, TRUE, FALSE, nullptr); done_event = CreateEventW(&security, TRUE, FALSE, nullptr); stop_event = CreateEventW(&security, TRUE, FALSE, nullptr);
     require(ready_event && done_event && stop_event, "private events");
     HANDLE job = CreateJobObjectW(nullptr, nullptr); require(job != nullptr, "outer job");
@@ -312,14 +332,24 @@ int wmain(int argc, wchar_t** argv) {
     TerminateJobObject(job, 99);
     require(WaitForSingleObject(receiver_process.hProcess, 2000) == WAIT_OBJECT_0, "receiver reaped");
     if (source_process.hProcess) require(WaitForSingleObject(source_process.hProcess, 2000) == WAIT_OBJECT_0, "source reaped");
+    DWORD receiver_exit = STILL_ACTIVE, source_exit = STILL_ACTIVE;
+    require(GetExitCodeProcess(receiver_process.hProcess, &receiver_exit), "receiver exit code");
+    if (source_process.hProcess) require(GetExitCodeProcess(source_process.hProcess, &source_exit), "source exit code");
     bool topology = state->enter_pid == state->receiver_pid && state->enter_tid == state->receiver_tid && state->query_pid == state->source_pid && state->query_tid == state->source_tid;
-    std::printf("{\"scope\":\"%s\",\"baseline_foreground\":%s,\"owner_ping_within_50ms\":%s,\"registration\":%ld,\"ready\":%s,\"delivered\":%s,\"cleaned\":%s,\"topology\":%s,\"native_bound\":%ld,\"small_probe\":%ld,\"large_probe\":%ld,\"baseline_private\":%llu,\"growth_bytes\":%llu,\"copied\":%ld,\"query_calls\":%ld,\"data_calls\":%ld,\"medium_releases\":%ld,\"elapsed_ms\":%llu,\"owner_messages\":%lu,\"controller_pid\":%lu,\"owner_pid\":%lu,\"receiver_pid\":%lu,\"enter_pid\":%lu,\"source_pid\":%lu,\"query_pid\":%lu,\"query_client_pid\":%lu,\"all_children_reaped\":true}\n", ole_route ? "private-DoDragDrop" : "private-direct-COM-proxy", baseline ? "true" : "false", ping ? "true" : "false", state->registration, ready ? "true" : "false", delivered ? "true" : "false", cleaned ? "true" : "false", topology ? "true" : "false", state->native_bound, state->small_probe, state->large_probe, state->private_baseline, static_cast<ULONGLONG>(growth), state->copied, state->query_calls, state->data_calls, state->medium_releases, GetTickCount64() - begin, dispatched, GetCurrentProcessId(), state->owner_pid, state->receiver_pid, state->enter_pid, state->source_pid, state->query_pid, state->query_client_pid);
-    bool expected = ready && state->native_bound && state->small_probe && state->large_probe;
-    if (!std::wcscmp(scenario, L"normal")) expected = expected && topology && delivered && cleaned && state->copied && state->medium_releases == 1;
+    std::printf("{\"scope\":\"%s\",\"baseline_foreground\":%s,\"owner_ping_within_50ms\":%s,\"registration\":%ld,\"ready\":%s,\"delivered\":%s,\"cleaned\":%s,\"topology\":%s,\"native_bound\":%ld,\"small_probe\":%ld,\"large_probe\":%ld,\"baseline_private\":%llu,\"growth_bytes\":%llu,\"copied\":%ld,\"query_calls\":%ld,\"data_calls\":%ld,\"medium_releases\":%ld,\"elapsed_ms\":%llu,\"owner_messages\":%lu,\"controller_pid\":%lu,\"owner_pid\":%lu,\"receiver_pid\":%lu,\"enter_pid\":%lu,\"source_pid\":%lu,\"query_pid\":%lu,\"query_client_pid\":%lu,\"query_client_pid_available\":%s,\"query_result\":%ld,\"get_result\":%ld,\"source_data_result\":%ld,\"offered_bytes\":%llu,\"cleanup_result\":%ld,\"receiver_exit\":%lu,\"source_exit\":%lu,\"failure_pid\":%lu,\"failure_win32_error\":%lu,\"failure_hresult\":%ld,\"failure_stage\":\"%s\",\"all_children_reaped\":true}\n", ole_route ? "private-DoDragDrop" : "private-direct-COM-proxy", baseline ? "true" : "false", ping ? "true" : "false", state->registration, ready ? "true" : "false", delivered ? "true" : "false", cleaned ? "true" : "false", topology ? "true" : "false", state->native_bound, state->small_probe, state->large_probe, state->private_baseline, static_cast<ULONGLONG>(growth), state->copied, state->query_calls, state->data_calls, state->medium_releases, GetTickCount64() - begin, dispatched, GetCurrentProcessId(), state->owner_pid, state->receiver_pid, state->enter_pid, state->source_pid, state->query_pid, state->query_client_pid, state->query_client_pid ? "true" : "false", state->query_result, state->get_result, state->source_data_result, state->offered_bytes, state->cleanup_result, receiver_exit, source_exit, state->failure_pid, state->failure_win32_error, state->failure_hresult, state->failure_stage);
+    bool expected = ready && state->registration == S_OK && state->native_bound && state->small_probe && state->large_probe && state->query_calls == 1 && (baseline ? state->owner_pid == state->receiver_pid : state->owner_pid != state->receiver_pid);
+    if (state->query_client_pid) expected = expected && state->query_client_pid == state->receiver_pid;
+    if (!std::wcscmp(scenario, L"normal")) expected = expected && topology && delivered && cleaned && state->copied && state->medium_releases == 1 && state->data_calls == 1 && state->get_result == S_OK && state->cleanup_result == S_OK && (!ole_route || state->enter_result == DRAGDROP_S_DROP);
     else expected = expected && topology && !state->copied && (!delivered || !std::wcscmp(scenario, L"over-memory"));
-    if (!std::wcscmp(scenario, L"query-stall")) expected = expected && (baseline ? !ping : ping);
+    if (!std::wcscmp(scenario, L"query-stall")) expected = expected && state->data_calls == 0 && state->query_result == E_PENDING && (baseline ? !ping : ping);
+    if (!std::wcscmp(scenario, L"get-stall")) expected = expected && state->data_calls == 1 && state->get_result == E_PENDING;
+    if (!std::wcscmp(scenario, L"release-stall")) expected = expected && state->data_calls == 1 && state->medium_releases == 1;
+    if (!std::wcscmp(scenario, L"over-memory")) {
+        bool memory_refused = state->get_result == E_OUTOFMEMORY || state->get_result == HRESULT_FROM_WIN32(ERROR_NOT_ENOUGH_MEMORY) || state->get_result == HRESULT_FROM_WIN32(ERROR_NO_SYSTEM_RESOURCES) || state->get_result == HRESULT_FROM_WIN32(ERROR_COMMITMENT_LIMIT);
+        expected = expected && state->data_calls == 1 && state->offered_bytes == 128 * 1024 * 1024 && state->source_data_result == S_OK && memory_refused;
+    }
     CloseHandle(receiver_process.hProcess); if (source_process.hProcess) CloseHandle(source_process.hProcess); CloseHandle(job);
-    UnmapViewOfFile(state); CloseHandle(mapping); CloseHandle(ready_event); CloseHandle(done_event); CloseHandle(stop_event);
+    UnmapViewOfFile(state); state = nullptr; CloseHandle(mapping); CloseHandle(ready_event); CloseHandle(done_event); CloseHandle(stop_event);
     DestroyWindow(window); UnregisterClassW(L"ScreenshotsPrivateDropProbe", GetModuleHandleW(nullptr));
     require(SetThreadDesktop(original_desktop), "restore desktop"); require(SetProcessWindowStation(original_station), "restore station"); CloseDesktop(desktop); CloseWindowStation(station);
     return expected ? 0 : 1;
