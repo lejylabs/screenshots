@@ -4,17 +4,25 @@ Date: 2026-11-17
 Scope: the user's complete major-feature list, with final GPUI redesign and new
 UI controls excluded. The workstation stays on. The full backlog is **open**.
 
-The current working checkpoint additionally integrates bounded Windows file-drop
-metadata and window-specific native/GPUI drag ownership. Its complete optimized
-workspace run passes **1,065 regular tests**, zero failures, with 71 opt-ins
-excluded across 60 outer suites. Linux/Windows GNU all-target metadata,
-Windows dependency-unit metadata, all-target optimized Clippy and focused pure/
-GPUI/font/style regressions pass. Native COM acquisition hard containment remains
-an implementation gap, and real Windows COM/resource acceptance remains open.
-[Drop contract](clipboard-import-output.md#windows-existing-file-drop-metadata-bounds).
+Chronological capture/upload history sorting is now integrated in core and CLI,
+with exact fractional UTC ordering and self-contained timestamp/ID cursors.
+The targeted optimized run passes 17 core and two actual CLI cases; both new
+opt-in cost/allocator probes also pass. The isolated executable completes 150
+timed and six separately memory-sampled requests against 10,000 capture plus
+10,000 upload metadata rows with unchanged database bytes. All-target optimized
+Clippy, Windows GNU metadata and formatting pass. [Query contract](history-queries.md).
+
+The preceding Windows file-drop/window-ownership correction is committed as
+`f2f03a4284e6d0318ecc1efa0363bd490c41b07b`. Its complete optimized workspace run
+passed **1,065 regular tests**, zero failures, with 71 opt-ins excluded across 60
+outer suites. Linux/Windows GNU all-target metadata, Windows dependency-unit
+metadata, optimized Clippy and focused pure/GPUI/font/style regressions pass.
+Native COM acquisition containment remains an implementation gap; Windows native
+COM/resource acceptance remains open. [Drop contract](clipboard-import-output.md#windows-existing-file-drop-metadata-bounds).
 The earlier format/Wayland source is committed as
 `fd98138633de4a15b028b62b54c0a2a9af301ec9`; its 1,044-test/private CLI/Wayland
-results remain a separate measured checkpoint. This is not full non-UI acceptance.
+results remain a separate checkpoint. These totals are different source snapshots,
+and are not added together or claimed as full non-UI acceptance.
 
 Earlier pushed baseline: branch `feat/non-ui-delivery`, `247f419`, including the
 reviewed persistence, logging, managed-color and portable packaging follow-ups.

@@ -143,7 +143,9 @@ pub use text::TextAnnotation;
 mod history;
 mod history_query;
 pub use history_query::{
-    HistoryPage, HistoryQuery, HistorySort, query_capture_history, query_upload_history,
+    HistoryDateCursor, HistoryDatePage, HistoryPage, HistoryQuery, HistorySort,
+    query_capture_history, query_capture_history_by_date, query_upload_history,
+    query_upload_history_by_date,
 };
 mod storage;
 pub use storage::{
