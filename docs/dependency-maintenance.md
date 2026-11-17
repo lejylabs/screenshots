@@ -154,3 +154,15 @@ GPUI Fast dev backend is selected. They cover open/preset/clear/cancel, disabled
 admission, date/time edits and events, typed 12-hour period and range date edits.
 All 31 actual scheduler package tests also pass. These headless GPUI interactions
 are regressions of existing controls, not new UI work or OS/IME/render acceptance.
+
+The first native ARM macOS run of the new standalone timezone runner failed at
+its offline metadata setup: Cargo needed an inactive target-all crate archive,
+although the application's native build did not use it. Its earlier native
+SDK/control/printing steps remain source-specific evidence, not a whole-job
+pass. The runner now resolves/fetches the private fixture's pinned manifests
+before its locked offline executable run, retaining the exact application-lock
+version/source check. A private native-only cache reproduces the old failure
+and passes the corrected setup; no global cache, dependency version or advisory
+policy is changed. Proof: `cold-cache-metadata-result.json` under the integration
+artifact directory. This setup fetch is a test-build operation, not application
+startup network work.

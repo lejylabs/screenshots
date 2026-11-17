@@ -44,7 +44,8 @@ def main():
                   + (ROOT / "scripts/fixtures/local_time_refresh.rs").read_text())
         (fixture / "src/main.rs").write_text(source)
         with (fixture / "metadata.json").open("wb") as metadata:
-            run(["cargo", "metadata", "--offline", "--format-version", "1", "--manifest-path",
+            # Resolve the private root and fetch pinned manifests before the offline run.
+            run(["cargo", "metadata", "--format-version", "1", "--manifest-path",
                  str(fixture / "Cargo.toml")], stdout=metadata)
         selected = tomllib.loads((fixture / "Cargo.lock").read_text())["package"]
         original = {(p["name"], p["version"], p.get("source")) for p in packages}
