@@ -1,180 +1,186 @@
-# Held Windows receiver topology proof, revision 6
+# Held Windows receiver topology proof, revision 7
 
-This is verification source only. It has not been compiled or executed by the
-subagent. The frozen previous native files and all earlier actual CI artifacts
-remain unchanged. Root must review and copy this entire revision into its
-auxiliary Windows CI snapshot. There are no production source changes.
+This is source-only verification work, not production integration. The author has
+not compiled or executed this revision. Root must review the complete source and
+run it only in its disposable GitHub-hosted Windows VM. All earlier frozen source
+and actual CI failure artifacts remain unchanged. No probe has run on the user's
+computer, read the user's clipboard, or accessed a printer/account/secret.
 
-## Actual evidence so far
+## Actual evidence and remaining question
 
-Revision 3's actual native Windows run is 44051463077, job 133930070373, artifact
-14314066479. All six direct COM cases pass, including a 128 MiB source HGLOBAL
-that succeeds in the source and returns E_OUTOFMEMORY in the 96 MiB growth-limited
-receiver. Query, GetData and release stalls are reaped after five seconds. Its
-three noninteractive DoDragDrop cases never entered the target. Their single
-source QueryGetData was OLE preflight, so those cases establish no OLE routing.
-The actual CRLF artifact source SHA-256 is f0eab7b43aaf3a7a17cb632f2a7230e9a78fc5316eb09334e815be6313f4eaa0;
-normalizing only CRLF to LF gives b5151b8759367e87e235b82c5f457fa2aadbb51c241399d65d8e8af239574c9e.
+Revision 3 run 44051463077 passes six direct COM cases, including normal medium
+release, query/GetData/release five-second reaps and a successful 128 MiB source
+HGLOBAL that fails receiver GetData with E_OUTOFMEMORY under the installed
+96 MiB private-commit growth ceiling. Its three private DoDragDrop cases never
+enter the target. Raw Windows CRLF source SHA-256 is
+f0eab7b43aaf3a7a17cb632f2a7230e9a78fc5316eb09334e815be6313f4eaa0;
+normalizing only CRLF to LF yields the frozen local b5151b8759367e87e235b82c5f457fa2aadbb51c241399d65d8e8af239574c9e.
 
-## New diagnostics and source model
+Revisions 4 and 5 also pass all six direct cases, but fail the real OLE cases.
+Revision 4 establishes GetCursorPos error 1459 on the noninteractive private
+station and a valid (16,16) cursor/owned target on the explicitly selected CI
+input desktop. Its source handles posted moves but native feedback occurs only
+once. Revision 5's first cursor set is a no-op to the initial (16,16), then its
+source STA's WM_TIMER does not dispatch inside DoDragDrop. Both revisions restore
+the six CI desktops/cursors successfully; neither establishes OLE routing.
 
-Actual revision 4 run 44054603220, job 133940606080, artifact 14314743711 passed
-all six direct cases again. All six CI input-desktop cases still failed before
-target entry even though GetCursorPos succeeded at (16,16), WindowFromPoint
-identified the owned target, and registration succeeded. Their source loops
-processed roughly 300 posted-move timer ticks but issued drag feedback only once.
-All six external desktop/cursor restoration guards succeeded. The old private
-cases record GetCursorPos error 1459, independently establishing that limitation.
+Revision 6 run 44059075939, job 133955895430, artifact 14316838348 again passes
+six direct cases. Its independent mover makes roughly 247 actual cursor moves;
+WindowFromPoint consistently identifies the owned ScreenshotsPrivateDropProbe
+and correct owner PID, and source enumeration returns S_OK. Yet every CI OLE
+case still has no QueryContinueDrag, GiveFeedback or target entry. All six
+external desktop/cursor guards succeed. The ordinary source must therefore be
+started from a real initiating gesture before making any routing inference.
 
-Revision 5 attempted to change movement in the explicitly gated hosted CI mode: its
-finite timer alternates real SetCursorPos positions (16,16) and (32,32), both
-inside the owned 128x128 target, while DoDragDrop owns native mouse capture.
-Actual revision 5 run 44055717794, job 133944440564, artifact 14315697484 again
-passed six direct cases, while every CI OLE case made only one movement attempt,
-never called QueryContinueDrag/GiveFeedback, and recorded one enumerator call.
-The first attempted position was the unchanged initial (16,16), so it generated
-no movement. The STA WM_TIMER callback then did not run inside DoDragDrop. All
-six external restoration guards succeeded. Those failures remain preserved.
+Revision 7 initiates a real left-button event on its owned source window and
+calls DoDragDrop from that window's WM_LBUTTONDOWN handler. It preserves every
+previous outcome and adds source input, QueryInterface, enumeration Next and GUI
+capture-stage diagnostics. A failure remains a failure; no direct-proxy result
+is a substitute for actual OLE target discovery.
 
-Revision 6 uses one operation-owned source-process mover thread only in the
-explicit hosted CI mode. Before creating any User32 object on that new thread,
-it attaches the source STA's owned private desktop. A kernel waitable timer wakes
-it every 20 ms only during the gesture; it waits for both the call-start marker
-and an actual source enumeration/preflight/continue callback from DoDragDrop
-before its first real movement, (32,32), then (16,16). It waits on its
-local stop event, the controller stop event and its timer. Normal DoDragDrop
-completion signals stop and joins the exact thread handle before source cleanup.
-Blocked cases remain inside the same externally killed/reaped source Job. It
-carries no COM object, IDataObject pointer, UI owner or frame across threads.
-The call-start marker and callback counters use Interlocked reads/writes for
-coordination between the source STA and its mover.
+## Explicitly different execution scopes
 
-The thread requests a 256 KiB stack and owns one stop event, one waitable timer
-and its join handle. These are fixture-only, bounded by the five-second source
-process deadline, with no thread or timer left in the application. Its PID/TID,
-start/stop markers, real move count and the actual window PID/class under the
-cursor are recorded and asserted. Source enumeration's return HRESULT is also
-recorded separately from its call count. Ordinary noninteractive cases keep the
-old posted-move diagnostic and create no mover thread. No mouse button/keyboard
-injection is used.
-The ordinary noninteractive cases and all previous artifacts remain unchanged.
+Without opt-in, every native case uses a unique unselected noninteractive window
+station and desktop. This mode performs no SwitchDesktop, SetCursorPos or
+SendInput. Its posted-move negative controls remain in the result report.
 
-Only a target's explicit QueryGetData/GetData acquisition stages trigger fault
-injection or its ready/ping signal. OLE preflight queries, gets and medium
-releases have separate counters. A fixed 16-entry numeric FORMATETC trace records
-format, aspect, tymed, lindex, stage and PID/TID without payload contents.
-The source advertises exactly CF_HDROP through SHCreateStdEnumFmtEtc. Its private
-source HWND receives finite posted WM_MOUSEMOVE messages. Source loop/timer,
-GetCursorPos result/error, GetMessagePos and WindowFromPoint diagnostics help
-distinguish missing input-desktop authority from registration/COM routing.
+The actual gesture mode requires a disposable dedicated GitHub-hosted Windows VM,
+never the user's computer, another user's session or a self-hosted runner. Both
+script and native code gate it with:
 
-Windows documents that GetCursorPos requires the input desktop, while DoDragDrop
-selects its target from the cursor's location. Noninteractive private desktop
-failures are preserved as diagnostic results. They are never substituted for a
-passing OLE source-to-receiver proof.
+- explicit PowerShell -OwnedHostedCiInputDesktop;
+- native --owned-ci-input-desktop and a ci- scenario;
+- GITHUB_ACTIONS=true, RUNNER_OS=Windows, RUNNER_ENVIRONMENT=github-hosted;
+- SCREENSHOTS_OWNED_HOSTED_CI_INPUT=1 set after the script verifies those flags.
 
-## Two explicitly different environments
+These environment checks prevent accidental host execution; they are not a
+cryptographic host attestation. The reviewed auxiliary workflow's windows-latest
+runner and actual GitHub run identity establish where the test was launched.
 
-Without opt-in, every case creates its own unselected noninteractive window
-station and desktop. No SwitchDesktop, SetCursorPos, SendInput, clipboard,
-printer, account, credential, network or capture call runs in this mode. All
-windows are fixed 128×128 or 64×64, with no full-desktop backing surface.
+The CI controller creates a uniquely named temporary WinSta0 desktop, switches
+that VM's input to it, and uses only its owned source/target windows. The source
+window is 64x64 at (256,256); the target is 128x128 at (0,0). No full-desktop
+surface, screenshot, real browser, clipboard, network request or credential call
+is involved. Only one synthetic left-button down/up and cursor movement are
+used; there is no keyboard injection. The original left button must be up before
+the case begins.
 
-The real OLE proof additionally requires a disposable, dedicated, GitHub-hosted
-Windows VM. It is NEVER a mode for the developer's desktop, a self-hosted runner,
-or another user's session. It requires all of:
+## Source gesture and thread ownership
 
-- PowerShell switch -OwnedHostedCiInputDesktop;
-- native private CLI flag --owned-ci-input-desktop and a ci- scenario;
-- GITHUB_ACTIONS=true, RUNNER_OS=Windows and RUNNER_ENVIRONMENT=github-hosted;
-- SCREENSHOTS_OWNED_HOSTED_CI_INPUT=1, set only after the script's environment gate.
+The source STA creates its data object and native window, retaining all COM
+pointers on that STA. One CI-only native mover thread requests a 256 KiB stack.
+Before any User32 object is created on that new thread, it attaches the exact
+source STA's owned desktop. Its context contains only a stop handle, desktop
+handle and source HWND, never an IDataObject/COM pointer, frame or UI reference.
+A kernel waitable timer wakes it every 20 ms only during this operation.
 
-In that isolated VM, the controller creates a uniquely named temporary desktop
-on WinSta0 and switches the CI VM's input desktop to it. It sets only that owned
-CI cursor inside (16,16)..(32,32), then runs actual DoDragDrop over the owned target HWND.
-There is no system mouse/keyboard injection, user clipboard access, real browser,
-printer, screenshot or secret lookup. The source uses the finite owned mover described above in CI mode, and its
-IDropSource drops only after the real target has been entered.
+After source-window readiness, the mover goes to (272,272), verifies that the
+window under that point is the exact owned source HWND, then sends one left-down.
+The source STA's ordinary GetMessage/DispatchMessage loop receives WM_LBUTTONDOWN
+and starts DoDragDrop in that handler. The mover waits for the atomic call-start
+marker and an actual source enumeration/preflight/continue callback from inside
+DoDragDrop. Its first target move is then (32,32), followed by (16,16), both within
+the owned target. It never posts fake negative-coordinate moves in this mode.
 
-The controller restores the original CI input desktop/cursor on normal cleanup.
-An independent PowerShell finally guard holds the original desktop handle and
-cursor before launch. It restores both after normal exit, any exception, or the
-15-second outer hang kill. The exact owned process object is killed; its
-kill-on-close Job closes the receiver/source descendants. No PID-by-name lookup
-or unrelated process termination is used. Any restoration failure is a test
-failure, with per-case stdout/stderr retained. A whole CI worker crash is outside
-this guard; the VM is disposable, with no user session to recover.
+Normal DoDragDrop completion signals the source-local stop event and joins the
+exact mover thread handle before releasing COM objects or destroying the source
+window. The mover sends left-up before exit. The controller's stop event also
+wakes it on cancellation, and the existing five-second owned Job contains every
+thread on a stall. Source/STA coordination uses Interlocked operations. A short
+process-local SRW lock serializes only the fixed QueryInterface GUID diagnostic
+copy; no foreign COM/native callback is made while that lock is held.
 
-## Native commands and acceptance
+The source implements a one-element IEnumFORMATETC directly: exactly CF_HDROP,
+HGLOBAL, CONTENT, lindex -1, with bounded Next/Skip/Reset/Clone behavior and
+explicit Next call/result/fetched counters. This removes an opaque enumerator
+from the diagnostic path. Fixed 16-entry FORMATETC traces separate OLE preflight
+from the target's explicit QueryGetData/GetData stages. Fault injection and ping
+signals occur only in the target acquisition stages, never during preflight.
 
-In an x64 MSVC developer PowerShell, ordinary private diagnostics:
+## Three button/desktop cleanup boundaries
+
+1. The source mover sends left-up and joins on normal completion. If any source
+   callback stalls or exits, all its threads remain inside the externally killed
+   and reaped Job.
+2. After reaping exact receiver/source process handles, the controller always
+   sends left-up on its still-selected owned CI desktop before restoring the
+   original desktop or cursor. This covers source errors and forced source kills.
+3. An independent PowerShell finally guard holds the original input desktop and
+   cursor before launch. On normal exit, exception or the 15-second controller
+   kill, it launches the same executable in --release-owned-ci-input CONTROLLER_ID
+   mode before switching back. That fresh native helper verifies all CI gates
+   and that the current input desktop name exactly matches the generated desktop
+   for that owned controller PID. It attaches only that desktop and sends left-up.
+   If the controller already restored the original desktop, the helper reports a
+   skip and injects nothing. It never sends input to an unrelated desktop.
+
+The external release helper has its own two-second process-handle timeout and
+is killed by its exact Process object on failure. Regardless of release errors,
+the outer finally still attempts original desktop/cursor restoration and reports
+failure. No process is found or killed by name. Normal and fault-case reports
+record source/controller button counts and external release/restoration outcomes.
+A complete CI worker crash is outside these guards; the VM is disposable, with
+no user session or user data to recover.
+
+## Build, outputs and mandatory assertions
+
+In a developer PowerShell, ordinary private diagnostics:
 
 ```powershell
 pwsh -NoProfile -File .\run_probe.ps1 -OutputDirectory .\results
 ```
 
-Only in the explicitly owned GitHub-hosted Windows CI VM:
+Only on the explicitly owned hosted Windows CI VM:
 
 ```powershell
 pwsh -NoProfile -File .\run_probe.ps1 -OutputDirectory .\results -OwnedHostedCiInputDesktop
 ```
 
-Exact compiler arguments are in the script: C++20, /EHsc /W4 /O2,
-_WIN32_WINNT=0x0A00 and ole32.lib user32.lib psapi.lib rpcrt4.lib shell32.lib.
-There is no third-party dependency or Cargo/application build. Raw source,
-normalized LF source and executable SHA-256 are recorded in report.json.
+The script records exact MSVC C++20 /EHsc /W4 /O2 arguments, raw/native and
+normalized-LF source SHA-256, executable SHA-256, per-case stdout/stderr and
+report.json. No Cargo/application build or third-party dependency is used.
+All six direct cases remain mandatory. Opted-in CI additionally requires six
+actual OLE cases: normal, query/get/release stalls, over-memory and the foreground
+baseline. The three old private no-target failures remain explicit bounded
+negative controls only when these real CI OLE cases are also required.
 
-The six direct COM cases remain mandatory. All six ci- OLE cases are mandatory
-when input-desktop opt-in is enabled: normal, query/get/release stall, over-memory,
-and a blocked foreground baseline. The earlier three noninteractive OLE cases
-remain in the report; a bounded no-target failure can serve as the explicit
-negative control only when the six actual CI-input OLE cases are also required.
-Without the opt-in, those failures still fail the prerequisite script.
+Normal success requires actual receiver/source PID/TID routing, separate HWND
+owner, successful GetData and cleanup, one custom medium release, publication only
+after release, actual OLE DRAGDROP_S_DROP, and reaped exact process handles.
+A posted ping during blocked QueryGetData must complete within 50 ms in the
+contained HWND owner. The foreground failure control owns its HWND and invokes
+an owned synthetic source directly on that STA; its blocked ping must fail.
+This is a deterministic control, not every external source's COM wait behavior
+or a physical input/presentation latency distribution.
 
-Normal success requires actual receiver/source apartment PID/TID agreement,
-registered HWND owner separation, successful GetData and cleanup, one custom
-medium release, no publication before release, actual DRAGDROP_S_DROP for OLE,
-and reaped exact process handles. A fixed posted ping during blocked QueryGetData
-must complete within 50 ms for the contained HWND owner. The baseline owns its
-HWND on its foreground STA and deliberately invokes an owned synthetic source
-directly on that STA, so its blocked ping is a deterministic failure control.
-The baseline is explicitly labeled and is not a measurement of every ordinary
-remote COM wait or a physical-input latency distribution.
+The memory case requires exactly one target GetData, a successful 128 MiB source
+allocation and an actual receiver memory-error HRESULT; returned-medium size
+rejection alone cannot pass. CI assertions also require the correct mover
+PID/TID, actual under-cursor owner PID/class, real left-down/source handler stage,
+controller left-up and normal stop/join/source left-up. QueryInterface GUIDs,
+GetGUIThreadInfo capture/active PID/class, enum completion and fixed failure/
+HRESULT/process-exit fields remain diagnostic even when the case fails. RPC
+caller PID is asserted only when Windows supplies it; zero means unavailable.
 
-The over-memory case requires exactly one target source GetData, successful
-creation of the 128 MiB source medium, and an actual receiver memory-error
-HRESULT. Merely rejecting the returned medium's size does not pass this proof.
-Query/GetData/cleanup HRESULTs, native stages, process exit codes and fixed
-failure-stage/Win32-error fields remain in the JSON, including unsupported
-RegisterDragDrop outcomes. RPC client PID is asserted when supplied; zero is
-reported as unavailable and never invented.
+## Resource and evidence limits
 
-## Containment and resource scope
+The receiver installs/probes measured-private-baseline +96 MiB commit growth
+before OLE/source access. The external five-second deadline covers acquisition,
+media release and cleanup. Its kill-on-close Job has two child slots and 512 MiB
+per-child commit ceiling. Child creation is atomic with the Job and inherits
+only one bounded mapping and three events. Normal source data is 64 bytes; the
+single memory fault intentionally creates 128 MiB in the owned source.
 
-The receiver installs measured-private-baseline +96 MiB committed-memory growth
-before OleInitialize/registration or foreign data access. A small successful and
-oversized failed commit probe establishes enforcement. The external controller's
-five-second deadline covers native query, GetData, media/release and cleanup.
-The controller owns an outer kill-on-close Job with at most two child processes
-and 512 MiB per-child commit ceiling. Children are atomically placed in that Job
-and inherit only one bounded mapping and three events. There is no abandoned
-thread or permanent timer. Normal cases retain at most a 64-byte source medium;
-the single over-memory source case deliberately allocates 128 MiB. The private
-source timer/mover exists only within the five-second gesture interval.
+The fixture has controller + receiver + source during the gesture, one fixed
+mapping with numeric instrumentation and <=16 KiB trusted target OBJREF, three
+inherited events and the operation-only mover handles/stack. The separate button
+release helper starts after controller completion/kill. No permanent timer,
+abandoned application thread, source watcher, image cache or renderer is added.
+Each controller is externally bounded to 15 seconds; the complete opted-in list
+normally finishes within roughly 90 seconds.
 
-At most controller + receiver + source processes exist. The mapping contains
-numeric instrumentation and a trusted owned target OBJREF capped at 16 KiB.
-Synthetic path bytes stay in owned native memory and are never opened or logged.
-The observer/controller waits on events and exact process handles while pumping
-its own queue. Each case is externally limited to 15 seconds; the complete
-opted-in list normally finishes within roughly 90 seconds.
-
-These synthetic checks do not establish all-format/custom-marshaler safety,
-Explorer/browser compatibility, main-app integration, DPI/accessibility,
-application cancellation, parked-production-helper cost or complete acceptance.
-Passing direct cases alone continues to establish no native OLE routing proof.
-
-Microsoft references:
-[GetCursorPos](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-getcursorpos),
-[DoDragDrop](https://learn.microsoft.com/en-us/windows/win32/api/ole2/nf-ole2-dodragdrop),
-[SHCreateStdEnumFmtEtc](https://learn.microsoft.com/en-us/windows/win32/api/shlobj_core/nf-shlobj_core-shcreatestdenumfmtetc).
+No result establishes arbitrary custom-unmarshaler behavior, main-app integration,
+Explorer/browser compatibility, DPI/accessibility, application cancellation,
+production idle/helper startup cost or full performance acceptance. The separate
+controlled custom IMarshal draft has not run and is not part of this revision.
+Production hard containment and raw/URL adapter integration remain open.

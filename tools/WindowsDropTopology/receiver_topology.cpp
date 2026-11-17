@@ -28,7 +28,12 @@ struct Shared {
     ULONGLONG private_baseline, offered_bytes;
     LONG preflight_query_calls, preflight_get_calls, preflight_medium_releases, native_stage, enum_calls, enum_result, source_continue_calls, source_feedback_calls, private_move_calls, ci_cursor_moves, query_trace_count;
     LONG drag_call_started, mover_started, mover_stopped, cursor_window_is_owner;
+    LONG drag_call_done, source_window_ready, injected_button_downs, injected_button_ups, controller_button_ups, input_stage;
     DWORD mover_pid, mover_tid, cursor_window_pid; char cursor_window_class[96];
+    LONG source_qi_calls, drop_source_qi_calls, source_gui_ok, source_capture_nonzero;
+    LONG enum_next_calls, enum_next_result, enum_next_fetched;
+    GUID last_source_iid, last_drop_source_iid;
+    DWORD source_active_pid, source_capture_pid; char source_capture_class[96];
     QueryTrace query_trace[16];
     LONG cursor_ok; DWORD cursor_error; POINT cursor; DWORD message_position; UINT_PTR point_window;
     DWORD marshal_bytes;
@@ -38,6 +43,10 @@ static Shared* state;
 static HANDLE ready_event, done_event, stop_event;
 static const wchar_t* scenario;
 static bool ole_route = false, baseline = false, ci_input = false;
+static IDataObject* source_data;
+static IDropSource* source_drop;
+static DWORD source_effect;
+static SRWLOCK qi_trace_lock = SRWLOCK_INIT;
 static void require_owned_ci() {
     wchar_t actions[8]{}, operating_system[32]{}, runner_environment[32]{}, explicit_gate[8]{};
     GetEnvironmentVariableW(L"GITHUB_ACTIONS", actions, 8);
@@ -66,6 +75,28 @@ static void require(bool value, const char* what) {
 }
 static void require_hr(HRESULT result, const char* what) {
     if (FAILED(result)) { if (state) state->failure_hresult = result; require(false, what); }
+}
+static bool owned_left_button(DWORD flags) {
+    require_owned_ci();
+    INPUT input{}; input.type = INPUT_MOUSE; input.mi.dwFlags = flags;
+    return SendInput(1, &input, sizeof(input)) == 1;
+}
+static int release_owned_ci_input(const wchar_t* controller_text) {
+    require_owned_ci(); wchar_t* end = nullptr;
+    for (const wchar_t* unit = controller_text; *unit; ++unit) require(*unit >= L'0' && *unit <= L'9', "owned CI release controller digits");
+    unsigned long controller = std::wcstoul(controller_text, &end, 10);
+    require(controller != 0 && end != controller_text && *end == 0, "owned CI release controller ID");
+    std::wstring expected = L"ScreenshotsDropProbe-" + std::to_wstring(controller);
+    HDESK input = OpenInputDesktop(0, FALSE, DESKTOP_READOBJECTS | DESKTOP_WRITEOBJECTS | DESKTOP_SWITCHDESKTOP);
+    require(input != nullptr, "owned CI external release input desktop");
+    wchar_t name[128]{}; DWORD actual = 0;
+    require(GetUserObjectInformationW(input, UOI_NAME, name, sizeof(name), &actual), "owned CI external release desktop identity");
+    if (expected != name) { CloseDesktop(input); std::printf("{\"released\":false,\"owned_desktop_not_current\":true}\n"); return 0; }
+    HDESK original = GetThreadDesktop(GetCurrentThreadId());
+    require(SetThreadDesktop(input), "attach external release to exact owned CI desktop");
+    require(owned_left_button(MOUSEEVENTF_LEFTUP), "external owned CI left-button release");
+    std::printf("{\"released\":true,\"owned_desktop_not_current\":false}\n");
+    require(SetThreadDesktop(original), "restore external release thread desktop"); CloseDesktop(input); return 0;
 }
 static HANDLE from_arg(const wchar_t* text) {
     return reinterpret_cast<HANDLE>(_wcstoui64(text, nullptr, 10));
@@ -128,9 +159,32 @@ struct MediumRelease final : IUnknown {
         return count;
     }
 };
+struct FormatsEnum final : IEnumFORMATETC {
+    LONG refs = 1; bool consumed = false;
+    HRESULT STDMETHODCALLTYPE QueryInterface(REFIID iid, void** out) override {
+        if (!out) return E_POINTER; *out = nullptr;
+        if (iid != IID_IUnknown && iid != IID_IEnumFORMATETC) return E_NOINTERFACE;
+        *out = this; AddRef(); return S_OK;
+    }
+    ULONG STDMETHODCALLTYPE AddRef() override { return InterlockedIncrement(&refs); }
+    ULONG STDMETHODCALLTYPE Release() override { LONG n = InterlockedDecrement(&refs); if (!n) delete this; return n; }
+    HRESULT STDMETHODCALLTYPE Next(ULONG requested, FORMATETC* out, ULONG* fetched) override {
+        InterlockedIncrement(&state->enum_next_calls);
+        if (!out || (!fetched && requested != 1)) { state->enum_next_result = E_POINTER; return E_POINTER; }
+        ULONG count = 0;
+        if (requested && !consumed) { *out = FORMATETC{CF_HDROP, nullptr, DVASPECT_CONTENT, -1, TYMED_HGLOBAL}; consumed = true; count = 1; }
+        if (fetched) *fetched = count;
+        state->enum_next_fetched = count; state->enum_next_result = count == requested ? S_OK : S_FALSE;
+        return state->enum_next_result;
+    }
+    HRESULT STDMETHODCALLTYPE Skip(ULONG count) override { bool available = !consumed; if (count) consumed = true; return count == 0 || (count == 1 && available) ? S_OK : S_FALSE; }
+    HRESULT STDMETHODCALLTYPE Reset() override { consumed = false; return S_OK; }
+    HRESULT STDMETHODCALLTYPE Clone(IEnumFORMATETC** out) override { if (!out) return E_POINTER; auto* copy = new FormatsEnum; copy->consumed = consumed; *out = copy; return S_OK; }
+};
 struct Source final : IDataObject {
     LONG refs = 1;
     HRESULT STDMETHODCALLTYPE QueryInterface(REFIID iid, void** out) override {
+        InterlockedIncrement(&state->source_qi_calls); AcquireSRWLockExclusive(&qi_trace_lock); state->last_source_iid = iid; ReleaseSRWLockExclusive(&qi_trace_lock);
         if (!out) return E_POINTER; *out = nullptr;
         if (iid != IID_IUnknown && iid != IID_IDataObject) return E_NOINTERFACE;
         *out = this; AddRef(); return S_OK;
@@ -186,8 +240,8 @@ struct Source final : IDataObject {
         InterlockedIncrement(&state->enum_calls);
         if (!out) return E_POINTER; *out = nullptr;
         if (direction != DATADIR_GET) return E_NOTIMPL;
-        FORMATETC format{CF_HDROP, nullptr, DVASPECT_CONTENT, -1, TYMED_HGLOBAL};
-        state->enum_result = SHCreateStdEnumFmtEtc(1, &format, out);
+        *out = new FormatsEnum;
+        state->enum_result = S_OK;
         return state->enum_result;
     }
     HRESULT STDMETHODCALLTYPE DAdvise(FORMATETC*, DWORD, IAdviseSink*, DWORD*) override { return OLE_E_ADVISENOTSUPPORTED; }
@@ -197,6 +251,7 @@ struct Source final : IDataObject {
 struct DropSource final : IDropSource {
     LONG refs = 1;
     HRESULT STDMETHODCALLTYPE QueryInterface(REFIID iid, void** out) override {
+        InterlockedIncrement(&state->drop_source_qi_calls); AcquireSRWLockExclusive(&qi_trace_lock); state->last_drop_source_iid = iid; ReleaseSRWLockExclusive(&qi_trace_lock);
         if (!out) return E_POINTER; *out = nullptr;
         if (iid != IID_IUnknown && iid != IID_IDropSource) return E_NOINTERFACE;
         *out = this; AddRef(); return S_OK;
@@ -211,7 +266,7 @@ static void CALLBACK private_move(HWND window, UINT, UINT_PTR, DWORD) {
     InterlockedIncrement(&state->private_move_calls); state->message_position = GetMessagePos();
     PostMessageW(window, WM_MOUSEMOVE, MK_LBUTTON, MAKELPARAM(-256, -256));
 }
-struct CiMoveState { HANDLE stop; HDESK desktop; };
+struct CiMoveState { HANDLE stop; HDESK desktop; HWND source_window; };
 static DWORD WINAPI owned_ci_mover(void* context) {
     require_owned_ci(); require(ci_input, "CI mover requires its private scenario");
     auto* move = static_cast<CiMoveState*>(context);
@@ -222,10 +277,20 @@ static DWORD WINAPI owned_ci_mover(void* context) {
     LARGE_INTEGER due{}; due.QuadPart = -20 * 10000;
     require(SetWaitableTimer(timer, &due, 20, nullptr, nullptr, FALSE), "arm owned CI mover timer");
     HANDLE waits[]{move->stop, stop_event, timer};
+    bool button_down = false;
     for (;;) {
         DWORD wait = WaitForMultipleObjects(3, waits, FALSE, INFINITE);
         if (wait == WAIT_OBJECT_0 || wait == WAIT_OBJECT_0 + 1) break;
         require(wait == WAIT_OBJECT_0 + 2, "owned CI mover wait");
+        if (!button_down) {
+            if (InterlockedCompareExchange(&state->source_window_ready, 0, 0) == 0) continue;
+            require(SetCursorPos(272, 272), "owned CI initiating source position");
+            require(WindowFromPoint(POINT{272, 272}) == move->source_window, "owned source must receive initiating gesture");
+            InterlockedExchange(&state->input_stage, 1);
+            require(owned_left_button(MOUSEEVENTF_LEFTDOWN), "owned CI initiating left-button down");
+            InterlockedIncrement(&state->injected_button_downs); button_down = true;
+            continue;
+        }
         // A source callback establishes that DoDragDrop has actually entered,
         // rather than merely that the caller is about to invoke it.
         if (InterlockedCompareExchange(&state->drag_call_started, 0, 0) == 0 || (InterlockedCompareExchange(&state->enum_calls, 0, 0) == 0 && InterlockedCompareExchange(&state->preflight_query_calls, 0, 0) == 0 && InterlockedCompareExchange(&state->source_continue_calls, 0, 0) == 0)) continue;
@@ -236,8 +301,25 @@ static DWORD WINAPI owned_ci_mover(void* context) {
         state->cursor_window_is_owner = reinterpret_cast<UINT_PTR>(under_cursor) == state->owner_hwnd;
         GetWindowThreadProcessId(under_cursor, &state->cursor_window_pid);
         GetClassNameA(under_cursor, state->cursor_window_class, sizeof(state->cursor_window_class));
+        GUITHREADINFO gui{}; gui.cbSize = sizeof(gui);
+        state->source_gui_ok = GetGUIThreadInfo(state->source_tid, &gui);
+        if (state->source_gui_ok) {
+            state->source_capture_nonzero = gui.hwndCapture != nullptr;
+            if (gui.hwndActive) GetWindowThreadProcessId(gui.hwndActive, &state->source_active_pid);
+            if (gui.hwndCapture) { GetWindowThreadProcessId(gui.hwndCapture, &state->source_capture_pid); GetClassNameA(gui.hwndCapture, state->source_capture_class, sizeof(state->source_capture_class)); }
+        }
     }
+    if (button_down) { require(owned_left_button(MOUSEEVENTF_LEFTUP), "owned CI source left-button release"); InterlockedIncrement(&state->injected_button_ups); }
     CancelWaitableTimer(timer); CloseHandle(timer); state->mover_stopped = 1; return 0;
+}
+static LRESULT CALLBACK source_proc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam) {
+    if (message == WM_LBUTTONDOWN && ci_input && source_data && source_drop && InterlockedCompareExchange(&state->drag_call_started, 1, 0) == 0) {
+        InterlockedExchange(&state->input_stage, 2);
+        state->enter_result = DoDragDrop(source_data, source_drop, DROPEFFECT_COPY, &source_effect);
+        InterlockedExchange(&state->drag_call_done, 1);
+        return 0;
+    }
+    return DefWindowProcW(hwnd, message, wparam, lparam);
 }
 struct Target final : IDropTarget {
     LONG refs = 1;
@@ -274,7 +356,7 @@ struct Target final : IDropTarget {
     }
     HRESULT STDMETHODCALLTYPE DragOver(DWORD, POINTL, DWORD* effect) override { *effect = DROPEFFECT_COPY; return S_OK; }
     HRESULT STDMETHODCALLTYPE DragLeave() override { return S_OK; }
-    HRESULT STDMETHODCALLTYPE Drop(IDataObject*, DWORD, POINTL, DWORD* effect) override { *effect = DROPEFFECT_COPY; return S_OK; }
+    HRESULT STDMETHODCALLTYPE Drop(IDataObject*, DWORD, POINTL, DWORD* effect) override { *effect = state->copied ? DROPEFFECT_COPY : DROPEFFECT_NONE; return S_OK; }
 };
 
 static int receiver(int argc, wchar_t** argv) {
@@ -320,27 +402,38 @@ static int source(int argc, wchar_t** argv) {
     require_hr(OleInitialize(nullptr), "source OleInitialize");
     auto* offered = new Source; DWORD effect = DROPEFFECT_COPY;
     if (ole_route) {
-        WNDCLASSW cls{}; cls.lpfnWndProc = DefWindowProcW; cls.hInstance = GetModuleHandleW(nullptr); cls.lpszClassName = L"ScreenshotsPrivateDropSource";
+        WNDCLASSW cls{}; cls.lpfnWndProc = source_proc; cls.hInstance = GetModuleHandleW(nullptr); cls.lpszClassName = L"ScreenshotsPrivateDropSource";
         require(RegisterClassW(&cls) != 0, "private source class");
         HWND source_window = CreateWindowExW(0, cls.lpszClassName, L"owned synthetic source", WS_POPUP | WS_VISIBLE, 256, 256, 64, 64, nullptr, nullptr, cls.hInstance, nullptr);
         require(source_window != nullptr, "private source window");
         state->point_window = reinterpret_cast<UINT_PTR>(WindowFromPoint(POINT{0, 0}));
         state->cursor_ok = GetCursorPos(&state->cursor); state->cursor_error = state->cursor_ok ? 0 : GetLastError();
         auto* drag_source = new DropSource;
+        source_data = offered; source_drop = drag_source; source_effect = DROPEFFECT_COPY;
         UINT_PTR timer = 0; HANDLE mover = nullptr;
-        CiMoveState move{nullptr, GetThreadDesktop(GetCurrentThreadId())};
+        CiMoveState move{nullptr, GetThreadDesktop(GetCurrentThreadId()), source_window};
         if (ci_input) {
             move.stop = CreateEventW(nullptr, TRUE, FALSE, nullptr); require(move.stop != nullptr, "owned CI mover stop");
             mover = CreateThread(nullptr, 256 * 1024, owned_ci_mover, &move, STACK_SIZE_PARAM_IS_A_RESERVATION, nullptr);
             require(mover != nullptr, "owned CI mover thread");
+            InterlockedExchange(&state->source_window_ready, 1);
         } else {
             timer = SetTimer(source_window, 1, 10, private_move); require(timer != 0, "private operation timer");
             private_move(source_window, 0, 0, 0);
         }
-        InterlockedExchange(&state->drag_call_started, 1);
-        state->enter_result = DoDragDrop(offered, drag_source, DROPEFFECT_COPY, &effect);
+        if (ci_input) {
+            while (InterlockedCompareExchange(&state->drag_call_done, 0, 0) == 0) {
+                MSG message{}; require(GetMessageW(&message, nullptr, 0, 0) > 0, "owned source gesture message loop");
+                TranslateMessage(&message); DispatchMessageW(&message);
+            }
+            effect = source_effect;
+        } else {
+            InterlockedExchange(&state->drag_call_started, 1);
+            state->enter_result = DoDragDrop(offered, drag_source, DROPEFFECT_COPY, &effect);
+        }
         if (mover) { SetEvent(move.stop); require(WaitForSingleObject(mover, 1000) == WAIT_OBJECT_0, "join owned CI mover"); CloseHandle(mover); CloseHandle(move.stop); }
         else KillTimer(source_window, timer);
+        source_data = nullptr; source_drop = nullptr;
         drag_source->Release(); DestroyWindow(source_window); UnregisterClassW(cls.lpszClassName, cls.hInstance);
     } else {
         HGLOBAL global = GlobalAlloc(GMEM_MOVEABLE, state->marshal_bytes); require(global != nullptr, "unmarshal storage");
@@ -380,6 +473,7 @@ static bool pump_until(HANDLE event, ULONGLONG limit, ULONG& dispatched) {
     }
 }
 int wmain(int argc, wchar_t** argv) {
+    if (argc == 3 && !std::wcscmp(argv[1], L"--release-owned-ci-input")) return release_owned_ci_input(argv[2]);
     if (argc > 1 && !std::wcscmp(argv[1], L"--receiver")) return receiver(argc, argv);
     if (argc > 1 && !std::wcscmp(argv[1], L"--source")) return source(argc, argv);
     bool explicit_ci_flag = argc == 3 && !std::wcscmp(argv[1], L"--owned-ci-input-desktop");
@@ -410,7 +504,7 @@ int wmain(int argc, wchar_t** argv) {
     HANDLE mapping = CreateFileMappingW(INVALID_HANDLE_VALUE, &security, PAGE_READWRITE, 0, sizeof(Shared), nullptr);
     state = static_cast<Shared*>(MapViewOfFile(mapping, FILE_MAP_ALL_ACCESS, 0, 0, sizeof(Shared))); require(state != nullptr, "private shared metadata");
     state->registration = state->enter_result = state->query_result = state->get_result = state->source_data_result = state->cleanup_result = E_PENDING;
-    state->enum_result = E_PENDING;
+    state->enum_result = state->enum_next_result = E_PENDING;
     ready_event = CreateEventW(&security, TRUE, FALSE, nullptr); done_event = CreateEventW(&security, TRUE, FALSE, nullptr); stop_event = CreateEventW(&security, TRUE, FALSE, nullptr);
     require(ready_event && done_event && stop_event, "private events");
     HANDLE job = CreateJobObjectW(nullptr, nullptr); require(job != nullptr, "outer job");
@@ -442,11 +536,15 @@ int wmain(int argc, wchar_t** argv) {
     TerminateJobObject(job, 99);
     require(WaitForSingleObject(receiver_process.hProcess, 2000) == WAIT_OBJECT_0, "receiver reaped");
     if (source_process.hProcess) require(WaitForSingleObject(source_process.hProcess, 2000) == WAIT_OBJECT_0, "source reaped");
+    if (ci_input) { require(owned_left_button(MOUSEEVENTF_LEFTUP), "owned CI controller left-button release"); InterlockedIncrement(&state->controller_button_ups); }
     DWORD receiver_exit = STILL_ACTIVE, source_exit = STILL_ACTIVE;
     require(GetExitCodeProcess(receiver_process.hProcess, &receiver_exit), "receiver exit code");
     if (source_process.hProcess) require(GetExitCodeProcess(source_process.hProcess, &source_exit), "source exit code");
     bool topology = state->enter_pid == state->receiver_pid && state->enter_tid == state->receiver_tid && (baseline ? state->query_pid == state->owner_pid && state->query_tid == state->owner_tid : state->query_pid == state->source_pid && state->query_tid == state->source_tid);
-    std::printf("{\"drag_call_started\":%ld,\"enum_result\":%ld,\"mover_started\":%ld,\"mover_stopped\":%ld,\"mover_pid\":%lu,\"mover_tid\":%lu,\"cursor_window_is_owner\":%ld,\"cursor_window_pid\":%lu,\"cursor_window_class\":\"%s\",", state->drag_call_started, state->enum_result, state->mover_started, state->mover_stopped, state->mover_pid, state->mover_tid, state->cursor_window_is_owner, state->cursor_window_pid, state->cursor_window_class);
+    wchar_t source_iid[40]{}, drop_iid[40]{};
+    StringFromGUID2(state->last_source_iid, source_iid, 40); StringFromGUID2(state->last_drop_source_iid, drop_iid, 40);
+    std::printf("{\"input_stage\":%ld,\"source_window_ready\":%ld,\"drag_call_done\":%ld,\"injected_button_downs\":%ld,\"injected_button_ups\":%ld,\"controller_button_ups\":%ld,\"source_qi_calls\":%ld,\"drop_source_qi_calls\":%ld,\"last_source_iid\":\"%ls\",\"last_drop_source_iid\":\"%ls\",\"source_gui_ok\":%ld,\"source_capture_nonzero\":%ld,\"source_active_pid\":%lu,\"source_capture_pid\":%lu,\"source_capture_class\":\"%s\",", state->input_stage, state->source_window_ready, state->drag_call_done, state->injected_button_downs, state->injected_button_ups, state->controller_button_ups, state->source_qi_calls, state->drop_source_qi_calls, source_iid, drop_iid, state->source_gui_ok, state->source_capture_nonzero, state->source_active_pid, state->source_capture_pid, state->source_capture_class);
+    std::printf("\"drag_call_started\":%ld,\"enum_result\":%ld,\"enum_next_calls\":%ld,\"enum_next_result\":%ld,\"enum_next_fetched\":%ld,\"mover_started\":%ld,\"mover_stopped\":%ld,\"mover_pid\":%lu,\"mover_tid\":%lu,\"cursor_window_is_owner\":%ld,\"cursor_window_pid\":%lu,\"cursor_window_class\":\"%s\",", state->drag_call_started, state->enum_result, state->enum_next_calls, state->enum_next_result, state->enum_next_fetched, state->mover_started, state->mover_stopped, state->mover_pid, state->mover_tid, state->cursor_window_is_owner, state->cursor_window_pid, state->cursor_window_class);
     std::printf("\"preflight_query_calls\":%ld,\"preflight_get_calls\":%ld,\"preflight_medium_releases\":%ld,\"native_stage\":%ld,\"enum_calls\":%ld,\"source_continue_calls\":%ld,\"source_feedback_calls\":%ld,\"private_move_calls\":%ld,\"ci_cursor_moves\":%ld,\"cursor_ok\":%ld,\"cursor_error\":%lu,\"cursor_x\":%ld,\"cursor_y\":%ld,\"message_position\":%lu,\"point_zero_is_owner\":%s,\"query_trace_count\":%ld,\"query_trace\":[", state->preflight_query_calls, state->preflight_get_calls, state->preflight_medium_releases, state->native_stage, state->enum_calls, state->source_continue_calls, state->source_feedback_calls, state->private_move_calls, state->ci_cursor_moves, state->cursor_ok, state->cursor_error, state->cursor.x, state->cursor.y, state->message_position, state->point_window == state->owner_hwnd ? "true" : "false", state->query_trace_count);
     for (LONG index = 0; index < state->query_trace_count && index < 16; ++index) {
         const auto& trace = state->query_trace[index];
@@ -467,7 +565,8 @@ int wmain(int argc, wchar_t** argv) {
     }
     if (ci_input) {
         expected = expected && state->mover_started == 1 && state->mover_pid == state->source_pid && state->mover_tid != state->source_tid && state->ci_cursor_moves >= 1 && state->cursor_window_is_owner == 1 && state->cursor_window_pid == state->owner_pid;
-        if (delivered) expected = expected && state->mover_stopped == 1;
+        expected = expected && state->injected_button_downs == 1 && state->input_stage == 2 && state->controller_button_ups == 1;
+        if (delivered) expected = expected && state->mover_stopped == 1 && state->injected_button_ups == 1;
     }
     CloseHandle(receiver_process.hProcess); if (source_process.hProcess) CloseHandle(source_process.hProcess); CloseHandle(job);
     UnmapViewOfFile(state); state = nullptr; CloseHandle(mapping); CloseHandle(ready_event); CloseHandle(done_event); CloseHandle(stop_event);

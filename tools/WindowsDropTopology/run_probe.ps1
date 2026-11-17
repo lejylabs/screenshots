@@ -29,6 +29,7 @@ public static class OwnedCiDesktopRestore {
     [DllImport("user32.dll", SetLastError=true)] public static extern bool CloseDesktop(IntPtr desktop);
     [DllImport("user32.dll", SetLastError=true)] public static extern bool GetCursorPos(out Point point);
     [DllImport("user32.dll", SetLastError=true)] public static extern bool SetCursorPos(int x, int y);
+    [DllImport("user32.dll")] public static extern short GetAsyncKeyState(int key);
 }
 '@
     $Cases += @('ci-ole-normal', 'ci-ole-query-stall', 'ci-ole-get-stall', 'ci-ole-over-memory', 'ci-ole-release-stall', 'ci-baseline-ole-query-stall')
@@ -48,6 +49,9 @@ foreach ($Case in $Cases) {
             if ($RestoreDesktop -eq [IntPtr]::Zero -or -not [OwnedCiDesktopRestore]::GetCursorPos([ref]$Cursor)) {
                 throw 'Cannot establish external owned CI desktop restoration guard'
             }
+            if (([OwnedCiDesktopRestore]::GetAsyncKeyState(1) -band 0x8000) -ne 0) {
+                throw 'Owned CI input proof requires the original left button to be released'
+            }
             $Arguments = @('--owned-ci-input-desktop', $Case)
         }
         $Process = Start-Process -FilePath $Executable -ArgumentList $Arguments -PassThru -NoNewWindow -RedirectStandardOutput $Out -RedirectStandardError $Err
@@ -66,12 +70,34 @@ foreach ($Case in $Cases) {
     } finally {
         if ($Process -and -not $Process.HasExited) { $Process.Kill(); $Process.WaitForExit() }
         if ($RestoreDesktop -ne [IntPtr]::Zero) {
-            $Restored = [OwnedCiDesktopRestore]::SwitchDesktop($RestoreDesktop)
-            $CursorRestored = $Restored -and [OwnedCiDesktopRestore]::SetCursorPos($Cursor.X, $Cursor.Y)
-            [OwnedCiDesktopRestore]::CloseDesktop($RestoreDesktop) | Out-Null
+            $ReleaseError = $null
+            $ReleaseProcess = $null
+            $ReleaseProof = $null
+            try {
+                if ($Process) {
+                    $ReleaseOut = Join-Path $OutputDirectory "$Case.release.stdout.json"
+                    $ReleaseErr = Join-Path $OutputDirectory "$Case.release.stderr.log"
+                    # A fresh owned native thread can attach to the private input
+                    # desktop even if this PowerShell thread owns native objects.
+                    $ReleaseProcess = Start-Process -FilePath $Executable -ArgumentList @('--release-owned-ci-input', [string]$Process.Id) -PassThru -NoNewWindow -RedirectStandardOutput $ReleaseOut -RedirectStandardError $ReleaseErr
+                    if (-not $ReleaseProcess.WaitForExit(2000)) { $ReleaseProcess.Kill(); $ReleaseProcess.WaitForExit(); throw 'External owned CI button release helper timed out' }
+                    $ReleaseProcess.Refresh()
+                    if ($ReleaseProcess.ExitCode -ne 0) { throw 'External owned CI button release failed' }
+                    $ReleaseProof = Get-Content -Raw $ReleaseOut | ConvertFrom-Json
+                    if (($ReleaseProof.released -eq $true) -eq ($ReleaseProof.owned_desktop_not_current -eq $true)) { throw 'External button release returned invalid proof shape' }
+                }
+            } catch { $ReleaseError = $_ } finally {
+                if ($ReleaseProcess -and -not $ReleaseProcess.HasExited) { $ReleaseProcess.Kill(); $ReleaseProcess.WaitForExit() }
+                # Release runs on the still-owned input desktop BEFORE switching.
+                $Restored = [OwnedCiDesktopRestore]::SwitchDesktop($RestoreDesktop)
+                $CursorRestored = $Restored -and [OwnedCiDesktopRestore]::SetCursorPos($Cursor.X, $Cursor.Y)
+                [OwnedCiDesktopRestore]::CloseDesktop($RestoreDesktop) | Out-Null
+            }
             if (-not $CursorRestored) { throw 'External owned CI desktop/cursor restoration failed' }
+            if ($ReleaseError) { throw $ReleaseError }
             if ($Results.Count -gt 0 -and $Results[-1].case -eq $Case) {
                 $Results[-1] | Add-Member -NotePropertyName external_ci_desktop_cursor_restored -NotePropertyValue $true
+                $Results[-1] | Add-Member -NotePropertyName external_ci_button_release -NotePropertyValue $ReleaseProof
             }
         }
     }
@@ -87,7 +113,8 @@ $Report = [ordered]@{
     changes_user_clipboard=$false
     owned_hosted_ci_input_opt_in=[bool]$OwnedHostedCiInputDesktop
     switches_input_desktop_only_in_owned_hosted_ci=[bool]$OwnedHostedCiInputDesktop
-    injects_system_mouse_or_keyboard=$false
+    synthesizes_left_button_only_on_owned_ci_desktop=[bool]$OwnedHostedCiInputDesktop
+    injects_keyboard=$false
     cases=$Results
 }
 $Report | ConvertTo-Json -Depth 10 | Set-Content -Encoding utf8 (Join-Path $OutputDirectory 'report.json')
