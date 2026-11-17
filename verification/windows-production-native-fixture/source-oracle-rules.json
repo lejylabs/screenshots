@@ -1,0 +1,158 @@
+{
+  "revision": 5,
+  "status": "AUTHORED_UNRUN",
+  "rules": [
+    {
+      "case": "control-source-error",
+      "mutation_id": 1,
+      "reason": "wrong-hresult",
+      "outcome": "success",
+      "requires_editor": false,
+      "ole": false,
+      "custom": false
+    },
+    {
+      "case": "control-source-none",
+      "mutation_id": 2,
+      "reason": "wrong-effect",
+      "outcome": "success",
+      "requires_editor": false,
+      "ole": false,
+      "custom": false
+    },
+    {
+      "case": "control-duplicate-acquire",
+      "mutation_id": 3,
+      "reason": "duplicate-acquire",
+      "outcome": "success",
+      "requires_editor": false,
+      "ole": false,
+      "custom": false
+    },
+    {
+      "case": "control-duplicate-release",
+      "mutation_id": 4,
+      "reason": "duplicate-release",
+      "outcome": "success",
+      "requires_editor": false,
+      "ole": false,
+      "custom": false
+    },
+    {
+      "case": "control-busy-copy",
+      "mutation_id": 5,
+      "reason": "capacity-copy",
+      "outcome": "capacity-refusal",
+      "requires_editor": false,
+      "ole": false,
+      "custom": false
+    },
+    {
+      "case": "control-busy-acquire",
+      "mutation_id": 6,
+      "reason": "capacity-acquire",
+      "outcome": "capacity-refusal",
+      "requires_editor": false,
+      "ole": false,
+      "custom": false
+    },
+    {
+      "case": "control-custom-source-error",
+      "mutation_id": 1,
+      "reason": "wrong-hresult",
+      "outcome": "success",
+      "requires_editor": false,
+      "ole": false,
+      "custom": true
+    },
+    {
+      "case": "ci-control-source-error",
+      "mutation_id": 7,
+      "reason": "wrong-hresult",
+      "outcome": "success",
+      "requires_editor": false,
+      "ole": true,
+      "custom": false,
+      "source_return_adapter": true
+    },
+    {
+      "case": "ci-control-source-none",
+      "mutation_id": 8,
+      "reason": "wrong-effect",
+      "outcome": "success",
+      "requires_editor": false,
+      "ole": true,
+      "custom": false,
+      "source_return_adapter": true
+    },
+    {
+      "case": "ci-control-duplicate-acquire",
+      "mutation_id": 3,
+      "reason": "duplicate-acquire",
+      "outcome": "success",
+      "requires_editor": false,
+      "ole": true,
+      "custom": false
+    },
+    {
+      "case": "gpui-control-source-error",
+      "mutation_id": 1,
+      "reason": "wrong-hresult",
+      "outcome": "success",
+      "requires_editor": true,
+      "ole": false,
+      "custom": false
+    },
+    {
+      "case": "gpui-control-source-none",
+      "mutation_id": 2,
+      "reason": "wrong-effect",
+      "outcome": "success",
+      "requires_editor": true,
+      "ole": false,
+      "custom": false
+    },
+    {
+      "case": "gpui-control-duplicate-acquire",
+      "mutation_id": 3,
+      "reason": "duplicate-acquire",
+      "outcome": "success",
+      "requires_editor": true,
+      "ole": false,
+      "custom": false
+    },
+    {
+      "case": "gpui-control-duplicate-release",
+      "mutation_id": 4,
+      "reason": "duplicate-release",
+      "outcome": "success",
+      "requires_editor": true,
+      "ole": false,
+      "custom": false
+    }
+  ],
+  "ordinary_success": [
+    "direct S_OK/COPY for both real Enter and Drop",
+    "OLE exact DRAGDROP_S_DROP/COPY",
+    "natural source exit 0 and cleanup completed",
+    "one actual selected-positive query, GetData success and ReleaseStgMedium lifetime",
+    "one actual staged SUBMIT"
+  ],
+  "capacity_refusal": [
+    "direct S_OK/NONE at Enter, no Drop call",
+    "OLE recognized drop/cancel with exact NONE",
+    "zero actual payload query/get/release/submit operations"
+  ],
+  "preflight": [
+    "outside scoped calls are diagnostic, never added to actual payload counts",
+    "OLE may reuse a selected-format provider prefetch only with explicit positive prefetch evidence",
+    "actual root GetData/ReleaseStgMedium count remains exactly one even with OLE cache"
+  ],
+  "negative_control": [
+    "real mutation applied under matching helper guard/sequence",
+    "specific wrong return or exact duplicate/forbidden count observed",
+    "matching final-source oracle false",
+    "no unrelated timeout or child crash accepted",
+    "GPUI variants require actual exact-pixel editor verification and close before failure"
+  ]
+}

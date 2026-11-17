@@ -73,6 +73,8 @@ pub(super) fn image_code(format: ImageFormat) -> Result<u32> {
 }
 fn length_limit(h: Header) -> Result<usize> {
     Ok(match h.kind {
+        #[cfg(screenshots_native_drop_acceptance)]
+        40 | 41 => 0,
         HELLO | ACK => 16,
         REGISTER => 8,
         REMOVE | RELEASE | STOP | MOTION | LEAVE | FAILED | REGISTERED | REMOVED | ALLOW | 30

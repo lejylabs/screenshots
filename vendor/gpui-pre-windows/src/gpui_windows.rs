@@ -1,5 +1,20 @@
 #![cfg(target_os = "windows")]
 
+#[cfg(screenshots_native_drop_acceptance)]
+mod native_drop_acceptance;
+#[cfg(screenshots_native_drop_acceptance)]
+pub use native_drop_acceptance::{
+    arm_consumer as native_drop_acceptance_arm_consumer,
+    await_consumer as native_drop_acceptance_await_consumer,
+    busy_admission as native_drop_acceptance_busy_admission,
+    hold_delivery as hold_native_drop_acceptance_delivery,
+    release_delivery as release_native_drop_acceptance_delivery, run as run_native_drop_acceptance,
+    run_ui as run_native_drop_ui_acceptance, ui_drive as native_drop_acceptance_drive,
+    ui_input as native_drop_acceptance_input, ui_rearm as native_drop_acceptance_rearm,
+    wait_reaped as native_drop_acceptance_wait_reaped,
+};
+#[cfg(screenshots_native_drop_acceptance)]
+pub use window::native_drop_acceptance_window_state;
 mod clipboard;
 mod native_drop_broker;
 mod native_drop_deadline;

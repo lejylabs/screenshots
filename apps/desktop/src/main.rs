@@ -65,6 +65,32 @@ mod workflow;
 
 fn main() {
     let arguments: Vec<_> = std::env::args_os().skip(1).collect();
+    #[cfg(all(target_os = "windows", screenshots_native_drop_acceptance))]
+    if arguments
+        .first()
+        .is_some_and(|value| value == "--owned-native-drop-acceptance")
+    {
+        let result = (|| {
+            anyhow::ensure!(
+                arguments.len() == 2,
+                "One explicit acceptance case is required"
+            );
+            windows_drop_spawn::install()?;
+            let case = arguments[1]
+                .to_str()
+                .ok_or_else(|| anyhow::anyhow!("Invalid acceptance case"))?;
+            if case.starts_with("gpui-") {
+                app_ui::run_windows_native_drop_editor_acceptance(case)
+            } else {
+                app_ui::run_windows_native_drop_acceptance(case)
+            }
+        })();
+        if let Err(error) = result {
+            eprintln!("owned native acceptance: {error:#}");
+            std::process::exit(1);
+        }
+        return;
+    }
     let result = launch(
         arguments,
         |arguments| {

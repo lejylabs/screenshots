@@ -3,6 +3,8 @@
 use anyhow::Context as _;
 use gpui_kit as gpui;
 use gpui_kit::platform as gpui_platform;
+#[cfg(all(target_os = "windows", screenshots_native_drop_acceptance))]
+pub use gpui_windows::run_native_drop_acceptance as run_windows_native_drop_acceptance;
 #[cfg(target_os = "windows")]
 pub use gpui_windows::{
     NATIVE_DROP_CHILD_ARGUMENT as WINDOWS_NATIVE_DROP_ARGUMENT,
@@ -10,6 +12,10 @@ pub use gpui_windows::{
     install_native_drop_spawner as install_windows_native_drop_spawner,
     native_drop_receiver as run_windows_native_drop_receiver,
 };
+#[cfg(all(target_os = "windows", screenshots_native_drop_acceptance))]
+mod windows_drop_acceptance;
+#[cfg(all(target_os = "windows", screenshots_native_drop_acceptance))]
+pub use windows_drop_acceptance::run as run_windows_native_drop_editor_acceptance;
 mod assets;
 mod caption;
 mod format_catalog;
@@ -615,7 +621,7 @@ impl CaptureWorkspace {
         Self::with_native_services(control, true, cx)
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, screenshots_native_drop_acceptance))]
     fn isolated_ui(window: &mut Window, cx: &mut Context<Self>) -> Self {
         Self::with_native_services(Some(window.window_handle()), false, cx)
     }
@@ -827,10 +833,10 @@ impl CaptureWorkspace {
         if native_services {
             shell.refresh_xcap_lists(cx);
         }
-        if shell.control.is_some() {
+        if shell.control.is_some() && !cfg!(screenshots_native_drop_acceptance) {
             shell.restore_upload_destination(cx);
         }
-        #[cfg(not(test))]
+        #[cfg(not(any(test, screenshots_native_drop_acceptance)))]
         cx.spawn(async move |this, cx| {
             let settings = cx
                 .background_spawn(async { app_core::CaptureSettings::load() })
@@ -3122,6 +3128,10 @@ impl CaptureWorkspace {
 
     fn open_dropped_encoded(&mut self, data: &gpui::ExternalImageDrop, cx: &mut Context<Self>) {
         if self.image_input_busy() {
+            #[cfg(all(target_os = "windows", screenshots_native_drop_acceptance))]
+            if data.bytes.as_ref().is_some_and(|bytes| !bytes.is_empty()) {
+                gpui_windows::native_drop_acceptance_busy_admission();
+            }
             return;
         }
         let Some(bytes) = data
