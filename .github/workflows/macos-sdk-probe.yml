@@ -9,7 +9,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-15, macos-15-intel]
+        os: [blacksmith-6vcpu-macos-15, macos-15-intel]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 90
     steps:
