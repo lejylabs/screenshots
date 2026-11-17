@@ -40,7 +40,7 @@ def main():
         (fixture / "Cargo.toml").write_text(manifest)
         (fixture / "Cargo.lock").write_bytes((ROOT / "Cargo.lock").read_bytes())
         production = ROOT / "vendor/gpui-pre/src/local_time.rs"
-        source = ('#[path=' + json.dumps(str(production)) + ']\nmod local_time;\n'
+        source = ('#[path=' + json.dumps(str(production), ensure_ascii=False) + ']\nmod local_time;\n'
                   + (ROOT / "scripts/fixtures/local_time_refresh.rs").read_text())
         (fixture / "src/main.rs").write_text(source)
         with (fixture / "metadata.json").open("wb") as metadata:
