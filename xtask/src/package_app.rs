@@ -294,17 +294,27 @@ fn admit_destinations(sources: &[PathBuf], output: &Path) -> Result<()> {
     }
     Ok(())
 }
+/// Publish one artifact and its checksum by hard links. On failure nothing that was
+/// already linked is removed: a shared-name unlink could delete a foreign replacement.
+fn publish_file(source: &Path, destination: &Path) -> Result<()> {
+    let name = destination.file_name().context("name")?.to_string_lossy().into_owned();
+    // Open handles keep the verified source's identity alive until publication settles.
+    let _artifact = fs::File::open(source)?;
+    let staging = TempDir::new_in(source.parent().context("source dir")?, ".publish-checksum-")?;
+    let staged = staging.path().join("checksum");
+    fs::write(&staged, format!("{}  {name}\n", sha(source)?))?;
+    let _checksum = fs::File::open(&staged)?;
+    package::publish(source, &staged, destination, &destination.with_file_name(format!("{name}.sha256")))
+        .context("Publication may be incomplete; output files were preserved for review. Use a new output directory before retrying.")
+}
 fn publish_all(sources: &[PathBuf], output: &Path) -> Result<()> {
+    publish_all_with(sources, output, &publish_file)
+}
+fn publish_all_with(sources: &[PathBuf], output: &Path, publish: &dyn Fn(&Path, &Path) -> Result<()>) -> Result<()> {
     admit_destinations(sources, output)?;
-    // Open handles keep each verified source's identity alive until publication settles.
-    let mut held = Vec::new();
     for source in sources {
-        let name = source.file_name().context("name")?.to_string_lossy().into_owned();
-        held.push(fs::File::open(source)?);
-        let staged = source.with_file_name(format!("{name}.sha256"));
-        fs::write(&staged, format!("{}  {name}\n", sha(source)?))?;
-        held.push(fs::File::open(&staged)?);
-        package::publish(source, &staged, &output.join(&name), &output.join(format!("{name}.sha256")))
+        let destination = output.join(source.file_name().context("name")?);
+        publish(source, &destination)
             .context("Artifact set publication failed; already created files remain in the selected output directory. No output was removed.")?;
     }
     Ok(())
@@ -370,7 +380,7 @@ pub fn main(args: &[String]) -> Result<()> {
             let app = work.join("Screenshots.app");
             app_bundle(&portable, &app, &info)?;
             if let Some(signing) = &signing {
-                info = sign::mac_app(&app, &info, signing)?;
+                info = sign::mac_app(&sign::Native, &app, &info, signing)?;
             }
             let archive_path = work.join(format!("{base}.app.tar.gz"));
             let executables = vec![app.join("Contents/MacOS/screenshots"), app.join("Contents/Resources/screenshots-install")];
@@ -383,10 +393,10 @@ pub fn main(args: &[String]) -> Result<()> {
                     [&"pkgbuild", &"--component", &app, &"--install-location", &"/Applications", &"--identifier", &ID, &"--version", &version_text];
                 let mut full: Vec<&dyn AsRef<std::ffi::OsStr>> = build.to_vec();
                 full.push(&pkg);
-                sign::tool(&full, Duration::from_secs(120), false)?;
+                sign::Tools::run(&sign::Native, &sign::args(&full), Duration::from_secs(120), false)?;
                 if let Some(signing) = &signing {
                     let signed = work.join(format!("{base}.signed.pkg"));
-                    sign::mac_package(&pkg, &signed, signing, notary.as_deref())?;
+                    sign::mac_package(&sign::Native, &pkg, &signed, signing, notary.as_deref())?;
                     pkg = signed;
                 }
                 outputs.push(pkg);
@@ -400,7 +410,7 @@ pub fn main(args: &[String]) -> Result<()> {
             let msix = work.join(format!("{base}.msix"));
             admit_destinations(std::slice::from_ref(&msix), &output)?;
             if let Some(signing) = &signing {
-                info = sign::windows_payload(&portable, &info, signing)?;
+                info = sign::windows_payload(&sign::Native, &portable, &info, signing)?;
             }
             let assets = portable.join("Assets");
             fs::create_dir(&assets)?;
@@ -411,9 +421,9 @@ pub fn main(args: &[String]) -> Result<()> {
             let publisher = signing.as_ref().and_then(|s| s["publisher"].as_str()).unwrap_or("CN=Screenshots");
             fs::write(portable.join("AppxManifest.xml"), appx_manifest(info["version"].as_str().unwrap_or_default(), architecture, publisher)?)?;
             let tool = if signing.is_some() { PathBuf::from("makeappx.exe") } else { sdk_makeappx()? };
-            sign::tool(&[&tool, &"pack", &"/d", &portable, &"/p", &msix, &"/o"], Duration::from_secs(120), false)?;
+            sign::Tools::run(&sign::Native, &sign::args(&[&tool, &"pack", &"/d", &portable, &"/p", &msix, &"/o"]), Duration::from_secs(120), false)?;
             if let Some(signing) = &signing {
-                sign::windows_package(&msix, signing)?;
+                sign::windows_package(&sign::Native, &msix, signing)?;
             }
             publish_all(std::slice::from_ref(&msix), &output)?;
             serde_json::json!({"status": "packaged", "kind": "MSIX",
@@ -442,5 +452,162 @@ mod tests {
         let dir = TempDir::new("xtask-png-").unwrap();
         png(&dir.path().join("a.png"), 44).unwrap();
         assert!(fs::read(dir.path().join("a.png")).unwrap().starts_with(b"\x89PNG"));
+    }
+
+    fn sources(dir: &Path) -> (PathBuf, PathBuf, PathBuf) {
+        let out = dir.join("out");
+        fs::create_dir(&out).unwrap();
+        let (a, b) = (dir.join("a"), dir.join("b"));
+        fs::write(&a, b"a").unwrap();
+        fs::write(&b, b"b").unwrap();
+        (out, a, b)
+    }
+
+    #[test]
+    fn group_failure_retains_complete_published_members_and_refuses_foreign_names() {
+        let dir = TempDir::new("xtask-publish-").unwrap();
+        let (out, a, b) = sources(dir.path());
+        let fail_second = |source: &Path, destination: &Path| -> Result<()> {
+            if source == b { bail!("injected publish failure") } else { publish_file(source, destination) }
+        };
+        assert!(publish_all_with(&[a.clone(), b.clone()], &out, &fail_second).is_err());
+        assert_eq!(fs::read(out.join("a")).unwrap(), b"a");
+        assert!(out.join("a.sha256").is_file());
+        // A later run never overwrites or removes what is already there.
+        fs::remove_file(out.join("a")).unwrap();
+        fs::write(out.join("a"), b"foreign").unwrap();
+        assert!(publish_all(&[a, b], &out).is_err());
+        assert_eq!(fs::read(out.join("a")).unwrap(), b"foreign");
+    }
+
+    #[test]
+    fn rollback_preserves_foreign_replacements_of_published_names() {
+        let dir = TempDir::new("xtask-publish-").unwrap();
+        let (out, a, b) = sources(dir.path());
+        let replace_then_fail = |source: &Path, destination: &Path| -> Result<()> {
+            if source == b {
+                for target in [out.join("a"), out.join("a.sha256")] {
+                    fs::remove_file(&target)?;
+                    fs::write(&target, b"foreign replacement")?;
+                }
+                bail!("injected");
+            }
+            publish_file(source, destination)
+        };
+        assert!(publish_all_with(&[a, b.clone()], &out, &replace_then_fail).is_err());
+        assert_eq!(fs::read(out.join("a")).unwrap(), b"foreign replacement");
+        assert_eq!(fs::read(out.join("a.sha256")).unwrap(), b"foreign replacement");
+    }
+
+    #[test]
+    fn msix_manifest_is_utf8_lf_and_routes_file_activation() {
+        let publisher = "CN=M\u{fc}ller & \u{6771}\u{4eac} \"Publisher\"";
+        let manifest = appx_manifest("0.1.0", "x64", publisher).unwrap();
+        assert!(!manifest.contains('\r'));
+        assert!(manifest.contains("Publisher=\"CN=M\u{fc}ller &amp; \u{6771}\u{4eac} &quot;Publisher&quot;\""));
+        assert!(manifest.contains("Executable=\"screenshots.exe\""));
+        assert!(manifest.contains("Parameters=\"--open &quot;%1&quot;\""));
+        assert_eq!(manifest.matches("<uap:FileType>").count(), 7);
+        assert!(appx_manifest("bad", "x64", "CN=A").is_err());
+        assert!(appx_manifest("0.1.0", "unsupported", "CN=A").is_err());
+    }
+
+    fn portable(root: &Path, binary: &[u8]) -> PathBuf {
+        let portable = root.join("portable");
+        fs::create_dir(&portable).unwrap();
+        fs::write(portable.join("screenshots"), binary).unwrap();
+        fs::write(portable.join("screenshots-install"), b"installer").unwrap();
+        set_mode(&portable.join("screenshots-install"), 0o755).unwrap();
+        fs::write(portable.join("LICENSE"), b"license retained").unwrap();
+        fs::write(portable.join("BUILD-INFO.json"), b"build info").unwrap();
+        portable
+    }
+
+    #[test]
+    fn mac_bundle_has_document_types_and_exact_binary() {
+        let dir = TempDir::new("xtask-bundle-").unwrap();
+        let portable = portable(dir.path(), b"synthetic Mach-O");
+        let app = dir.path().join("Screenshots.app");
+        app_bundle(&portable, &app, &serde_json::json!({"version": "0.1.0"})).unwrap();
+        assert_eq!(fs::read(app.join("Contents/MacOS/screenshots")).unwrap(), b"synthetic Mach-O");
+        assert_eq!(fs::read(app.join("Contents/Resources/LICENSE")).unwrap(), b"license retained");
+        assert_eq!(fs::read(app.join("Contents/Resources/screenshots-install")).unwrap(), b"installer");
+        let plist = fs::read_to_string(app.join("Contents/Info.plist")).unwrap();
+        for expected in ["<string>me.lejy.screenshots</string>", "<key>CFBundleExecutable</key>\n\t<string>screenshots</string>", "<string>Viewer</string>", "<string>public.png</string>"] {
+            assert!(plist.contains(expected), "{expected}");
+        }
+        assert!(app_bundle(&portable, &app, &serde_json::json!({"version": "0.1.0"})).is_err());
+    }
+
+    /// Minimal tar walker for assertions: (name, mode, kind, link, body).
+    #[cfg(unix)]
+    fn tar_entries(gz: &[u8]) -> Vec<(String, u32, u8, String, Vec<u8>)> {
+        let mut raw = Vec::new();
+        flate2::read::GzDecoder::new(gz).read_to_end(&mut raw).unwrap();
+        let (mut out, mut at, mut pax_path) = (Vec::new(), 0, None);
+        let text = |b: &[u8]| String::from_utf8(b.iter().take_while(|c| **c != 0).copied().collect()).unwrap();
+        let octal = |b: &[u8]| u64::from_str_radix(text(b).trim(), 8).unwrap_or(0);
+        while at + 512 <= raw.len() && raw[at..at + 512].iter().any(|b| *b != 0) {
+            let header = &raw[at..at + 512];
+            let size = octal(&header[124..136]) as usize;
+            let body = raw[at + 512..at + 512 + size].to_vec();
+            let kind = header[156];
+            if kind == b'x' {
+                let record = String::from_utf8(body.clone()).unwrap();
+                pax_path = record.split_once(" path=").map(|(_, v)| v.trim_end().to_owned());
+            } else {
+                let name = pax_path.take().unwrap_or_else(|| {
+                    let prefix = text(&header[345..500]);
+                    if prefix.is_empty() { text(&header[0..100]) } else { format!("{prefix}/{}", text(&header[0..100])) }
+                });
+                out.push((name, octal(&header[100..108]) as u32, kind, text(&header[157..257]), body));
+            }
+            at += 512 + size.div_ceil(512) * 512;
+        }
+        out
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn debian_ar_and_tar_members_have_real_package_layout() {
+        let dir = TempDir::new("xtask-deb-").unwrap();
+        let portable = portable(dir.path(), b"synthetic ELF");
+        let package = dir.path().join("screenshots.deb");
+        deb_package(&portable, &package, &serde_json::json!({"version": "0.1.0", "target": "x86_64-unknown-linux-gnu", "source_date_epoch": 17, "linux_abi": {"glibc": "2.39"}})).unwrap();
+        let data = fs::read(&package).unwrap();
+        assert!(data.starts_with(b"!<arch>\n"));
+        let mut members = std::collections::BTreeMap::new();
+        let mut at = 8;
+        while at < data.len() {
+            let header = &data[at..at + 60];
+            assert_eq!(&header[58..], b"`\n");
+            let name = std::str::from_utf8(&header[..16]).unwrap().trim().trim_end_matches('/').to_owned();
+            let size: usize = std::str::from_utf8(&header[48..58]).unwrap().trim().parse().unwrap();
+            members.insert(name, data[at + 60..at + 60 + size].to_vec());
+            at += 60 + size + size % 2;
+        }
+        assert_eq!(members["debian-binary"], b"2.0\n");
+        let control = tar_entries(&members["control.tar.gz"]);
+        let control = String::from_utf8(control.iter().find(|e| e.0 == "control").unwrap().4.clone()).unwrap();
+        for expected in ["libc6 (>= 2.39)", "libicu72 | libicu74 | libicu76 | libicu78", "libssl3t64 | libssl3", "Architecture: amd64"] {
+            assert!(control.contains(expected), "{expected}");
+        }
+        let entries = tar_entries(&members["data.tar.gz"]);
+        let find = |name: &str| entries.iter().find(|e| e.0 == name).unwrap_or_else(|| panic!("{name} missing"));
+        let link = find("usr/bin/screenshots");
+        assert_eq!((link.2, link.3.as_str()), (b'2', "../lib/screenshots/screenshots"));
+        assert_eq!(find("usr/lib/screenshots/screenshots").4, b"synthetic ELF");
+        assert_eq!(find("usr/lib/screenshots/screenshots-install").1, 0o755);
+        assert_eq!(find("usr/lib/screenshots/BUILD-INFO.json").4, b"build info");
+        assert_eq!(find("usr/share/doc/screenshots/LICENSE").4, b"license retained");
+        assert!(String::from_utf8_lossy(&find("usr/share/applications/me.lejy.screenshots.desktop").4).contains("--open %f"));
+    }
+
+    #[test]
+    fn published_checksum_names_the_artifact() {
+        let dir = TempDir::new("xtask-publish-").unwrap();
+        let (out, a, _) = sources(dir.path());
+        publish_all(std::slice::from_ref(&a), &out).unwrap();
+        assert_eq!(fs::read_to_string(out.join("a.sha256")).unwrap(), format!("{}  a\n", sha(&a).unwrap()));
     }
 }

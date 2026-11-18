@@ -10,26 +10,13 @@ use std::{
     },
 };
 
+#[derive(Debug, PartialEq, Eq)]
 pub(super) enum SendError {
-    Busy(Message),
-    Full(Message),
+    Busy,
+    Full,
 }
-impl std::fmt::Debug for SendError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(match self {
-            Self::Busy(_) => "queue busy",
-            Self::Full(_) => "queue full",
-        })
-    }
-}
-#[cfg(test)]
-impl SendError {
-    pub(super) fn into_inner(self) -> Message {
-        match self {
-            Self::Busy(message) | Self::Full(message) => message,
-        }
-    }
-}
+/// A refused send hands the message back so a caller may retry it.
+pub(super) type Rejected = (SendError, Message);
 #[derive(Debug, PartialEq, Eq)]
 pub(super) enum ReceiveError {
     Busy,
@@ -90,13 +77,13 @@ impl Mailbox {
                 notify,
             })
     }
-    pub(super) fn try_send(&self, message: Message) -> Result<(), SendError> {
+    pub(super) fn try_send(&self, message: Message) -> Result<(), Rejected> {
         let Some(mut gate) = self.gate(true) else {
-            return Err(SendError::Busy(message));
+            return Err((SendError::Busy, message));
         };
         // Pinned ArrayQueue0.3.14 push_mut is a finite, allocation-free operation;
         // shared push/pop APIs have retry loops and must not be used here.
-        gate.queue().push_mut(message).map_err(SendError::Full)
+        gate.queue().push_mut(message).map_err(|message| (SendError::Full, message))
     }
     pub(super) fn try_recv(&self) -> Result<Message, ReceiveError> {
         let Some(mut gate) = self.gate(false) else {

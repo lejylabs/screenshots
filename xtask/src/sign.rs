@@ -4,6 +4,7 @@ use anyhow::{Context, Result, bail, ensure};
 use screenshots_install::{TempDir, read_json, sha};
 use serde_json::Value;
 use std::{
+    ffi::{OsStr, OsString},
     path::{Path, PathBuf},
     process::Command,
     time::Duration,
@@ -143,27 +144,41 @@ fn protected_path() -> Result<String> {
     Ok("/usr/bin:/bin:/usr/sbin:/sbin".into())
 }
 
-/// Run a release tool. Known native tools are resolved to protected paths and run
-/// with the protected environment.
-pub fn tool(args: &[&dyn AsRef<std::ffi::OsStr>], timeout: Duration, capture: bool) -> Result<Vec<u8>> {
-    let first = args.first().context("Missing release tool")?.as_ref().to_string_lossy().into_owned();
-    let native = MAC_TOOLS.iter().any(|(name, _)| *name == first) || matches!(first.as_str(), "signtool.exe" | "makeappx.exe");
-    let program = if native { native_tool(&first)? } else { PathBuf::from(&first) };
+/// Release-tool invocation; the native implementation is replaced by a recorder in tests.
+pub trait Tools {
+    fn run(&self, args: &[OsString], timeout: Duration, capture: bool) -> Result<Vec<u8>>;
+}
+/// Known native tools are resolved to protected paths and run with the protected
+/// environment in a private working directory.
+pub struct Native;
+impl Tools for Native {
+    fn run(&self, args: &[OsString], timeout: Duration, capture: bool) -> Result<Vec<u8>> {
+        let first = args.first().context("Missing release tool")?.to_string_lossy().into_owned();
+        let native = MAC_TOOLS.iter().any(|(name, _)| *name == first) || matches!(first.as_str(), "signtool.exe" | "makeappx.exe");
+        let program = if native { native_tool(&first)? } else { PathBuf::from(&first) };
+        run_program(&program, &args[1..], native, timeout, capture)
+    }
+}
+pub(crate) fn run_program(program: &Path, args: &[OsString], protected: bool, timeout: Duration, capture: bool) -> Result<Vec<u8>> {
     let mut command = Command::new(program);
-    command.args(args[1..].iter().map(|a| a.as_ref()));
-    if native {
+    command.args(args);
+    if protected {
         command.env_clear().envs(native_environment()?);
     }
     let working = TempDir::new("screenshots-sign-tool-")?;
     contained(command, working.path(), timeout, capture)
 }
-fn run(args: &[&dyn AsRef<std::ffi::OsStr>]) -> Result<()> {
-    tool(args, Duration::from_secs(120), false).map(drop)
+
+pub fn args(values: &[&dyn AsRef<OsStr>]) -> Vec<OsString> {
+    values.iter().map(|v| v.as_ref().to_os_string()).collect()
+}
+fn run(tools: &dyn Tools, values: &[&dyn AsRef<OsStr>]) -> Result<()> {
+    tools.run(&args(values), Duration::from_secs(120), false).map(drop)
 }
 
-fn verify_mac(path: &Path, signing: &Value) -> Result<()> {
+fn verify_mac(tools: &dyn Tools, path: &Path, signing: &Value) -> Result<()> {
     let requirement = format!("anchor apple generic and certificate leaf[subject.OU] = \"{}\"", signing["team_id"].as_str().unwrap_or_default());
-    run(&[&"codesign", &"--verify", &"--strict", &"-R", &requirement, &path])
+    run(tools, &[&"codesign", &"--verify", &"--strict", &"-R", &requirement, &path])
 }
 fn write_info(path: &Path, info: &Value) -> Result<()> {
     std::fs::write(path, serde_json::to_string_pretty(info)? + "\n")?;
@@ -171,24 +186,24 @@ fn write_info(path: &Path, info: &Value) -> Result<()> {
 }
 
 /// Sign and verify the application bundle; returns the updated build information.
-pub fn mac_app(app: &Path, info: &Value, signing: &Value) -> Result<Value> {
+pub fn mac_app(tools: &dyn Tools, app: &Path, info: &Value, signing: &Value) -> Result<Value> {
     let app = app.canonicalize()?;
     let identity = signing["application_identity"].as_str().unwrap_or_default();
     let mut updated = info.clone();
     updated["binary_sha256_scope"] = "admitted executable before enclosing bundle signature".into();
     updated["signing"] = format!("Developer ID team {}; native signature verified before publication", signing["team_id"].as_str().unwrap_or_default()).into();
     write_info(&app.join("Contents/Resources/BUILD-INFO.json"), &updated)?;
-    run(&[&"codesign", &"--force", &"--sign", &identity, &"--identifier", &"me.lejy.screenshots", &"--options", &"runtime", &"--timestamp", &app])?;
-    verify_mac(&app, signing)?;
-    run(&[&"codesign", &"--verify", &"--deep", &"--strict", &app])?;
+    run(tools, &[&"codesign", &"--force", &"--sign", &identity, &"--identifier", &"me.lejy.screenshots", &"--options", &"runtime", &"--timestamp", &app])?;
+    verify_mac(tools, &app, signing)?;
+    run(tools, &[&"codesign", &"--verify", &"--deep", &"--strict", &app])?;
     Ok(updated)
 }
 
 /// Authenticode-sign the portable executables before MSIX packing.
-pub fn windows_payload(portable: &Path, info: &Value, signing: &Value) -> Result<Value> {
+pub fn windows_payload(tools: &dyn Tools, portable: &Path, info: &Value, signing: &Value) -> Result<Value> {
     let portable = portable.canonicalize()?;
     for name in ["screenshots.exe", "screenshots-install.exe"] {
-        windows_package(&portable.join(name), signing)?;
+        windows_package(tools, &portable.join(name), signing)?;
     }
     let mut updated = info.clone();
     updated["binary_sha256"] = sha(&portable.join("screenshots.exe"))?.into();
@@ -196,18 +211,18 @@ pub fn windows_payload(portable: &Path, info: &Value, signing: &Value) -> Result
     write_info(&portable.join("BUILD-INFO.json"), &updated)?;
     Ok(updated)
 }
-pub fn windows_package(path: &Path, signing: &Value) -> Result<()> {
+pub fn windows_package(tools: &dyn Tools, path: &Path, signing: &Value) -> Result<()> {
     let path = path.canonicalize()?;
     let thumbprint = signing["thumbprint"].as_str().unwrap_or_default();
     let timestamp = signing["timestamp_url"].as_str().unwrap_or_default();
-    run(&[&"signtool.exe", &"sign", &"/fd", &"SHA256", &"/sha1", &thumbprint, &"/tr", &timestamp, &"/td", &"SHA256", &path])?;
-    run(&[&"signtool.exe", &"verify", &"/pa", &"/all", &path])
+    run(tools, &[&"signtool.exe", &"sign", &"/fd", &"SHA256", &"/sha1", &thumbprint, &"/tr", &timestamp, &"/td", &"SHA256", &path])?;
+    run(tools, &[&"signtool.exe", &"verify", &"/pa", &"/all", &path])
 }
 
-pub fn mac_package(unsigned: &Path, signed: &Path, signing: &Value, notary_profile: Option<&str>) -> Result<()> {
+pub fn mac_package(tools: &dyn Tools, unsigned: &Path, signed: &Path, signing: &Value, notary_profile: Option<&str>) -> Result<()> {
     let installer = signing["installer_identity"].as_str().unwrap_or_default();
-    run(&[&"productsign", &"--sign", &installer, &unsigned, &signed])?;
-    let certificate = String::from_utf8(tool(&[&"pkgutil", &"--check-signature", &signed], Duration::from_secs(120), true)?)?;
+    run(tools, &[&"productsign", &"--sign", &installer, &unsigned, &signed])?;
+    let certificate = String::from_utf8(tools.run(&args(&[&"pkgutil", &"--check-signature", &signed]), Duration::from_secs(120), true)?)?;
     let leaf = certificate.lines().find_map(|line| {
         let rest = line.trim_start().strip_prefix("1.")?;
         rest.starts_with(char::is_whitespace).then(|| rest.trim())
@@ -221,15 +236,19 @@ pub fn mac_package(unsigned: &Path, signed: &Path, signing: &Value, notary_profi
     ensure!(leaf == Some(installer) && trusted, "Signed installer certificate/team does not match the requested trusted identity");
     if let Some(profile) = notary_profile {
         text(profile, 256)?;
-        let response = tool(
-            &[&"xcrun", &"notarytool", &"submit", &signed, &"--keychain-profile", &profile, &"--wait", &"--timeout", &"15m", &"--output-format", &"json"],
+        let response = tools.run(
+            &args(&[&"xcrun", &"notarytool", &"submit", &signed, &"--keychain-profile", &profile, &"--wait", &"--timeout", &"15m", &"--output-format", &"json"]),
             Duration::from_secs(930),
             true,
         )?;
         let result: Value = serde_json::from_slice(&response).context("Notarization did not accept the package")?;
         ensure!(result["status"] == "Accepted", "Notarization did not accept the package");
-        run(&[&"xcrun", &"stapler", &"staple", &signed])?;
-        run(&[&"xcrun", &"stapler", &"validate", &signed])?;
+        run(tools, &[&"xcrun", &"stapler", &"staple", &signed])?;
+        run(tools, &[&"xcrun", &"stapler", &"validate", &signed])?;
     }
     Ok(())
 }
+
+#[cfg(test)]
+#[path = "sign_tests.rs"]
+mod tests;

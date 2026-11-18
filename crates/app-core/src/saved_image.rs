@@ -332,7 +332,7 @@ fn snapshot(
 
 pub fn inspect_saved_image(path: &Path) -> Result<SavedImageInfo> {
     let (mut file, _) = open(path)?;
-    inspect_saved_image_file(&mut file, &|| false)
+    inspect_saved_image_file(&file, &|| false)
 }
 
 /// Shared native move/recovery inspection. The retained handle is checked before
@@ -368,7 +368,7 @@ pub fn load_saved_image(path: &Path, cancelled: impl Fn() -> bool) -> Result<ima
     let start = Instant::now();
     check(&cancelled, start)?;
     let (mut file, admitted) = open(path)?;
-    let info = inspect_saved_image_file(&mut file, &cancelled)?;
+    let info = inspect_saved_image_file(&file, &cancelled)?;
     let pixels = if info.format == ImageExportFormat::Png {
         crate::clipboard::decode_saved_png(
             BufReader::with_capacity(
@@ -378,7 +378,7 @@ pub fn load_saved_image(path: &Path, cancelled: impl Fn() -> bool) -> Result<ima
             crate::MAX_CAPTURE_BYTES,
         )?
     } else {
-        let bytes = snapshot(&mut file, info.encoded_bytes, &cancelled, start)?;
+        let bytes = snapshot(&file, info.encoded_bytes, &cancelled, start)?;
         admitted.verify_file(&file)?;
         crate::decode_editor_image_bytes_with_backing_and_cancel(
             &bytes,
@@ -643,7 +643,7 @@ fn export_one(
     check(cancelled, start)?;
     ensure!(source.is_absolute(), "Saved image path must be absolute");
     let (mut file, admitted) = open(source)?;
-    let info = inspect_saved_image_file(&mut file, cancelled)?;
+    let info = inspect_saved_image_file(&file, cancelled)?;
     let encoding = match policy {
         LibraryExportPolicy::Preserve if !strip_metadata => None,
         LibraryExportPolicy::Preserve => Some(CaptureFormatPolicy::Png),

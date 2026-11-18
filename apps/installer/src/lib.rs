@@ -360,6 +360,32 @@ fn create_new(path: &Path) -> Result<File> {
 fn remove_if_present(path: &Path) {
     let _ = fs::remove_file(path);
 }
+/// Crash injection for the recovery tests, read from `SCREENSHOTS_INSTALL_FAILPOINT`
+/// as comma-separated `name=exit:<code>|error|partial:<code>` entries. Compiled out of
+/// release builds.
+#[cfg(debug_assertions)]
+fn failpoint_action(name: &str) -> Option<String> {
+    let spec = std::env::var("SCREENSHOTS_INSTALL_FAILPOINT").ok()?;
+    spec.split(',').find_map(|entry| entry.rsplit_once('=').filter(|(n, _)| *n == name).map(|(_, a)| a.to_owned()))
+}
+#[cfg(not(debug_assertions))]
+fn failpoint_action(_: &str) -> Option<String> {
+    None
+}
+fn failpoint(name: &str) -> Result<()> {
+    match failpoint_action(name).as_deref() {
+        Some("error") => Err(anyhow!("Injected failure at {name}")),
+        Some(action) => match action.strip_prefix("exit:").and_then(|c| c.parse().ok()) {
+            Some(code) => std::process::exit(code),
+            None => Ok(()),
+        },
+        None => Ok(()),
+    }
+}
+fn partial_failpoint(path: &Path) -> Option<i32> {
+    let name = format!("partial:{}", path.file_name()?.to_string_lossy());
+    failpoint_action(&name)?.strip_prefix("exit:")?.parse().ok()
+}
 fn unique(prefix: &str) -> String {
     format!("{prefix}{}", uuid::Uuid::new_v4())
 }
@@ -399,6 +425,12 @@ fn atomic_file(path: &Path, payload: &[u8], expected: Option<&Value>) -> Result<
         {
             let mut output = create_new(&temporary)?;
             set_mode(&temporary, 0o600)?;
+            if let Some(code) = partial_failpoint(path) {
+                // Debug-only crash simulation: half the payload reaches disk, then exit.
+                output.write_all(&payload[..payload.len() / 2])?;
+                output.sync_all()?;
+                std::process::exit(code);
+            }
             output.write_all(payload)?;
             output.sync_all()?;
         }
@@ -419,6 +451,7 @@ fn atomic_file(path: &Path, payload: &[u8], expected: Option<&Value>) -> Result<
     result
 }
 fn atomic_json(path: &Path, value: &Value, expected: Option<&Value>) -> Result<()> {
+    failpoint(&format!("write:{}", path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()))?;
     let payload = json_bytes(value);
     let limit = if path.file_name().is_some_and(|n| n == TRANSACTION) { MAX_TRANSACTION } else { MAX_MANIFEST };
     require!(payload.len() as u64 <= limit, "Managed manifest exceeds its byte limit");
@@ -428,7 +461,7 @@ fn atomic_json(path: &Path, value: &Value, expected: Option<&Value>) -> Result<(
 // ---- Lock ----
 
 /// One OS lock serializes publication, trust changes, rollback and removal.
-struct InstallationLock {
+pub struct InstallationLock {
     file: File,
 }
 fn strip_verbatim(path: PathBuf) -> PathBuf {
@@ -444,7 +477,7 @@ fn strip_verbatim(path: PathBuf) -> PathBuf {
     path
 }
 impl InstallationLock {
-    fn acquire(root: &Path, create_parent: bool) -> Result<Self> {
+    pub fn acquire(root: &Path, create_parent: bool) -> Result<Self> {
         let requested = std::path::absolute(root)?;
         let parent = requested.parent().context("Install root has no parent")?;
         if create_parent {
@@ -719,7 +752,8 @@ fn decode_key(intent: &Value) -> Result<Vec<u8>> {
 }
 fn finish_transaction(root: &Path) -> Result<()> {
     fs::remove_file(root.join(TRANSACTION))?;
-    sync_directory(root)
+    sync_directory(root)?;
+    failpoint("finish_transaction.after")
 }
 fn replace_state(root: &Path, value: &Value) -> Result<()> {
     let path = root.join(STATE);
@@ -808,6 +842,7 @@ fn version_names(root: &Path) -> Result<Vec<String>> {
     Ok(names)
 }
 fn publish_entry(root: &Path, folder: &Path, executable: &str, previous: Option<&str>) -> Result<()> {
+    failpoint("publish_entry")?;
     let entry = root.join(executable);
     if exists_or_link(&entry) {
         require!(previous.is_some() && is_real_file(&entry), "Launcher conflicts with existing file");
@@ -909,6 +944,7 @@ fn install_snapshot(package: &Path, root_value: &Path, digest: &str) -> Result<O
     create_private_dir(&staging)?;
     let result = (|| -> Result<Outcome> {
         let extracted = extract(package, &staging)?;
+        failpoint("extract.after")?;
         let info = &extracted.info;
         let (info_version, info_target) = (text(info, "version")?.to_owned(), text(info, "target")?.to_owned());
         let identifier = format!("{info_version}-{info_target}");
@@ -949,6 +985,7 @@ fn install_snapshot(package: &Path, root_value: &Path, digest: &str) -> Result<O
         sync_directory(&staging)?;
         sync_directory(&parent)?;
         atomic_json(&root.join(TRANSACTION), &intent, None)?;
+        failpoint("versions.mkdir")?;
         if !exists_or_link(&versions) {
             create_private_dir(&versions)?;
         }
@@ -1275,6 +1312,7 @@ fn delete_owned_file(path: &Path, item: &Value) -> Result<()> {
     let current = fs::symlink_metadata(path)?;
     require!(stamp(&metadata) == stamp(&current), "Uninstall member changed during verification; preserved");
     fs::remove_file(path)?;
+    failpoint("delete_owned_file.after")?;
     Ok(())
 }
 fn finish_uninstall(root: &Path, mut pending: Value) -> Result<Outcome> {
@@ -1338,6 +1376,7 @@ fn finish_uninstall(root: &Path, mut pending: Value) -> Result<Outcome> {
     if versions.exists() {
         fs::remove_dir(&versions)?;
     }
+    failpoint("delete_launcher")?;
     delete_owned_file(&root.join(&launcher_name), &pending["launcher"])?;
     let key = root.join(PUBLIC_KEY);
     if let Some(expected) = opt_text(&value, "key_sha256")
@@ -1437,13 +1476,19 @@ fn download(address: &str, destination: &Path, limit: u64, expected: Option<u64>
     let deadline = Instant::now() + Duration::from_secs(60);
     let mut output = create_new(destination)?;
     runtime.block_on(async {
-        let client = reqwest::Client::builder()
+        let builder = reqwest::Client::builder()
             .no_proxy()
             .redirect(reqwest::redirect::Policy::none())
             .connect_timeout(Duration::from_secs(15))
             .read_timeout(Duration::from_secs(15))
-            .user_agent("screenshots-updater/1")
-            .build()?;
+            .user_agent("screenshots-updater/1");
+        // Debug-only extra trust root for the isolated HTTPS update test.
+        #[cfg(debug_assertions)]
+        let builder = match std::env::var_os("SCREENSHOTS_INSTALL_TEST_ROOT_CERT") {
+            Some(path) => builder.add_root_certificate(reqwest::Certificate::from_pem(&fs::read(path)?)?),
+            None => builder,
+        };
+        let client = builder.build()?;
         let mut response = client.get(url).send().await?;
         require!(response.status() == reqwest::StatusCode::OK, "Update server did not return a complete resource");
         if let Some(declared) = response.content_length() {

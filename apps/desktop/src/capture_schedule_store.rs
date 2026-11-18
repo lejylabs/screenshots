@@ -79,7 +79,7 @@ fn safe_file(file: &File, max: u64) -> Result<()> {
 fn open_file(path: &Path, create: bool, writable: bool) -> Result<File> {
     #[cfg(target_os = "windows")]
     {
-        return super::private_file::open_access(path, create, writable);
+        super::private_file::open_access(path, create, writable)
     }
     #[cfg(not(target_os = "windows"))]
     {

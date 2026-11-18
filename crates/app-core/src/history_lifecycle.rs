@@ -795,7 +795,7 @@ pub fn plan_retention(database: &Path, policy: &RetentionPolicy) -> Result<Reten
     };
     if let Some(days) = policy.capture_days {
         let date = now
-            .to_zoned(jiff::tz::TimeZone::UTC)
+            .to_zoned_datetime(jiff::tz::TimeZone::UTC)
             .date()
             .checked_sub((i64::from(days) + 1).days())
             .context("Retention date is outside the calendar")?;
@@ -874,7 +874,7 @@ fn eligible_capture(database: &Path, id: i64, policy: &RetentionPolicy) -> Resul
         .capture_days
         .context("Capture retention is not configured")?;
     let cutoff = Timestamp::now()
-        .to_zoned(jiff::tz::TimeZone::UTC)
+        .to_zoned_datetime(jiff::tz::TimeZone::UTC)
         .date()
         .checked_sub(i64::from(days).days())
         .context("Retention date is outside the calendar")?;

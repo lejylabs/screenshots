@@ -26,34 +26,13 @@ jobs:
             ${{ runner.os }}-cargo-
       - name: Probe fresh-process native VM enforcement without image or print access
         run: |
-          python3 - <<'BUDGET'
-          from pathlib import Path
-          import os,json,tomllib
-          root=Path.cwd(); fixture=Path(os.environ['RUNNER_TEMP'])/'owned-macos-vm-budget'
-          (fixture/'src').mkdir(parents=True,exist_ok=True)
-          packages=tomllib.loads((root/'Cargo.lock').read_text())['package']
-          versions={name:next(p['version'] for p in packages if p['name']==name) for name in ('anyhow','libc')}
-          manifest='[package]\nname="owned-native-budget-probe"\nversion="0.0.0"\nedition="2024"\n[workspace]\n[dependencies]\n'+''.join(name+'="='+version+'"\n' for name,version in versions.items())
-          (fixture/'Cargo.toml').write_text(manifest.replace(chr(92)+'n',chr(10)))
-          source='#[allow(dead_code)]\n#[path='+json.dumps(str(root/'crates/app-core/src/clipboard_input_budget.rs'))+']\nmod budget;\nfn main()->anyhow::Result<()> { let mut budget=budget::Budget::enter()?; budget.decoding()?; println!("post-exec VM growth bound enforced"); Ok(()) }\n'
-          (fixture/'src/main.rs').write_text(source.replace(chr(92)+'n',chr(10)))
-          BUDGET
+          cargo xtask ci vm-budget-fixture "$RUNNER_TEMP/owned-macos-vm-budget"
           cargo run --release --manifest-path "$RUNNER_TEMP/owned-macos-vm-budget/Cargo.toml"
       - name: Record actual native SDK screen-input contract
         run: |
           sw_vers
           xcrun --show-sdk-version
-          python3 - <<'HEADER'
-          from pathlib import Path
-          import subprocess
-          sdk=Path(subprocess.check_output(['xcrun','--show-sdk-path'],text=True).strip())
-          header=sdk/'System/Library/Frameworks/AVFoundation.framework/Headers/AVCaptureInput.h'
-          source=header.read_text()
-          for name in ['cropRect','scaleFactor','removesDuplicateFrames']:
-              start=source.find('@property',source.find('@interface AVCaptureScreenInput'))
-              found=source.find(name,start)
-              print('SDK contract',name,source[max(start,found-2300):found+700])
-          HEADER
+          cargo xtask ci sdk-contract
       - name: Check actual native core and test sources
         run: cargo check --locked -p screenshots --all-targets -j 2
       - name: Portable admission models against native SDK build
@@ -68,7 +47,7 @@ jobs:
           cargo test --locked --profile release-fast -p screenshots --bin screenshots -j 2 capture_worker::tests::video_parent_loss_stops_source_encoder_and_probe_without_a_global_pid_signal -- --exact --test-threads=1
 
       - name: Run native portability signing fixtures only
-        run: python3 scripts/test-native-signing.py
+        run: cargo test --locked -p xtask sign::
 
       - name: Run owned persistence and native logger fixtures
         run: |
@@ -164,12 +143,12 @@ jobs:
       - name: Verify atomic native worker commit limit
         run: cargo test --locked --profile release-fast -p screenshots --bin screenshots -j 2 native_worker_job_has_an_explicit_commit_ceiling -- --test-threads=1
       - name: Run Windows native portability signing fixtures only
-        run: python scripts/test-native-signing.py
+        run: cargo test --locked -p xtask sign::
 
       - name: Contain owned nonqueued native message floods
         run: cargo test --locked --profile release-fast -p screenshots --bin screenshots -j 2 capture_worker::tests::windows_sent_message_flood_is_contained_by_parent_deadline -- --exact --test-threads=1
       - name: Verify native MSIX manifest bytes without SDK invocation
-        run: python scripts/test-package-app.py
+        run: cargo test --locked -p xtask package
 
       - name: Run owned persistence and native logger fixtures
         run: |

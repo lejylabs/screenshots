@@ -51,7 +51,7 @@ fn send(sender: &Mailbox, mut message: Message) {
     for _ in 0..1000 {
         match sender.try_send(message) {
             Ok(()) => return,
-            Err(error) => message = error.into_inner(),
+            Err((_, rejected)) => message = rejected,
         }
         std::thread::sleep(Duration::from_micros(50));
     }

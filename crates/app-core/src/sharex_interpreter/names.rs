@@ -78,20 +78,20 @@ fn now(context: &Context, frozen_only: bool) -> R<Now> {
         if let Ok(stamp) = jiff::Timestamp::from_str(text) {
             let utc = text.ends_with(['Z', 'z']);
             let civil = if utc {
-                stamp.to_zoned(jiff::tz::TimeZone::UTC).datetime()
+                stamp.to_zoned_datetime(jiff::tz::TimeZone::UTC).datetime()
             } else {
-                stamp.to_zoned(system).datetime()
+                stamp.to_zoned_datetime(system).datetime()
             };
             return Ok(Now { civil, unix: stamp.as_second() });
         }
         let civil = DateTime::from_str(text).map_err(|_| Fail::invalid())?;
-        let unix = civil.to_zoned(system).map_err(|_| Fail::invalid())?.timestamp().as_second();
+        let unix = civil.to_zoned_datetime(system).map_err(|_| Fail::invalid())?.timestamp().as_second();
         return Ok(Now { civil, unix });
     }
     if frozen_only {
         return Ok(Now { civil: DateTime::constant(1970, 1, 1, 0, 0, 0, 0), unix: 0 });
     }
-    let zoned = jiff::Zoned::now();
+    let zoned = jiff::ZonedDateTime::now();
     Ok(Now { civil: zoned.datetime(), unix: zoned.timestamp().as_second() })
 }
 fn weekday_name(day: Weekday) -> &'static str {

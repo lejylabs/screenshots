@@ -6,7 +6,7 @@ in `.github/workflows/rust.yml`. Packaging is Rust-only (`cargo xtask`).
 Do not use `--ignore-rust-version` or update dependencies during release builds.
 
 ```sh
-python3 scripts/test-package.py
+cargo test --locked -p xtask -p screenshots-install
 cargo xtask package --target x86_64-unknown-linux-gnu
 ```
 

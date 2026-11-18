@@ -569,7 +569,7 @@ impl CaptionInput {
                         if key == "backspace" {
                             range.start = self.content[..range.start]
                                 .grapheme_indices(true)
-                                .last()
+                                .next_back()
                                 .map_or(0, |(i, _)| i);
                         } else {
                             range.end = self.content[range.end..]
@@ -621,7 +621,7 @@ impl CaptionInput {
                         }
                         "left" => self.content[..cursor]
                             .grapheme_indices(true)
-                            .last()
+                            .next_back()
                             .map_or(0, |(i, _)| i),
                         _ => self.content[cursor..]
                             .graphemes(true)

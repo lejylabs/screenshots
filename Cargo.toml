@@ -47,17 +47,16 @@ gpui-kit = "=0.9.1" # Kit pins a matching GPUI family; optional JS, speech and s
 anyhow = "1.0.104"
 base64 = "0.23.1"
 arboard = "3.7.0"
-jiff = { version = "=0.2.43", default-features = false, features = ["std", "js"] }
-chrono = { version = "0.4.45", features = ["serde"] }
+jiff = { version = "1.0.0", default-features = false, features = ["std", "js"] }
 directories = "6.0.0"
 global-hotkey = "0.10.0"
 image = "0.25.10"
-regex = "1.13.1"
+regex = "1.13.2"
 reqwest = { version = "0.13.5", features = ["json", "multipart", "stream"] }
 roxmltree = "0.21.2"
 rfd = "0.18.0"
-rusqlite = { version = "0.41.1", features = ["bundled", "chrono", "uuid", "hooks", "backup", "functions"] }
-rusqlite_migration = "2.6.0"
+rusqlite = { version = "0.41.1", features = ["bundled", "uuid", "hooks", "backup", "functions"] }
+rusqlite_migration = "2.7.0"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
 thiserror = "2.0.21"
@@ -68,8 +67,8 @@ toml = "1.2.1"
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter", "fmt"] }
 tray-icon = "0.26.1"
-uuid = { version = "1.29.2", features = ["v4", "v7", "serde"] }
-zeroize = "1.9.1"
+uuid = { version = "1.29.3", features = ["v4", "v7", "serde"] }
+zeroize = "1.9.2"
 
 # Phase 0 still-image spike. Not a committed product backend yet.
 xcap = "=0.9.10"

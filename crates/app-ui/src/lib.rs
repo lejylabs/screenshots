@@ -142,7 +142,7 @@ enum OverlayMode {
 }
 
 enum EditorImage {
-    Captured(CapturedImage),
+    Captured(Box<CapturedImage>),
     SavedPng(PathBuf),
     File(PathBuf),
     Clipboard(app_core::NativeClipboardBackend),
@@ -3174,7 +3174,7 @@ impl CaptureWorkspace {
         let source = self
             .last_capture
             .clone()
-            .map(EditorImage::Captured)
+            .map(|image| EditorImage::Captured(Box::new(image)))
             .or_else(|| self.last_saved.clone().map(EditorImage::SavedPng));
         if let Some(source) = source {
             self.open_redaction_source(source, cx);
@@ -3379,7 +3379,7 @@ impl CaptureWorkspace {
                     cx.background_spawn(async move {
                         cancellation.check().map_err(|e| e.to_string())?;
                         let mut source = match source {
-                            EditorImage::Captured(source) => source,
+                            EditorImage::Captured(source) => *source,
                             EditorImage::Url(source) => source
                                 .capture_with_cancel(&|| cancellation.check())
                                 .map_err(|e| format!("{e:#}"))?,
@@ -7939,7 +7939,6 @@ fn run_prepared(
     {
         drop(platform);
         run_resident();
-        return;
     }
     #[cfg(not(any(target_os = "windows", target_os = "macos")))]
     {

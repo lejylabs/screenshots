@@ -36,7 +36,7 @@ pub(super) fn identity(file: &File) -> Result<String> {
             .iter()
             .map(|b| format!("{b:02x}"))
             .collect();
-        return Ok(format!("w:{:016x}:{id}", value.VolumeSerialNumber));
+        Ok(format!("w:{:016x}:{id}", value.VolumeSerialNumber))
     }
     #[cfg(not(any(unix, target_os = "windows")))]
     anyhow::bail!("Native save identities are unavailable")

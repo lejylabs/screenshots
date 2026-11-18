@@ -38,7 +38,13 @@ fn main() {
     };
     match result {
         Ok(outcome) => println!("{}", install::outcome_json(&outcome)),
-        Err(_) => {
+        Err(error) => {
+            #[cfg(debug_assertions)]
+            if std::env::var_os("SCREENSHOTS_INSTALL_DEBUG_ERRORS").is_some() {
+                eprintln!("{error:#}");
+            }
+            #[cfg(not(debug_assertions))]
+            let _ = error;
             // Paths, signed URLs and server response payloads are not diagnostic text.
             eprintln!(
                 "Installation/update completion was not confirmed; completed changes may remain. Inspect status before retrying."

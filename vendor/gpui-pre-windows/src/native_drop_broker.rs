@@ -29,7 +29,7 @@ const READY: u32 = 32;
 
 static NEXT: AtomicU64 = AtomicU64::new(1);
 fn identity() -> Result<u64> {
-    NEXT.fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| {
+    NEXT.try_update(Ordering::AcqRel, Ordering::Acquire, |n| {
         n.checked_add(1).filter(|n| *n <= isize::MAX as u64)
     })
     .map_err(|_| anyhow::anyhow!("Native identity exhausted"))

@@ -61,7 +61,7 @@ fn source_tree(folder: &Path) -> Result<Value> {
     Ok(json!({"sha256": sha_bytes(encoded.as_bytes()), "files": rows.len(), "bytes": total}))
 }
 
-fn selected_ids(metadata: &Value, selection: &Value) -> Result<BTreeSet<String>> {
+pub(crate) fn selected_ids(metadata: &Value, selection: &Value) -> Result<BTreeSet<String>> {
     let selection = selection.as_object().filter(|m| !m.is_empty() && m.len() <= 4096).context("Invalid selected graph")?;
     let mut ids = BTreeMap::new();
     for package in metadata["packages"].as_array().into_iter().flatten() {
@@ -96,12 +96,12 @@ struct Published {
     files: BTreeMap<String, Vec<u8>>,
     prefix: String,
 }
-fn published_archive(entry: &Value, body: &[u8], wanted: &[&str]) -> Result<Published> {
+fn published_archive(entry: &Value, body: &[u8], wanted: &[&str], unpacked: u64) -> Result<Published> {
     ensure!(body.len() <= MAX_ARCHIVE && sha_bytes(body) == s(entry, "published_archive_sha256"), "Published archive checksum mismatch");
     let prefix = format!("{}-{}/", s(entry, "name"), s(entry, "version"));
     let mut files = BTreeMap::new();
     let mut count = 0usize;
-    let limits = archive::TarLimits { entries: 4096, member: MAX_UNPACKED, total: MAX_UNPACKED };
+    let limits = archive::TarLimits { entries: 4096, member: unpacked, total: unpacked };
     archive::read_tar_gz(body, &limits, &mut |member| {
         count += 1;
         ensure!(count <= 4096, "Published archive member bound exceeded");
@@ -206,6 +206,9 @@ fn advisory_policy(policy: &toml::Table, db_root: &Path, mitigations: &[Value]) 
 
 type Loader<'a> = &'a dyn Fn(&Value) -> Result<Vec<u8>>;
 fn prepare(metadata: &Value, selection: &Value, provenance: &Value, root: &Path, policy: &toml::Table, db_root: &Path, loader: Loader) -> Result<(Value, String, Value)> {
+    prepare_bounded(metadata, selection, provenance, root, policy, db_root, loader, MAX_UNPACKED)
+}
+fn prepare_bounded(metadata: &Value, selection: &Value, provenance: &Value, root: &Path, policy: &toml::Table, db_root: &Path, loader: Loader, unpacked: u64) -> Result<(Value, String, Value)> {
     ensure!(keys(provenance, &["version", "scope", "first_party", "packages", "mitigations"]), "Unknown provenance field");
     let list = |key: &str| provenance[key].as_array().cloned().unwrap_or_default();
     let (packages, first_party, mitigations) = (list("packages"), list("first_party"), list("mitigations"));
@@ -266,7 +269,7 @@ fn prepare(metadata: &Value, selection: &Value, provenance: &Value, root: &Path,
         let body = loader(entry)?;
         archived_bytes += body.len();
         ensure!(archived_bytes <= 64 * 1024 * 1024, "Aggregate published archive bound exceeded");
-        let published = published_archive(entry, &body, &wanted)?;
+        let published = published_archive(entry, &body, &wanted, unpacked)?;
         for proof in mitigations.iter().filter(|p| p["package"] == package["name"]) {
             mitigated.push(glib_mitigation(proof, entry, package, metadata, &published, root, db_root)?);
         }
@@ -304,7 +307,7 @@ pub fn main(args: &[String]) -> Result<()> {
         Some("verify-selection") => {
             let [_, before, after] = args else { bail!("usage: verify-selection <before> <after>") };
             let (before, after) = (load(Path::new(before), 4 << 20)?, load(Path::new(after), 4 << 20)?);
-            ensure!(before.as_object().is_some_and(|m| !m.is_empty()) && before == after, "Actual/projected selected package or license listing differs");
+            verify_selection(&before, &after)?;
             Ok(())
         }
         Some("prepare") => {
@@ -348,3 +351,12 @@ pub fn main(args: &[String]) -> Result<()> {
         _ => bail!("usage: cargo xtask vendored-advisory-view prepare|verify-selection ..."),
     }
 }
+
+fn verify_selection(before: &Value, after: &Value) -> Result<()> {
+    ensure!(before.as_object().is_some_and(|m| !m.is_empty()) && before == after, "Actual/projected selected package or license listing differs");
+    Ok(())
+}
+
+#[cfg(test)]
+#[path = "advisory_tests.rs"]
+mod tests;

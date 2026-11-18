@@ -86,7 +86,10 @@ fn native_licenses(target: &str) -> Result<Vec<Value>> {
 fn linux_abi(binary: &Path) -> Result<Value> {
     let output = Command::new("readelf").args(["--version-info", "--wide"]).arg(binary).output()?;
     ensure!(output.status.success() && output.stdout.len() <= 8 * 1024 * 1024, "ELF version metadata is unavailable or exceeds 8 MiB");
-    let text = String::from_utf8_lossy(&output.stdout);
+    glibc_requirement(&String::from_utf8_lossy(&output.stdout))
+}
+/// Highest `GLIBC_x.y[.z]` symbol version in readelf output.
+fn glibc_requirement(text: &str) -> Result<Value> {
     let mut minimum: Option<(u32, u32, u32)> = None;
     for (index, _) in text.match_indices("GLIBC_") {
         let rest = &text[index + 6..];
@@ -174,12 +177,16 @@ pub struct Inputs<'a> {
     pub epoch: u64,
     pub info: Value,
     pub licenses: Vec<Value>,
-    pub verify_native_abi: bool,
+    /// Measures the frozen staged Linux executable; `None` skips ABI recording.
+    pub abi: Option<&'a dyn Fn(&Path) -> Result<Value>>,
 }
 
 /// Stage complete files, then publish without replacing an existing archive.
 pub fn package(inputs: Inputs<'_>) -> Result<PathBuf> {
-    let Inputs { binary, installer, output, name, target, epoch, mut info, licenses, verify_native_abi } = inputs;
+    let Inputs { binary, installer, output, name, target, epoch, mut info, licenses, abi } = inputs;
+    // Refuse a missing or irregular input before creating any output.
+    open_regular(binary)?;
+    open_regular(installer)?;
     fs::create_dir_all(output)?;
     let windows = target.contains("windows");
     let filename = format!("{name}{}", if windows { ".zip" } else { ".tar.gz" });
@@ -194,9 +201,9 @@ pub fn package(inputs: Inputs<'_>) -> Result<PathBuf> {
     let installer_copy = folder.join(format!("screenshots-install{suffix}"));
     let digest = frozen_copy(binary, &executable)?;
     frozen_copy(installer, &installer_copy)?;
-    if verify_native_abi && target.contains("linux") {
+    if let Some(abi) = abi.filter(|_| target.contains("linux")) {
         // Inspect the frozen staged executable, not a concurrently rebuilt input.
-        info["linux_abi"] = linux_abi(&executable)?;
+        info["linux_abi"] = abi(&executable)?;
     }
     info["binary_sha256"] = digest.into();
     fs::write(folder.join("BUILD-INFO.json"), serde_json::to_string_pretty(&info)? + "\n")?;
@@ -297,7 +304,76 @@ pub fn main(args: &[String]) -> Result<()> {
         "binary_input": if prebuilt { "explicit prebuilt binary" } else { "cargo build --locked --release" },
         "signing": "unsigned; native runtime acceptance is separate"});
     let name = format!("screenshots-{version}-{host}");
-    let path = package(Inputs { binary: &binary, installer: &installer, output: &output, name: &name, target: &host, epoch, info, licenses, verify_native_abi: true })?;
+    let path = package(Inputs { binary: &binary, installer: &installer, output: &output, name: &name, target: &host, epoch, info, licenses, abi: Some(&linux_abi) })?;
     println!("{}", path.display());
     Ok(())
 }
+
+/// Verify an archive's checksum, extract it and run headless `--version`/`--help`
+/// with isolated user directories, failing if either writes user state.
+pub fn smoke(archive: &Path) -> Result<Value> {
+    let name = archive.file_name().context("archive name")?.to_string_lossy().into_owned();
+    let checksum = String::from_utf8(regular_bytes(&archive.with_file_name(format!("{name}.sha256")), 1024)?)?;
+    ensure!(checksum == format!("{}  {name}\n", sha(archive)?), "Archive checksum does not match");
+    let root = TempDir::new("screenshots-package-smoke-")?;
+    let folder = root.path().join("extract");
+    fs::create_dir(&folder)?;
+    let extracted = screenshots_install::extract(archive, &folder)?;
+    let binary = folder.join(extracted.executable);
+    let isolated = ["HOME", "USERPROFILE", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME", "APPDATA", "LOCALAPPDATA"];
+    let mut command_env: Vec<(String, PathBuf)> = Vec::new();
+    for variable in isolated {
+        let path = root.path().join(variable.to_lowercase());
+        fs::create_dir(&path)?;
+        command_env.push((variable.into(), path));
+    }
+    for argument in ["--version", "--help"] {
+        let mut command = Command::new(&binary);
+        command.arg(argument).current_dir(root.path());
+        for variable in ["DISPLAY", "WAYLAND_DISPLAY", "RUST_LOG"] {
+            command.env_remove(variable);
+        }
+        command.envs(command_env.iter().map(|(k, v)| (k, v)));
+        let output = run_bounded(command, std::time::Duration::from_secs(15))?;
+        ensure!(String::from_utf8_lossy(&output).to_lowercase().contains("screenshots"), "Headless command did not identify screenshots");
+    }
+    for (_, path) in &command_env {
+        ensure!(fs::read_dir(path)?.next().is_none(), "Headless help/version unexpectedly wrote user state");
+    }
+    Ok(json!({"archive": name, "binary_sha256": extracted.info["binary_sha256"], "headless_help_and_version": "passed", "user_state": "unchanged"}))
+}
+fn run_bounded(mut command: Command, timeout: std::time::Duration) -> Result<Vec<u8>> {
+    command.stdin(std::process::Stdio::null()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::null());
+    let mut child = command.spawn()?;
+    let mut stdout = child.stdout.take().context("stdout")?;
+    let reader = std::thread::spawn(move || {
+        let mut data = Vec::new();
+        let _ = (&mut stdout).take(1 << 20).read_to_end(&mut data);
+        data
+    });
+    let deadline = std::time::Instant::now() + timeout;
+    let status = loop {
+        if let Some(status) = child.try_wait()? {
+            break status;
+        }
+        if std::time::Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            bail!("Headless command exceeded its deadline");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    };
+    let output = reader.join().map_err(|_| anyhow::anyhow!("reader failed"))?;
+    ensure!(status.success(), "Headless command failed");
+    Ok(output)
+}
+
+pub fn smoke_main(args: &[String]) -> Result<()> {
+    let [archive] = args else { bail!("usage: cargo xtask package-smoke <archive>") };
+    println!("{}", smoke(&Path::new(archive).canonicalize()?)?);
+    Ok(())
+}
+
+#[cfg(test)]
+#[path = "package_tests.rs"]
+mod tests;
