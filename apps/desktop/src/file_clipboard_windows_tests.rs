@@ -336,7 +336,12 @@ fn fixture() {
             )?;
             owner.retire()?;
             let mut reader = arboard::Clipboard::new()?;
-            assert_eq!(reader.get().file_list()?, [path.clone()]);
+            let pasted_files = reader.get().file_list()?;
+            assert_eq!(pasted_files.len(), 1);
+            assert_eq!(
+                std::fs::canonicalize(&pasted_files[0])?,
+                std::fs::canonicalize(&path)?
+            );
             assert_eq!(std::fs::read(&path)?, b"private unchanged source");
             Ok(())
         })();
