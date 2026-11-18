@@ -1,6 +1,6 @@
 //! Main-thread Pasteboard Manager input in the bounded isolated worker.
 use super::*;
-use std::ffi::{CString, c_void};
+use std::ffi::{CString, c_ulong, c_void};
 type Cf = *const c_void;
 type Board = *mut c_void;
 #[link(name = "CoreFoundation", kind = "framework")]
@@ -18,8 +18,9 @@ unsafe extern "C" {
 unsafe extern "C" {
     fn PasteboardCreate(name: Cf, board: *mut Board) -> i32;
     fn PasteboardSynchronize(board: Board) -> u32;
-    fn PasteboardGetItemCount(board: Board, count: *mut u32) -> i32;
-    fn PasteboardGetItemIdentifier(board: Board, index: u32, item: *mut usize) -> i32;
+    // ItemCount is unsigned long, including on 64-bit macOS; u32 corrupts the caller stack.
+    fn PasteboardGetItemCount(board: Board, count: *mut c_ulong) -> i32;
+    fn PasteboardGetItemIdentifier(board: Board, index: isize, item: *mut usize) -> i32;
     fn PasteboardCopyItemFlavors(board: Board, item: usize, flavors: *mut Cf) -> i32;
     fn PasteboardGetItemFlavorFlags(board: Board, item: usize, flavor: Cf, flags: *mut u32) -> i32;
     fn PasteboardCopyItemFlavorData(board: Board, item: usize, flavor: Cf, data: *mut Cf) -> i32;
@@ -126,12 +127,37 @@ impl Session {
         for index in 1..=count {
             let mut item = 0;
             ensure!(
-                unsafe { PasteboardGetItemIdentifier(self.board(), index, &mut item) } == 0,
+                unsafe { PasteboardGetItemIdentifier(self.board(), index as isize, &mut item) }
+                    == 0,
                 "Could not inspect pasteboard item"
             );
             items.push(item);
         }
         Ok(items)
+    }
+    fn files(
+        &self,
+        items: Vec<usize>,
+        check: &crate::NativeCaptureCheck<'_>,
+    ) -> Result<ClipboardSnapshot> {
+        let mut files = Vec::new();
+        for item in items {
+            ensure!(
+                self.has(item, "public.file-url")?,
+                "Pasteboard item is not a file reference"
+            );
+            let mut bytes =
+                self.data(item, "public.file-url", CLIPBOARD_FILE_BYTES * 3 + 1, check)?;
+            if bytes.last() == Some(&0) {
+                bytes.pop();
+            }
+            let ClipboardSnapshot::Files { files: mut next } = uri_files(&bytes)? else {
+                unreachable!()
+            };
+            ensure!(next.len() == 1, "Pasteboard file item must name one file");
+            files.append(&mut next);
+        }
+        Ok(ClipboardSnapshot::Files { files })
     }
     fn has(&self, item: usize, name: &str) -> Result<bool> {
         let name = string(name)?;
@@ -248,26 +274,7 @@ pub(super) fn inspect(
             };
             ClipboardSnapshot::Text { text }
         }
-        ClipboardInspectKind::Files => {
-            let mut files = Vec::new();
-            for item in items {
-                ensure!(
-                    session.has(item, "public.file-url")?,
-                    "Pasteboard item is not a file reference"
-                );
-                let mut bytes =
-                    session.data(item, "public.file-url", CLIPBOARD_FILE_BYTES * 3 + 1, check)?;
-                if bytes.last() == Some(&0) {
-                    bytes.pop();
-                }
-                let ClipboardSnapshot::Files { files: mut next } = uri_files(&bytes)? else {
-                    unreachable!()
-                };
-                ensure!(next.len() == 1, "Pasteboard file item must name one file");
-                files.append(&mut next);
-            }
-            ClipboardSnapshot::Files { files }
-        }
+        ClipboardInspectKind::Files => session.files(items, check)?,
     };
     session.check(check)?;
     value.validate()?;
@@ -304,4 +311,124 @@ pub(super) fn image(
     crate::decode_editor_image_bytes_with_backing_and_cancel(&bytes, bytes.capacity(), &|| {
         check().is_err() || Instant::now() >= deadline
     })
+}
+
+fn drop_change_count(name: &str) -> Result<i64> {
+    use objc2::{class, msg_send, rc::Retained, runtime::AnyObject};
+    use objc2_foundation::NSString;
+    let name = NSString::from_str(name);
+    let board: Option<Retained<AnyObject>> =
+        unsafe { msg_send![class!(NSPasteboard), pasteboardWithName: &*name] };
+    let board = board.ok_or_else(|| anyhow::anyhow!("Native drag pasteboard unavailable"))?;
+    let count: isize = unsafe { msg_send![&*board, changeCount] };
+    Ok(count as i64)
+}
+
+/// All promised-data calls, native object allocations and release stay in the worker.
+pub(super) fn native_drop(
+    source: &crate::NativeDropSource,
+    image: bool,
+    _: u32,
+    deadline: Instant,
+    check: &crate::NativeCaptureCheck<'_>,
+) -> Result<crate::NativeDropReply> {
+    use crate::{NativeDropMime as Mime, NativeDropReply, NativeDropSource};
+    let NativeDropSource::MacPasteboard { name, change_count } = source else {
+        anyhow::bail!("Native drop descriptor does not name a drag pasteboard");
+    };
+    ensure!(
+        drop_change_count(name)? == *change_count,
+        "Native drag pasteboard ownership changed"
+    );
+    let session = Session::named(name, deadline)?;
+    let items = session.items(check)?;
+    ensure!(!items.is_empty(), "Native drag pasteboard is empty");
+    let mut file_items = true;
+    for item in &items {
+        session.check(check)?;
+        file_items &= session.has(*item, "public.file-url")?;
+    }
+    let mut mime = Mime::UriList;
+    let mut bytes = Vec::new();
+    if file_items {
+        ensure!(!image, "Native drop changed its representation");
+        for item in items {
+            let mut next =
+                session.data(item, "public.file-url", CLIPBOARD_FILE_BYTES * 3 + 1, check)?;
+            if next.last() == Some(&0) {
+                next.pop();
+            }
+            ensure!(
+                !next.is_empty()
+                    && !next.contains(&0)
+                    && bytes
+                        .len()
+                        .checked_add(next.len() + 2)
+                        .is_some_and(|total| total <= CLIPBOARD_FILES_BYTES),
+                "Native drag references exceed their bound"
+            );
+            bytes.reserve_exact(next.len() + 2);
+            bytes.extend_from_slice(&next);
+            bytes.extend_from_slice(b"\r\n");
+        }
+    } else {
+        ensure!(items.len() == 1, "Drop one image or one image URL");
+        let item = items[0];
+        let mut chosen = None;
+        for (name, kind) in [
+            ("public.png", Mime::Png),
+            ("public.jpeg", Mime::Jpeg),
+            ("org.webmproject.webp", Mime::Webp),
+            ("com.microsoft.bmp", Mime::Bmp),
+            ("public.tiff", Mime::Tiff),
+            ("public.url", Mime::UriList),
+            ("public.utf8-plain-text", Mime::UriList),
+        ] {
+            session.check(check)?;
+            if session.has(item, name)? {
+                chosen = Some((name, kind));
+                break;
+            }
+        }
+        let (flavor, kind) =
+            chosen.ok_or_else(|| anyhow::anyhow!("Unsupported native drag offer"))?;
+        mime = kind;
+        ensure!(
+            !image || mime != Mime::UriList,
+            "Native drop changed its representation"
+        );
+        if image || mime == Mime::UriList {
+            bytes = session.data(item, flavor, mime.maximum(), check)?;
+            if mime == Mime::UriList && bytes.last() == Some(&0) {
+                bytes.pop();
+            }
+        }
+    }
+    session.check(check)?;
+    ensure!(
+        drop_change_count(name)? == *change_count,
+        "Native drag pasteboard ownership changed"
+    );
+    drop(session);
+    check()?;
+    Ok(NativeDropReply {
+        mime,
+        bytes,
+        root_offset: None,
+    })
+}
+
+#[cfg(feature = "native-file-clipboard-fixture")]
+pub(super) fn inspect_owned_named_files(name: &str) -> Result<ClipboardSnapshot> {
+    ensure!(
+        name.starts_with("screenshots.owned-file-fixture.") && name.len() <= 128,
+        "Only an explicitly owned fixture pasteboard may be inspected"
+    );
+    let _budget = budget::Budget::enter()?;
+    let check = || Ok(());
+    let session = Session::named(name, Instant::now() + Duration::from_secs(4))?;
+    let value = session.files(session.items(&check)?, &check)?;
+    session.check(&check)?;
+    value.validate()?;
+    Ok(value)
 }

@@ -201,8 +201,19 @@ remain unverified. Metadata checking and private Unix success do not accept them
    failure, cancellation and uninterruptible cleanup. Exercise the GDI calls
    through a fake native API or an exclusively owned, non-forwarding virtual
    print driver; never select a user's queue, built-in prompt-to-file queue, or
-   physical printer in unattended CI. GDI end-to-end output is a gate until that
-   private fixture exists and is run, not established by the Unix fixture.
+   physical printer in unattended CI. Explicitly run the ignored core tests
+   `windows_owned_gdi_pixels_geometry_and_cleanup` and
+   `windows_owned_gdi_failures_latch_and_cleanup` with `--test-threads=1` in an
+   optimized Windows test build. Their owned memory DC/DIB exercises the exact
+   shipping geometry, alpha/BGRA conversion, SetStretchBltMode/SetBrushOrgEx and
+   StretchDIBits body with native GDI and validates output pixels and DC/DIB
+   cleanup. Device capabilities and successful document callbacks are controlled
+   test inputs; StartDocW on the memory DC is also exercised as a real native
+   refusal. These cases establish no Winspool, printer driver, successful native
+   StartDoc/EndDoc, worker-to-GDI or spooler acceptance. That complete native
+   print-output gate stays open until an exclusively owned, non-forwarding
+   virtual-driver fixture exists and is run. The Unix and owned process-mock
+   fixtures do not establish it either.
 4. Inject missing queue/service/driver, malformed images, unsupported paper, invalid
    device geometry, stream break, StartDoc/EndDoc failure, stdout failure and
    timeout after accepted submission. Confirm no automatic duplicate/remote
@@ -230,3 +241,93 @@ remain unverified. Metadata checking and private Unix success do not accept them
 - [Microsoft EndDoc blocking behavior](https://learn.microsoft.com/en-us/windows/win32/api/wingdi/nf-wingdi-enddoc).
 - [Microsoft System32-only LoadLibraryExW](https://learn.microsoft.com/en-us/windows/win32/api/libloaderapi/nf-libloaderapi-loadlibraryexw).
 - [Microsoft GetProcAddress](https://learn.microsoft.com/en-us/windows/win32/api/libloaderapi/nf-libloaderapi-getprocaddress).
+
+## Native ARM macOS runtime evidence (2026-11-17)
+
+Auxiliary snapshot `b85db9261104fdac868d4d5d1d79b901445a6e65`, application
+source `9f2e135bbcf3671811018faa3c028938210e7079`, passed native ARM macOS job
+134043931856 in [run 44084691005](https://github.com/lejylabs/screenshots/actions/runs/44084691005).
+The actual fresh-process VM enforcement probe, three core print controls, six
+desktop controls including worker rejection/timeout/cancel, and the real private
+IPP CLI fixture pass. The fixture verifies missing-queue refusal, exact existing
+queue submission, stripped metadata, preserved source and stdout failure without
+retry. It never uses a physical printer or user queue. The log is preserved at
+`target/verification/native-b85db926-macos-arm.log`. This closes that source's
+ARM runtime check after the earlier pre-exec EINVAL failure; Intel job 134043931578 was canceled during later optimized app-UI compilation
+(the cancellation reaped Cargo/rustc); it supplies no full Intel print-runtime
+pass. Windows GDI output/driver faults, calibrated physical output and reference
+hardware resource acceptance remain separate gates. Later source changes are
+not covered by this snapshot.
+
+## Owned native Windows GDI evidence — 2026-11-18
+
+Both exact optimized ignored GDI cases executed and passed in Windows job134704173055, run44276006510 (snapshot55a202af57187a63f9ebcbbc405ef4d39186a50d). The independent step requires exactly two discovered cases and retained the native output log even though the earlier unrelated drop-fixture C++ compile failed. This establishes actual owned memory-DC raster geometry/color/alpha-composition/cleanup and native StartDoc refusal, plus the separately labeled controlled document-fault branches. It does not establish real Winspool/driver submission, physical printing or resource budgets. The exact source changes are committed in `b411f73`.
+
+
+## Owned real-spool fixture proposal
+
+`verification/windows-spool-native-fixture/README.md` describes an explicitly
+instrumented disposable-host fixture for the real CLI/helper, Winspool,
+Microsoft-signed builtin XPS driver and owned Local Port output. Normal builds
+still reject that file port; the fixture requires a same-queue normal-binary
+refusal control. Only its compiled exact GUID queue/private sink pair can pass
+its separate never-default-enabled source guard. It adds no product CLI flag,
+queue installation, file-port support or runtime environment bypass.
+
+The fixture is authored source, not native acceptance evidence. It must build
+and run with retained source/binary identities, exact spool/output and fault
+oracles and verified whole-family/queue/port/pixel cleanup before the downstream
+real-driver gate can pass. Even a passing instrumented run would not establish
+unmodified shipping file-port acceptance, other drivers, native hangs,
+calibrated physical output or the reference-hardware resource budgets.
+
+
+## Real-driver gate blocked on the current CI host — 2026-11-18
+
+Actual MSVC compilation/linking and PowerShell parsing pass. The exact native
+CreateProcess/environment/private-desktop/Job preflight independently passes
+with the original ACL and signature checks, no queue/port acquisition and no
+product execution (run44373977655, verified artifact14460011667).
+
+A no-Rust probe of the original acquisition/ownership-control boundary then
+observes AddPrinterW error1726. Verified Application event1000 records
+`spoolsv.exe`10.0.20348.5756 faulting in `localspl.dll`10.0.20348.5866 with
+access violation0xc0000005 at0x12dfa; SCM7031/7036 record OS-initiated service
+recovery. No manual service restart, installation or default-printer change was
+requested; post-fault queue/port/default state is not certified. The
+read-only service/crash artifact14460229686 (run44377124632) was verified at
+SHA256 `9b9feedb6464acae469e9fa0143da37461f9737ec2ed89d7ef93d222f95f278c`.
+
+This blocks real Winspool/driver qualification on that host before product or
+pixel execution.1726 does not prove nonexecution of the RPC: the original
+uncertain-acquisition gate retains authority and refuses destructive cleanup.
+The bounded ownership probe reaches its three-minute cap; queue/port cleanup is
+not claimed, and the disposable host must be discarded. No malformed source
+API field was established by the targeted review, and no ACL, API parameter or
+output oracle is relaxed to obtain a pass.
+
+The existing full run44355258320 remains a separate pending observation, with
+its configured hard cap at2026-11-18 20:08:29UTC; the smaller probes do not
+simulate its product result. Exact source/event/error hashes and scope are in
+`target/verification/windows-spool-blocked-host-final/evidence-index.json`.
+The50MiB resident target still fails, and physical printing, GPU/reference
+hardware, account and signing/certificate gates remain separate.
+
+
+The last concrete API precondition was checked explicitly. The elevated native
+controller owns SeLoadDriverPrivilege but initially leaves it disabled; winprint
+and RAW are installed. A separately reviewed fixture-only guard enables only
+that already-present LUID on its own process immediately around AddPrinter and
+restores/verifies the exact previous attributes on every returning path. It
+grants no privilege or account policy, and does not alter product code or ACLs.
+
+Actual run44381333600 verifies attributes0 before,2 during with enabled-state
+verification, and exact restoration to0 before the original failure path.
+AddPrinter still returns1726 and the same spoolsv/localspl access violation is
+recorded. Artifact14463708225 was verified against SHA256
+`17ad7e41ca86c9574c756fbf9398c34fe0c07a9fb84fd5a2ce50804149507f5f`.
+Thus the observed processor/datatype and enabled-caller preconditions are met in
+that probe; the RPC fault persists. This does not attribute the crash to the
+earlier disabled state. Original uncertain acquisition/cleanup retention stays
+in force, and no product, ownership-control or pixel-output pass is claimed.
+The exercised guard is retained for future correctly contextualized fixture runs.

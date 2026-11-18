@@ -22,17 +22,13 @@ pub fn capture_file_name(template: &str) -> Result<Option<String>> {
     if template.is_empty() {
         return Ok(None);
     }
-    file_name_at(template, chrono::Utc::now(), uuid::Uuid::new_v4()).map(Some)
+    file_name_at(template, jiff::Timestamp::now(), uuid::Uuid::new_v4()).map(Some)
 }
 
-fn file_name_at(
-    template: &str,
-    time: chrono::DateTime<chrono::Utc>,
-    id: uuid::Uuid,
-) -> Result<String> {
+fn file_name_at(template: &str, time: jiff::Timestamp, id: uuid::Uuid) -> Result<String> {
     let stem = template
-        .replace("{date}", &time.format("%Y-%m-%d").to_string())
-        .replace("{time}", &time.format("%H-%M-%S-%3f").to_string());
+        .replace("{date}", &time.strftime("%Y-%m-%d").to_string())
+        .replace("{time}", &time.strftime("%H-%M-%S-%3f").to_string());
     let name = format!("{stem}-{id}.png");
     ensure!(name.len() <= 240, "The expanded filename is too long");
     Ok(name)
@@ -44,7 +40,7 @@ mod tests {
 
     #[test]
     fn templates_stay_single_component_bounded_unique_and_predictable() -> Result<()> {
-        let time = chrono::DateTime::parse_from_rfc3339("2026-11-12T18:04:05.123Z")?.to_utc();
+        let time = "2026-11-12T18:04:05.123Z".parse::<jiff::Timestamp>()?;
         assert_eq!(
             file_name_at("Shot-{date}_{time}", time, uuid::Uuid::nil())?,
             "Shot-2026-11-12_18-04-05-123-00000000-0000-0000-0000-000000000000.png"

@@ -14,6 +14,11 @@ use std::{
 
 const URL: &str = "https://example.invalid/inert-upload-result";
 const SECRET: &str = "DO_NOT_ECHO_RESULT_PAYLOAD";
+fn sharex_result_capacity() -> usize {
+    6 * (3 * 2048 + 4096 + 16 * (256 + 4096))
+        + r#"{"success":false,"status":65535,"url":"","thumbnail":"","deletion":"","error_message":"","events":[]}"#.len()
+        + 16 * r#"{"title":"","text":""},"#.len()
+}
 const STATE: [&str; 7] = [
     "HOME",
     "USERPROFILE",
@@ -38,6 +43,63 @@ fn full_sxcu_results_format_links_and_refuse_failed_or_linkless_outcomes() {
     value["success"] = true.into();
     value["url"] = serde_json::Value::Null;
     rejected(f.run(&["format", "plain"], &serde_json::to_vec(&value).unwrap()));
+    f.no_state();
+}
+
+#[test]
+fn full_sxcu_maximum_events_and_escaped_json_feed_format_and_qr() {
+    let f = Fixture::new();
+    let events = (0..16)
+        .map(|_| {
+            serde_json::json!({
+                "title":"\u{0001}".repeat(256), "text":"\u{0002}".repeat(4096)
+            })
+        })
+        .collect::<Vec<_>>();
+    let mut value = serde_json::json!({"success":true,"status":201,"url":URL,
+        "thumbnail":null,"deletion":null,"error_message":null,"events":events});
+    let encoded = serde_json::to_vec(&value).unwrap();
+    assert!(encoded.len() > 8192);
+    assert_eq!(success(f.run(&["format", "plain"], &encoded))["text"], URL);
+    let path = f.path("maximum-events.png");
+    success(f.qr(&path, &encoded));
+    let pixels = image::open(&path).unwrap().into_luma8();
+    let mut decoder = quircs::Quirc::default();
+    let codes = decoder
+        .identify(
+            pixels.width() as usize,
+            pixels.height() as usize,
+            pixels.as_raw(),
+        )
+        .map(|code| code.unwrap().decode().unwrap().payload)
+        .collect::<Vec<_>>();
+    assert_eq!(codes, vec![URL.as_bytes().to_vec()]);
+    value["events"][0]["title"] = "x".repeat(257).into();
+    rejected(f.run(&["format", "plain"], &serde_json::to_vec(&value).unwrap()));
+    value["events"][0]["title"] = "x".into();
+    value["events"][0]["text"] = "x".repeat(4097).into();
+    rejected(f.run(&["format", "plain"], &serde_json::to_vec(&value).unwrap()));
+    value["events"] =
+        serde_json::to_value(vec![serde_json::json!({"title":"x","text":"x"}); 17]).unwrap();
+    rejected(f.run(&["format", "plain"], &serde_json::to_vec(&value).unwrap()));
+    let maximum = sharex_result_capacity();
+    let long_url = format!(
+        "https://example.invalid/{}",
+        "x".repeat(2048 - "https://example.invalid/".len())
+    );
+    let maximum_value = serde_json::json!({"success":true,"status":299,
+        "url":long_url,"thumbnail":long_url,"deletion":long_url,
+        "error_message":"\u{0003}".repeat(4096),
+        "events":vec![serde_json::json!({"title":"\u{0001}".repeat(256),"text":"\u{0002}".repeat(4096)});16]});
+    let mut exact = serde_json::to_vec(&maximum_value).unwrap();
+    assert!(exact.len() <= maximum);
+    exact.resize(maximum, b' ');
+    assert_eq!(
+        success(f.run(&["format", "plain"], &exact))["text"],
+        long_url
+    );
+    exact.push(b' ');
+    rejected(f.run(&["format", "plain"], &exact));
     f.no_state();
 }
 
@@ -412,7 +474,7 @@ fn complete_object_waits_for_eof_and_oversized_open_pipe_is_rejected() {
     assert!(stopped.stdout.is_empty());
     let mut running = f.spawn(&["format".into(), "plain".into()]);
     let mut overflow = object(URL);
-    overflow.resize(8193, b' ');
+    overflow.resize(sharex_result_capacity() + 1, b' ');
     running
         .child
         .stdin

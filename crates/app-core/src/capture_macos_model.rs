@@ -957,3 +957,22 @@ mod tests {
         assert!(slot.reserve().is_err());
     }
 }
+
+#[cfg(any(target_os = "macos", test))]
+pub(crate) fn capture_application_excluded(pid: i32, owner: u32, helper: u32) -> bool {
+    u32::try_from(pid).is_ok_and(|pid| pid != 0 && (pid == owner || pid == helper))
+}
+
+#[cfg(test)]
+mod capture_exclusion_tests {
+    use super::*;
+    #[test]
+    fn capture_excludes_the_originating_app_and_helper_without_hiding_unrelated_applications() {
+        assert!(capture_application_excluded(41, 41, 73));
+        assert!(capture_application_excluded(73, 41, 73));
+        assert!(!capture_application_excluded(99, 41, 73));
+        assert!(!capture_application_excluded(-1, 41, 73));
+        assert!(!capture_application_excluded(0, 0, 73));
+        assert!(!capture_application_excluded(41, 0, 73));
+    }
+}

@@ -214,7 +214,7 @@ impl Render for CaptureWorkspace {
             self.exact_region_inputs = None;
             self.region_preset_name = None;
         }
-        #[cfg(target_os = "windows")]
+        #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
         if self.page == ControlPage::Settings
             && !self.settings_loading
             && self.hotkey_inputs.is_none()
@@ -232,7 +232,7 @@ impl Render for CaptureWorkspace {
                 })
             }));
         }
-        #[cfg(target_os = "windows")]
+        #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
         if self.page != ControlPage::Settings {
             self.hotkey_inputs = None;
         }
@@ -290,7 +290,12 @@ impl Render for CaptureWorkspace {
             .bg(colors.background)
             .text_color(colors.foreground)
             .can_drop(move |value, _, cx| (value.is::<gpui::ExternalPaths>()||value.is::<gpui::ExternalImageDrop>()||value.is::<gpui::ExternalUrlDrop>())
-                && drop_owner.upgrade().is_some_and(|owner| !owner.read(cx).image_input_busy()))
+                && drop_owner.upgrade().is_some_and(|owner| {
+                    let busy = owner.read(cx).image_input_busy();
+                    #[cfg(all(target_os = "windows", screenshots_native_drop_acceptance))]
+                    if busy { gpui_windows::native_drop_acceptance_busy_admission(); }
+                    !busy
+                }))
             .on_drop(cx.listener(|this, paths: &gpui::ExternalPaths, _, cx| {
                 this.open_dropped_image(paths.paths(), cx);
             }))
@@ -302,7 +307,7 @@ impl Render for CaptureWorkspace {
             .on_action(cx.listener(|this, _: &OpenFullscreenOverlays, _, cx| {
                 this.open_overlays(OverlayMode::Fullscreen, cx)
             }))
-            .on_action(cx.listener(|this, _: &CloseOverlay, _, cx| this.close_overlays(cx)))
+            .on_action(cx.listener(|this, _: &CloseOverlay, _, cx| this.cancel_overlays(cx)))
             .on_action(cx.listener(|this, _: &CapturePrimary, _, cx| this.capture_primary(cx)))
             .on_action(cx.listener(|this, _: &CaptureAll, _, cx| this.capture_all(cx)))
             .on_action(
@@ -1242,7 +1247,7 @@ impl Render for CaptureWorkspace {
                             "close-overlays",
                             "Close overlays",
                             false,
-                            cx.listener(|this, _, _, cx| this.close_overlays(cx)),
+                            cx.listener(|this, _, _, cx| this.cancel_overlays(cx)),
                         )),
                 )
             })
@@ -1253,25 +1258,34 @@ impl Render for CaptureWorkspace {
 }
 impl CaptureWorkspace {
     fn hotkey_settings(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
-        #[cfg(not(target_os = "windows"))]
+        #[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
         let _ = cx;
         let panel = div().flex_none().p_5().flex().flex_col().gap_3().child(
             div()
                 .font_weight(gpui::FontWeight::SEMIBOLD)
                 .child("Global shortcuts"),
         );
-        #[cfg(not(target_os = "windows"))]
+        #[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
         {
             panel.child("Global shortcut configuration is currently available on Windows only. Use your desktop's shortcut settings where supported.").into_any_element()
         }
-        #[cfg(target_os = "windows")]
+        #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
         {
             let disabled = self.settings_loading
                 || self.settings_saving
                 || self.quitting
-                || self.hotkey.is_none()
+                || {
+                    #[cfg(target_os = "windows")]
+                    {
+                        self.hotkey.is_none()
+                    }
+                    #[cfg(any(target_os = "linux", target_os = "macos"))]
+                    {
+                        self.unix_services.is_none() || self.unix_shortcuts_busy
+                    }
+                }
                 || self.output_directory.is_none();
-            panel.child(div().text_sm().child("Use Ctrl, Alt, Shift or Super (Windows key) + a letter, digit, F1–F24 or PrintScreen. Letters/digits need Ctrl, Alt or Super. Leave empty to disable."))
+            panel.child(div().text_sm().child("Use Ctrl, Alt, Shift or Super (Command on macOS) + a letter, digit, F1–F24 or PrintScreen. Letters/digits need Ctrl, Alt or Super. Leave empty to disable."))
                 .children(self.hotkey_inputs.iter().flat_map(|inputs| inputs.iter().enumerate()).map(|(index, input)| {
                     div().flex().flex_col().gap_1()
                         .child(app_core::CaptureHotkeys::LABELS[index])

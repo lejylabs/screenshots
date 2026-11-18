@@ -2,18 +2,21 @@ use crate::TestSupportExt as _;
 use std::rc::Rc;
 
 use crate::{h_flex, styled::StyledExt as _, v_flex};
-use chrono::{Datelike, Local, NaiveDate, Weekday};
 use gpui::{
     AnyElement, App, Context, ElementId, Empty, Entity, EventEmitter, FocusHandle,
     InteractiveElement, IntoElement, ParentElement, Render, RenderOnce, SharedString,
     StatefulInteractiveElement, StyleRefinement, Styled, Window, div, px,
 };
+use jiff::{
+    ToSpan,
+    civil::{Date as CivilDate, Weekday},
+};
 
 /// A controlled calendar value.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Date {
-    Single(Option<NaiveDate>),
-    Range(Option<NaiveDate>, Option<NaiveDate>),
+    Single(Option<CivilDate>),
+    Range(Option<CivilDate>, Option<CivilDate>),
 }
 
 impl std::fmt::Display for Date {
@@ -28,13 +31,13 @@ impl std::fmt::Display for Date {
     }
 }
 
-impl From<NaiveDate> for Date {
-    fn from(value: NaiveDate) -> Self {
+impl From<CivilDate> for Date {
+    fn from(value: CivilDate) -> Self {
         Self::Single(Some(value))
     }
 }
-impl From<(NaiveDate, NaiveDate)> for Date {
-    fn from((start, end): (NaiveDate, NaiveDate)) -> Self {
+impl From<(CivilDate, CivilDate)> for Date {
+    fn from((start, end): (CivilDate, CivilDate)) -> Self {
         Self::Range(Some(start), Some(end))
     }
 }
@@ -46,13 +49,13 @@ impl Date {
     pub fn is_complete(&self) -> bool {
         matches!(self, Self::Single(Some(_)) | Self::Range(Some(_), Some(_)))
     }
-    pub fn start(&self) -> Option<NaiveDate> {
+    pub fn start(&self) -> Option<CivilDate> {
         match self {
             Self::Single(Some(v)) | Self::Range(Some(v), _) => Some(*v),
             _ => None,
         }
     }
-    pub fn end(&self) -> Option<NaiveDate> {
+    pub fn end(&self) -> Option<CivilDate> {
         match self {
             Self::Range(_, Some(v)) => Some(*v),
             _ => None,
@@ -60,14 +63,14 @@ impl Date {
     }
     pub fn format(&self, format: &str) -> Option<SharedString> {
         match self {
-            Self::Single(Some(v)) => Some(v.format(format).to_string().into()),
+            Self::Single(Some(v)) => Some(v.strftime(format).to_string().into()),
             Self::Range(Some(a), Some(b)) => {
-                Some(format!("{} - {}", a.format(format), b.format(format)).into())
+                Some(format!("{} - {}", a.strftime(format), b.strftime(format)).into())
             }
             _ => None,
         }
     }
-    pub fn is_active(&self, value: &NaiveDate) -> bool {
+    pub fn is_active(&self, value: &CivilDate) -> bool {
         match self {
             Self::Single(v) => *v == Some(*value),
             Self::Range(a, b) => *a == Some(*value) || *b == Some(*value),
@@ -76,43 +79,43 @@ impl Date {
     pub fn is_single(&self) -> bool {
         matches!(self, Self::Single(_))
     }
-    pub fn is_in_range(&self, value: &NaiveDate) -> bool {
+    pub fn is_in_range(&self, value: &CivilDate) -> bool {
         matches!(self, Self::Range(Some(a), Some(b)) if value >= a && value <= b)
     }
 }
 
 pub struct IntervalMatcher {
-    before: Option<NaiveDate>,
-    after: Option<NaiveDate>,
+    before: Option<CivilDate>,
+    after: Option<CivilDate>,
 }
 pub struct RangeMatcher {
-    from: Option<NaiveDate>,
-    to: Option<NaiveDate>,
+    from: Option<CivilDate>,
+    to: Option<CivilDate>,
 }
 pub enum Matcher {
     DayOfWeek(Vec<u32>),
     Interval(IntervalMatcher),
     Range(RangeMatcher),
-    Custom(Box<dyn Fn(&NaiveDate) -> bool + Send + Sync>),
+    Custom(Box<dyn Fn(&CivilDate) -> bool + Send + Sync>),
 }
 impl From<Vec<u32>> for Matcher {
     fn from(v: Vec<u32>) -> Self {
         Self::DayOfWeek(v)
     }
 }
-impl<F: Fn(&NaiveDate) -> bool + Send + Sync + 'static> From<F> for Matcher {
+impl<F: Fn(&CivilDate) -> bool + Send + Sync + 'static> From<F> for Matcher {
     fn from(v: F) -> Self {
         Self::Custom(Box::new(v))
     }
 }
 impl Matcher {
-    pub fn interval(before: Option<NaiveDate>, after: Option<NaiveDate>) -> Self {
+    pub fn interval(before: Option<CivilDate>, after: Option<CivilDate>) -> Self {
         Self::Interval(IntervalMatcher { before, after })
     }
-    pub fn range(from: Option<NaiveDate>, to: Option<NaiveDate>) -> Self {
+    pub fn range(from: Option<CivilDate>, to: Option<CivilDate>) -> Self {
         Self::Range(RangeMatcher { from, to })
     }
-    pub fn custom<F: Fn(&NaiveDate) -> bool + Send + Sync + 'static>(f: F) -> Self {
+    pub fn custom<F: Fn(&CivilDate) -> bool + Send + Sync + 'static>(f: F) -> Self {
         Self::Custom(Box::new(f))
     }
     pub fn is_match(&self, date: &Date) -> bool {
@@ -122,9 +125,11 @@ impl Matcher {
             _ => false,
         }
     }
-    pub fn matched(&self, date: &NaiveDate) -> bool {
+    pub fn matched(&self, date: &CivilDate) -> bool {
         match self {
-            Self::DayOfWeek(days) => days.contains(&date.weekday().num_days_from_sunday()),
+            Self::DayOfWeek(days) => {
+                days.contains(&(date.weekday().to_sunday_zero_offset() as u32))
+            }
             Self::Interval(v) => {
                 v.before.is_some_and(|x| date < &x) || v.after.is_some_and(|x| date > &x)
             }
@@ -174,19 +179,19 @@ pub struct CalendarState {
     current_month: u8,
     years: Vec<Vec<i32>>,
     year_page: i32,
-    today: NaiveDate,
+    today: CivilDate,
     number_of_months: usize,
     disabled_matcher: Option<Rc<Matcher>>,
 }
 
 impl CalendarState {
     pub fn new(_: &mut Window, cx: &mut Context<Self>) -> Self {
-        let today = Local::now().date_naive();
+        let today = gpui::local_datetime(jiff::Timestamp::now()).date();
         Self {
             focus_handle: cx.focus_handle(),
             view: CalendarView::Day,
             date: Date::Single(None),
-            current_year: today.year(),
+            current_year: i32::from(today.year()),
             current_month: today.month() as u8,
             years: vec![],
             year_page: 0,
@@ -194,7 +199,7 @@ impl CalendarState {
             number_of_months: 1,
             disabled_matcher: None,
         }
-        .year_range((today.year() - 50, today.year() + 50))
+        .year_range((i32::from(today.year()) - 50, i32::from(today.year()) + 50))
     }
     pub fn disabled_matcher(mut self, matcher: impl Into<Matcher>) -> Self {
         self.disabled_matcher = Some(Rc::new(matcher.into()));
@@ -230,11 +235,11 @@ impl CalendarState {
         self.date = date;
         if let Some(v) = date.start() {
             self.current_month = v.month() as u8;
-            self.current_year = v.year();
+            self.current_year = i32::from(v.year());
         }
         true
     }
-    pub fn select_date(&mut self, value: NaiveDate) -> bool {
+    pub fn select_date(&mut self, value: CivilDate) -> bool {
         if self
             .disabled_matcher
             .as_ref()
@@ -258,7 +263,7 @@ impl CalendarState {
     /// Activates a day item and emits [`CalendarEvent::Selected`] once the
     /// controlled value is complete. This is the single pointer/keyboard
     /// activation path used by the calendar root.
-    pub fn activate_date(&mut self, value: NaiveDate, cx: &mut Context<Self>) -> bool {
+    pub fn activate_date(&mut self, value: CivilDate, cx: &mut Context<Self>) -> bool {
         let complete = self.select_date(value);
         if complete {
             cx.emit(CalendarEvent::Selected(self.date()));
@@ -303,18 +308,18 @@ impl CalendarState {
             n.rem_euclid(12) as u32 + 1,
         )
     }
-    pub fn days(&self) -> Vec<Vec<NaiveDate>> {
+    pub fn days(&self) -> Vec<Vec<CivilDate>> {
         self.month_days().into_iter().flatten().collect()
     }
     /// Calendar weeks grouped by visible month. This preserves six-week
     /// months and is the preferred rendering API.
-    pub fn month_days(&self) -> Vec<Vec<Vec<NaiveDate>>> {
+    pub fn month_days(&self) -> Vec<Vec<Vec<CivilDate>>> {
         (0..self.number_of_months)
             .map(|n| {
                 days_in_month(
                     self.current_year,
                     self.current_month as u32 + n as u32,
-                    Weekday::Sun,
+                    Weekday::Sunday,
                 )
             })
             .collect()
@@ -369,7 +374,7 @@ impl CalendarState {
     pub fn current_month(&self) -> u8 {
         self.current_month
     }
-    pub fn today(&self) -> NaiveDate {
+    pub fn today(&self) -> CivilDate {
         self.today
     }
     pub fn years_on_page(&self) -> &[i32] {
@@ -574,7 +579,7 @@ impl Calendar {
             id: id.into(),
             state: state.clone(),
             number_of_months: 1,
-            first_day_of_week: Weekday::Sun,
+            first_day_of_week: Weekday::Sunday,
             style: StyleRefinement::default(),
             item: Rc::new(|item, _, _, _| item.into_any_element()),
             label: Rc::new(|kind, value| match kind {
@@ -747,7 +752,7 @@ impl RenderOnce for Calendar {
                     header_row = header_row.child(self.render_item(
                         format!("weekday-{offset}-{weekday}"),
                         st,
-                        (weekday + self.first_day_of_week.num_days_from_sunday() as i32) % 7,
+                        (weekday + self.first_day_of_week.to_sunday_zero_offset() as i32) % 7,
                         window,
                         cx,
                     ));
@@ -765,7 +770,7 @@ impl RenderOnce for Calendar {
                             CalendarItemState::new(CalendarItemKind::Day)
                                 .active(s.date().is_active(&date))
                                 .in_range(s.date().is_in_range(&date))
-                                .muted(date.month() != m || disabled)
+                                .muted(date.month() as u32 != m || disabled)
                                 .disabled(disabled)
                                 .today(date == s.today())
                         };
@@ -828,22 +833,22 @@ impl RenderOnce for Calendar {
     }
 }
 
-fn days_in_month(year: i32, month: u32, first_day: Weekday) -> Vec<Vec<NaiveDate>> {
+fn days_in_month(year: i32, month: u32, first_day: Weekday) -> Vec<Vec<CivilDate>> {
     let total = year as i64 * 12 + month as i64 - 1;
     let year = total.div_euclid(12) as i32;
     let month = total.rem_euclid(12) as u32 + 1;
-    let first = NaiveDate::from_ymd_opt(year, month, 1).unwrap();
+    let first = CivilDate::new(year.try_into().unwrap(), month.try_into().unwrap(), 1).unwrap();
     let next = if month == 12 {
-        NaiveDate::from_ymd_opt(year + 1, 1, 1).unwrap()
+        CivilDate::new((year + 1).try_into().unwrap(), 1, 1).unwrap()
     } else {
-        NaiveDate::from_ymd_opt(year, month + 1, 1).unwrap()
+        CivilDate::new(year.try_into().unwrap(), (month + 1).try_into().unwrap(), 1).unwrap()
     };
     let offset =
-        (first.weekday().num_days_from_sunday() + 7 - first_day.num_days_from_sunday()) % 7;
-    let start = first - chrono::Duration::days(offset as i64);
-    let count = ((next - start).num_days() as usize).div_ceil(7) * 7;
+        (first.weekday().to_sunday_zero_offset() + 7 - first_day.to_sunday_zero_offset()) % 7;
+    let start = first - (offset as i64).days();
+    let count = (start.until(next).unwrap().get_days() as usize).div_ceil(7) * 7;
     (0..count)
-        .map(|n| start + chrono::Duration::days(n as i64))
+        .map(|n| start + (n as i64).days())
         .collect::<Vec<_>>()
         .chunks(7)
         .map(<[_]>::to_vec)
@@ -886,9 +891,7 @@ mod tests {
         for mode in [CalendarView::Day, CalendarView::Month, CalendarView::Year] {
             cx.update(|window, cx| {
                 view.read(cx).calendar.clone().update(cx, |state, cx| {
-                    state.apply_date(Date::Single(Some(
-                        NaiveDate::from_ymd_opt(2026, 9, 7).unwrap(),
-                    )));
+                    state.apply_date(Date::Single(Some(CivilDate::new(2026, 9, 7).unwrap())));
                     state.set_view(mode);
                     cx.notify();
                 });
@@ -943,8 +946,8 @@ mod tests {
     #[gpui::test]
     fn range_selection_restarts_and_completes(cx: &mut gpui::TestAppContext) {
         let s = state(cx, Date::Range(None, None));
-        let a = NaiveDate::from_ymd_opt(2025, 2, 10).unwrap();
-        let b = NaiveDate::from_ymd_opt(2025, 2, 12).unwrap();
+        let a = CivilDate::new(2025, 2, 10).unwrap();
+        let b = CivilDate::new(2025, 2, 12).unwrap();
         s.update(cx, |s, _| {
             assert!(!s.select_date(a));
             assert!(s.select_date(b));
@@ -961,24 +964,19 @@ mod tests {
         let s = state(cx, Date::Single(None));
         s.update(cx, |s, _| {
             s.disabled_matcher = Some(Rc::new(Matcher::range(
-                Some(NaiveDate::from_ymd_opt(2025, 1, 1).unwrap()),
-                Some(NaiveDate::from_ymd_opt(2025, 1, 31).unwrap()),
+                Some(CivilDate::new(2025, 1, 1).unwrap()),
+                Some(CivilDate::new(2025, 1, 31).unwrap()),
             )))
         });
         s.update(cx, |s, _| {
-            assert!(!s.select_date(NaiveDate::from_ymd_opt(2025, 1, 2).unwrap()))
+            assert!(!s.select_date(CivilDate::new(2025, 1, 2).unwrap()))
         });
     }
     #[gpui::test]
     fn month_navigation_crosses_year(cx: &mut gpui::TestAppContext) {
-        let s = state(
-            cx,
-            Date::Single(Some(NaiveDate::from_ymd_opt(2025, 1, 1).unwrap())),
-        );
+        let s = state(cx, Date::Single(Some(CivilDate::new(2025, 1, 1).unwrap())));
         s.update(cx, |s, _| {
-            s.apply_date(Date::Single(Some(
-                NaiveDate::from_ymd_opt(2025, 1, 1).unwrap(),
-            )));
+            s.apply_date(Date::Single(Some(CivilDate::new(2025, 1, 1).unwrap())));
             s.prev_month();
         });
         assert_eq!(
@@ -994,14 +992,9 @@ mod tests {
 
     #[gpui::test]
     fn six_week_month_is_not_truncated(cx: &mut gpui::TestAppContext) {
-        let s = state(
-            cx,
-            Date::Single(Some(NaiveDate::from_ymd_opt(2025, 8, 1).unwrap())),
-        );
+        let s = state(cx, Date::Single(Some(CivilDate::new(2025, 8, 1).unwrap())));
         s.update(cx, |s, _| {
-            s.apply_date(Date::Single(Some(
-                NaiveDate::from_ymd_opt(2025, 8, 1).unwrap(),
-            )));
+            s.apply_date(Date::Single(Some(CivilDate::new(2025, 8, 1).unwrap())));
             assert_eq!(s.month_days().len(), 1);
             assert_eq!(s.month_days()[0].len(), 6);
             assert_eq!(s.days().len(), 6);
@@ -1050,8 +1043,8 @@ mod tests {
         let (harness, _) = cx.add_window_view(EventHarness::new);
         let s = harness.read_with(cx, |h, _| h.calendar.clone());
         s.update(cx, |s, _| s.date = Date::Range(None, None));
-        let start = NaiveDate::from_ymd_opt(2025, 4, 4).unwrap();
-        let end = NaiveDate::from_ymd_opt(2025, 4, 8).unwrap();
+        let start = CivilDate::new(2025, 4, 4).unwrap();
+        let end = CivilDate::new(2025, 4, 8).unwrap();
         s.update(cx, |s, cx| {
             assert!(!s.activate_date(start, cx));
             assert!(s.activate_date(end, cx));

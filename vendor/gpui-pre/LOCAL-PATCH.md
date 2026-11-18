@@ -24,3 +24,27 @@ exact IBM Plex Sans and Lilex files and original OFL texts from pinned Zed revis
 against that upstream revision. They are not loaded into production. The three
 style assertion functions use standard `#[test]` instead of the unavailable
 workspace performance attribute, preserving their complete assertions.
+
+## Chrono maintenance migration (2026-11-17)
+
+Replace the unmaintained Chrono dependency with Jiff 0.2.43, default features
+disabled (`std` plus browser `js` clock support). Calendar/date/time public Rust
+types use Jiff civil types, and scheduler clocks use Jiff Timestamp. UI layout,
+controls, events and the existing month-grid algorithms stay intact. GPUI's
+on-demand local conversion uses native OS timezone/DST rules and a fixed-offset
+Jiff value; it owns no timezone database/cache, refresh timer, worker or runtime.
+The existing Apache-2.0 source/license and earlier local patches remain intact.
+
+Activation, optimized regression tests, five native-target metadata checks and
+default advisory-policy verification belong to the root integration gate; this
+held source packet alone establishes none of those passing results.
+
+## Test-only minimization model (2026-11-17)
+
+TestPlatform now models minimize as Hidden and activation as Visible. A single
+queued foreground callback observes final visibility outside the caller's
+entity/window borrow; active-window clearing only affects that exact window.
+This replaces the former unimplemented test operation and lets the real control
+thumbnail-atlas release/reopen regression execute. Production platforms and
+renderers are unchanged; the model is confined to test/test-support code and
+adds one flag plus at most one coalesced test callback, with no idle timer.

@@ -48,6 +48,10 @@ x11rb::atom_manager! {
         XdndFinished,
         XdndTypeList,
         XdndActionCopy,
+        XdndActionList,
+        XdndProxy,
+        TARGETS,
+        TIMESTAMP,
         TextUriList: b"text/uri-list",
         UTF8_STRING,
         TEXT,
@@ -1049,6 +1053,14 @@ impl X11Window {
 }
 
 impl X11WindowStatePtr {
+    pub(super) fn native_drop_position(&self, position: [i32; 2]) -> Point<Pixels> {
+        let scale = self.state.borrow().scale_factor;
+        gpui::point(
+            px(position[0] as f32 / scale),
+            px(position[1] as f32 / scale),
+        )
+    }
+
     pub fn should_close(&self) -> bool {
         let mut cb = self.callbacks.borrow_mut();
         if let Some(mut should_close) = cb.should_close.take() {
@@ -1385,6 +1397,16 @@ impl X11WindowStatePtr {
 }
 
 impl PlatformWindow for X11Window {
+    fn can_start_external_drag(&self) -> bool {
+        true
+    }
+    fn start_external_drag(&self, payload: &gpui::ExternalDragPayload) -> bool {
+        let client = self.0.state.borrow().client.clone();
+        client
+            .get_client()
+            .is_some_and(|client| client.start_external_drag(self.0.x_window, payload))
+    }
+
     fn bounds(&self) -> Bounds<Pixels> {
         self.0.state.borrow().bounds
     }

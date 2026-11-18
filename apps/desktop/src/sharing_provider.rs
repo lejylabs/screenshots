@@ -665,11 +665,21 @@ impl PreparedUpload {
             identity.verify_file(&file)?;
         }
         check()?;
-        let secret = checked_credentials(
-            &profile.target(),
-            &check,
-            app_core::read_provider_credentials,
-        )?;
+        let secret = checked_credentials(&profile.target(), &check, |target| {
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
+            {
+                app_core::execute_native_credential(
+                    app_core::NativeCredentialCall::Read {
+                        target: target.into(),
+                    },
+                    &|| check().map_err(|_| app_core::CaptureError::NativeCanceled),
+                )
+            }
+            #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+            {
+                app_core::read_provider_credentials(target)
+            }
+        })?;
         let bytes = secret
             .strip_prefix(PREFIX)
             .context("Stored provider credential has an unsupported format")?;

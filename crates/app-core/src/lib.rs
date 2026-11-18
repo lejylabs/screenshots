@@ -48,6 +48,8 @@ mod capture_macos_pixels;
 #[cfg(target_os = "macos")]
 mod capture_macos_sck;
 #[cfg(target_os = "macos")]
+pub use capture_macos_sck::hide_macos_capture_view;
+#[cfg(target_os = "macos")]
 mod capture_macos_video;
 #[cfg(any(target_os = "windows", test))]
 mod display_pixels;
@@ -67,8 +69,14 @@ pub use capture_macos_model::{
     MacLogicalRect, MacMediaTimestamp, MacScrollRequest, MacScrollStop, MacScrollSummary,
     MacVideoRequest, MacVideoSummary, MacWindowProof,
 };
+#[cfg(target_os = "linux")]
+mod capture_visibility;
 mod image_url;
 mod native_capture_job;
+#[cfg(target_os = "linux")]
+pub use capture_visibility::hide_capture_window;
+mod native_drop;
+pub use native_drop::{NativeDropMime, NativeDropReply, NativeDropSource, acquire_native_drop};
 mod portal_capture;
 pub use image_url::{ImageUrlSource, MAX_IMAGE_URL_BYTES};
 pub use native_capture_job::{
@@ -76,7 +84,11 @@ pub use native_capture_job::{
     NativeCaptureExecutor, NativeCaptureReply, NativeSourceInventory,
     install_native_capture_executor, validate_native_frames,
 };
-pub use portal_capture::{PortalCaptureCursor, PortalCaptureSource, capture_portal_with_cancel};
+pub use portal_capture::{
+    PortalCaptureCursor, PortalCaptureSource, PortalScrollRequest, PortalScrollSummary,
+    PortalStreamSource, PortalVideoRequest, PortalVideoSummary, capture_portal_scroll_with_cancel,
+    capture_portal_with_cancel,
+};
 mod capture_options;
 mod image_cancel;
 mod raster_ops;
@@ -104,13 +116,25 @@ pub use file_identity::FileIdentity;
 mod filenames;
 pub use arrows::ArrowAnnotation;
 pub use filenames::{capture_file_name, validate_capture_name_template};
+mod capture_color;
+mod capture_rgb;
+pub use capture_rgb::{
+    NativeRgbColor, NativeRgbPacking, NativeRgbPrimaries, NativeRgbSource, NativeRgbTransfer,
+    decode_native_rgb_with_cancel,
+};
+#[cfg(any(target_os = "windows", test))]
+mod capture_half_tiles;
+#[cfg(any(target_os = "windows", test))]
+mod capture_windows_admission;
 mod clipboard;
 mod clipboard_input;
+#[cfg(target_os = "windows")]
+pub use clipboard_input::{NativeAcquisitionBudget, native_acquisition_budget};
 mod managed_color;
 pub use clipboard_input::{
-    ClipboardFileReference, ClipboardInspectKind, ClipboardPathEncoding, ClipboardSnapshot,
-    NativeClipboardBackend, capture_clipboard_image_with_cancel, inspect_clipboard_with_cancel,
-    read_clipboard_image,
+    CLIPBOARD_FILE_BYTES, ClipboardFileReference, ClipboardInspectKind, ClipboardPathEncoding,
+    ClipboardSnapshot, NativeClipboardBackend, capture_clipboard_image_with_cancel,
+    inspect_clipboard_with_cancel, read_clipboard_image,
 };
 #[cfg(target_os = "windows")]
 mod clipboard_windows;
@@ -234,6 +258,7 @@ pub use upload::{
     upload_saved_image_with_progress,
 };
 
+pub use clipboard::validate_file_clipboard_path;
 pub use clipboard::{
     ImageClipboard, decode_editor_image_bytes, decode_editor_image_bytes_with_backing_and_cancel,
     decode_editor_image_bytes_with_cancel, load_editor_image, load_editor_image_with_cancel,
@@ -243,20 +268,33 @@ pub use clipboard::{
     load_editor_image_with_identity_limit_and_dimensions_with_cancel, load_editor_image_with_limit,
     load_png_thumbnail, load_saved_png,
 };
+#[cfg(unix)]
+pub use clipboard::{install_file_clipboard_spawner, prepare_file_clipboard_uri};
 
-#[cfg(target_os = "windows")]
+mod capture_command;
+#[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
 mod hotkey;
-#[cfg(target_os = "windows")]
-pub use hotkey::{CaptureCommand, CaptureHotkey};
+mod tray_command;
+pub use capture_command::CaptureCommand;
+#[cfg(any(target_os = "windows", target_os = "macos"))]
+pub use hotkey::CaptureHotkey;
+pub use tray_command::TrayCommand;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+mod unix_desktop_services;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub use unix_desktop_services::{
+    UnixDesktopAction, UnixDesktopEvent, UnixDesktopServices, UnixShortcutOperation,
+    UnixShortcutReport,
+};
 
 #[cfg(target_os = "windows")]
 mod native_appearance;
 #[cfg(target_os = "windows")]
 pub use native_appearance::apply_native_menus;
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "macos"))]
 mod tray;
-#[cfg(target_os = "windows")]
-pub use tray::{SpikeTray, TrayCommand};
+#[cfg(any(target_os = "windows", target_os = "macos"))]
+pub use tray::SpikeTray;
 
 #[cfg(target_os = "windows")]
 mod desktop_window;
@@ -277,3 +315,35 @@ pub use capture::{
 pub fn version() -> &'static str {
     env!("CARGO_PKG_VERSION")
 }
+
+#[cfg(target_os = "linux")]
+#[doc(hidden)]
+pub use unix_desktop_services::{
+    X11ShortcutRegistrar, shortcut_portal_owner, shortcut_portal_request,
+};
+
+#[cfg(target_os = "linux")]
+#[doc(hidden)]
+pub use unix_desktop_services::{
+    LinuxDesktopProcess, LinuxDesktopProcessOwner, LinuxTaskPortal, install_linux_desktop_spawner,
+    serve_linux_desktop_child,
+};
+
+#[cfg(all(target_os = "macos", feature = "native-file-clipboard-fixture"))]
+#[doc(hidden)]
+pub use clipboard_input::inspect_owned_macos_file_pasteboard;
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+mod native_credentials;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[doc(hidden)]
+pub use native_credentials::{
+    NativeCredentialCall, NativeCredentialExecutor, execute as execute_native_credential,
+    install_native_credential_executor,
+};
+
+#[doc(hidden)]
+pub use clipboard::{
+    FileClipboardOwner, MAX_CLIPBOARD_TEXT_BYTES, NativeClipboardOutput,
+    install_native_clipboard_spawner,
+};

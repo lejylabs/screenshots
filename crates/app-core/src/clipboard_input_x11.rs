@@ -23,6 +23,7 @@ struct Session {
     connection: RustConnection,
     window: Window,
     selection: Atom,
+    timestamp: u32,
     property: Atom,
     targets: Atom,
     incr: Atom,
@@ -38,13 +39,25 @@ struct Session {
 }
 impl Session {
     fn new(backend: NativeClipboardBackend, deadline: Instant) -> Result<Self> {
+        Self::selection(backend, deadline, "CLIPBOARD", None, CURRENT_TIME, None)
+    }
+    fn selection(
+        backend: NativeClipboardBackend,
+        deadline: Instant,
+        selection_name: &str,
+        expected_owner: Option<Window>,
+        timestamp: u32,
+        display: Option<&str>,
+    ) -> Result<Self> {
         if backend == NativeClipboardBackend::Automatic && crate::linux_wayland_session() {
             bail!(
                 "Wayland clipboard requires focused application Paste; no ambient clipboard fallback was attempted"
             );
         }
-        let display = std::env::var_os("DISPLAY")
-            .ok_or_else(|| anyhow::anyhow!("X11 clipboard is unavailable"))?;
+        let display = display
+            .map(std::ffi::OsString::from)
+            .or_else(|| std::env::var_os("DISPLAY"))
+            .ok_or_else(|| anyhow::anyhow!("X11 selection is unavailable"))?;
         let bytes = display.as_bytes();
         ensure!(
             bytes.len() <= 64
@@ -77,6 +90,7 @@ impl Session {
             connection,
             window,
             selection: 0,
+            timestamp,
             property: 0,
             targets: 0,
             incr: 0,
@@ -90,7 +104,7 @@ impl Session {
             events: 0,
             pending: VecDeque::new(),
         };
-        session.selection = session.atom("CLIPBOARD")?;
+        session.selection = session.atom(selection_name)?;
         session.property = session.atom("_SCREENSHOTS_CLIP_INPUT")?;
         session.targets = session.atom("TARGETS")?;
         session.incr = session.atom("INCR")?;
@@ -121,6 +135,10 @@ impl Session {
         session.baseline_timestamp = Some((session.selection_timestamp, session.event_timestamp));
         // A second ordered round trip closes bootstrap races before any TARGETS read.
         session.check(&|| Ok(()))?;
+        ensure!(
+            expected_owner.is_none_or(|owner| owner == session.owner),
+            "Native drop source no longer owns its selection"
+        );
         Ok(session)
     }
     fn atom(&self, name: &str) -> Result<Atom> {
@@ -248,7 +266,7 @@ impl Session {
             self.selection,
             target,
             self.property,
-            CURRENT_TIME,
+            self.timestamp,
         )?;
         self.connection.flush()?;
         loop {
@@ -389,6 +407,57 @@ impl Session {
         }
     }
 }
+#[derive(Debug, PartialEq, Eq)]
+struct DropTargetWitness {
+    root: u32,
+    offset: [i16; 2],
+    geometry: [i32; 6],
+}
+impl Session {
+    fn drop_target_witness(&self, target: Window, parent: u32) -> Result<DropTargetWitness> {
+        let pid_atom = self.atom("_NET_WM_PID")?;
+        let pid = self
+            .connection
+            .get_property(false, target, pid_atom, AtomEnum::CARDINAL, 0, 1)?
+            .reply()?;
+        ensure!(
+            pid.type_ == u32::from(AtomEnum::CARDINAL)
+                && pid.format == 32
+                && pid.bytes_after == 0
+                && pid.value32().is_some_and(|mut values| {
+                    values.next() == Some(parent) && values.next().is_none()
+                }),
+            "Native drop target is not owned by this application"
+        );
+        let geometry = self.connection.get_geometry(target)?.reply()?;
+        let attributes = self.connection.get_window_attributes(target)?.reply()?;
+        ensure!(
+            attributes.map_state == x11rb::protocol::xproto::MapState::VIEWABLE,
+            "Native drop target is not viewable"
+        );
+        let offset = self
+            .connection
+            .translate_coordinates(geometry.root, target, 0, 0)?
+            .reply()?;
+        ensure!(
+            offset.same_screen,
+            "Native drop target belongs to another screen"
+        );
+        Ok(DropTargetWitness {
+            root: geometry.root,
+            offset: [offset.dst_x, offset.dst_y],
+            geometry: [
+                i32::from(geometry.x),
+                i32::from(geometry.y),
+                i32::from(geometry.width),
+                i32::from(geometry.height),
+                i32::from(geometry.border_width),
+                i32::from(geometry.depth),
+            ],
+        })
+    }
+}
+
 impl Drop for Session {
     fn drop(&mut self) {
         let _ = self.connection.destroy_window(self.window);
@@ -462,4 +531,110 @@ pub(super) fn image(
         check().is_err() || Instant::now() >= deadline
     })
     .context("Clipboard image is unsupported or exceeds its image bound")
+}
+
+/// The worker owns selection observation and every foreign/provider round trip.
+pub(super) fn native_drop(
+    source: &crate::NativeDropSource,
+    image: bool,
+    originating_pid: u32,
+    deadline: Instant,
+    check: &crate::NativeCaptureCheck<'_>,
+) -> Result<crate::NativeDropReply> {
+    use crate::{NativeDropMime as Mime, NativeDropReply, NativeDropSource};
+    let NativeDropSource::X11 {
+        display,
+        source,
+        target,
+        types,
+        extended,
+        timestamp,
+    } = source
+    else {
+        bail!("Native drop descriptor does not name X11");
+    };
+    let mut session = Session::selection(
+        NativeClipboardBackend::FocusedX11,
+        deadline,
+        "XdndSelection",
+        Some(*source),
+        *timestamp,
+        Some(display),
+    )?;
+    let before = session.drop_target_witness(*target, originating_pid)?;
+    let offered = if *extended {
+        let atom = session.atom("XdndTypeList")?;
+        let list = session
+            .connection
+            .get_property(
+                false,
+                *source,
+                atom,
+                AtomEnum::ATOM,
+                0,
+                CLIPBOARD_FORMATS as u32,
+            )?
+            .reply()?;
+        ensure!(
+            list.type_ == u32::from(AtomEnum::ATOM)
+                && list.format == 32
+                && list.bytes_after == 0
+                && list.value_len as usize <= CLIPBOARD_FORMATS,
+            "Native drop type list exceeds its bound"
+        );
+        list.value32()
+            .ok_or_else(|| anyhow::anyhow!("Invalid native drop type list"))?
+            .collect::<Vec<_>>()
+    } else {
+        types
+            .iter()
+            .copied()
+            .filter(|value| *value != NONE)
+            .collect()
+    };
+    session.check(check)?;
+    let mut chosen = None;
+    for (name, mime) in [
+        ("image/png", Mime::Png),
+        ("image/jpeg", Mime::Jpeg),
+        ("image/webp", Mime::Webp),
+        ("image/bmp", Mime::Bmp),
+        ("image/tiff", Mime::Tiff),
+        ("text/uri-list", Mime::UriList),
+        ("text/plain;charset=utf-8", Mime::UriList),
+        ("UTF8_STRING", Mime::UriList),
+        ("text/plain", Mime::UriList),
+    ] {
+        let atom = session.atom(name)?;
+        if offered.contains(&atom) {
+            chosen = Some((atom, mime));
+            break;
+        }
+    }
+    let (atom, mime) = chosen.ok_or_else(|| anyhow::anyhow!("Unsupported native drop offer"))?;
+    ensure!(
+        !image || mime != Mime::UriList,
+        "Native drop offer changed its format"
+    );
+    let bytes = if image || mime == Mime::UriList {
+        session.bytes(atom, mime.maximum(), check)?
+    } else {
+        Vec::new()
+    };
+    session.check(check)?;
+    let after = session.drop_target_witness(*target, originating_pid)?;
+    ensure!(
+        before == after,
+        "Native drop target geometry or visibility changed during transfer"
+    );
+    session.check(check)?;
+    let reply = NativeDropReply {
+        mime,
+        bytes,
+        root_offset: Some(after.offset),
+    };
+    // Release every native object/connection inside the parent's absolute watchdog.
+    drop(session);
+    check()?;
+    Ok(reply)
 }

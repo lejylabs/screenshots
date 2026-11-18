@@ -168,7 +168,12 @@ impl UnixSingleInstance {
             .name("launch-events".into())
             .stack_size(256 * 1024)
             .spawn(move || {
-                if listen(socket, read, sender).is_err() {
+                let result = listen(&socket, &read, &sender);
+                // Channel EOF must mean the native listener is already retired.
+                drop(socket);
+                drop(read);
+                drop(sender);
+                if result.is_err() {
                     tracing::error!("Launch event listener failed");
                 }
             })?;
@@ -584,7 +589,7 @@ fn wait(fd: RawFd, stop: RawFd, events: i16, deadline: Option<Instant>) -> std::
     }
 }
 
-fn listen(socket: UnixListener, stop: UnixStream, sender: mpsc::Sender<()>) -> Result<()> {
+fn listen(socket: &UnixListener, stop: &UnixStream, sender: &mpsc::Sender<()>) -> Result<()> {
     while wait(socket.as_raw_fd(), stop.as_raw_fd(), libc::POLLIN, None)? {
         let (mut client, _) = match socket.accept() {
             Ok(client) => client,

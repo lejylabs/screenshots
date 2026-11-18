@@ -1,5 +1,8 @@
-//! Packed RGB8 admission before constructing any slice or output raster.
-use app_core::{CaptureError, validate_image_size};
+//! Packed native RGB admission before constructing any slice or output raster.
+use app_core::{
+    CaptureError, NativeRgbColor, NativeRgbPacking, NativeRgbPrimaries, NativeRgbSource,
+    NativeRgbTransfer, validate_image_size,
+};
 use pipewire::spa;
 use spa::param::video::{VideoFormat, VideoInfoRaw};
 
@@ -11,9 +14,14 @@ pub(super) struct Format {
     pub bgr: bool,
     pub alpha: bool,
     pub premultiplied: bool,
+    pub packing: NativeRgbPacking,
+    pub color: Option<NativeRgbColor>,
+    pub metadata: [u32; 4],
 }
 pub(super) fn unsupported() -> CaptureError {
-    CaptureError::Unsupported("Portal frame needs packed, progressive SDR RGB8 CPU memory")
+    CaptureError::Unsupported(
+        "Portal frame needs admitted packed RGB CPU memory and explicit supported color metadata",
+    )
 }
 impl Format {
     pub fn parse(info: VideoInfoRaw) -> Result<Self, CaptureError> {
@@ -25,39 +33,105 @@ impl Format {
             || info.views() > 1
             || info.multiview_mode() != 0
             || info.multiview_flags() != 0
-            || !matches!(
-                info.color_range(),
-                0 | spa::sys::SPA_VIDEO_COLOR_RANGE_0_255
-            )
-            || !matches!(
-                info.color_matrix(),
-                0 | spa::sys::SPA_VIDEO_COLOR_MATRIX_RGB
-            )
-            || !matches!(
-                info.color_primaries(),
-                0 | spa::sys::SPA_VIDEO_COLOR_PRIMARIES_BT709
-            )
-            || !matches!(
-                info.transfer_function(),
-                0 | spa::sys::SPA_VIDEO_TRANSFER_SRGB
-            )
         {
             return Err(unsupported());
         }
-        let (bgr, alpha) = match info.format() {
-            VideoFormat::RGBx => (false, false),
-            VideoFormat::BGRx => (true, false),
-            VideoFormat::RGBA => (false, true),
-            VideoFormat::BGRA => (true, true),
+        let (packing, bgr, alpha) = match info.format() {
+            VideoFormat::RGBx => (NativeRgbPacking::Rgbx8, false, false),
+            VideoFormat::BGRx => (NativeRgbPacking::Bgrx8, true, false),
+            VideoFormat::RGBA => (NativeRgbPacking::Rgba8, false, true),
+            VideoFormat::BGRA => (NativeRgbPacking::Bgra8, true, true),
+            VideoFormat::RGBA_F16 if cfg!(target_endian = "little") => {
+                (NativeRgbPacking::RgbaF16Le, false, true)
+            }
+            VideoFormat::RGBA_F32 if cfg!(target_endian = "little") => {
+                (NativeRgbPacking::RgbaF32Le, false, true)
+            }
+            VideoFormat::xRGB_210LE => (NativeRgbPacking::Xrgb210Le, false, false),
+            VideoFormat::xBGR_210LE => (NativeRgbPacking::Xbgr210Le, true, false),
+            VideoFormat::RGBx_102LE => (NativeRgbPacking::Rgbx102Le, false, false),
+            VideoFormat::BGRx_102LE => (NativeRgbPacking::Bgrx102Le, true, false),
+            VideoFormat::ARGB_210LE => (NativeRgbPacking::Argb210Le, false, true),
+            VideoFormat::ABGR_210LE => (NativeRgbPacking::Abgr210Le, true, true),
+            VideoFormat::RGBA_102LE => (NativeRgbPacking::Rgba102Le, false, true),
+            VideoFormat::BGRA_102LE => (NativeRgbPacking::Bgra102Le, true, true),
             _ => return Err(unsupported()),
         };
+        let metadata = [
+            info.color_range(),
+            info.color_matrix(),
+            info.color_primaries(),
+            info.transfer_function(),
+        ];
+        let rgb8 = matches!(
+            packing,
+            NativeRgbPacking::Rgba8
+                | NativeRgbPacking::Bgra8
+                | NativeRgbPacking::Rgbx8
+                | NativeRgbPacking::Bgrx8
+        );
+        // Preserve the established untagged/explicit sRGB8 path byte-for-byte.
+        // Every other format requires all four real negotiated color properties.
+        let legacy = rgb8
+            && matches!(metadata[0], 0 | spa::sys::SPA_VIDEO_COLOR_RANGE_0_255)
+            && matches!(metadata[1], 0 | spa::sys::SPA_VIDEO_COLOR_MATRIX_RGB)
+            && matches!(metadata[2], 0 | spa::sys::SPA_VIDEO_COLOR_PRIMARIES_BT709)
+            && matches!(metadata[3], 0 | spa::sys::SPA_VIDEO_TRANSFER_SRGB);
+        let color = if legacy {
+            None
+        } else {
+            if metadata[0] != spa::sys::SPA_VIDEO_COLOR_RANGE_0_255
+                || metadata[1] != spa::sys::SPA_VIDEO_COLOR_MATRIX_RGB
+            {
+                return Err(unsupported());
+            }
+            let primaries = match metadata[2] {
+                spa::sys::SPA_VIDEO_COLOR_PRIMARIES_BT709 => NativeRgbPrimaries::Bt709,
+                spa::sys::SPA_VIDEO_COLOR_PRIMARIES_BT2020 => NativeRgbPrimaries::Bt2020,
+                spa::sys::SPA_VIDEO_COLOR_PRIMARIES_SMPTEEG432 => NativeRgbPrimaries::DisplayP3,
+                spa::sys::SPA_VIDEO_COLOR_PRIMARIES_ADOBERGB => NativeRgbPrimaries::AdobeRgb,
+                _ => return Err(unsupported()),
+            };
+            let transfer = match metadata[3] {
+                spa::sys::SPA_VIDEO_TRANSFER_GAMMA10 => NativeRgbTransfer::Linear,
+                spa::sys::SPA_VIDEO_TRANSFER_SRGB => NativeRgbTransfer::Srgb,
+                spa::sys::SPA_VIDEO_TRANSFER_BT709
+                | spa::sys::SPA_VIDEO_TRANSFER_BT2020_10
+                | spa::sys::SPA_VIDEO_TRANSFER_BT601 => NativeRgbTransfer::Bt709,
+                spa::sys::SPA_VIDEO_TRANSFER_BT2020_12 => NativeRgbTransfer::Bt2020Twelve,
+                spa::sys::SPA_VIDEO_TRANSFER_GAMMA22 => NativeRgbTransfer::Gamma22,
+                spa::sys::SPA_VIDEO_TRANSFER_ADOBERGB => NativeRgbTransfer::AdobeRgb,
+                spa::sys::SPA_VIDEO_TRANSFER_SMPTE2084 if !rgb8 => NativeRgbTransfer::Pq,
+                spa::sys::SPA_VIDEO_TRANSFER_ARIB_STD_B67 if !rgb8 => NativeRgbTransfer::Hlg,
+                _ => return Err(unsupported()),
+            };
+            Some(NativeRgbColor {
+                transfer,
+                primaries,
+            })
+        };
+        let source =
+            u64::from(size.width) * u64::from(size.height) * packing.bytes_per_pixel() as u64;
+        if source > app_core::MAX_CAPTURE_BYTES {
+            return Err(CaptureError::MemoryLimit);
+        }
         Ok(Self {
             width: size.width,
             height: size.height,
             bgr,
             alpha,
             premultiplied: info.flags().bits() & 2 != 0,
+            packing,
+            color,
+            metadata,
         })
+    }
+    pub fn finite_buffer_limit(self) -> usize {
+        if self.packing.bytes_per_pixel() == 16 {
+            32 * 1024 * 1024
+        } else {
+            16 * 1024 * 1024
+        }
     }
     pub fn extent(
         self,
@@ -67,7 +141,7 @@ impl Format {
         stride: i32,
     ) -> Result<std::ops::Range<usize>, CaptureError> {
         validate_image_size(self.width, self.height)?;
-        let row = self.width as usize * 4;
+        let row = self.width as usize * self.packing.bytes_per_pixel();
         if mapped == 0 || mapped > MAX_MAPPED_BYTES || stride <= 0 || (stride as usize) < row {
             return Err(unsupported());
         }
@@ -93,6 +167,21 @@ impl Format {
                 .map_err(|_| CaptureError::MemoryLimit)?,
             stride.try_into().map_err(|_| unsupported())?,
         )?;
+        if let Some(color) = self.color {
+            return app_core::decode_native_rgb_with_cancel(
+                NativeRgbSource {
+                    width: self.width,
+                    height: self.height,
+                    stride,
+                    packing: self.packing,
+                    premultiplied: self.premultiplied,
+                    opaque_alpha_only: true,
+                    color,
+                },
+                bytes,
+                &|| false,
+            );
+        }
         let mut output = image::RgbaImage::new(self.width, self.height);
         let samples: &mut [u8] = output.as_mut();
         for (source, target) in bytes
@@ -133,6 +222,53 @@ mod tests {
             height: 2,
         });
         info
+    }
+    #[test]
+    fn precision_requires_real_complete_metadata_and_changes_remain_visible() {
+        for video in [
+            VideoFormat::RGBA_F16,
+            VideoFormat::RGBA_F32,
+            VideoFormat::xBGR_210LE,
+        ] {
+            let mut raw = info(video);
+            assert!(Format::parse(raw).is_err());
+            raw.set_color_range(spa::sys::SPA_VIDEO_COLOR_RANGE_0_255);
+            raw.set_color_matrix(spa::sys::SPA_VIDEO_COLOR_MATRIX_RGB);
+            raw.set_color_primaries(spa::sys::SPA_VIDEO_COLOR_PRIMARIES_BT2020);
+            raw.set_transfer_function(spa::sys::SPA_VIDEO_TRANSFER_SMPTE2084);
+            let admitted = Format::parse(raw).unwrap();
+            assert_eq!(
+                admitted.packing.bytes_per_pixel(),
+                if video == VideoFormat::RGBA_F16 {
+                    8
+                } else if video == VideoFormat::RGBA_F32 {
+                    16
+                } else {
+                    4
+                }
+            );
+            raw.set_transfer_function(spa::sys::SPA_VIDEO_TRANSFER_ARIB_STD_B67);
+            assert_ne!(Format::parse(raw).unwrap(), admitted);
+            raw.set_color_matrix(0);
+            assert!(Format::parse(raw).is_err());
+        }
+    }
+    #[test]
+    fn float_depth_and_native_row_pitch_are_charged_before_pixels() {
+        let mut raw = info(VideoFormat::RGBA_F32);
+        raw.set_color_range(spa::sys::SPA_VIDEO_COLOR_RANGE_0_255);
+        raw.set_color_matrix(spa::sys::SPA_VIDEO_COLOR_MATRIX_RGB);
+        raw.set_color_primaries(spa::sys::SPA_VIDEO_COLOR_PRIMARIES_BT709);
+        raw.set_transfer_function(spa::sys::SPA_VIDEO_TRANSFER_GAMMA10);
+        let format = Format::parse(raw).unwrap();
+        assert!(format.extent(64, 0, 64, 31).is_err());
+        assert_eq!(format.extent(64, 0, 64, 32).unwrap(), 0..64);
+        assert_eq!(format.finite_buffer_limit(), 32 * 1024 * 1024);
+        raw.set_size(spa::utils::Rectangle {
+            width: 8192,
+            height: 8192,
+        });
+        assert!(Format::parse(raw).is_err());
     }
     #[test]
     fn all_packed_orders_padding_offsets_and_hidden_alpha_are_exact() {

@@ -59,8 +59,12 @@ output paths use the invoking directory. The atomic PNG writer supplies the
 final no-replace collision check.
 
 Require nonterminal stdin using the same `IsTerminal` policy as the existing
-credential commands. Read at most **8193 bytes** into one operation-local vector
-and reject lengths above **8192 bytes**, including JSON whitespace. Empty input,
+credential commands. Native result JSON keeps its **8192-byte** whole-input cap,
+including whitespace. Full SXCU results use a separately derived cap covering
+three 2048-byte links, 4096 error bytes and sixteen events of 256 title plus
+4096 text bytes, allowing six JSON escape bytes per string byte and all fixed
+field/event syntax. Read at most that cap plus one byte into one bounded vector;
+validate every field and reject larger input before output. Empty input,
 invalid UTF-8/JSON, a BOM, comments, trailing non-whitespace bytes, a second JSON
 value, arrays, duplicate fields and unknown fields fail before output. JSON
 field order and surrounding JSON whitespace are unrestricted.
@@ -81,7 +85,12 @@ silently replace duplicates or allocate arbitrary nested data. Construct the
 existing `app_core::UploadOutcome` from the parsed strings. Validate every
 present URL even though only the primary URL is formatted in this slice.
 
-This shape directly accepts `upload` and `upload-file` output. It deliberately
+This shape directly accepts native `upload` and `upload-file` output. Full SXCU
+`upload`/`upload-file` results also admit their confirmed `success`, `status`,
+optional link/error fields and bounded `events` envelope; a failed or linkless
+result is refused. Large supported event arrays do not prevent Link/QR processing.
+The SXCU byte cap derives from those field bounds and worst-case JSON escaping,
+rather than inheriting the smaller native envelope cap. It deliberately
 rejects `upload-images`/`upload-files` NDJSON, their `type`/`index`/`total` fields,
 and their final summary. It also rejects nested `capture-task` output and S3
 bucket/key results. Do not select the first line, discard trailing errors,
@@ -188,7 +197,17 @@ and image appearance unchanged. `link qr` performs its own checked result
 write so post-publication failures have the exact behavior above. Do not route
 through `qr::run` or introduce another QR encoder.
 
-One operation owns at most 8193 input bytes and three bounded URL strings.
+The encoded input length is capped at 479701 plus one detection byte (under
+469 KiB); this is a logical length bound, not a hard Vec allocation ceiling.
+The current Rust 1.100.0 synthetic stdin/Take/read_to_end pattern retained
+524352 bytes of Vec capacity at lengths 479701/479702, versus capacity 8193 at
+8192/8193 bytes. Charge the growing input buffer conservatively below 1 MiB,
+including transient old/new growth overlap for that observed pattern, plus the
+bounded decoded result fields, serde temporary parsing state and three URL
+strings. The buffer charge excludes those parser/field allocations. Allocator capacity is
+implementation-dependent; these synthetic observations are not full CLI or
+hardware performance measurements. Native results retain their 8192-byte
+admission policy.
 The label is at most 256 bytes; bound formatted `text` at 16 KiB before growth
 and final JSON at 32 KiB including its newline. Those limits accommodate the
 specified escaping while remaining hard output caps. Use checked appends or
@@ -265,3 +284,12 @@ app's existing scanner reports a decode error. A second maximum-length fixture
 decodes with quircs. Do not infer universal reader compatibility from successful
 generation. The external verification script requires `markdown-it-py` and
 ZBar (`zbarimg`) and tests both markup links and the dense QR explicitly.
+
+
+Verification update (2026-11-17): all 11 actual optimized executable tests pass,
+including maximum escaped SXCU envelopes/events through formatting and independent
+QR decoding, native 8192/8193-byte boundaries, the bounded open pipe and existing
+failure/no-overwrite behavior. A full private HTTPS upload fixture also feeds its
+actual large result stdout to Link and QR without another request. This validates
+the integrated adapter, not every external QR reader or real sharing account.
+Exact evidence is in `target/verification/sharex-review6-integration/`.

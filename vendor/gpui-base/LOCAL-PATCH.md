@@ -28,3 +28,17 @@ zbus 6 family. The selected portal settings feature and async-io compatibility
 feature remain enabled. This native dependency migration has separate runtime
 and acceptance evidence in `docs/dependency-maintenance.md`; the no-runtime-cost
 statement above applies to the time-crate replacement.
+
+## Chrono maintenance migration (2026-11-17)
+
+Replace the unmaintained Chrono dependency with Jiff 0.2.43, default features
+disabled (`std` plus browser `js` clock support). Calendar/date/time public Rust
+types use Jiff civil types, and scheduler clocks use Jiff Timestamp. UI layout,
+controls, events and the existing month-grid algorithms stay intact. GPUI's
+on-demand local conversion uses native OS timezone/DST rules and a fixed-offset
+Jiff value; it owns no timezone database/cache, refresh timer, worker or runtime.
+The existing Apache-2.0 source/license and earlier local patches remain intact.
+
+Activation, optimized regression tests, five native-target metadata checks and
+default advisory-policy verification belong to the root integration gate; this
+held source packet alone establishes none of those passing results.

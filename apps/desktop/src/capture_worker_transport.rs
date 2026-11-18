@@ -13,16 +13,16 @@ pub(super) const ENV: &str = "SCREENSHOTS_NATIVE_CAPTURE_PIPE";
 pub(super) const CHUNK: usize = 64 * 1024;
 
 #[cfg(unix)]
-pub(super) struct Transport {
+pub(crate) struct Transport {
     pub stream: std::os::unix::net::UnixStream,
 }
 #[cfg(target_os = "windows")]
-pub(super) struct Transport {
+pub(crate) struct Transport {
     read: std::fs::File,
     write: std::fs::File,
 }
 
-pub(super) struct Prepared {
+pub(crate) struct Prepared {
     pub transport: Transport,
     pub nonce: [u8; 16],
     #[cfg(unix)]
@@ -40,12 +40,49 @@ impl Prepared {
             .collect()
     }
     pub fn new(command: &mut Command) -> Result<Self> {
+        Self::new_kind(command, false)
+    }
+    #[cfg(target_os = "linux")]
+    pub fn packets(command: &mut Command) -> Result<Self> {
+        Self::new_kind(command, true)
+    }
+    fn new_kind(command: &mut Command, packets: bool) -> Result<Self> {
+        #[cfg(not(unix))]
+        let _ = packets;
         let nonce = uuid::Uuid::new_v4();
         let parent = std::process::id();
         #[cfg(unix)]
         {
             use std::os::{fd::AsRawFd, unix::process::CommandExt};
-            let (server, child) = std::os::unix::net::UnixStream::pair()?;
+            #[cfg(target_os = "linux")]
+            let (server, child) = if packets {
+                use std::os::fd::FromRawFd;
+                let mut fds = [-1; 2];
+                ensure!(
+                    unsafe {
+                        libc::socketpair(
+                            libc::AF_UNIX,
+                            libc::SOCK_SEQPACKET | libc::SOCK_CLOEXEC,
+                            0,
+                            fds.as_mut_ptr(),
+                        )
+                    } == 0,
+                    "Cannot create private native packet channel"
+                );
+                unsafe {
+                    (
+                        std::os::unix::net::UnixStream::from_raw_fd(fds[0]),
+                        std::os::unix::net::UnixStream::from_raw_fd(fds[1]),
+                    )
+                }
+            } else {
+                std::os::unix::net::UnixStream::pair()?
+            };
+            #[cfg(not(target_os = "linux"))]
+            let (server, child) = {
+                ensure!(!packets, "Native packet transport requires Linux");
+                std::os::unix::net::UnixStream::pair()?
+            };
             for stream in [&server, &child] {
                 let size = 128 * 1024i32;
                 for option in [libc::SO_SNDBUF, libc::SO_RCVBUF] {
@@ -204,7 +241,20 @@ impl Prepared {
     }
 }
 impl Transport {
+    #[cfg(target_os = "windows")]
+    pub(crate) fn into_windows_files(self) -> (std::fs::File, std::fs::File) {
+        (self.read, self.write)
+    }
     pub fn inherited() -> Result<(Self, [u8; 16], u32)> {
+        Self::inherited_kind(false)
+    }
+    #[cfg(target_os = "linux")]
+    pub fn inherited_packets() -> Result<(Self, [u8; 16], u32)> {
+        Self::inherited_kind(true)
+    }
+    fn inherited_kind(packets: bool) -> Result<(Self, [u8; 16], u32)> {
+        #[cfg(not(unix))]
+        let _ = packets;
         let value = std::env::var(ENV).context("Private native channel is absent")?;
         ensure!(value.len() <= 256, "Invalid private native channel");
         let fields = value.split(':').collect::<Vec<_>>();
@@ -245,8 +295,13 @@ impl Transport {
                         &mut kind_length,
                     )
                 } == 0
-                    && kind == libc::SOCK_STREAM,
-                "Native channel must be a stream socket"
+                    && kind
+                        == if packets {
+                            libc::SOCK_SEQPACKET
+                        } else {
+                            libc::SOCK_STREAM
+                        },
+                "Native channel has an unexpected socket kind"
             );
             let mut address: libc::sockaddr_storage = unsafe { std::mem::zeroed() };
             let mut length = std::mem::size_of_val(&address) as libc::socklen_t;
@@ -416,9 +471,43 @@ impl Read for Transport {
         self.read.read(&mut bytes[..count])
     }
 }
+#[cfg(all(test, target_os = "windows"))]
+#[derive(Default)]
+pub(super) struct WriteProbe {
+    pub entered: std::sync::atomic::AtomicUsize,
+    pub finished: std::sync::atomic::AtomicUsize,
+}
+#[cfg(all(test, target_os = "windows"))]
+pub(super) static WRITE_PROBE: std::sync::Mutex<Option<std::sync::Arc<WriteProbe>>> =
+    std::sync::Mutex::new(None);
+#[cfg(all(test, target_os = "windows"))]
+struct WriteCompleted(Option<std::sync::Arc<WriteProbe>>);
+#[cfg(all(test, target_os = "windows"))]
+impl Drop for WriteCompleted {
+    fn drop(&mut self) {
+        if let Some(probe) = &self.0 {
+            probe
+                .finished
+                .fetch_add(1, std::sync::atomic::Ordering::Release);
+        }
+    }
+}
 #[cfg(target_os = "windows")]
 impl Write for Transport {
     fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        #[cfg(test)]
+        let _completed = {
+            let probe = WRITE_PROBE
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner())
+                .clone();
+            if let Some(probe) = &probe {
+                probe
+                    .entered
+                    .fetch_add(1, std::sync::atomic::Ordering::Release);
+            }
+            WriteCompleted(probe)
+        };
         self.write.write(bytes)
     }
     fn flush(&mut self) -> std::io::Result<()> {

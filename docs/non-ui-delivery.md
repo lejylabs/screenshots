@@ -2067,3 +2067,116 @@ Optimized workspace/all-target Clippy, Windows GNU metadata, formatting and diff
 checks pass. [Source/provenance/evidence](../vendor/gpui-pre-wgpu/LOCAL-PATCH.md).
 Exact logs and restoration checks remain in
 `target/verification/pathless-render-targets-integration/`.
+
+
+## Corrected modern sharing and result pipeline (2026-11-17)
+
+Actual finding rounds 6–12 corrected numeric raw/canonical masks, JSON/XML
+Cookie ancestry, constructor rejection, duplicate mask charging, multipart
+argument consumption and post-transfer opened-source identity. Independent
+source rounds 13/14 are clean. The subsequent two conflicting C# test identifiers
+were renamed without production changes; the initial compiler failure remains
+separate from the passing helper build.
+
+Executed optimized checks pass 33 core/process/legacy cases, three shared-source
+controls, 11 real Link/QR/result cases, 357 helper assertions and the complete
+137-request HTTPS fixture. The latter includes actual changed/unchanged file
+transfers, sealed raw schedules and uncertainty/no retry/later-output, final
+memory/saved pixels, copied/installed runtime and running-old-process upgrade.
+The bus, unlocked collection, TLS CA/services and user-data paths are exclusively
+owned synthetic fixtures; extracted test-provider packages have repository hash
+and public signature verification, with no global installation or existing
+credential access. Optimized all-target Clippy, Windows GNU metadata, formatting
+and diff checks pass. These are not real-account, native Windows/macOS or
+reference-hardware acceptance. See [the detailed contract](sharex-runtime.md#corrected-parser-source-and-result-integration-2026-11-17)
+and `target/verification/sharex-review6-integration/` for exact source/artifact
+identities, test compiler correction and full results.
+
+
+Subsequent dependency check (2026-11-17): the unchanged dependency graph's
+default audit now reports Chrono as unmaintained under RUSTSEC-2026-0543. The
+[official database entry](https://github.com/RustSec/advisory-db/blob/main/crates/chrono/RUSTSEC-2026-0543.md)
+has no patched Chrono version. This failed run is retained separately in
+`target/verification/sharex-review6-integration/advisories.log`; earlier passes
+are not relabeled. Maintained-API migration is a separate open implementation,
+with no advisory ignore or version spoof. Functional sharing tests above remain
+valid but do not close this global maintenance gate.
+
+## Maintained date/time graph integration (2026-11-17)
+
+The subsequent Chrono audit failure above is now corrected in the active graph
+without ignores. The integrated Jiff migration preserves exact history ordering,
+public UTC formats, leap handling, final-year schedule admission and negative
+current-clock millisecond flooring; on-demand native local conversion refreshes
+Unix timezone rules without idle activity. Actual fresh source rounds 7/8 are
+clean. The optimized workspace passes 1,098 tests (zero failures, 73 ignored,
+61 outer suites), Clippy/format/Linux metadata and default advisory checks pass.
+The independent 80,004-case legacy oracle and owned timezone positive/old-source
+negative controls pass. Native/resource and retained calendar fixture gates are
+separate; this does not close the full non-UI backlog. Exact graph/provenance,
+additional unconfigured license-check failure and limits follow
+[the maintenance evidence](dependency-maintenance.md#integrated-chrono-maintenance-migration-2026-11-17).
+
+## Unix main-app desktop service integration (2026-11-17)
+
+Scoped main startup now owns native tray and saved shortcut services, with a
+parked supervised Linux helper or thread-correct macOS callbacks. Existing
+controls are reused. Native loss/close/reopen, Save/Import rollback, recoverable
+Quit and thumbnail release preserve access and data. Actual X11 execution found
+and corrected consumed-control lost wakes and readiness ACK ordering; a fresh
+review corrected request publication before capture-gate closure. Admission is
+reserved before state mutation and published only after closing the gate.
+
+The optimized workspace passes 1,141 tests (zero failures, 73 ignored, 61 outer
+suites). Actual fresh applied-source reviews 11/12 are clean. Clippy, formatting,
+default advisories and Windows GNU metadata pass; the final six private native
+fixture modes pass with real X11/D-Bus adapters and the latest reservation code.
+Earlier failures and exact execution identities remain archived. This closes the
+local functional integration slice; main GUI, Mac runtime/physical/session,
+joint 50 MiB private memory and remaining PLAN performance gates are separate.
+[Contract and evidence](unix-native-services.md).
+
+## Windows native drop receiver source integration (2026-11-17)
+
+All eligible GPUI Windows targets now use the isolated non-agile receiving STA,
+with the native watchdog installed before message retrieval/unmarshaling and
+absolute expiry checks before completion/publication. Per-window lifecycle,
+reentrant retirement, bounded single admission through final delivery and
+asynchronous exact-owner cleanup replace the foreground source-calling target.
+Actual source reviews 5/6 are clean on the frozen patch; Root preserves current
+Unix/Jiff changes through genuine three-way merging and corrects the constructor
+wrapper call during GNU compilation.
+
+Optimized Linux metadata, Windows GNU workspace/all-target and vendor-test
+metadata, 122 application consumers (9 ignored), three optimized deadline
+controls, Clippy and formatting pass. These are named local checks, not Windows
+execution. The separately authored cfg native fixture and all native COM/OLE,
+fault/editor/lifecycle/private-GPU/resource acceptance remain open. Details and
+precise original-source/C++ prerequisite limits follow the
+[drop contract](clipboard-import-output.md#integrated-windows-receiver-source-2026-11-17).
+
+## Native HDR source precision and SDR rendition (2026-11-17)
+
+Modern macOS tagged-float and Windows WGC FP16 source paths now retain precision
+until explicit color conversion into the existing RGBA8 sRGB document. Frozen
+source/geometry/reference-white/native-byte reservations precede acquisition;
+SDR mirrors and proven legacy behavior remain distinct from unknown HDR states.
+Linux/Windows GNU metadata, 89 optimized affected capture controls (four opt-ins
+ignored) and Clippy pass. This is portable/type evidence; actual CG/WGC, HDR/P3/
+SDR hardware and PLAN resource/latency acceptance remain open. The separately
+prepared Linux metadata/format adapter and Windows tiled extension must supply
+their own evidence. [Precise policy and limits](hdr-capture.md).
+
+## Finite Wayland source and managed-color integration (2026-11-17)
+
+Explicit portal display/window recording, existing audio routing and finite
+manual scrolling now reach the actual native worker and typed Task path. Native
+post-encoder source timestamps, restricted FD/serial, exact raster and bounded
+buffers retain source identity and refuse stale/unknown data. Managed-color
+format alternatives require explicit SPA proofs while preserving legacy SDR.
+
+Optimized portable/preflight, actual C SPA filtering and private real-PipeWire/
+CLI/worker/codec/freshness/color/negotiation/refusal controls pass. The software
+4K observation reports capture/CLI timing separately; physical hardware and
+compositor/input/audio/resource/soak gates remain open. Source review convergence
+and exact native outcomes follow [the contract](wayland-finite-capture.md).

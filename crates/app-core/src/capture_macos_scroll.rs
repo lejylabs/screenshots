@@ -54,26 +54,33 @@ pub(crate) fn run(
                     until.min(Instant::now() + Duration::from_secs(20)),
                     u64::from(request.region.width) * u64::from(request.region.height) * 4,
                 )?;
-                unsafe { crate::capture_macos_image::decode(image.0) }?
+                unsafe {
+                    crate::capture_macos_image::decode_region(image.0, request.region, expected)
+                }?
             } else {
-                crate::capture_macos_image::legacy_window(target.proof, &options)?
+                let full = crate::capture_macos_image::legacy_window(target.proof, &options)?;
+                ensure!(
+                    full.dimensions() == expected,
+                    "Native scrolling source extent changed"
+                );
+                image::imageops::crop_imm(
+                    &full,
+                    request.region.x,
+                    request.region.y,
+                    request.region.width,
+                    request.region.height,
+                )
+                .to_image()
             };
             ensure!(
-                pixels.dimensions() == expected
+                pixels.dimensions() == (request.region.width, request.region.height)
                     && pixels.as_raw().len() as u64
-                        == u64::from(expected.0) * u64::from(expected.1) * 4,
+                        == u64::from(request.region.width) * u64::from(request.region.height) * 4,
                 "Native scrolling pixels changed extent"
             );
             check()?;
             target.check()?;
-            Ok(image::imageops::crop_imm(
-                &pixels,
-                request.region.x,
-                request.region.y,
-                request.region.width,
-                request.region.height,
-            )
-            .to_image())
+            Ok(pixels)
         };
         let mut assembler = ScrollAssembler::new(capture()?, request.matcher())?;
         let mut captured = 1u32;

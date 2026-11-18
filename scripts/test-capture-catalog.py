@@ -100,7 +100,7 @@ def main():
                         and not Path(f"/tmp/.X11-unix/X{i}").exists()), None)
         require(display, "No unused private X11 display")
         env = dict(os.environ)
-        for name in ("WAYLAND_DISPLAY", "DBUS_SESSION_BUS_ADDRESS", "AT_SPI_BUS_ADDRESS"):
+        for name in ("WAYLAND_DISPLAY", "WAYLAND_SOCKET", "DBUS_SESSION_BUS_ADDRESS", "AT_SPI_BUS_ADDRESS"):
             env.pop(name, None)
         state_keys = ("HOME", "USERPROFILE", "APPDATA", "LOCALAPPDATA", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME")
         env.update({name: str(root / name) for name in state_keys})
@@ -188,6 +188,48 @@ def main():
             displays = json.loads(invoke(["list", "displays"]).stdout)
             require(len(displays) == 1, "Fixture must have exactly one display")
             display_id = displays[0]["id"]
+            dpi_stages = []
+            for dpi in (48, 96, 192):
+                resource = f"Xft.dpi:\t{dpi}\n".encode()
+                x.XChangeProperty(connection, desktop, atom("RESOURCE_MANAGER"), atom("STRING"),
+                                  8, 0, resource, len(resource))
+                x.XSync(connection, 0)
+                metadata = json.loads(invoke(["list", "displays"]).stdout)
+                require(len(metadata) == 1 and metadata[0]["id"] == display_id,
+                        "Xft DPI changed native display identity")
+                require((metadata[0]["width"], metadata[0]["height"]) == (128, 96)
+                        and metadata[0]["scale"] == dpi / 96,
+                        "Xft DPI did not retain independent root geometry and UI scale")
+                stage_checked = checked
+                stage_calls = calls
+                for name, target, width, height, origin, include in [
+                    ("display-exclude", ["display", display_id], 128, 96, (0, 0), False),
+                    ("display-include", ["display", display_id], 128, 96, (0, 0), True),
+                    ("region-exclude", ["region", display_id, 20, 20, 30, 25], 30, 25, (20, 20), False),
+                    ("region-include", ["region", display_id, 20, 20, 30, 25], 30, 25, (20, 20), True),
+                    ("hotspot-exclude", ["region", display_id, 28, 29, 1, 1], 1, 1, (28, 29), False),
+                    ("hotspot-include", ["region", display_id, 28, 29, 1, 1], 1, 1, (28, 29), True),
+                    ("clip-left", ["region", display_id, 28, 28, 2, 3], 2, 3, (28, 28), True),
+                    ("clip-right", ["region", display_id, 27, 28, 2, 3], 2, 3, (27, 28), True),
+                    ("clip-top", ["region", display_id, 27, 29, 3, 2], 3, 2, (27, 29), True),
+                    ("clip-bottom", ["region", display_id, 27, 28, 3, 2], 3, 2, (27, 28), True),
+                    ("edge-exclude", ["region", display_id, 127, 95, 1, 1], 1, 1, (127, 95), False),
+                    ("edge-include", ["region", display_id, 127, 95, 1, 1], 1, 1, (127, 95), True),
+                ]:
+                    path = root / f"dpi-{dpi}-{name}.png"
+                    options = {"cursor": "include" if include else "exclude"}
+                    result = json.loads(invoke(["capture-task", *target, path, "--capture-options", json.dumps(options)]).stdout)
+                    require((result["width"], result["height"]) == (width, height),
+                            "Xft DPI changed capture dimensions or resampled the native raster")
+                    pixels(path, width, height, origin, include)
+                dpi_stages.append({"dpi": dpi, "ui_scale": dpi / 96, "native_raster": [128, 96],
+                                   "capture_invocations": calls - stage_calls,
+                                   "exact_rgba_pixels_checked": checked - stage_checked})
+            # The existing catalog/hotkey checks retain their original 1x saved geometry.
+            resource = b"Xft.dpi:\t96\n"
+            x.XChangeProperty(connection, desktop, atom("RESOURCE_MANAGER"), atom("STRING"),
+                              8, 0, resource, len(resource))
+            x.XSync(connection, 0)
             for name, target, width, height, origin, include in [
                 ("without", ["display", display_id], 128, 96, (0, 0), False),
                 ("with", ["display", display_id], 128, 96, (0, 0), True),
@@ -293,6 +335,8 @@ def main():
             report = {"binary_sha256": digest(binary), "cli_invocations": calls,
                       "binary_identity_stable": True,
                       "exact_rgba_pixels_checked": checked, "cursor_hotspot_and_clipping": True,
+                      "xft_dpi_cursor_stages": dpi_stages,
+                      "xft_dpi_root_pixels_without_resampling": True,
                       "connector_fallback_explicit": True, "native_template_capture": True,
                       "assigned_task_capture": True, "physical_template_hotkey": True,
                       "rapid_hotkey_taps": 3, "source_display_unchanged": True,
