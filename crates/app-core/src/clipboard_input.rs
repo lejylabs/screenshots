@@ -566,3 +566,9 @@ mod tests {
         assert_eq!(registered_format_label(&name, 0).unwrap(), None);
     }
 }
+
+#[cfg(all(target_os = "macos", feature = "native-file-clipboard-fixture"))]
+#[doc(hidden)]
+pub fn inspect_owned_macos_file_pasteboard(name: &str) -> Result<ClipboardSnapshot> {
+    platform::inspect_owned_named_files(name)
+}

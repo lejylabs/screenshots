@@ -1531,6 +1531,52 @@ impl ShareXPrepared {
             permit,
         )
     }
+    /// Explicit private UTF-8 input; no plaintext file or diagnostic payload is retained.
+    pub fn upload_text(
+        &self,
+        text: &str,
+        cancel: crate::UploadCancellation,
+    ) -> Result<ShareXOutcome> {
+        ensure!(
+            self.0.kind == Some(ShareXInputKind::Text)
+                && text.len() <= 65536
+                && !text.contains('\0'),
+            "In-memory SXCU text requires KindText and at most 64 KiB without NUL"
+        );
+        cancel.check()?;
+        let permit = Permit::acquire()?;
+        let name = self
+            .0
+            .options
+            .filename
+            .clone()
+            .unwrap_or_else(|| format!("{}.txt", uuid::Uuid::new_v4().simple()));
+        let mut outcome = self
+            .run(
+                None,
+                Zeroizing::new(text.to_owned()),
+                name,
+                None,
+                cancel,
+                permit,
+            )
+            .map_err(|_| {
+                anyhow::anyhow!(
+                    "Private SXCU text upload failed; a remote object may exist; no retry"
+                )
+            })?;
+        // Imported profiles may reflect input into diagnostic events and error messages.
+        for event in &mut outcome.events {
+            event.title.zeroize();
+            event.text.zeroize();
+        }
+        outcome.events.clear();
+        if let Some(message) = outcome.error_message.as_mut() {
+            message.zeroize();
+        }
+        outcome.error_message = None;
+        Ok(outcome)
+    }
     fn execute(&self, path: &Path, cancel: crate::UploadCancellation) -> Result<ShareXOutcome> {
         cancel.check()?;
         let permit = Permit::acquire()?;

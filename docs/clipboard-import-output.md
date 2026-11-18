@@ -673,3 +673,100 @@ owned-desktop controls. Its evolving counts are authored inventory, never pass
 counts. Original R10 remains a C++ prerequisite. The new fixture must clear its
 own source review, cfg/MSVC/C++/PowerShell checks and actual positive/negative
 execution before it supplies receiving-boundary evidence.
+
+## Unix persistent file-reference output (held implementation)
+
+`ImageClipboard::copy_file` accepts exactly one explicit absolute existing regular
+file. Native path metadata is <=4096 bytes and its canonical target is rechecked
+inside the isolated writer before publication. Linux offers `text/uri-list` and
+`x-special/gnome-copied-files` with the literal `copy` operation; no move/delete
+operation, image encode/decode, file-content read, temporary file, disk round-trip,
+upload, History mutation or production clipboard verification is introduced.
+A file reference is a pathname: later source mutation/deletion can change what a
+recipient opens, and no immutable-content promise is made.
+
+A lazy installed function pointer starts at most one file writer at a time. One
+256 KiB Rust supervisor owns the authenticated inherited transport and process
+family through final termination/reap; dropping the public handle only disconnects
+a one-slot channel. The supervisor parks after publication, then performs active
+cleanup when replaced/dropped. Busy admission remains held throughout cleanup.
+Native startup/canonicalization/publication is contained by a five-second outer
+deadline; failed or lost acknowledgement reports that clipboard content may have
+changed. Success means publication was acknowledged, not a clipboard read-back or
+recipient paste. An unpublished/cancelled owner can never later acknowledge a
+new operation. Subsequent image/text output checks the installed file-owner
+quiescence fence before publishing, so a canceled child cannot overtake later
+output while cleanup is pending. Their native setters are otherwise unchanged.
+Native dependency allocations retain the existing runtime-probed 96 MiB
+VM-growth guard inside the private child. No process/thread starts at ordinary
+startup and no permanent timer/polling loop is installed.
+
+X11 uses a local numeric DISPLAY only, one connection/window, CLIPBOARD only, a
+bounded one-request URI property and a native-fd/control-fd poll with no idle timer.
+It offers no PRIMARY and performs no clipboard-manager handover on release.
+Wayland uses ext-data-control-v1 or wlr-data-control-v1 on exactly one seat. These
+privileged protocols are unavailable on some compositors, including usual GNOME
+sessions: that capability failure is explicit, with no XWayland/text fallback.
+No focused gesture control is added. The owner destroys unsolicited offers
+without reading their content, retains one URI payload and at most four
+nonblocking outbound file descriptors with five-second transfer deadlines.
+A native event batch is bounded by 4096 handled events and the opaque dependency
+queue stays inside the private worker memory ceiling. X11 materializes at most
+one additional <=12 KiB Copy wrapper during a corresponding request; Wayland
+streams the fixed Copy prefix plus its sole retained URI without duplicating it.
+macOS writes immediate public.file-url data with the same Pasteboard Manager API
+as the existing reader on the private child's native main thread, not GPUI's
+foreground/background executor. The macOS supervisor cleans up immediately after
+acknowledgement; native pasteboard storage preserves the copied file reference.
+A named private pasteboard is used by acceptance
+fixtures; the general pasteboard is never used by development tests.
+
+`clipboard copy-file ABSOLUTE_FILE --hold-ms 1000..300000` is an explicit CLI
+route that retains Linux delayed ownership for the requested duration. Ctrl+C
+ends that lifetime and begins cleanup. No new UI controls are added. Existing
+image/text setters retain their previous native-call deadline limitations;
+this file-output implementation does not establish their hard deadline gate.
+The existing Windows file setter likewise retains its previous native-call
+deadline limit. Standalone CLI completion awaits file-owner reap and reports
+that its requested Linux ownership lifetime has ended.
+
+Resource acceptance remains unmeasured: helper private/resident VM, Wayland/X11
+connection buffers, native pasteboard objects, supervisor stack/RSS (plus the
+existing 128 KiB macOS parent-lifeline thread during its short helper lifetime), first/warm
+publish latency, release/reap latency and idle wakeups require optimized private
+server runs. Targets are not measurements. Root must run pure tests and private
+Xvfb/data-control/named-pasteboard fixtures before claiming native completion.
+
+Revision 2 adds an operation-scoped signal self-pipe for the finite CLI hold. Both
+SIGINT and SIGTERM write the bounded native wake endpoint regardless of which
+thread handles the signal; a byte remains readable if delivery occurs between
+checking cancellation and entering poll. The read endpoint is polled with the
+absolute hold deadline and no periodic timer. Handler registration and the socket
+pair exist only for this explicit CLI operation and are released on exit; wake
+errors still await native owner retirement/reap. The socket's requested send buffer
+is 4096 bytes (the OS may round its actual bounded allocation). Wayland seat
+Capabilities/Name events now use explicit bounded Dispatch, count against the
+4096-event batch policy, and reject names over 128 bytes. Pure seat admission and
+private subprocess signal-before-poll/other-thread hold fixtures are authored;
+these checks have not been executed by the delivery agent.
+
+Revision 3 keeps standalone completion authority through every ordinary CLI exit.
+Resident publication/cancellation still returns at its existing deadline plus
+250 ms cleanup grace, explicit resident retirement still returns after five
+seconds, and Lease Drop remains nonblocking. Those bounded returns do not prove
+reap. The standalone command additionally owns a zero-sized completion drain:
+its condition variable waits without a polling timer until the actual supervisor
+releases admission after Native's process-family cleanup and child.wait finish.
+The clipboard/lease drops before this drain; cancellation's conditional shutdown
+is enabled only after the drain completes. Thus publication errors and retirement
+timeouts retain a live CLI until actual cleanup completes, rather than relying
+on parent-death signaling after process::exit. A cleanup that remains kernel-blocked
+keeps that standalone CLI alive; no finite completed-reap claim is fabricated.
+The static mutex/condition variable add no thread, process, runtime, channel,
+permanent timer or metadata cache. Private subprocess regression sources use the
+actual supervisor with a controlled seven-second delay before actual reap,
+observe the unchanged bounded API error, require the CLI to remain alive beyond
+both existing thresholds, and permit ordinary error exit only after the same
+owned child.wait marker. Their isolated Linux controller is a subreaper and
+actually reaps adopted providers even when an early-exit regression fails.
+These new source regressions remain unrun by the delivery agent.

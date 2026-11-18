@@ -1280,9 +1280,9 @@ impl X11Client {
                 let window = self.get_window(event.event)?;
                 let mut state = self.0.borrow_mut();
                 if event.detail == 1
-                    && state.external_drag_press.is_some_and(|press| {
-                        press.0 == event.event && press.4 == event.deviceid
-                    })
+                    && state
+                        .external_drag_press
+                        .is_some_and(|press| press.0 == event.event && press.4 == event.deviceid)
                 {
                     state.external_drag_press = None;
                 }

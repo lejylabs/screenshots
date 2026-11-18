@@ -74,7 +74,8 @@ pub fn load_editor_image_with_cancel(
     )
 }
 
-/// Verify the actual opened object and decode that same retained handle.
+/// Compare the opened object's metadata version before and after decoding the retained handle.
+/// This detects observable changes; it is not an immutable filesystem snapshot.
 pub fn load_editor_image_with_identity(
     path: &std::path::Path,
     expected: &crate::FileIdentity,
@@ -209,7 +210,7 @@ fn load_image_input_guarded_dimensions_with_cancel(
         use std::os::unix::fs::OpenOptionsExt;
         options.custom_flags(libc::O_NONBLOCK);
     }
-    let file = options.open(path)?;
+    let mut file = options.open(path)?;
     if let Some(expected) = expected {
         expected.verify_file(&file)?;
     }
@@ -221,19 +222,25 @@ fn load_image_input_guarded_dimensions_with_cancel(
         "Image file exceeds the 32 MiB input limit"
     );
     let reader = image::ImageReader::new(std::io::BufReader::new(EditorFile {
-        file,
+        file: &mut file,
         length,
         position: 0,
     }))
     .with_guessed_format()?;
-    decode_image_reader_dimensions_with_cancel(
+    let pixels = decode_image_reader_dimensions_with_cancel(
         reader,
         length,
         max_decoded_bytes,
         png_only,
         expected_dimensions,
         cancelled,
-    )
+    )?;
+    if let Some(expected) = expected {
+        expected
+            .verify_file(&file)
+            .context("Image input changed during consumption")?;
+    }
+    Ok(pixels)
 }
 
 /// Explicit encoded clipboard, drop or URL input; decode on a blocking worker.
@@ -878,34 +885,157 @@ pub fn load_png_thumbnail(
     Ok(thumbnail)
 }
 
+/// Drop requests retirement without waiting; the installed owner retains cleanup responsibility.
+#[cfg(unix)]
+#[doc(hidden)]
+pub trait FileClipboardOwner: Send {
+    /// Explicit worker-side replacement may wait for bounded completion; Drop itself never waits.
+    fn retire(self: Box<Self>) -> Result<()>;
+}
+#[cfg(unix)]
+type FileClipboardSpawner =
+    fn(&std::path::Path, &crate::NativeCaptureCheck<'_>) -> Result<Box<dyn FileClipboardOwner>>;
+#[cfg(unix)]
+struct FileClipboardService {
+    spawn: FileClipboardSpawner,
+    quiescent: fn() -> Result<()>,
+}
+#[cfg(unix)]
+static FILE_CLIPBOARD_SPAWNER: std::sync::OnceLock<FileClipboardService> =
+    std::sync::OnceLock::new();
+/// Installs a function pointer only; no clipboard access, thread or process starts here.
+#[cfg(unix)]
+#[doc(hidden)]
+pub fn install_file_clipboard_spawner(
+    spawn: FileClipboardSpawner,
+    quiescent: fn() -> Result<()>,
+) -> Result<()> {
+    FILE_CLIPBOARD_SPAWNER
+        .set(FileClipboardService { spawn, quiescent })
+        .map_err(|_| anyhow::anyhow!("File clipboard owner is already installed"))
+}
+/// Pure wire admission. Filesystem checks belong to the isolated native owner.
+#[doc(hidden)]
+pub fn validate_file_clipboard_path(path: &std::path::Path) -> Result<()> {
+    anyhow::ensure!(path.is_absolute(), "Saved file path must be absolute");
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::OsStrExt;
+        let bytes = path.as_os_str().as_bytes();
+        anyhow::ensure!(
+            !bytes.is_empty() && bytes.len() <= crate::CLIPBOARD_FILE_BYTES && !bytes.contains(&0),
+            "File clipboard path exceeds its native bound"
+        );
+    }
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::ffi::OsStrExt;
+        let mut length = 0;
+        for unit in path.as_os_str().encode_wide() {
+            length += 2;
+            anyhow::ensure!(
+                unit != 0 && length <= crate::CLIPBOARD_FILE_BYTES,
+                "File clipboard path exceeds its native bound"
+            );
+        }
+    }
+    Ok(())
+}
+
+/// Existing-file admission and URL serialization; call only inside the isolated writer.
+#[cfg(unix)]
+#[doc(hidden)]
+pub fn prepare_file_clipboard_uri(path: &std::path::Path) -> Result<String> {
+    validate_file_clipboard_path(path)?;
+    let path = std::fs::canonicalize(path).context("File clipboard source is unavailable")?;
+    validate_file_clipboard_path(&path)?;
+    anyhow::ensure!(
+        std::fs::metadata(&path)?.is_file(),
+        "File clipboard source is not a regular file"
+    );
+    let uri = reqwest::Url::from_file_path(&path)
+        .map_err(|_| anyhow::anyhow!("File clipboard source cannot be represented as a URL"))?;
+    anyhow::ensure!(
+        uri.as_str().len() <= crate::CLIPBOARD_FILE_BYTES * 3,
+        "File clipboard URL exceeds its bound"
+    );
+    Ok(uri.into())
+}
+
 #[derive(Default)]
 pub struct ImageClipboard {
     clipboard: Option<arboard::Clipboard>,
+    #[cfg(unix)]
+    file_owner: Option<Box<dyn FileClipboardOwner>>,
 }
 
 impl ImageClipboard {
-    #[cfg(target_os = "windows")]
-    pub fn copy_file(&mut self, path: &std::path::Path) -> Result<()> {
-        anyhow::ensure!(path.is_absolute(), "Saved file path must be absolute");
-        anyhow::ensure!(
-            std::fs::metadata(path)
-                .context("Saved file is unavailable")?
-                .is_file(),
-            "Saved path is not a file"
-        );
-        if self.clipboard.is_none() {
-            self.clipboard = Some(arboard::Clipboard::new().context("open clipboard")?);
+    /// Explicit worker-side finish/replacement; Drop requests the same cleanup without waiting.
+    #[cfg(unix)]
+    #[doc(hidden)]
+    pub fn retire_file_owner(&mut self) -> Result<()> {
+        if let Some(owner) = self.file_owner.take() {
+            owner
+                .retire()
+                .context("File clipboard owner cleanup is pending")?;
         }
-        self.clipboard
-            .as_mut()
-            .unwrap()
-            .set()
-            .file_list(&[path])
-            .context("copy file to clipboard")
+        Ok(())
+    }
+    pub fn copy_file(&mut self, path: &std::path::Path) -> Result<()> {
+        self.copy_file_with_cancel(path, &|| Ok(()))
+    }
+    pub fn copy_file_with_cancel(
+        &mut self,
+        path: &std::path::Path,
+        check: &crate::NativeCaptureCheck<'_>,
+    ) -> Result<()> {
+        check()?;
+        validate_file_clipboard_path(path)?;
+        #[cfg(unix)]
+        {
+            // A retired native owner cannot publish into a later copy operation.
+            self.retire_file_owner()?;
+            let spawn = FILE_CLIPBOARD_SPAWNER
+                .get()
+                .context("Native file clipboard owner is not installed")?;
+            check()?;
+            self.file_owner = Some((spawn.spawn)(path, check)?);
+            Ok(())
+        }
+        #[cfg(target_os = "windows")]
+        {
+            anyhow::ensure!(
+                std::fs::metadata(path)
+                    .context("Saved file is unavailable")?
+                    .is_file(),
+                "Saved path is not a file"
+            );
+            check()?;
+            if self.clipboard.is_none() {
+                self.clipboard = Some(arboard::Clipboard::new().context("open clipboard")?);
+            }
+            self.clipboard
+                .as_mut()
+                .unwrap()
+                .set()
+                .file_list(&[path])
+                .context("copy file to clipboard; native contents may already have changed")
+        }
+    }
+
+    #[cfg(unix)]
+    fn finish_file_output_before_publication(&mut self) -> Result<()> {
+        self.retire_file_owner()?;
+        if let Some(service) = FILE_CLIPBOARD_SPAWNER.get() {
+            (service.quiescent)()?;
+        }
+        Ok(())
     }
 
     /// Explicit text output; retain ownership using the same native clipboard instance.
     pub fn copy_text(&mut self, text: String) -> Result<()> {
+        #[cfg(unix)]
+        self.finish_file_output_before_publication()?;
         if self.clipboard.is_none() {
             self.clipboard = Some(arboard::Clipboard::new().context("open clipboard")?);
         }
@@ -926,6 +1056,8 @@ impl ImageClipboard {
     }
 
     pub fn copy_image(&mut self, image: &image::RgbaImage) -> Result<(u32, u32)> {
+        #[cfg(unix)]
+        self.finish_file_output_before_publication()?;
         let (width, height) = image.dimensions();
         if self.clipboard.is_none() {
             self.clipboard = Some(arboard::Clipboard::new().context("open clipboard")?);
@@ -965,6 +1097,61 @@ mod tests {
         result
     }
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn file_copy_wire_admission_is_pure_and_preserves_native_bytes() {
+        use std::os::unix::ffi::OsStrExt;
+        for bytes in [
+            b"relative".as_slice(),
+            b"/nul\0path".as_slice(),
+            &[b'/'; 4097],
+        ] {
+            assert!(
+                validate_file_clipboard_path(std::path::Path::new(std::ffi::OsStr::from_bytes(
+                    bytes
+                )))
+                .is_err()
+            );
+        }
+        for bytes in [b"/native-\xff".as_slice(), &[b'/'; 4096]] {
+            validate_file_clipboard_path(std::path::Path::new(std::ffi::OsStr::from_bytes(bytes)))
+                .unwrap();
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn file_clipboard_serializes_one_native_existing_file_without_reading_pixels() -> Result<()> {
+        use std::os::unix::{ffi::OsStrExt, fs::symlink};
+        let root =
+            std::env::temp_dir().join(format!("file-clipboard-source-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&root)?;
+        let path = root.join(std::ffi::OsStr::from_bytes(b"space #?%\n-nonutf8-\xff"));
+        std::fs::write(&path, b"unchanged source")?;
+        let link = root.join("link");
+        symlink(&path, &link)?;
+        let result = (|| -> Result<()> {
+            let uri = prepare_file_clipboard_uri(&link)?;
+            assert!(!uri.contains(['\r', '\n']));
+            let crate::ClipboardSnapshot::Files { files } =
+                crate::clipboard_input::uri_files(uri.as_bytes())?
+            else {
+                unreachable!()
+            };
+            assert_eq!(files.len(), 1);
+            assert_eq!(
+                files[0].native,
+                std::fs::canonicalize(&path)?.as_os_str().as_bytes()
+            );
+            assert_eq!(std::fs::read(&path)?, b"unchanged source");
+            assert!(prepare_file_clipboard_uri(&root).is_err());
+            assert!(prepare_file_clipboard_uri(&root.join("missing")).is_err());
+            Ok(())
+        })();
+        std::fs::remove_dir_all(root)?;
+        result
+    }
 
     #[cfg(unix)]
     #[test]
@@ -1651,5 +1838,82 @@ mod encoded_input_tests {
             64 * 1024,
             "snapshot stops at the next bounded read"
         );
+    }
+
+    #[test]
+    fn opened_image_identity_rejects_same_size_in_place_change_between_snapshot_chunks()
+    -> Result<()> {
+        use std::{
+            cell::{Cell, RefCell},
+            fs::{FileTimes, OpenOptions},
+            io::{Seek, SeekFrom, Write},
+            time::{Duration, SystemTime},
+        };
+        let root = std::env::temp_dir().join(format!(
+            "screenshots-image-consumption-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir(&root)?;
+        let path = root.join("source.bmp");
+        let pixels = image::RgbaImage::from_pixel(256, 128, image::Rgba([17, 23, 29, 255]));
+        crate::save_bmp(&pixels, &path)?;
+        let result = (|| -> Result<()> {
+            let (admitted_file, expected) = crate::FileIdentity::open(&path)?;
+            let length = admitted_file.metadata()?.len();
+            assert!(length > 2 * 65536);
+            assert_eq!(load_editor_image_with_identity(&path, &expected)?, pixels);
+            let writer = RefCell::new(OpenOptions::new().write(true).open(&path)?);
+            let checkpoints = Cell::new(0u32);
+            let mutated = Cell::new(false);
+            let error = load_editor_image_with_identity_and_limit_with_cancel(
+                &path,
+                &expected,
+                crate::MAX_CAPTURE_BYTES,
+                &|| {
+                    let checkpoint = checkpoints.get() + 1;
+                    checkpoints.set(checkpoint);
+                    // Admission, decoder entry, then one checkpoint per 64 KiB read.
+                    // At four, the first chunk has been consumed and more input remains.
+                    if checkpoint == 4 {
+                        let mut file = writer.borrow_mut();
+                        file.seek(SeekFrom::Start(length - 1)).unwrap();
+                        file.write_all(&[128]).unwrap();
+                        file.set_times(
+                            FileTimes::new()
+                                .set_modified(SystemTime::UNIX_EPOCH + Duration::from_secs(1)),
+                        )
+                        .unwrap();
+                        assert_eq!(file.metadata().unwrap().len(), length);
+                        mutated.set(true);
+                    }
+                    false
+                },
+            )
+            .unwrap_err();
+            assert!(
+                mutated.get(),
+                "Fixture did not mutate during the bounded read loop"
+            );
+            assert!(
+                error.to_string().contains("changed during consumption"),
+                "{error:#}"
+            );
+            let current = crate::FileIdentity::from_file(&admitted_file)?;
+            assert!(
+                expected.same_object(&current),
+                "Fixture must keep the same native file object"
+            );
+            assert_ne!(
+                expected, current,
+                "Fixture must make the metadata change observable without timing assumptions"
+            );
+            // The modified input is valid: refusal must be the final source guard, not a codec error.
+            let changed = load_editor_image(&path)?;
+            assert_eq!(changed.dimensions(), pixels.dimensions());
+            assert_ne!(changed, pixels, "Fixture must rewrite actual pixel data");
+            Ok(())
+        })();
+        std::fs::remove_dir_all(root)?;
+        result
     }
 }

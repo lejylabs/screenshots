@@ -13,7 +13,7 @@ $Source = Join-Path $OutputDirectory 'production_source.exe'
 $Bridge = Join-Path $OutputDirectory 'production_bridge.dll'
 $Controller = Join-Path $OutputDirectory 'production_controller.exe'
 foreach ($Build in @(@('production_source.cpp', $Source, $false), @('production_bridge.cpp', $Bridge, $true), @('production_controller.cpp', $Controller, $false))) {
-    $Arguments = @('/nologo','/std:c++20','/EHsc','/W4','/O2','/D_WIN32_WINNT=0x0A00',(Join-Path $Native $Build[0]),"/Fe:$($Build[1])","/Fo:$OutputDirectory\$($Build[0]).obj",'ole32.lib','oleaut32.lib','user32.lib','psapi.lib','rpcrt4.lib','shell32.lib','uuid.lib')
+    $Arguments = @('/nologo','/std:c++20','/EHsc','/W4','/O2','/D_WIN32_WINNT=0x0A00',(Join-Path $Native $Build[0]),"/Fe:$($Build[1])","/Fo:$OutputDirectory\$($Build[0]).obj",'ole32.lib','oleaut32.lib','user32.lib','psapi.lib','rpcrt4.lib','shell32.lib','uuid.lib','gdi32.lib')
     if ($Build[2]) { $Arguments += '/LD' }
     & cl.exe @Arguments
     if ($LASTEXITCODE -ne 0) { throw "Owned native fixture compilation failed: $($Build[0])" }
@@ -22,12 +22,20 @@ $env:SCREENSHOTS_OWNED_PRODUCTION_ACCEPTANCE = '1'
 $env:SCREENSHOTS_DROP_ACCEPTANCE_DLL = $Bridge
 $env:SCREENSHOTS_DROP_ACCEPTANCE_SOURCE = $Source
 Remove-Item Env:SCREENSHOTS_DROP_ACCEPTANCE_CONTROL -ErrorAction SilentlyContinue
+foreach ($Name in @('private-formats-self-check.json','private-formats-self-check.stderr.log')) {if (Test-Path (Join-Path $OutputDirectory $Name)) {throw "Refusing to overwrite evidence: $Name"}}
+$PrivateCheck = Start-Process -FilePath $Source -ArgumentList '--private-formats-self-check' -PassThru -NoNewWindow -RedirectStandardOutput (Join-Path $OutputDirectory 'private-formats-self-check.json') -RedirectStandardError (Join-Path $OutputDirectory 'private-formats-self-check.stderr.log')
+$PrivateCheckTimedOut = -not $PrivateCheck.WaitForExit(10000)
+if ($PrivateCheckTimedOut) {$PrivateCheck.Kill(); $PrivateCheck.WaitForExit()}
+$PrivateCheck.Refresh(); $PrivateCheckProof = $null; $PrivateCheckParseError = $null
+try {$PrivateCheckProof = Get-Content -Raw (Join-Path $OutputDirectory 'private-formats-self-check.json') | ConvertFrom-Json} catch {$PrivateCheckParseError = $_.Exception.Message}
+$PrivateCheckPassed = -not $PrivateCheckTimedOut -and $PrivateCheck.ExitCode -eq 0 -and $PrivateCheckProof.private_formats_self_check -eq $true -and $PrivateCheckProof.passed -eq $true
+$PrivateCheckResult = [pscustomobject]@{passed=$PrivateCheckPassed; exit_code=$PrivateCheck.ExitCode; timed_out=$PrivateCheckTimedOut; proof=$PrivateCheckProof; parse_error=$PrivateCheckParseError}
 $Cases = @(
     'protocol-register-remove-stop','protocol-bad-auth','protocol-withheld-startup-permit',
     'protocol-job-kill-reap','protocol-broken-command-pipe','protocol-broken-response-pipe','protocol-truncated-body','protocol-bad-magic',
     'protocol-reserved-bits','protocol-overflow-length','protocol-invalid-kind',
     'protocol-skipped-sequence','protocol-parent-death',
-    'normal','custom-normal','query-stall','get-stall','release-stall','over-memory',
+    'normal','shell-private-normal','control-helper-unknown','custom-normal','query-stall','get-stall','release-stall','over-memory',
     'custom-unmarshal-stall','custom-unmarshal-memory','source-death','startup-stall','register-stall','revoke-stall','uninitialize-stall',
     'query-reenter','get-reenter','medium-reenter',
     'helper-factory-stall','helper-enter-stall','helper-drop-stall','helper-release-stall',
@@ -39,7 +47,7 @@ $Cases = @(
 )
 if ($OwnedHostedCiInputDesktop) {
     $env:SCREENSHOTS_OWNED_HOSTED_CI_INPUT = '1'
-    $Cases += @('ci-ole-normal','ci-ole-query-stall','ci-ole-get-stall','ci-ole-release-stall','ci-ole-over-memory','ci-custom-ole-normal','ci-custom-ole-unmarshal-stall','ci-custom-ole-unmarshal-memory','gpui-ole-image','ci-control-source-error','ci-control-source-none','ci-control-duplicate-acquire')
+    $Cases += @('ci-ole-normal','ci-ole-shell-private-normal','ci-ole-query-stall','ci-ole-get-stall','ci-ole-release-stall','ci-ole-over-memory','ci-custom-ole-normal','ci-custom-ole-unmarshal-stall','ci-custom-ole-unmarshal-memory','gpui-ole-image','ci-control-source-error','ci-control-source-none','ci-control-duplicate-acquire')
     Add-Type -TypeDefinition @'
 using System;
 using System.Runtime.InteropServices;
@@ -114,11 +122,12 @@ foreach ($Case in $Cases) {
         $TeardownPassed = $Expected.Count -eq 0 -or -not $Expected[0].teardown_after_initial_submit -or ($TeardownInitial.Count -eq 1 -and $TeardownFinal.Count -eq 1 -and ($Negative -or ($TeardownFinal[0].receiver_exit -eq 70 -and $TeardownFinal[0].ordered_after_close -eq $true -and $TeardownFinal[0].mandatory_injection_evidence -eq $true)))
         $NegativePassed = -not $Negative -or ($ControllerProof.negative_control_rejected -eq $true -and $ControllerProof.application_exit -eq 1 -and -not $ControllerProof.outer_timeout -and $ControllerProof.outer_job_empty -and $OmissionProof.Count -eq 1)
         $PositivePassed = $Negative -or $Expected.Count -eq 0 -or $PositiveProof.Count -eq 1
-        $OracleControl=$Case -in @('control-failed-as-leave-source-death','control-failed-as-leave-unmarshal','control-late-submit','control-noop-barrier','gpui-control-noop-busy-ack','gpui-control-noop-cancel-ack','control-wrong-terminal','control-early-failure-ack')
+        $OracleControl=$Case -in @('control-helper-unknown','control-failed-as-leave-source-death','control-failed-as-leave-unmarshal','control-late-submit','control-noop-barrier','gpui-control-noop-busy-ack','gpui-control-noop-cancel-ack','control-wrong-terminal','control-early-failure-ack')
         $SourceRule=@($SourceRules.rules|Where-Object {$_.case -eq $Case})
         $SourceControl=$SourceRule.Count -eq 1
         $OracleControl=$OracleControl -or $SourceControl
         $OracleProof=$true
+        if ($Case -eq 'control-helper-unknown') {$OracleProof=@($Proof|Where-Object {$_.native_operation_diagnostics -eq $true -and $_.failed_operation_stage -eq 4}).Count -eq 1 -and @($Proof|Where-Object {$_.shell_visual_evidence -eq $true -and $_.unknown_control_calls -eq 1 -and $_.visual_unexpected_count -eq 1 -and $_.visual_unexpected_hresult -eq -2147418113}).Count -eq 1 -and @($Proof|Where-Object {$_.source_final_oracle -eq $true -and $_.source_oracle_passed -eq $false -and $_.result_verified -eq $false -and $_.enter_effect -eq 0 -and $_.drop_returned -eq 0 -and $_.helper_gets -eq 1 -and $_.helper_releases -eq 1 -and $_.submits -eq 0 -and $_.phase_bad -eq 0 -and $_.source_natural_exit -eq $true -and $_.source_cleanup_done -eq 1}).Count -eq 1}
         if ($Case -eq 'control-late-submit') {$OracleProof=@($Proof|Where-Object {$_.completion_barrier -eq $true -and $_.barrier_acknowledged -eq $true -and $_.enters -gt 0 -and $_.submits -gt 0 -and $_.reader_submits -gt 0 -and $_.rejection_verified -eq $false}).Count -eq 1 -and @($Proof|Where-Object {$_.drop_returned -eq 1 -and $_.drop_effect -eq 1 -and $_.rejection_effect_verified -eq $false}).Count -eq 1}
         if ($Case -eq 'control-noop-barrier') {$OracleProof=@($Proof|Where-Object {$_.completion_barrier -eq $true -and $_.barrier_acknowledged -eq $false -and $_.rejection_verified -eq $false}).Count -eq 1}
         if ($Case -eq 'gpui-control-noop-busy-ack') {$OracleProof=@($Proof|Where-Object {$_.consumer_path -eq 'busy-admission' -and $_.consumer_visited -eq $true -and $_.consumer_token -gt 0 -and $_.consumer_generation -gt 0 -and $_.consumer_acknowledged -eq $false}).Count -eq 1}
@@ -152,6 +161,10 @@ foreach ($Case in $Cases) {
             $SourceRows=@($Proof|Where-Object {$_.source_final_oracle -eq $true})
             if ($SourceRows.Count) {$SourcePassed=@($SourceRows|Where-Object {$_.source_oracle_passed -ne $true}).Count -eq 0}
         }
+        if ($Case -eq 'control-helper-unknown') {$SourcePassed=$OracleProof}
+        $VisualPassed=$true
+        if ($Case -in @('normal','custom-normal','ci-ole-normal','gpui-file','gpui-image','gpui-url','gpui-ole-image')) {$VisualPassed=@($Proof|Where-Object {$_.shell_visual_evidence -eq $true -and $_.visual_format_refusals -gt 0 -and $_.private_gets -gt 0 -and $_.private_refusals -gt 0 -and $_.drag_image_initialized -eq 0}).Count -eq 1}
+        if ($Case -in @('shell-private-normal','ci-ole-shell-private-normal')) {$VisualPassed=@($Proof|Where-Object {$_.shell_visual_evidence -eq $true -and $_.drag_image_initialized -eq 1 -and $_.private_sets -gt 0 -and $_.private_gets -gt 0 -and $_.visual_format_refusals -eq 0 -and $_.private_live_slots -eq 0 -and $_.private_live_bytes -eq 0 -and $_.private_peak_slots -gt 0 -and $_.private_peak_slots -le 8 -and $_.private_peak_bytes -gt 0 -and $_.private_peak_bytes -le 262144}).Count -eq 1}
         $OrderingPassed=$true
         if ($Case -in @('ordered-enter-submit','ordered-replacement-enter-submit')) {$OrderingPassed=@($Proof|Where-Object {$_.real_enter_consumed_before_drop -eq $true -and $_.generation -gt 0}).Count -eq 1 -and @($Proof|Where-Object {$_.actual_drop_after_consumed_enter -eq $true -and $_.returned_drop_effect -eq 1 -and $_.source_reaped -eq $true -and $_.ordered_source_passed -eq $true}).Count -eq 1 -and @($Proof|Where-Object {$_.ordered_delivery -eq $true -and $_.expected_kind -eq 13 -and $_.actual_kind -eq 13 -and $_.current -eq $true}).Count -ge 1}
         if ($Case -eq 'ordered-failure-publish') {$OrderingPassed=@($Proof|Where-Object {$_.reader_reaped_before_failure_publication -eq $true -and $_.retained_enter_before_transition -eq $true -and $_.completion_pending_before_transition -eq $true -and $_.early_ack_rejected -eq $false}).Count -eq 1 -and @($Proof|Where-Object {$_.failure_publication_completed -eq $true -and $_.failure_version -gt 0}).Count -eq 1 -and @($Proof|Where-Object {$_.terminal_rejection_consumed -eq $true -and $_.terminal_kind -eq 14}).Count -eq 1}
@@ -172,7 +185,7 @@ foreach ($Case in $Cases) {
         if ($Case -eq 'same-hwnd-reclaim') {$ConsumerPassed=$ConsumerPassed -and @($Proof|Where-Object {$_.registration_wake_rejected_before_allow -eq $true -and $_.epoch -gt 1 -and $_.receiver_pid -gt 0}).Count -eq 1 -and @($Proof|Where-Object {$_.current_receiver_admitted -eq $true -and $_.epoch -gt 1 -and $_.receiver_pid -eq $_.allow_pid -and $_.allow_tid -gt 0}).Count -eq 1}
         if (-not $OracleControl -and -not $Negative -and @($Proof|Where-Object {$_.completion_barrier -eq $true}).Count) {$CompletionPassed=@($Proof|Where-Object {$_.completion_barrier -eq $true -and $_.barrier_acknowledged -eq $true -and $_.submits -eq 0 -and $_.reader_submits -eq 0 -and $_.rejection_verified -eq $true}).Count -eq 1 -and @($Proof|Where-Object {$_.terminal_rejection_consumed -eq $true -and $_.terminal_kind -in @(12,14)}).Count -eq 1}
         if ($Case -in @('source-death','custom-unmarshal-memory')) {$CompletionPassed=$CompletionPassed -and @($Proof|Where-Object {$_.terminal_rejection_consumed -eq $true -and $_.terminal_kind -eq 14}).Count -eq 1 -and @($Proof|Where-Object {$_.ordered_delivery -eq $true -and $_.expected_kind -eq 14 -and $_.actual_kind -eq 14 -and $_.current -eq $true}).Count -eq 1}
-        $Results += [pscustomobject]@{case=$Case; exit_code=$Process.ExitCode; controller=$ControllerProof; proof=$Proof; negative_control=$Negative; omitted_injection_rejected=$NegativePassed; positive_injection_proved=$PositivePassed; teardown_proved=$TeardownPassed; oracle_control_rejected=$OraclePassed; source_oracle_proved=$SourcePassed; ordering_proved=$OrderingPassed; consumer_proved=$ConsumerPassed; completion_proved=$CompletionPassed; external_desktop_restored=$null; external_input_release_verified=$null}
+        $Results += [pscustomobject]@{case=$Case; exit_code=$Process.ExitCode; controller=$ControllerProof; proof=$Proof; negative_control=$Negative; omitted_injection_rejected=$NegativePassed; positive_injection_proved=$PositivePassed; teardown_proved=$TeardownPassed; oracle_control_rejected=$OraclePassed; source_oracle_proved=$SourcePassed; shell_visual_proved=$VisualPassed; ordering_proved=$OrderingPassed; consumer_proved=$ConsumerPassed; completion_proved=$CompletionPassed; external_desktop_restored=$null; external_input_release_verified=$null}
     } catch {$PrimaryError = $_} finally {
         try {if ($Process -and -not $Process.HasExited) {$Process.Kill(); $Process.WaitForExit()}} catch {$CleanupError = $_}
         if ($Restore -ne [IntPtr]::Zero) {
@@ -215,7 +228,7 @@ $Sources = @($Files | ForEach-Object {
     $Normalized = [Text.Encoding]::UTF8.GetBytes([IO.File]::ReadAllText($_.FullName).Replace("`r`n","`n"))
     [pscustomobject]@{name=$_.Name; sha256=(Get-FileHash -Algorithm SHA256 $_.FullName).Hash.ToLowerInvariant(); lf_sha256=[Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($Normalized)).ToLowerInvariant()}
 })
-$Report = [ordered]@{status='executed-owned-ci'; fixture_revision=6; source_oracle_rules_sha256=(Get-FileHash -Algorithm SHA256 (Join-Path $PSScriptRoot 'source-oracle-rules.json')).Hash.ToLowerInvariant(); authored_case_inventory=$Cases.Count; executed_case_results=$Results.Count; assertion_matrix_sha256=(Get-FileHash -Algorithm SHA256 (Join-Path $PSScriptRoot 'assertion-matrix.json')).Hash.ToLowerInvariant(); github_run_id=$env:GITHUB_RUN_ID; github_run_attempt=$env:GITHUB_RUN_ATTEMPT; github_sha=$env:GITHUB_SHA; rustflags=$env:RUSTFLAGS; application_sha256=(Get-FileHash -Algorithm SHA256 $Application).Hash.ToLowerInvariant(); bridge_sha256=(Get-FileHash -Algorithm SHA256 $Bridge).Hash.ToLowerInvariant(); source_executable_sha256=(Get-FileHash -Algorithm SHA256 $Source).Hash.ToLowerInvariant(); controller_sha256=(Get-FileHash -Algorithm SHA256 $Controller).Hash.ToLowerInvariant(); native_sources=$Sources; windows=[Environment]::OSVersion.VersionString; owned_hosted_ci_input_opt_in=[bool]$OwnedHostedCiInputDesktop; cases=$Results; physical_hardware_acceptance=$false}
+$Report = [ordered]@{status='executed-owned-ci'; fixture_revision=6; source_oracle_rules_sha256=(Get-FileHash -Algorithm SHA256 (Join-Path $PSScriptRoot 'source-oracle-rules.json')).Hash.ToLowerInvariant(); authored_case_inventory=$Cases.Count; executed_case_results=$Results.Count; assertion_matrix_sha256=(Get-FileHash -Algorithm SHA256 (Join-Path $PSScriptRoot 'assertion-matrix.json')).Hash.ToLowerInvariant(); github_run_id=$env:GITHUB_RUN_ID; github_run_attempt=$env:GITHUB_RUN_ATTEMPT; github_sha=$env:GITHUB_SHA; rustflags=$env:RUSTFLAGS; application_sha256=(Get-FileHash -Algorithm SHA256 $Application).Hash.ToLowerInvariant(); bridge_sha256=(Get-FileHash -Algorithm SHA256 $Bridge).Hash.ToLowerInvariant(); source_executable_sha256=(Get-FileHash -Algorithm SHA256 $Source).Hash.ToLowerInvariant(); controller_sha256=(Get-FileHash -Algorithm SHA256 $Controller).Hash.ToLowerInvariant(); native_sources=$Sources; windows=[Environment]::OSVersion.VersionString; owned_hosted_ci_input_opt_in=[bool]$OwnedHostedCiInputDesktop; private_formats_self_check=$PrivateCheckResult; cases=$Results; physical_hardware_acceptance=$false}
 $Report | ConvertTo-Json -Depth 12 | Set-Content -Encoding utf8 (Join-Path $OutputDirectory 'report.json')
-$Failures = @($Results | Where-Object {$_.exit_code -ne 0 -or -not $_.controller.passed -or -not $_.controller.outer_job_empty -or -not $_.omitted_injection_rejected -or -not $_.positive_injection_proved -or -not $_.teardown_proved -or -not $_.oracle_control_rejected -or -not $_.consumer_proved -or -not $_.completion_proved -or -not $_.ordering_proved -or -not $_.source_oracle_proved -or $_.external_desktop_restored -eq $false -or $_.external_input_release_verified -eq $false})
-if ($Failures.Count) {throw 'Actual production acceptance failed; preserve all evidence and inspect report.json'}
+$Failures = @($Results | Where-Object {$_.exit_code -ne 0 -or -not $_.controller.passed -or -not $_.controller.outer_job_empty -or -not $_.omitted_injection_rejected -or -not $_.positive_injection_proved -or -not $_.teardown_proved -or -not $_.oracle_control_rejected -or -not $_.consumer_proved -or -not $_.completion_proved -or -not $_.ordering_proved -or -not $_.source_oracle_proved -or -not $_.shell_visual_proved -or $_.external_desktop_restored -eq $false -or $_.external_input_release_verified -eq $false})
+if ($Failures.Count -or -not $PrivateCheckPassed) {throw 'Actual production acceptance failed; preserve all evidence and inspect report.json'}

@@ -53,6 +53,9 @@ impl NativeCaptureCancellation {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "operation", rename_all = "snake_case", deny_unknown_fields)]
 pub enum NativeCaptureCall {
+    HideCaptureWindow {
+        window: u32,
+    },
     PortalVideo {
         request: crate::PortalVideoRequest,
     },
@@ -109,6 +112,7 @@ pub enum NativeCaptureCall {
     },
 }
 pub enum NativeCaptureReply {
+    CaptureWindowHidden,
     PortalVideo {
         summary: crate::PortalVideoSummary,
     },
@@ -333,6 +337,11 @@ impl NativeCaptureCall {
     }
     pub fn validate(&self) -> Result<(), CaptureError> {
         match self {
+            Self::HideCaptureWindow { window } => {
+                if !cfg!(target_os = "linux") || *window == 0 {
+                    return Err(invalid());
+                }
+            }
             Self::PortalVideo { request } => request.validate()?,
             Self::PortalScroll { request } => request.validate()?,
             Self::NativeDrop { source, .. } => source.validate()?,
@@ -457,6 +466,25 @@ impl NativeCaptureCall {
             return Err(invalid());
         }
         self.validate()?;
+        if let Self::HideCaptureWindow { window } = &self {
+            #[cfg(target_os = "linux")]
+            {
+                crate::capture_visibility::hide_x11_window(*window, originating_pid).map_err(
+                    |_| {
+                        CaptureError::Backend(
+                            "Native control hide acknowledgment failed; no capture was taken"
+                                .into(),
+                        )
+                    },
+                )?;
+                return Ok(NativeCaptureReply::CaptureWindowHidden);
+            }
+            #[cfg(not(target_os = "linux"))]
+            {
+                let _ = window;
+                return Err(invalid());
+            }
+        }
         if matches!(
             self,
             Self::MacVideo { .. } | Self::PortalVideo { .. } | Self::PortalScroll { .. }
@@ -538,6 +566,9 @@ impl NativeCaptureCall {
                 | Self::Desktop { .. }
         );
         #[cfg(target_os = "macos")]
+        let _app_exclusion =
+            native_pixels.then(|| crate::capture_macos_sck::AppExclusion::new(originating_pid));
+        #[cfg(target_os = "macos")]
         if native_pixels {
             crate::capture_macos_ax::screen_permission().map_err(|error| {
                 error
@@ -584,6 +615,9 @@ impl NativeCaptureCall {
         let backend =
             XcapBackend::new(std::path::PathBuf::new()).with_originating_process(originating_pid);
         let reply = match &self {
+            Self::HideCaptureWindow { .. } => {
+                unreachable!("Visibility precedes source enumeration")
+            }
             Self::Inventory => NativeCaptureReply::Inventory(NativeSourceInventory {
                 displays: backend.list_displays(),
                 windows: backend.list_windows(),
@@ -651,6 +685,7 @@ impl NativeCaptureCall {
 
     pub fn validate_reply(&self, reply: &NativeCaptureReply) -> Result<(), CaptureError> {
         match (self, reply) {
+            (Self::HideCaptureWindow { .. }, NativeCaptureReply::CaptureWindowHidden) => Ok(()),
             (Self::PortalVideo { request }, NativeCaptureReply::PortalVideo { summary }) => {
                 summary.validate(*request)
             }

@@ -730,6 +730,9 @@ fn execute(
     )
 }
 fn operation_timeout(call: &NativeCaptureCall) -> Duration {
+    if matches!(call, NativeCaptureCall::HideCaptureWindow { .. }) {
+        return Duration::from_secs(3);
+    }
     if let NativeCaptureCall::PortalVideo { request } = call {
         return Duration::from_secs(150 + u64::from(request.seconds));
     }

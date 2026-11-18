@@ -3,8 +3,8 @@ use super::*;
 use calloop::timer::{TimeoutAction, Timer};
 use gpui::{ExternalDragPayload, FileDragPaths};
 use std::{ffi::c_void, ptr, sync::Arc};
-use x11rb::{COPY_FROM_PARENT, NONE, x11_utils::TryParse};
 use x11rb::protocol::xinput::{self, ConnectionExt as _};
+use x11rb::{COPY_FROM_PARENT, NONE, x11_utils::TryParse};
 
 const GESTURE_TIMEOUT: Duration = Duration::from_secs(30);
 const DROP_TIMEOUT: Duration = Duration::from_secs(4);
@@ -313,7 +313,9 @@ impl Drag {
                         xproto::GrabMode::ASYNC,
                         xproto::GrabMode::ASYNC,
                         xinput::GrabOwner::NO_OWNER,
-                        &[u32::from(xinput::XIEventMask::BUTTON_RELEASE | xinput::XIEventMask::MOTION)]
+                        &[u32::from(
+                            xinput::XIEventMask::BUTTON_RELEASE | xinput::XIEventMask::MOTION
+                        )]
                     ),
                     Kind::PointerGrab
                 );
@@ -535,7 +537,9 @@ impl Drag {
     fn ungrab(&mut self) {
         if self.grabs {
             self.grabs = false;
-            let _ = self.connection.xinput_xi_ungrab_device(x11rb::CURRENT_TIME, self.pointer_device);
+            let _ = self
+                .connection
+                .xinput_xi_ungrab_device(x11rb::CURRENT_TIME, self.pointer_device);
             let _ = self.connection.ungrab_keyboard(x11rb::CURRENT_TIME);
             let _ = self.connection.flush();
         }
@@ -646,7 +650,9 @@ impl X11Client {
             return false;
         };
         let mut state = self.0.borrow_mut();
-        let Some((press_origin, timestamp, time, position, pointer_device)) = state.external_drag_press else {
+        let Some((press_origin, timestamp, time, position, pointer_device)) =
+            state.external_drag_press
+        else {
             return false;
         };
         if state.external_drag.is_some()
@@ -660,8 +666,15 @@ impl X11Client {
             return false;
         };
         state.external_drag_generation = generation;
-        let Some(mut drag) = Drag::begin(&state, origin, generation, timestamp, pointer_device, position, bytes)
-        else {
+        let Some(mut drag) = Drag::begin(
+            &state,
+            origin,
+            generation,
+            timestamp,
+            pointer_device,
+            position,
+            bytes,
+        ) else {
             return false;
         };
         drag.time = time;
@@ -712,7 +725,9 @@ impl X11Client {
         };
         let mut keep = true;
         let handled = match event {
-            Event::XinputMotion(event) if event.event == drag.origin && event.deviceid == drag.pointer_device => {
+            Event::XinputMotion(event)
+                if event.event == drag.origin && event.deviceid == drag.pointer_device =>
+            {
                 keep = drag.motion(
                     [(event.root_x >> 16) as i16, (event.root_y >> 16) as i16],
                     event.time,
@@ -720,7 +735,9 @@ impl X11Client {
                 true
             }
             Event::XinputButtonRelease(event)
-                if event.event == drag.origin && event.detail == 1 && event.deviceid == drag.pointer_device =>
+                if event.event == drag.origin
+                    && event.detail == 1
+                    && event.deviceid == drag.pointer_device =>
             {
                 keep = drag.release(
                     [(event.root_x >> 16) as i16, (event.root_y >> 16) as i16],

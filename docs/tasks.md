@@ -33,7 +33,9 @@ Example:
 Sources are `file` (bounded existing image loader), `display`/`window` with `id`,
 or `region` with `display,x,y,width,height`. The optional existing image recipe
 runs in memory before any action, so every output/upload uses finalized pixels.
-`primary_display`, `active_window` and `active_display` choose their native
+`desktop` captures the complete admitted [stitched desktop](desktop-composite.md)
+through its existing isolated operation; unsupported/incomplete native layouts
+fail before any action. `primary_display`, `active_window` and `active_display` choose their native
 target at invocation, with focus/process guards. `raw_file` streams an arbitrary
 file unchanged for HTTP/provider/S3 transfers; it cannot use image recipes,
 image save or image copy. `none` runs command/utility tasks without creating a
@@ -41,6 +43,14 @@ dummy screenshot. `{input}` expands to the resolved file-source path.
 Capture permissions, geometry/native limits and hard-call timeout caveats remain
 those of the existing backend. Validation cannot prove a device is available
 or an image decodes; runtime failure produces no synthetic success.
+
+Explicit `clipboard_image`, `clipboard_text` and single-reference `clipboard_file`
+sources require `allow_private_source: true`. Each execution samples the current
+private clipboard once after preparation; validation/sealing/waiting never does.
+Image and file modes reuse the corresponding image/raw-file routes. Bounded text
+uses only explicit Text SXCU upload in memory, without a plaintext temporary file.
+Read the [clipboard source/privacy contract](task-clipboard-input.md) before using
+these sources in hotkey or scheduled profiles.
 
 Actions execute in supplied order:
 

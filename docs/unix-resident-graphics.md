@@ -1,9 +1,9 @@
 # Unix resident window and graphics ownership
 
-Source candidate, 2026-11-17. Formatting has run on the held files. Compilation,
-focused regressions, native execution and optimized resource measurements have
-not run for this candidate. Earlier results in the lifecycle/native-services
-notes describe the earlier minimized-shell implementation.
+Integrated source, 2026-11-18. Optimized Linux metadata checks, all 17 focused
+resident lifecycle regressions and the private X11 graphics-owner probe pass.
+Windows GNU metadata checking also passes; this is not Windows runtime evidence.
+Whole-process memory, idle CPU and reference-hardware budgets remain open.
 
 When the singleton-owned main app has a real tray host, Close removes its native
 control and overlay windows. The existing ResidentController global owns the
@@ -85,7 +85,23 @@ controls remain the existing implementation. Window-local unsaved form inputs
 follow the existing resident retirement behavior; capture pixels and failed
 output recovery remain owned independently.
 
-## Verification to execute after integration
+## Integrated verification and remaining gates
+
+The owned authenticated Xvfb probe passed eight reopen cycles on the same native
+connection. With two windows it retained the shared graphics owner after closing
+one and retired it after closing the last; adapter vendor/device/name/backend
+identity remained stable on recreation. The optimized probe executable SHA256 was
+`deb678ceb68c39347f5d1b4fe96f2e87658af86a89ad04507bdc87a5e46b747d`.
+The runner isolated D-Bus, HOME/config/runtime and retained exact child ownership
+through exit/reap before deleting its runtime directory. An initial test-harness
+Quit issued before the native loop started was lost; a test-only deferred Quit
+fixed that harness failure. It was not evidence of a production GPU deadlock.
+
+The 17 lifecycle regressions include rendered Escape/Close-overlays cancellation
+with an existing hidden control and a queued Show. The two fresh final source
+reviews are clean. These checks establish ownership and functional behavior;
+dropping the graphics slot does not establish a private-memory saving. The
+previous whole-process resource failures remain unresolved until remeasurement.
 
 Use the exact integrated source and optimized binaries. Root integration owns
 Cargo and native execution. Do not run these native probes on the user's session.

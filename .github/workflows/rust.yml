@@ -87,6 +87,7 @@ jobs:
           }
           Copy-Item -Recurse target/sharex-helper/publish/win-x64 target/release-fast/lib/screenshots-sxcu
       - name: Build actual instrumented application
+        id: application_build
         shell: pwsh
         run: |
           $env:RUSTFLAGS = '--cfg screenshots_native_drop_acceptance --check-cfg=cfg(screenshots_native_drop_acceptance)'
@@ -98,6 +99,17 @@ jobs:
           $Parameters = @{Application=(Resolve-Path target/release-fast/screenshots.exe).Path; OutputDirectory=(Join-Path $PWD 'target/production-drop-results')}
           if ('true' -eq 'true') {$Parameters.OwnedHostedCiInputDesktop=$true}
           & ./verification/windows-production-native-fixture/run.ps1 @Parameters
+      - name: Verify owned native GDI raster and controlled document faults
+        if: ${{ always() && steps.application_build.outcome == 'success' }}
+        shell: pwsh
+        run: |
+          $env:RUSTFLAGS = '--cfg screenshots_native_drop_acceptance --check-cfg=cfg(screenshots_native_drop_acceptance)'
+          $Listed = @(cargo test --locked --profile release-fast -p app-core --lib -j 2 windows_owned_gdi_ -- --ignored --list)
+          if ($LASTEXITCODE -ne 0) {exit $LASTEXITCODE}
+          if (@($Listed | Where-Object {$_.Trim() -match 'windows_owned_gdi_.*: test$'}).Count -ne 2) {throw 'Both owned GDI cases must be selected'}
+          New-Item -ItemType Directory -Force target/production-drop-results | Out-Null
+          cargo test --locked --profile release-fast -p app-core --lib -j 2 windows_owned_gdi_ -- --ignored --test-threads=1 --nocapture 2>&1 | Tee-Object -FilePath target/production-drop-results/owned-gdi.log
+          if ($LASTEXITCODE -ne 0) {exit $LASTEXITCODE}
       - uses: actions/cache/save@v4
         if: ${{ always() && steps.application_cache.outputs.cache-hit != 'true' }}
         with:

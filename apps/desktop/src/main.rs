@@ -18,6 +18,8 @@ mod desktop_integration;
 #[cfg(target_os = "linux")]
 mod desktop_services_process;
 mod editor_document;
+#[cfg(unix)]
+mod file_clipboard;
 mod file_logging;
 mod gif_assembly;
 mod hash_file;
@@ -102,6 +104,10 @@ fn main() {
             if windows_drop_spawn::try_child(arguments)? {
                 return Ok(true);
             }
+            #[cfg(unix)]
+            if file_clipboard::try_child(arguments)? {
+                return Ok(true);
+            }
             if print_image::try_child(arguments)? {
                 return Ok(true);
             }
@@ -111,6 +117,8 @@ fn main() {
             #[cfg(target_os = "linux")]
             desktop_services_process::install()?;
             capture_worker::install()?;
+            #[cfg(unix)]
+            file_clipboard::install()?;
             #[cfg(any(target_os = "linux", target_os = "macos"))]
             app_ui::install_unix_native_drop_reader()?;
             #[cfg(target_os = "windows")]

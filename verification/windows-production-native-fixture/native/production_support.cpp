@@ -43,6 +43,8 @@ struct Shared {
     DWORD allow_pid,allow_tid,registration_probe_pid;
     DWORD controller_pid;
     LONG phase_helper_pid,operation_stage,failed_operation_stage,operation_hresult;
+    LONG visual_format_refusals,visual_unexpected_count,visual_unexpected_hresult,helper_unknown_control_calls,helper_unknown_inner_hresult;
+    LONG private_set_calls,private_get_calls,private_refusals,private_live_slots,private_live_bytes,private_peak_bytes,private_peak_slots,drag_image_initialized;
     DWORD phase_helper_tid;
     DWORD receiver_pid, receiver_tid, source_pid, source_tid;
     DWORD enter_pid, enter_tid, query_pid, query_tid, data_pid, data_tid, query_client_pid;
@@ -359,6 +361,22 @@ struct FormatsEnum final : IEnumFORMATETC {
 };
 struct Source final : IDataObject {
     LONG refs = 1;
+    IDataObject* private_data = nullptr;
+    struct PrivateSlot {CLIPFORMAT format{};SIZE_T bytes{};};
+    PrivateSlot private_slots[8]{};SIZE_T private_bytes=0;bool private_busy=false;
+    bool has_private(CLIPFORMAT format) const {for(const auto& item:private_slots) if(item.format==format)return true;return false;}
+    ~Source() {
+        if (private_data) private_data->Release();
+        state->private_live_slots=0;state->private_live_bytes=0;
+    }
+    bool cooperative() const {return wcsstr(scenario,L"shell-private")!=nullptr;}
+    HRESULT private_descriptor(FORMATETC* format) const {
+        if (!format || format->cfFormat<0xc000 || format->cfFormat==production_format() || format->ptd) return DV_E_FORMATETC;
+        if (format->dwAspect!=DVASPECT_CONTENT) return DV_E_DVASPECT;
+        if (format->lindex!=-1) return DV_E_LINDEX;
+        if (!(format->tymed&TYMED_HGLOBAL)) return DV_E_TYMED;
+        return S_OK;
+    }
     HRESULT STDMETHODCALLTYPE QueryInterface(REFIID iid, void** out) override {
         InterlockedIncrement(&state->source_qi_calls); AcquireSRWLockExclusive(&qi_trace_lock); state->last_source_iid = iid; ReleaseSRWLockExclusive(&qi_trace_lock);
         if (!out) return E_POINTER; *out = nullptr;
@@ -368,6 +386,7 @@ struct Source final : IDataObject {
     ULONG STDMETHODCALLTYPE AddRef() override { return InterlockedIncrement(&refs); }
     ULONG STDMETHODCALLTYPE Release() override { LONG n = InterlockedDecrement(&refs); if (!n) delete this; return n; }
     HRESULT STDMETHODCALLTYPE QueryGetData(FORMATETC* format) override {
+        if (cooperative() && format && format->cfFormat!=production_format() && SUCCEEDED(private_descriptor(format)) && private_data && has_private(format->cfFormat) && private_data->QueryGetData(format)==S_OK) return S_OK;
         bool target_entered=InterlockedCompareExchange(&state->payload_phase,0,0)==1 && state->payload_format==(format?format->cfFormat:0);
         bool selected=format && format->cfFormat==production_format() && (format->tymed&TYMED_HGLOBAL)!=0;
         if (target_entered && selected) InterlockedIncrement(&state->payload.source_selected_queries);
@@ -392,7 +411,15 @@ struct Source final : IDataObject {
     HRESULT STDMETHODCALLTYPE GetData(FORMATETC* format, STGMEDIUM* medium) override {
         if (!format || !medium) return E_POINTER;
         *medium = STGMEDIUM{};
-        if (format->cfFormat != production_format() || (format->tymed & TYMED_HGLOBAL) == 0) return DV_E_FORMATETC;
+        if (format->cfFormat != production_format()) {
+            InterlockedIncrement(&state->private_get_calls);
+            HRESULT descriptor=private_descriptor(format);
+            if (!cooperative() || FAILED(descriptor) || !private_data || !has_private(format->cfFormat)) {InterlockedIncrement(&state->private_refusals);return FAILED(descriptor)?descriptor:DV_E_FORMATETC;}
+            HRESULT result=private_data->GetData(format,medium);
+            if (FAILED(result)) InterlockedIncrement(&state->private_refusals);
+            return result;
+        }
+        if ((format->tymed & TYMED_HGLOBAL) == 0) return DV_E_FORMATETC;
         bool target_entered=InterlockedCompareExchange(&state->payload_phase,0,0)==2 && state->payload_format==format->cfFormat;
         if (target_entered) InterlockedIncrement(&state->payload.source_gets);
         else {InterlockedIncrement(&state->preflight_get_calls);InterlockedIncrement(&state->payload.outside_gets);}
@@ -425,7 +452,31 @@ struct Source final : IDataObject {
     }
     HRESULT STDMETHODCALLTYPE GetDataHere(FORMATETC*, STGMEDIUM*) override { return E_NOTIMPL; }
     HRESULT STDMETHODCALLTYPE GetCanonicalFormatEtc(FORMATETC*, FORMATETC* out) override { if (out) out->ptd = nullptr; return E_NOTIMPL; }
-    HRESULT STDMETHODCALLTYPE SetData(FORMATETC*, STGMEDIUM*, BOOL) override { return E_NOTIMPL; }
+    HRESULT STDMETHODCALLTYPE SetData(FORMATETC* format, STGMEDIUM* medium, BOOL release) override {
+        InterlockedIncrement(&state->private_set_calls);
+        if (!cooperative()) {InterlockedIncrement(&state->private_refusals);return E_NOTIMPL;}
+        HRESULT descriptor=private_descriptor(format);
+        if (FAILED(descriptor)) return descriptor;
+        if (!medium || medium->tymed!=TYMED_HGLOBAL || !medium->hGlobal) return DV_E_TYMED;
+        SIZE_T bytes=GlobalSize(medium->hGlobal);
+        if (!bytes || bytes>64*1024) return STG_E_MEDIUMFULL;
+        PrivateSlot* slot=nullptr;
+        for (auto& item:private_slots) if(item.format==format->cfFormat) {slot=&item;break;}
+        if (!slot) for(auto& item:private_slots) if(!item.format) {slot=&item;break;}
+        if (!slot || private_bytes-slot->bytes+bytes>256*1024) return STG_E_MEDIUMFULL;
+        if (private_busy) return E_UNEXPECTED;
+        private_busy=true;struct StoreGuard {bool& busy;~StoreGuard(){busy=false;}} guard{private_busy};
+        if (!private_data) {HRESULT result=SHCreateDataObject(nullptr,0,nullptr,nullptr,IID_PPV_ARGS(&private_data));if(FAILED(result))return result;}
+        HRESULT result=private_data->SetData(format,medium,release);
+        if (SUCCEEDED(result)) {
+            if (!slot->format) ++state->private_live_slots;
+            private_bytes=private_bytes-slot->bytes+bytes;*slot={format->cfFormat,bytes};
+            state->private_live_bytes=static_cast<LONG>(private_bytes);
+            if (state->private_live_bytes>state->private_peak_bytes) state->private_peak_bytes=state->private_live_bytes;
+            if (state->private_live_slots>state->private_peak_slots) state->private_peak_slots=state->private_live_slots;
+        }
+        return result;
+    }
     HRESULT STDMETHODCALLTYPE EnumFormatEtc(DWORD direction, IEnumFORMATETC** out) override {
         InterlockedIncrement(&state->enum_calls);
         if (!out) return E_POINTER; *out = nullptr;
@@ -438,6 +489,20 @@ struct Source final : IDataObject {
     HRESULT STDMETHODCALLTYPE DUnadvise(DWORD) override { return OLE_E_ADVISENOTSUPPORTED; }
     HRESULT STDMETHODCALLTYPE EnumDAdvise(IEnumSTATDATA**) override { return OLE_E_ADVISENOTSUPPORTED; }
 };
+static void initialize_owned_drag_image(IDataObject* offered) {
+    if (!wcsstr(scenario,L"shell-private")) return;
+    IDragSourceHelper* helper{};require_hr(CoCreateInstance(CLSID_DragDropHelper,nullptr,CLSCTX_INPROC_SERVER,IID_PPV_ARGS(&helper)),"real owned drag-image source helper");
+    BITMAPINFO info{};info.bmiHeader.biSize=sizeof(BITMAPINFOHEADER);info.bmiHeader.biWidth=2;info.bmiHeader.biHeight=-1;info.bmiHeader.biPlanes=1;info.bmiHeader.biBitCount=32;info.bmiHeader.biCompression=BI_RGB;
+    void* pixels{};HBITMAP bitmap=CreateDIBSection(nullptr,&info,DIB_RGB_COLORS,&pixels,nullptr,0);
+    require(bitmap && pixels,"owned two-pixel drag bitmap");
+    static const BYTE rgba[]{37,23,11,255,71,59,43,255};memcpy(pixels,rgba,sizeof(rgba));
+    SHDRAGIMAGE image{{2,1},{0,0},bitmap,0xffffffff};
+    HRESULT result=helper->InitializeFromBitmap(&image,offered);
+    // On success the Shell manager owns the synthetic bitmap.
+    if (FAILED(result)) DeleteObject(bitmap);
+    helper->Release();require_hr(result,"real owned drag-image initialization");
+    InterlockedExchange(&state->drag_image_initialized,1);
+}
 #include "custom_marshal.hpp"
 struct DropSource final : IDropSource {
     LONG refs = 1;
@@ -615,6 +680,7 @@ static int source(int argc, wchar_t** argv) {
     require_hr(OleInitialize(nullptr), "source OleInitialize");
     DWORD marshal_factory = custom_source ? register_owned_unmarshaler() : 0;
     IDataObject* offered = custom_source ? static_cast<IDataObject*>(new CustomSource) : new Source; DWORD effect = DROPEFFECT_COPY;
+    initialize_owned_drag_image(offered);
     if (ole_route) {
         WNDCLASSW cls{}; cls.lpfnWndProc = source_proc; cls.hInstance = GetModuleHandleW(nullptr); cls.lpszClassName = L"ScreenshotsPrivateDropSource";
         require(RegisterClassW(&cls) != 0, "private source class");

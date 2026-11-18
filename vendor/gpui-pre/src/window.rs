@@ -3308,6 +3308,12 @@ impl Window {
         self.platform_window.set_document_path(path);
     }
 
+    /// The window's cached display identity, updated by native display notifications.
+    /// This reads no platform inventory and is safe for geometry/input callbacks.
+    pub fn display_id(&self) -> Option<DisplayId> {
+        self.display_id
+    }
+
     /// Determine the display on which the window is visible.
     pub fn display(&self, cx: &App) -> Option<Rc<dyn PlatformDisplay>> {
         cx.platform
@@ -8558,6 +8564,22 @@ mod tests {
         assert_eq!(test_window.frame_wake_count(), frame_wake_count);
     }
 
+    #[gpui::test]
+    fn test_cached_window_display_id_follows_native_move_notifications(cx: &mut TestAppContext) {
+        let window = cx.add_window(|_, _| EmptyView);
+        window.update(cx, |_, window, _| {
+            assert_eq!(window.display_id(), Some(DisplayId(1)));
+        }).unwrap();
+        cx.test_platform().connect_display(DisplayId(2), None);
+        window.update(cx, |_, window, _| {
+            assert_eq!(window.display_id(), Some(DisplayId(1)));
+        }).unwrap();
+        cx.test_window(window.into()).simulate_move_to_display(DisplayId(2));
+        window.update(cx, |_, window, _| {
+            assert_eq!(window.display_id(), Some(DisplayId(2)));
+        }).unwrap();
+    }
+
     /// App learns display state from the platform's display notifications,
     /// and a window from the platform's report of which display it is on.
     #[gpui::test]
@@ -8592,7 +8614,7 @@ mod tests {
                     window.observe_window_display(move |window, cx| {
                         window_notifications
                             .borrow_mut()
-                            .push((window.display_id, window.refresh_interval(cx)));
+                            .push((window.display_id(), window.refresh_interval(cx)));
                     })
                 }
             })

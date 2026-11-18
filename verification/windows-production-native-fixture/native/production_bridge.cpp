@@ -91,6 +91,8 @@ extern "C" __declspec(dllexport) void __cdecl acceptance_hook(unsigned code, uns
     if (code==80) {InterlockedExchange(&state->operation_stage,static_cast<LONG>(sequence));return;}
     if (code==81) {if(sequence) InterlockedExchange(&state->failed_operation_stage,state->operation_stage);return;}
     if (code==82) {state->operation_hresult=static_cast<LONG>(sequence);return;}
+    if (code==83) {if(static_cast<HRESULT>(sequence)==DV_E_FORMATETC) InterlockedIncrement(&state->visual_format_refusals);else InterlockedIncrement(&state->payload.phase_bad);return;}
+    if (code==84) {InterlockedCompareExchange(&state->visual_unexpected_hresult,static_cast<LONG>(sequence),0);InterlockedIncrement(&state->visual_unexpected_count);return;}
     if (code>=50 && code<=55) {unsigned phase=(code-50)/2+1;if ((code&1)==0) payload_begin(phase,static_cast<unsigned>(sequence));else payload_end(phase,static_cast<HRESULT>(sequence));return;}
     if (code==56) {if (sequence>0) InterlockedIncrement(&state->payload.submits);else InterlockedIncrement(&state->payload.phase_bad);return;}
     if (code==70) {mutation_applied(static_cast<unsigned>(sequence));return;}
@@ -218,6 +220,7 @@ static int finish_drive(HANDLE source_job,DWORD helper,DWORD helper_tid,LONG pri
     bool alive_after_delivery=WaitForSingleObject(exact_receiver,0)==WAIT_TIMEOUT;
     if (deferred) {std::printf("{\"teardown_validation_deferred\":true,\"helper_alive_after_delivery\":%s,\"helper_pid\":%lu}\n",alive_after_delivery?"true":"false",helper);std::fflush(stdout);}
     std::printf("{\"native_operation_diagnostics\":true,\"helper_pid\":%lu,\"phase_helper_pid\":%ld,\"current_receiver_pid\":%lu,\"operation_stage\":%ld,\"failed_operation_stage\":%ld,\"operation_hresult\":%ld}\n",helper,state->phase_helper_pid,state->receiver_pid,state->operation_stage,state->failed_operation_stage,state->operation_hresult);std::fflush(stdout);
+    std::printf("{\"shell_visual_evidence\":true,\"visual_format_refusals\":%ld,\"visual_unexpected_count\":%ld,\"visual_unexpected_hresult\":%ld,\"private_sets\":%ld,\"private_gets\":%ld,\"private_refusals\":%ld,\"private_live_slots\":%ld,\"private_live_bytes\":%ld,\"private_peak_slots\":%ld,\"private_peak_bytes\":%ld,\"drag_image_initialized\":%ld,\"unknown_control_calls\":%ld,\"unknown_inner_hresult\":%ld}\n",state->visual_format_refusals,state->visual_unexpected_count,state->visual_unexpected_hresult,state->private_set_calls,state->private_get_calls,state->private_refusals,state->private_live_slots,state->private_live_bytes,state->private_peak_slots,state->private_peak_bytes,state->drag_image_initialized,state->helper_unknown_control_calls,state->helper_unknown_inner_hresult);std::fflush(stdout);
     bool source_valid=final_source_oracle(helper,helper_tid,helper_reaped,finished,source_exit,source_natural);
     bool ok=source_valid && owned_input && no_description && positive && helper!=state->owner_pid && first && provider && allocation && (!stall || helper_reaped) && (stall || finished) && (!deferred || alive_after_delivery);
     if (expected_busy && ok) {CloseHandle(offered_process.hProcess);CloseHandle(source_job);return 0;}
@@ -255,7 +258,7 @@ extern "C" __declspec(dllexport) int __cdecl acceptance_drive() {
     ResetEvent(ready_event);
     LONG prior_queries=state->query_calls,prior_data=state->data_calls;
     source_baseline=state->payload;mutation_baseline=state->source_mutation.applied;
-    state->operation_stage=0;state->failed_operation_stage=0;state->operation_hresult=0;
+    state->operation_stage=0;state->failed_operation_stage=0;state->operation_hresult=0;state->visual_format_refusals=0;state->visual_unexpected_count=0;state->visual_unexpected_hresult=0;
     state->returned_enter=0;state->returned_enter_effect=0;state->returned_drop=0;state->returned_drop_effect=0;state->returned_drop_hresult=E_PENDING;state->source_cleanup_done=0;state->raw_ole_returned=0;state->source_adapter_applied=0;
     const auto* phase_spec=expected_injection();
     DWORD helper=startup_fault && phase_spec && state->injections[phase_spec->id].ready ? state->injections[phase_spec->id].helper_pid : state->receiver_pid;
@@ -360,14 +363,20 @@ struct ProductionHelper final : IDropTargetHelper {
             if (try_injection(id)) {InterlockedIncrement(&state->helper_reentries);injection_completed(id,actual_target->DragLeave());}
         }
     }
-    HRESULT STDMETHODCALLTYPE DragEnter(HWND hwnd, IDataObject* data, POINT* point, DWORD effect) override { fault(L"enter"); return inner->DragEnter(hwnd, data, point, effect); }
+    HRESULT STDMETHODCALLTYPE DragEnter(HWND hwnd, IDataObject* data, POINT* point, DWORD effect) override {
+        fault(L"enter");HRESULT result=inner->DragEnter(hwnd,data,point,effect);
+        wchar_t control[64]{};GetEnvironmentVariableW(L"SCREENSHOTS_DROP_ACCEPTANCE_CONTROL",control,64);
+        if(!wcscmp(control,L"helper-unknown")) {state->helper_unknown_inner_hresult=result;InterlockedIncrement(&state->helper_unknown_control_calls);return E_UNEXPECTED;}
+        return result;
+    }
     HRESULT STDMETHODCALLTYPE DragLeave() override { fault(L"leave"); return inner->DragLeave(); }
     HRESULT STDMETHODCALLTYPE DragOver(POINT* point, DWORD effect) override { fault(L"over"); return inner->DragOver(point, effect); }
     HRESULT STDMETHODCALLTYPE Drop(IDataObject* data, POINT* point, DWORD effect) override { fault(L"drop"); return inner->Drop(data, point, effect); }
     HRESULT STDMETHODCALLTYPE Show(BOOL visible) override { return inner->Show(visible); }
 };
 extern "C" __declspec(dllexport) HRESULT __cdecl acceptance_helper(IDropTargetHelper** output) {
-    if (!bridge_attached || !wcsstr(scenario, L"helper-")) return S_FALSE;
+    wchar_t control[64]{};GetEnvironmentVariableW(L"SCREENSHOTS_DROP_ACCEPTANCE_CONTROL",control,64);
+    if (!bridge_attached || (!wcsstr(scenario, L"helper-") && wcscmp(control,L"helper-unknown"))) return S_FALSE;
     if (!wcscmp(scenario,L"helper-factory-stall") && try_injection(I_HELPER_FACTORY)) Sleep(INFINITE);
     IDropTargetHelper* inner{}; HRESULT result = CoCreateInstance(CLSID_DragDropHelper, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&inner));
     if (FAILED(result)) return result;

@@ -37,6 +37,74 @@ use std::{
 unsafe extern "C" {
     static kCGColorSpaceSRGB: CFStringRef;
 }
+thread_local! {
+    static CAPTURE_OWNER: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+pub(crate) struct AppExclusion(u32);
+impl AppExclusion {
+    pub(crate) fn new(pid: u32) -> Self {
+        Self(CAPTURE_OWNER.replace(pid))
+    }
+}
+impl Drop for AppExclusion {
+    fn drop(&mut self) {
+        CAPTURE_OWNER.set(self.0);
+    }
+}
+
+/// Hides one live AppKit window without a miniaturization animation.
+/// # Safety
+/// `view` must identify the live NSView owned by the caller's GPUI window,
+/// and the caller must keep that window alive until this main-thread call returns.
+pub unsafe fn hide_macos_capture_view(view: std::ptr::NonNull<c_void>) -> Result<()> {
+    native::main_thread()?;
+    let view = unsafe { &*view.as_ptr().cast::<AnyObject>() };
+    let window: Option<Retained<AnyObject>> = unsafe { msg_send![view, window] };
+    let window = window.context("Capture control view has no native window")?;
+    unsafe {
+        let _: () = msg_send![&window, orderOut: ptr::null::<AnyObject>()];
+    }
+    let visible: Bool = unsafe { msg_send![&window, isVisible] };
+    ensure!(!visible.as_bool(), "Native capture control did not hide");
+    Ok(())
+}
+
+fn excluded_applications(content: &AnyObject) -> Result<Retained<NSArray<AnyObject>>> {
+    let applications: Retained<NSArray<AnyObject>> = unsafe { msg_send![content, applications] };
+    ensure!(
+        applications.count() <= 4096,
+        "Native shareable application inventory exceeds its bound"
+    );
+    let owner = CAPTURE_OWNER.get();
+    let mut excluded = Vec::with_capacity(2);
+    for index in 0..applications.count() {
+        let application = applications.objectAtIndex(index);
+        let pid: i32 = unsafe { msg_send![&application, processID] };
+        if crate::capture_macos_model::capture_application_excluded(pid, owner, std::process::id())
+        {
+            ensure!(
+                excluded.len() < 2,
+                "Native capture application identity is ambiguous"
+            );
+            excluded.push(application);
+        }
+    }
+    Ok(NSArray::from_retained_slice(&excluded))
+}
+
+pub(super) fn verify_legacy_app_hidden() -> Result<()> {
+    let owner = CAPTURE_OWNER.get();
+    if owner != 0 {
+        ensure!(
+            !native::windows()?
+                .iter()
+                .any(|window| window.pid == owner && window.onscreen),
+            "Originating application is still onscreen; legacy capture refused"
+        );
+    }
+    Ok(())
+}
+
 pub(super) struct Image(pub *const c_void);
 impl Drop for Image {
     fn drop(&mut self) {
@@ -282,10 +350,12 @@ impl Display {
         // SCDisplay dimensions are points, not the requested output's pixels.
         let frame: CGRect = unsafe { msg_send![&selected, frame] };
         let empty = NSArray::<AnyObject>::new();
+        let excluded = excluded_applications(&content)?;
         let allocated: Allocated<AnyObject> =
             unsafe { msg_send![class(c"SCContentFilter")?, alloc] };
-        let filter: Retained<AnyObject> =
-            unsafe { msg_send![allocated,initWithDisplay:&*selected,excludingWindows:&*empty] };
+        let filter: Retained<AnyObject> = unsafe {
+            msg_send![allocated,initWithDisplay:&*selected,excludingApplications:&*excluded,exceptingWindows:&*empty]
+        };
         let scale: f32 = unsafe { msg_send![&filter, pointPixelScale] };
         let rect: CGRect = unsafe { msg_send![&filter, contentRect] };
         let coordinates = crate::MacDisplayCoordinates::from_filter(

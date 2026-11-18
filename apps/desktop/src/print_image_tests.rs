@@ -199,6 +199,9 @@ fn spool_http_is_bounded_and_never_follows_redirects_or_authentication() -> Resu
 
 #[cfg(unix)]
 fn mock(mode: &str) -> Command {
+    if std::env::var_os("SCREENSHOTS_PRINT_TEST_TRACE").is_some() {
+        eprintln!("OWNED print mock mode={mode}");
+    }
     let mut command = Command::new("/usr/bin/python3");
     command
         .arg(
