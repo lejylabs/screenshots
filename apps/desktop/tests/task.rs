@@ -542,3 +542,22 @@ fn task_signal_after_a_completed_command_still_cleans_second_command_group() {
         std::thread::sleep(Duration::from_millis(10));
     }
 }
+
+#[test]
+fn desktop_task_validates_without_native_access_and_failure_publishes_nothing() {
+    let f = Fixture::new();
+    let profile = serde_json::json!({"version":1,"source":{"type":"desktop"},"actions":[{"type":"save","path":"out.png"}]});
+    assert_eq!(ok(f.run(&profile, "validate"))[0]["valid"], true);
+    assert!(!f.p("out.png").exists());
+    #[cfg(target_os = "linux")]
+    {
+        let result = f.run(&profile, "run");
+        assert!(!result.status.success());
+        assert!(result.stdout.is_empty());
+        assert!(!f.p("out.png").exists());
+    }
+    let mut invalid = profile;
+    invalid["source"]["id"] = "invented".into();
+    assert!(!f.run(&invalid, "validate").status.success());
+    f.no_state();
+}

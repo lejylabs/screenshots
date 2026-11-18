@@ -151,14 +151,14 @@ fn invalid_operations_never_publish_or_overwrite_output() {
     assert!(!f.run(&["upload".as_ref()]).status.success());
 }
 
-#[cfg(not(target_os = "windows"))]
+#[cfg(target_os = "linux")]
 #[test]
-fn unsupported_stitched_capture_never_creates_output() {
+fn unavailable_stitched_capture_never_creates_output() {
     let fixture = Fixture::new();
     let output = fixture.path("desktop.png");
     let result = fixture.run(&["capture".as_ref(), "desktop".as_ref(), output.as_os_str()]);
     assert!(!result.status.success());
-    assert!(String::from_utf8_lossy(&result.stderr).contains("unsupported"));
+    assert!(result.stdout.is_empty());
     assert!(!output.exists());
 }
 
