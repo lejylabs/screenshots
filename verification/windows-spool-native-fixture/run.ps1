@@ -11,6 +11,13 @@ Set-StrictMode -Version Latest
 if ($env:GITHUB_ACTIONS -cne 'true' -or $env:RUNNER_OS -cne 'Windows' -or $env:RUNNER_ENVIRONMENT -cne 'github-hosted') {throw 'Requires disposable GitHub-hosted Windows; never run on a user PC'}
 $Identity = [Security.Principal.WindowsIdentity]::GetCurrent()
 if (-not ([Security.Principal.WindowsPrincipal]::new($Identity)).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {throw 'Already elevated CI token required; no UAC or reboot is requested'}
+if ($Stage -ne 'Prepare') {
+    # A native intermediary bypasses pwsh's direct-child Windows PowerShell module-path filtering.
+    $ExpectedShellHome = [IO.Path]::Combine([Environment]::SystemDirectory,'WindowsPowerShell\v1.0')
+    if ($PSVersionTable.PSEdition -cne 'Desktop' -or $PSVersionTable.PSVersion.Major -ne 5 -or -not [string]::Equals($PSHOME.TrimEnd('\'),$ExpectedShellHome,[StringComparison]::OrdinalIgnoreCase)) {throw 'Requires the installed Windows PowerShell 5 engine'}
+    $env:PSModulePath = [IO.Path]::Combine($ExpectedShellHome,'Modules')
+    Import-Module -Name ([IO.Path]::Combine($env:PSModulePath,'Microsoft.PowerShell.Security\Microsoft.PowerShell.Security.psd1')) -ErrorAction Stop
+}
 $Sid = $Identity.User.Value
 $RunnerTemp = (Resolve-Path -LiteralPath $env:RUNNER_TEMP).Path.TrimEnd('\')
 $Drive = [IO.DriveInfo]::new([IO.Path]::GetPathRoot($RunnerTemp))
