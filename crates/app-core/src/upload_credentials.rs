@@ -3,7 +3,7 @@ use anyhow::Result;
 use anyhow::ensure;
 use zeroize::Zeroizing;
 
-fn validate_managed_target(target: &str) -> Result<()> {
+pub(crate) fn validate_managed_target(target: &str) -> Result<()> {
     ensure!(
         target.len() <= 4096 && !target.chars().any(char::is_control),
         "Credential target is invalid"
@@ -47,8 +47,7 @@ fn bearer_header(token: &str) -> Result<reqwest::header::HeaderValue> {
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
-#[path = "upload_credentials_native.rs"]
-mod native;
+use crate::native_credentials as native;
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 pub(crate) fn read_header(
@@ -57,6 +56,22 @@ pub(crate) fn read_header(
 ) -> Result<reqwest::header::HeaderValue> {
     validate_managed_target(target)?;
     let payload = native::read(target)?;
+    header_from_payload(&payload, authentication)
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub(crate) fn read_header_with_check(
+    target: &str,
+    authentication: UploadAuthentication,
+    check: &crate::NativeCaptureCheck<'_>,
+) -> Result<reqwest::header::HeaderValue> {
+    validate_managed_target(target)?;
+    let payload = native::execute(
+        crate::NativeCredentialCall::Read {
+            target: target.into(),
+        },
+        check,
+    )?;
     header_from_payload(&payload, authentication)
 }
 
@@ -102,7 +117,7 @@ const PAYLOAD_PREFIX: &[u8] = b"screenshots-upload-v1\0";
 const MAX_PAYLOAD_BYTES: usize = 8192;
 
 #[cfg(any(target_os = "linux", target_os = "macos", test))]
-fn credential_payload(
+pub(crate) fn credential_payload(
     authentication: UploadAuthentication,
     username: &str,
     secret: &str,

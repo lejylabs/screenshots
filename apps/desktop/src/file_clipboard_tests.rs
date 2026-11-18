@@ -146,6 +146,74 @@ fn owned_file_writer_child_fixture() {
         );
         return;
     }
+    if mode == "output-native" {
+        try_child(&[output::CHILD.into()]).unwrap();
+        return;
+    }
+    if mode.starts_with("output-") {
+        let (channel, nonce, _) = transport::Transport::inherited().unwrap();
+        let mut io = transport::ActiveIo {
+            transport: channel,
+            deadline: Instant::now() + Duration::from_secs(20),
+            check: &|| Ok(()),
+        };
+        if mode == "output-stall" {
+            let mut never = [0];
+            let _ = io.read_exact(&mut never);
+            return;
+        }
+        let magic = if cfg!(target_os = "macos") {
+            b"SCOUTP02"
+        } else {
+            b"SCOUTP01"
+        };
+        io.write_all(magic).unwrap();
+        io.write_all(&nonce).unwrap();
+        let mut header = [0; 42];
+        io.read_exact(&mut header).unwrap();
+        assert_eq!(&header[..8], magic);
+        assert_eq!(&header[8..24], nonce);
+        assert!(matches!(header[24], 1 | 2));
+        let length =
+            usize::try_from(u64::from_be_bytes(header[33..41].try_into().unwrap())).unwrap();
+        assert!(length <= 1024 * 1024);
+        let mut bytes = Vec::new();
+        if header[24] == 1 {
+            loop {
+                let mut count = [0; 4];
+                io.read_exact(&mut count).unwrap();
+                let count = u32::from_be_bytes(count) as usize;
+                if count == 0 {
+                    break;
+                }
+                assert!(count <= 65536 && bytes.len() + count <= 1024 * 1024);
+                let start = bytes.len();
+                bytes.resize(start + count, 0);
+                io.read_exact(&mut bytes[start..]).unwrap();
+            }
+            assert!(image::load_from_memory(&bytes).is_ok());
+        } else {
+            bytes.resize(length, 0);
+            io.read_exact(&mut bytes).unwrap();
+        }
+        #[cfg(target_os = "macos")]
+        if header[24] == 1 {
+            io.write_all(&[3]).unwrap();
+        }
+        let mut gate = [0];
+        io.read_exact(&mut gate).unwrap();
+        assert_eq!(gate, [1]);
+        if mode == "output-late" {
+            let marker = std::path::PathBuf::from(std::env::var_os("OUTPUT_STARTED").unwrap());
+            std::fs::write(&marker, b"entered-private-native-publication").unwrap();
+            std::thread::park_timeout(Duration::from_millis(500));
+            std::fs::write(marker.with_extension("published"), b"forbidden-late-result").unwrap();
+        }
+        io.write_all(&[1]).unwrap();
+        let mut retired = [0];
+        let _ = io.read(&mut retired);
+        return;
+    }
     if mode == "native" {
         try_child(&[CHILD.into()]).unwrap();
         return;
@@ -180,6 +248,12 @@ fn owned_file_writer_child_fixture() {
 fn file_owner_retains_admission_and_drop_never_waits_for_native_teardown() -> Result<()> {
     let _serial = SERIAL.lock().unwrap();
     let owner = spawn_with_command(Path::new("/owned-fixture"), false, child("provider"))?;
+    #[cfg(target_os = "linux")]
+    assert!(
+        !crate::capture_worker::reserve_signal_shutdown(),
+        "a live file owner must prevent process exit"
+    );
+    #[cfg(target_os = "linux")]
     assert!(spawn_with_command(Path::new("/owned-fixture"), false, child("provider")).is_err());
     let started = Instant::now();
     drop(owner);
@@ -534,3 +608,303 @@ fn x11_owned_file_roundtrip_uses_the_existing_isolated_native_file_reader() -> R
 #[cfg(target_os = "linux")]
 #[path = "file_clipboard_wayland_tests.rs"]
 mod wayland;
+
+#[test]
+fn image_and_text_cancellation_reap_late_providers_before_replacement() -> Result<()> {
+    let _serial = SERIAL.lock().unwrap();
+    let root = Root::new()?;
+    let image = image::RgbaImage::from_pixel(3, 2, image::Rgba([17, 31, 47, 83]));
+    for is_image in [true, false] {
+        let started = root.0.join(if is_image {
+            "image.started"
+        } else {
+            "text.started"
+        });
+        let mut command = child("output-late");
+        command.env("OUTPUT_STARTED", &started);
+        let check = || {
+            if started.exists() {
+                Err(app_core::CaptureError::NativeCanceled)
+            } else {
+                Ok(())
+            }
+        };
+        let value = if is_image {
+            app_core::NativeClipboardOutput::Image(Arc::new(image.clone()))
+        } else {
+            app_core::NativeClipboardOutput::Text("private-UTF8-ä")
+        };
+        let now = Instant::now();
+        assert!(spawn_input(Input::Output(value), false, command, &check).is_err());
+        assert!(now.elapsed() < Duration::from_secs(2));
+        assert!(
+            started.exists(),
+            "Provider never reached the native-publication boundary"
+        );
+        cleaned();
+        assert!(
+            !started.with_extension("published").exists(),
+            "Retired provider published late"
+        );
+        let owner = spawn_input(
+            Input::Output(app_core::NativeClipboardOutput::Text("replacement")),
+            false,
+            child("output-provider"),
+            &|| Ok(()),
+        )?;
+        #[cfg(target_os = "linux")]
+        assert!(
+            spawn_input(
+                Input::Output(app_core::NativeClipboardOutput::Image(Arc::new(
+                    image.clone()
+                ))),
+                false,
+                child("output-provider"),
+                &|| Ok(())
+            )
+            .is_err()
+        );
+        owner.retire()?;
+        cleaned();
+        assert!(!started.with_extension("published").exists());
+    }
+    Ok(())
+}
+#[test]
+#[ignore = "five-second private stalled output-provider fixture; never accesses a native clipboard"]
+fn image_and_text_outer_deadline_contains_a_stalled_native_setter() -> Result<()> {
+    let _serial = SERIAL.lock().unwrap();
+    let image = image::RgbaImage::new(1, 1);
+    for value in [
+        app_core::NativeClipboardOutput::Image(Arc::new(image)),
+        app_core::NativeClipboardOutput::Text("synthetic"),
+    ] {
+        let now = Instant::now();
+        let result = spawn_input(Input::Output(value), false, child("output-stall"), &|| {
+            Ok(())
+        });
+        assert!(result.is_err());
+        assert!(now.elapsed() < Duration::from_secs(6));
+        cleaned();
+    }
+    Ok(())
+}
+#[cfg(target_os = "linux")]
+fn bounded_cli(mut command: Command) -> Result<std::process::Output> {
+    let mut process = Server(
+        command
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()?,
+    );
+    let until = Instant::now() + Duration::from_secs(10);
+    loop {
+        if process.0.try_wait()?.is_some() {
+            break;
+        }
+        ensure!(
+            Instant::now() < until,
+            "Owned clipboard reader exceeded its finite deadline"
+        );
+        std::thread::park_timeout(Duration::from_millis(1));
+    }
+    let mut out = Vec::new();
+    process
+        .0
+        .stdout
+        .take()
+        .unwrap()
+        .take(65536)
+        .read_to_end(&mut out)?;
+    let mut err = Vec::new();
+    process
+        .0
+        .stderr
+        .take()
+        .unwrap()
+        .take(65536)
+        .read_to_end(&mut err)?;
+    Ok(std::process::Output {
+        status: process.0.wait()?,
+        stdout: out,
+        stderr: err,
+    })
+}
+#[cfg(target_os = "linux")]
+#[test]
+#[ignore = "private authenticated Xvfb only; SCREENSHOTS_TEST_BINARY names the optimized isolated image/text reader"]
+fn x11_owned_image_incr_and_text_paste_survive_publication_until_explicit_replacement() -> Result<()>
+{
+    let _serial = SERIAL.lock().unwrap();
+    let binary =
+        std::env::var_os("SCREENSHOTS_TEST_BINARY").context("Set SCREENSHOTS_TEST_BINARY")?;
+    let root = Root::new()?;
+    let auth = root.0.join("authority");
+    let cookie = *uuid::Uuid::new_v4().as_bytes();
+    authority(&auth, "", &cookie)?;
+    let mut server = Server(
+        Command::new("Xvfb")
+            .args([
+                "-displayfd",
+                "1",
+                "-screen",
+                "0",
+                "64x64x24",
+                "-nolisten",
+                "tcp",
+                "-auth",
+            ])
+            .arg(&auth)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()?,
+    );
+    let mut output = server.0.stdout.take().unwrap();
+    let until = Instant::now() + Duration::from_secs(5);
+    let mut display = String::new();
+    loop {
+        ensure!(
+            Instant::now() < until && display.len() < 8,
+            "Private Xvfb startup failed"
+        );
+        let mut fd = libc::pollfd {
+            fd: output.as_raw_fd(),
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        let timeout = until.saturating_duration_since(Instant::now()).as_millis() as i32;
+        ensure!(
+            unsafe { libc::poll(&mut fd, 1, timeout) } > 0,
+            "Private Xvfb startup timed out"
+        );
+        let mut byte = [0];
+        output.read_exact(&mut byte)?;
+        if byte[0] == b'\n' {
+            break;
+        }
+        ensure!(byte[0].is_ascii_digit(), "Invalid private display");
+        display.push(byte[0] as char);
+    }
+    authority(&auth, &display, &cookie)?;
+    let display = format!(":{display}");
+    let native = || {
+        let mut command = child("output-native");
+        command
+            .env("DISPLAY", &display)
+            .env("XAUTHORITY", &auth)
+            .env("XDG_SESSION_TYPE", "x11");
+        command
+    };
+    let reader = |arguments: &[&std::ffi::OsStr]| {
+        let mut command = Command::new(&binary);
+        command
+            .args(arguments)
+            .env_clear()
+            .env("DISPLAY", &display)
+            .env("XAUTHORITY", &auth)
+            .env("XDG_SESSION_TYPE", "x11");
+        command
+    };
+    let mut seed = 0x12345678u32;
+    let image = image::RgbaImage::from_fn(256, 256, |_, _| {
+        let mut pixel = [0; 4];
+        for b in &mut pixel {
+            seed ^= seed << 13;
+            seed ^= seed >> 17;
+            seed ^= seed << 5;
+            *b = seed as u8;
+        }
+        image::Rgba(pixel)
+    });
+    let owner = spawn_input(
+        Input::Output(app_core::NativeClipboardOutput::Image(Arc::new(
+            image.clone(),
+        ))),
+        false,
+        native(),
+        &|| Ok(()),
+    )?;
+    for index in 0..2 {
+        let path = root.0.join(format!("pasted-{index}.png"));
+        let result = bounded_cli(reader(&[
+            "clipboard".as_ref(),
+            "image".as_ref(),
+            path.as_os_str(),
+        ]))?;
+        ensure!(result.status.success(), "Owned X11 PNG paste failed");
+        assert!(
+            std::fs::metadata(&path)?.len() > 64 * 1024,
+            "Fixture did not exercise INCR"
+        );
+        assert_eq!(image::open(path)?.into_rgba8(), image);
+    }
+    owner.retire()?;
+    let text = "private UTF-8 ä and emoji 🐾";
+    let owner = spawn_input(
+        Input::Output(app_core::NativeClipboardOutput::Text(text)),
+        false,
+        native(),
+        &|| Ok(()),
+    )?;
+    let result = bounded_cli(reader(&["clipboard".as_ref(), "text".as_ref()]))?;
+    ensure!(result.status.success(), "Owned X11 text paste failed");
+    let app_core::ClipboardSnapshot::Text { text: pasted } =
+        serde_json::from_slice(&result.stdout)?
+    else {
+        anyhow::bail!("Wrong text representation");
+    };
+    assert_eq!(pasted, text);
+    owner.retire()?;
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn cancellation_and_deadline_leave_actual_retirement_owned_until_reap() -> Result<()> {
+    let _serial = SERIAL.lock().unwrap();
+    for canceled in [false, true] {
+        let (mut controller, provider) = std::os::unix::net::UnixStream::pair()?;
+        for stream in [&controller, &provider] {
+            stream.set_read_timeout(Some(Duration::from_secs(3)))?;
+            stream.set_write_timeout(Some(Duration::from_secs(3)))?;
+        }
+        CLEANUP_PROBE.with(|probe| {
+            *probe.borrow_mut() = Some(CleanupProbe {
+                stream: provider,
+                entered: false,
+            })
+        });
+        let owner = spawn_with_command(Path::new("/owned-fixture"), false, child("provider"))?;
+        let started = Instant::now();
+        let deadline = started
+            + if canceled {
+                Duration::from_secs(5)
+            } else {
+                Duration::from_millis(50)
+            };
+        let check = || {
+            if canceled && started.elapsed() >= Duration::from_millis(50) {
+                Err(app_core::CaptureError::NativeCanceled)
+            } else {
+                Ok(())
+            }
+        };
+        assert!(owner.retire_with_cancel(deadline, &check).is_err());
+        assert!(started.elapsed() < Duration::from_secs(1));
+        let mut marker = [0; 12];
+        controller.read_exact(&mut marker)?;
+        assert_eq!(&marker[..8], b"START001");
+        assert!(
+            BUSY.load(Ordering::Acquire),
+            "Canceled retirement released admission before actual reap"
+        );
+        assert!(spawn_with_command(Path::new("/owned-fixture"), false, child("provider")).is_err());
+        controller.write_all(&[1])?;
+        controller.read_exact(&mut marker)?;
+        assert_eq!(&marker[..8], b"REAPED01");
+        cleaned();
+    }
+    Ok(())
+}

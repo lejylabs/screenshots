@@ -828,12 +828,12 @@ impl Task {
                     }
                     Ready::CopyImage => {
                         let pixels=&frame.as_ref().context("Copy requires an image source")?.pixels;
-                        if let Some(client)=bridge.as_mut() {client.copy_image(pixels)?;} else {clipboard.copy_image(pixels)?;owns_clipboard=true;}
+                        if let Some(client)=bridge.as_mut() {client.copy_image(pixels)?;} else {clipboard.copy_shared_image_with_cancel(pixels.clone(),&|| check().map_err(|_|app_core::CaptureError::NativeCanceled))?;owns_clipboard=true;}
                         serde_json::json!({"action":"copy_image"})
                     }
                     Ready::CopyLink => {
                         let text=&upload.as_ref().context("Task upload returned no shareable link")?.url;
-                        if let Some(client)=bridge.as_mut() {client.copy_text(text)?;} else {clipboard.copy_text(text.clone())?;owns_clipboard=true;}
+                        if let Some(client)=bridge.as_mut() {client.copy_text(text)?;} else {clipboard.copy_text_with_cancel(text,&|| check().map_err(|_|app_core::CaptureError::NativeCanceled))?;owns_clipboard=true;}
                         serde_json::json!({"action":"copy_link"})
                     }
                     Ready::Command(program, args, timeout) => {

@@ -223,7 +223,6 @@ name = "app-core"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "arboard",
  "base64 0.23.1",
  "block2 0.6.2",
  "core-foundation 0.10.1",
@@ -7692,6 +7691,7 @@ dependencies = [
  "jiff",
  "libc",
  "pipewire",
+ "png 0.18.1",
  "qrcode",
  "quircs",
  "rfd",

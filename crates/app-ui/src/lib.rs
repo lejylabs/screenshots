@@ -6452,7 +6452,7 @@ impl CaptureWorkspace {
                     .background_spawn(async move {
                         let mut clipboard = clipboard.lock().map_err(|error| error.to_string())?;
                         match pixels {
-                            Some(pixels) => clipboard.copy_image(&pixels),
+                            Some(pixels) => clipboard.copy_shared_image(pixels),
                             None => clipboard.copy_saved_image(&path),
                         }
                         .map_err(|error| format!("{error:#}"))

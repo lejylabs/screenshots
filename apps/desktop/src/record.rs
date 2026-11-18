@@ -337,11 +337,17 @@ pub(crate) mod unix {
             };
             for signal in [signal_hook::consts::SIGINT, signal_hook::consts::SIGTERM] {
                 // Keep termination available after cleanup, including blocked result output.
-                let shutdown = signal_hook::flag::register_conditional_shutdown(
-                    signal,
-                    1,
-                    result.finished.clone(),
-                )?;
+                let finished = result.finished.clone();
+                let shutdown = unsafe {
+                    signal_hook::low_level::register(signal, move || {
+                        // Admission stays reserved through actual child-family reap, including drain.
+                        if finished.load(Ordering::SeqCst)
+                            && crate::capture_worker::reserve_signal_shutdown()
+                        {
+                            libc::_exit(1);
+                        }
+                    })
+                }?;
                 // Standalone commands retain termination after cleanup if result output blocks.
                 // Reused scheduled tasks are scoped: retired handlers must not kill a later run.
                 if scoped {

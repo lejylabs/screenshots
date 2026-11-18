@@ -573,11 +573,18 @@ impl Prepared {
             let mut clipboard = clipboard
                 .lock()
                 .map_err(|_| anyhow::anyhow!("Host clipboard owner is unavailable"))?;
+            let check = || {
+                if canceled.load(Ordering::SeqCst) {
+                    Err(app_core::CaptureError::NativeCanceled)
+                } else {
+                    Ok(())
+                }
+            };
             match transfer {
                 Transfer::Image(image) => {
-                    clipboard.copy_image(&image)?;
+                    clipboard.copy_shared_image_with_cancel(Arc::new(image), &check)?;
                 }
-                Transfer::Text(text) => clipboard.copy_text(text)?,
+                Transfer::Text(text) => clipboard.copy_text_with_cancel(&text, &check)?,
             }
             Ok(())
         })

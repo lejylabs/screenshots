@@ -1,9 +1,10 @@
 //! One explicit file reference, one operation-owned native writer. No startup clipboard access.
 use anyhow::{Context, Result, ensure};
+#[cfg(unix)]
+use std::path::Path;
 use std::{
     ffi::OsString,
     io::{Read, Write},
-    path::Path,
     process::{Command, Stdio},
     sync::{
         Arc,
@@ -12,6 +13,7 @@ use std::{
     },
     time::{Duration, Instant},
 };
+#[cfg(unix)]
 #[allow(dead_code)]
 #[path = "../../../crates/app-core/src/clipboard_input_budget.rs"]
 mod budget;
@@ -24,16 +26,42 @@ mod macos;
 #[allow(dead_code)]
 #[path = "capture_worker_transport.rs"]
 mod transport;
+#[cfg(unix)]
 #[allow(dead_code)]
 #[path = "capture_worker_unix.rs"]
 mod unix;
 
+#[cfg(target_os = "windows")]
+#[path = "file_clipboard_image_windows.rs"]
+mod image_windows;
+#[path = "file_clipboard_output.rs"]
+mod output;
+#[cfg(target_os = "windows")]
+#[allow(dead_code)]
+#[path = "capture_worker_windows.rs"]
+mod windows;
+#[cfg(unix)]
 const CHILD: &str = "__native-file-clipboard-worker";
+#[cfg(unix)]
 const MAGIC: &[u8; 8] = b"SCFILE01";
 const DEADLINE: Duration = Duration::from_secs(5);
 static BUSY: AtomicBool = AtomicBool::new(false);
+// Root integration: capture admission is reserved first; success is followed immediately by _exit.
+#[cfg(unix)]
+pub(crate) fn reserve_signal_shutdown() -> bool {
+    BUSY.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .is_ok()
+}
+#[cfg(all(test, target_os = "linux"))]
+pub(crate) fn release_signal_shutdown_for_test() {
+    drop(Admission);
+}
+
+static CLOSING: AtomicBool = AtomicBool::new(false);
 static COMPLETION_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 static COMPLETED: std::sync::Condvar = std::sync::Condvar::new();
+static ACTIVE_STOP: std::sync::Mutex<Option<(Arc<AtomicBool>, mpsc::SyncSender<()>)>> =
+    std::sync::Mutex::new(None);
 #[cfg(target_os = "linux")]
 static WAYLAND: AtomicBool = AtomicBool::new(false);
 struct Admission;
@@ -43,22 +71,58 @@ impl Drop for Admission {
             .lock()
             .unwrap_or_else(|poison| poison.into_inner());
         // Admission outlives Native, whose destructor returns only after actual family reap.
+        ACTIVE_STOP
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .take();
         BUSY.store(false, Ordering::Release);
         COMPLETED.notify_all();
     }
 }
-// Disconnecting this one-slot channel is nonblocking. The supervisor retains the live process.
+// Sending retirement on this one-slot channel is nonblocking. The supervisor retains the live process.
 struct Lease {
     release: Option<mpsc::SyncSender<()>>,
     completed: mpsc::Receiver<()>,
 }
 impl app_core::FileClipboardOwner for Lease {
-    fn retire(mut self: Box<Self>) -> Result<()> {
-        self.release.take();
-        self.completed
-            .recv_timeout(DEADLINE)
-            .context("File clipboard cleanup is still pending")?;
-        Ok(())
+    fn retire_with_cancel(
+        mut self: Box<Self>,
+        deadline: Instant,
+        check: &app_core::NativeCaptureCheck<'_>,
+    ) -> Result<()> {
+        if let Some(release) = self.release.take() {
+            let _ = release.try_send(());
+        }
+        loop {
+            check()?;
+            if Instant::now() >= deadline {
+                return Err(app_core::CaptureError::NativeTimeout.into());
+            }
+            match self.completed.recv_timeout(
+                deadline
+                    .saturating_duration_since(Instant::now())
+                    .min(Duration::from_millis(20)),
+            ) {
+                Ok(()) => {
+                    check()?;
+                    if Instant::now() >= deadline {
+                        return Err(app_core::CaptureError::NativeTimeout.into());
+                    }
+                    return Ok(());
+                }
+                Err(mpsc::RecvTimeoutError::Timeout) => {}
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    anyhow::bail!("Clipboard native cleanup acknowledgement is unavailable")
+                }
+            }
+        }
+    }
+}
+impl Drop for Lease {
+    fn drop(&mut self) {
+        if let Some(release) = self.release.take() {
+            let _ = release.try_send(());
+        }
     }
 }
 struct Completed(mpsc::SyncSender<()>);
@@ -68,16 +132,23 @@ impl Drop for Completed {
     }
 }
 struct Native {
+    #[cfg(unix)]
     child: std::process::Child,
+    #[cfg(unix)]
     group: i32,
-    #[cfg(test)]
+    #[cfg(target_os = "windows")]
+    child: windows::Process,
+    #[cfg(target_os = "windows")]
+    container: Arc<windows::Container>,
+    #[cfg(all(test, unix))]
     cleanup_probe: Option<tests::CleanupProbe>,
 }
 impl Drop for Native {
     fn drop(&mut self) {
-        #[cfg(test)]
+        #[cfg(all(test, unix))]
         let mut cleanup_probe = self.cleanup_probe.take();
         // Keep the waitable leader reserved through the final family signal/inspection.
+        #[cfg(unix)]
         loop {
             unix::signal_owned_group(self.group);
             #[cfg(test)]
@@ -102,35 +173,54 @@ impl Drop for Native {
             // Only active failed teardown retries; this never installs an idle service timer.
             std::thread::park_timeout(Duration::from_millis(100));
         }
+        #[cfg(target_os = "windows")]
+        loop {
+            self.container.stop();
+            self.child.kill();
+            let waited = self.child.wait().is_ok();
+            if waited && self.container.empty().is_ok_and(|empty| empty) {
+                return;
+            }
+            std::thread::park_timeout(Duration::from_millis(100));
+        }
     }
 }
 pub(crate) fn install() -> Result<()> {
     #[cfg(target_os = "linux")]
     WAYLAND.store(app_core::linux_wayland_session(), Ordering::Release);
-    app_core::install_file_clipboard_spawner(spawn, quiescent)
+    #[cfg(unix)]
+    app_core::install_file_clipboard_spawner(spawn, quiescent)?;
+    app_core::install_native_clipboard_spawner(spawn_output)
 }
+#[cfg(unix)]
 fn quiescent() -> Result<()> {
     ensure!(
         !BUSY.load(Ordering::Acquire),
-        "A file clipboard publication or cleanup is still active; no later clipboard output was attempted"
+        "A clipboard publication or cleanup is still active; no later clipboard output was attempted"
     );
     Ok(())
 }
-fn command_for_owner() -> Result<Command> {
+fn command_for_owner(child: &str) -> Result<Command> {
     #[cfg(target_os = "linux")]
     let executable = std::path::PathBuf::from("/proc/self/exe");
     #[cfg(not(target_os = "linux"))]
     let executable = std::env::current_exe()?;
     let mut command = Command::new(executable);
     command
-        .arg(CHILD)
+        .arg(child)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .env_clear();
     for (key, value) in std::env::vars_os() {
+        #[cfg(target_os = "windows")]
+        let name = key.to_str().map(str::to_ascii_uppercase);
+        #[cfg(target_os = "windows")]
+        let name = name.as_deref();
+        #[cfg(not(target_os = "windows"))]
+        let name = key.to_str();
         if matches!(
-            key.to_str(),
+            name,
             Some(
                 "HOME"
                     | "PATH"
@@ -143,6 +233,11 @@ fn command_for_owner() -> Result<Command> {
                     | "LC_ALL"
                     | "LC_CTYPE"
                     | "TMPDIR"
+                    | "SYSTEMROOT"
+                    | "WINDIR"
+                    | "TEMP"
+                    | "TMP"
+                    | "USERPROFILE"
             )
         ) {
             command.env(key, value);
@@ -151,6 +246,7 @@ fn command_for_owner() -> Result<Command> {
     // An inherited WAYLAND_SOCKET belongs to the original client; never silently reuse it or XWayland.
     Ok(command)
 }
+#[cfg(unix)]
 fn spawn(
     path: &Path,
     check: &app_core::NativeCaptureCheck<'_>,
@@ -160,9 +256,9 @@ fn spawn(
     let wayland = WAYLAND.load(Ordering::Acquire) || app_core::linux_wayland_session();
     #[cfg(not(target_os = "linux"))]
     let wayland = false;
-    spawn_with_command_checked(path, wayland, command_for_owner()?, check)
+    spawn_with_command_checked(path, wayland, command_for_owner(CHILD)?, check)
 }
-#[cfg(test)]
+#[cfg(all(test, unix))]
 fn spawn_with_command(
     path: &Path,
     wayland: bool,
@@ -170,30 +266,99 @@ fn spawn_with_command(
 ) -> Result<Box<dyn app_core::FileClipboardOwner>> {
     spawn_with_command_checked(path, wayland, command, &|| Ok(()))
 }
+#[cfg(unix)]
 fn spawn_with_command_checked(
     path: &Path,
+    wayland: bool,
+    command: Command,
+    check: &app_core::NativeCaptureCheck<'_>,
+) -> Result<Box<dyn app_core::FileClipboardOwner>> {
+    spawn_input(Input::File(path), wayland, command, check)
+}
+enum Input<'a> {
+    #[cfg(unix)]
+    File(&'a Path),
+    Output(app_core::NativeClipboardOutput<'a>),
+}
+fn spawn_output(
+    output: app_core::NativeClipboardOutput<'_>,
+    check: &app_core::NativeCaptureCheck<'_>,
+) -> Result<Box<dyn app_core::FileClipboardOwner>> {
+    #[cfg(target_os = "linux")]
+    let wayland = WAYLAND.load(Ordering::Acquire) || app_core::linux_wayland_session();
+    #[cfg(not(target_os = "linux"))]
+    let wayland = false;
+    spawn_input(
+        Input::Output(output),
+        wayland,
+        command_for_owner(output::CHILD)?,
+        check,
+    )
+}
+fn spawn_input(
+    input: Input<'_>,
     wayland: bool,
     mut command: Command,
     check: &app_core::NativeCaptureCheck<'_>,
 ) -> Result<Box<dyn app_core::FileClipboardOwner>> {
     check()?;
-    use std::os::unix::ffi::OsStrExt;
-    app_core::validate_file_clipboard_path(path)?;
+    #[cfg(unix)]
+    if let Input::File(path) = &input {
+        app_core::validate_file_clipboard_path(path)?;
+    }
+    ensure!(
+        !CLOSING.load(Ordering::Acquire),
+        "Clipboard native output is shutting down"
+    );
     ensure!(
         BUSY.compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
             .is_ok(),
-        "File clipboard owner is busy or still cleaning up"
+        "Clipboard owner is busy or still cleaning up"
     );
     let admission = Admission;
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     let cleanup_probe = tests::CLEANUP_PROBE.with(|probe| probe.borrow_mut().take());
-    let path = path.as_os_str().as_bytes().to_vec();
     let deadline = Instant::now() + DEADLINE;
+    enum OwnedInput {
+        #[cfg(unix)]
+        File(Vec<u8>),
+        Output(output::Request),
+    }
+    let input = match input {
+        #[cfg(unix)]
+        Input::File(path) => {
+            use std::os::unix::ffi::OsStrExt;
+            OwnedInput::File(path.as_os_str().as_bytes().to_vec())
+        }
+        Input::Output(value) => OwnedInput::Output(output::Request::new(value)?),
+    };
+    check()?;
+    ensure!(
+        Instant::now() < deadline,
+        "Clipboard output preparation timed out"
+    );
     let cancelled = Arc::new(AtomicBool::new(false));
     let stop = cancelled.clone();
     let (ready, response) = mpsc::sync_channel(1);
+    let image_gate = Arc::new(AtomicBool::new(false));
+    #[cfg(target_os = "windows")]
+    let worker_image_gate = image_gate.clone();
+    #[cfg(not(target_os = "windows"))]
+    let worker_image_gate = image_gate;
     let (release, retired) = mpsc::sync_channel::<()>(1);
     let (completed, completion) = mpsc::sync_channel(1);
+    *ACTIVE_STOP
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner()) = Some((cancelled.clone(), release.clone()));
+    ensure!(
+        !CLOSING.load(Ordering::Acquire),
+        "Clipboard native output is shutting down"
+    );
+    #[cfg(target_os = "windows")]
+    let owned_container: Arc<std::sync::OnceLock<Arc<windows::Container>>> =
+        Arc::new(std::sync::OnceLock::new());
+    #[cfg(target_os = "windows")]
+    let coordinator_container = owned_container.clone();
     std::thread::Builder::new()
         .name("file-clipboard-owner".into())
         .stack_size(256 * 1024)
@@ -206,22 +371,33 @@ fn spawn_with_command_checked(
                     "File publication canceled"
                 );
                 let prepared = transport::Prepared::new(&mut command)?;
-                let mut child = command
-                    .spawn()
-                    .context("Could not start file clipboard owner")?;
-                let group = match i32::try_from(child.id()) {
-                    Ok(group) => group,
-                    Err(error) => {
-                        let _ = child.kill();
-                        let _ = child.wait();
-                        return Err(error.into());
+                #[cfg(unix)]
+                let native = {
+                    let mut child = command.spawn().context("Could not start clipboard owner")?;
+                    let group = match i32::try_from(child.id()) {
+                        Ok(group) => group,
+                        Err(error) => {
+                            let _ = child.kill();
+                            let _ = child.wait();
+                            return Err(error.into());
+                        }
+                    };
+                    Native {
+                        child,
+                        group,
+                        #[cfg(test)]
+                        cleanup_probe,
                     }
                 };
-                let native = Native {
-                    child,
-                    group,
-                    #[cfg(test)]
-                    cleanup_probe,
+                #[cfg(target_os = "windows")]
+                let native = {
+                    let container = Arc::new(windows::container()?);
+                    let _ = coordinator_container.set(container.clone());
+                    if stop.load(Ordering::Acquire) || Instant::now() >= deadline {
+                        anyhow::bail!("Clipboard output canceled before process creation");
+                    }
+                    let child = windows::spawn(&command, &container, &prepared.child_handles())?;
+                    Native { child, container }
                 };
                 let (channel, nonce) = prepared.parent();
                 let check = || {
@@ -236,21 +412,29 @@ fn spawn_with_command_checked(
                     deadline,
                     check: &check,
                 };
-                let mut hello = [0; 24];
-                io.read_exact(&mut hello)?;
-                ensure!(
-                    &hello[..8] == MAGIC && hello[8..] == nonce,
-                    "File owner challenge mismatch"
-                );
-                io.write_all(MAGIC)?;
-                io.write_all(&nonce)?;
-                io.write_all(&(path.len() as u32).to_be_bytes())?;
-                io.write_all(&[u8::from(wayland)])?;
-                io.write_all(&path)?;
-                drop(path);
-                let mut ack = [0];
-                io.read_exact(&mut ack)?;
-                ensure!(ack == [1], "Native file clipboard publication failed");
+                match input {
+                    #[cfg(unix)]
+                    OwnedInput::File(path) => {
+                        let mut hello = [0; 24];
+                        io.read_exact(&mut hello)?;
+                        ensure!(
+                            &hello[..8] == MAGIC && hello[8..] == nonce,
+                            "File owner challenge mismatch"
+                        );
+                        io.write_all(MAGIC)?;
+                        io.write_all(&nonce)?;
+                        io.write_all(&(path.len() as u32).to_be_bytes())?;
+                        io.write_all(&[u8::from(wayland)])?;
+                        io.write_all(&path)?;
+                        drop(path);
+                        let mut ack = [0];
+                        io.read_exact(&mut ack)?;
+                        ensure!(ack == [1], "Native file clipboard publication failed");
+                    }
+                    OwnedInput::Output(request) => {
+                        request.exchange(wayland, &nonce, &mut io, &worker_image_gate)?
+                    }
+                }
                 check()?;
                 ensure!(
                     Instant::now() < deadline,
@@ -260,21 +444,31 @@ fn spawn_with_command_checked(
             })();
             match result {
                 Ok((native, channel)) => {
-                    if ready.send(Ok(())).is_ok() {
-                        #[cfg(target_os = "linux")]
-                        let _ = retired.recv(); // Park with zero idle wakeups until replacement/discard.
+                    #[cfg(target_os = "linux")]
+                    {
+                        if ready.send(Ok(())).is_ok() {
+                            let _ = retired.recv(); // Zero idle wakeups until replacement/discard.
+                        }
+                        drop(channel);
+                        drop(native);
                     }
-                    drop(channel);
-                    drop(native);
+                    #[cfg(not(target_os = "linux"))]
+                    {
+                        drop(channel);
+                        drop(native);
+                        let _ = ready.send(Ok(()));
+                    }
                 }
-                Err(_) => {
-                    let _ = ready.send(Err(()));
+                Err(error) => {
+                    let preparation = error.downcast_ref::<output::PreparationFailed>().is_some();
+                    let _ = ready.send(Err(preparation));
                 }
             }
             #[cfg(not(target_os = "linux"))]
             drop(retired);
         })
         .context("Could not start file clipboard supervisor")?;
+    let mut preparation_failed = false;
     let published = loop {
         if check().is_err() || Instant::now() >= deadline {
             break false;
@@ -285,7 +479,11 @@ fn spawn_with_command_checked(
                 .min(Duration::from_millis(20)),
         ) {
             Ok(Ok(())) => break check().is_ok() && Instant::now() < deadline,
-            Ok(Err(())) | Err(mpsc::RecvTimeoutError::Disconnected) => break false,
+            Ok(Err(preparation)) => {
+                preparation_failed = preparation;
+                break false;
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => break false,
             Err(mpsc::RecvTimeoutError::Timeout) => {}
         }
     };
@@ -296,21 +494,60 @@ fn spawn_with_command_checked(
         }))
     } else {
         cancelled.store(true, Ordering::Release);
+        #[cfg(target_os = "windows")]
+        if let Some(container) = owned_container.get() {
+            container.stop();
+        }
+        let _ = release.try_send(());
         drop(release);
         let _ = completion.recv_timeout(Duration::from_millis(250));
+        #[cfg(target_os = "windows")]
+        if image_gate.load(Ordering::Acquire) {
+            anyhow::bail!(
+                "Clipboard image output did not complete; PNG may already be available and DIBV5 may be missing; no retry was attempted"
+            );
+        }
+        if preparation_failed {
+            anyhow::bail!(
+                "Clipboard image preparation failed or exceeded its native resource budget; clipboard publication was not attempted"
+            );
+        }
         #[cfg(target_os = "linux")]
         if wayland {
             anyhow::bail!(
-                "Wayland file publication failed (data-control and exactly one seat required); clipboard content may already have changed"
+                "Wayland clipboard publication failed (data-control and exactly one seat required); clipboard content may already have changed"
             );
         }
         anyhow::bail!(
-            "File clipboard publication failed or timed out; clipboard content may already have changed"
+            "Clipboard publication failed or timed out; clipboard content may already have changed"
         )
     }
 }
 
 pub(crate) fn try_child(arguments: &[OsString]) -> Result<bool> {
+    if arguments.first().is_some_and(|arg| arg == output::CHILD) {
+        ensure!(
+            arguments.len() == 1,
+            "Invalid private clipboard output arguments"
+        );
+        output::serve().map_err(|_| {
+            anyhow::anyhow!(
+                "Private native clipboard output failed; contents may already have changed"
+            )
+        })?;
+        return Ok(true);
+    }
+    #[cfg(unix)]
+    {
+        legacy_child(arguments)
+    }
+    #[cfg(not(unix))]
+    {
+        Ok(false)
+    }
+}
+#[cfg(unix)]
+fn legacy_child(arguments: &[OsString]) -> Result<bool> {
     if arguments.first().is_none_or(|arg| arg != CHILD) {
         return Ok(false);
     }
@@ -364,10 +601,12 @@ pub(crate) fn try_child(arguments: &[OsString]) -> Result<bool> {
 }
 
 /// Operation-scoped self-pipe: delivery on any thread remains readable across check/poll races.
+#[cfg(unix)]
 struct HoldWake {
     read: std::os::unix::net::UnixStream,
     handlers: [Option<signal_hook::SigId>; 2],
 }
+#[cfg(unix)]
 impl HoldWake {
     fn new() -> Result<Self> {
         let (read, write) = std::os::unix::net::UnixStream::pair()?;
@@ -443,6 +682,7 @@ impl HoldWake {
         Ok(())
     }
 }
+#[cfg(unix)]
 impl Drop for HoldWake {
     fn drop(&mut self) {
         for handler in &mut self.handlers {
@@ -452,7 +692,7 @@ impl Drop for HoldWake {
         }
     }
 }
-#[cfg(test)]
+#[cfg(all(test, unix))]
 thread_local! {
     static BEFORE_HOLD_POLL: std::cell::RefCell<Option<Box<dyn FnOnce()>>> = const { std::cell::RefCell::new(None) };
 }
@@ -472,7 +712,22 @@ impl Drop for StandaloneDrain {
     }
 }
 
+/// Exit authority: wait for actual reap, never just the bounded API acknowledgement.
+pub(crate) fn drain_owned_workers() {
+    CLOSING.store(true, Ordering::Release);
+    if let Some((stop, release)) = ACTIVE_STOP
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner())
+        .as_ref()
+    {
+        stop.store(true, Ordering::Release);
+        let _ = release.try_send(());
+    }
+    drop(StandaloneDrain);
+}
+
 /// Explicit standalone lifetime, shared with the existing `clipboard` CLI route.
+#[cfg(unix)]
 pub(crate) fn command(args: &[OsString]) -> Result<()> {
     ensure!(
         args.len() == 3 && args[1] == "--hold-ms",
@@ -512,6 +767,10 @@ pub(crate) fn command(args: &[OsString]) -> Result<()> {
     Ok(())
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 #[path = "file_clipboard_tests.rs"]
 mod tests;
+
+#[cfg(all(test, target_os = "windows"))]
+#[path = "file_clipboard_windows_tests.rs"]
+mod windows_tests;

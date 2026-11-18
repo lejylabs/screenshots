@@ -304,7 +304,7 @@ impl OAuthProfile {
         };
         check()?;
         persist(
-            &NativeStore,
+            &NativeStore(check),
             &self.refresh_target,
             &self.upload_target,
             response,
@@ -492,6 +492,14 @@ impl OAuthProfile {
 
     pub fn refresh(&self, check: &dyn Fn() -> Result<()>) -> Result<OAuthOutcome> {
         check()?;
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        let bytes = native_checked(
+            crate::NativeCredentialCall::Read {
+                target: self.refresh_target.clone(),
+            },
+            check,
+        )?;
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
         let bytes = crate::read_provider_credentials(&self.refresh_target)?;
         check()?;
         let previous = Stored::decode(&bytes)?;
@@ -512,7 +520,7 @@ impl OAuthProfile {
         )?;
         let response = Token::decode(&body)?;
         persist(
-            &NativeStore,
+            &NativeStore(check),
             &self.refresh_target,
             &self.upload_target,
             response,
@@ -523,7 +531,23 @@ impl OAuthProfile {
 
     pub fn remove(&self, check: &dyn Fn() -> Result<()>) -> Result<()> {
         check()?;
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        let refresh = native_checked(
+            crate::NativeCredentialCall::Remove {
+                target: self.refresh_target.clone(),
+            },
+            check,
+        );
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        let access = native_checked(
+            crate::NativeCredentialCall::Remove {
+                target: self.upload_target.clone(),
+            },
+            check,
+        );
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
         let refresh = crate::remove_provider_credentials(&self.refresh_target);
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
         let access = crate::upload_credentials::delete(&self.upload_target);
         ensure!(
             refresh.is_ok() && access.is_ok(),
@@ -970,13 +994,56 @@ trait Store {
     fn state(&self, target: &str, payload: &[u8]) -> Result<()>;
     fn access(&self, target: &str, token: &str) -> Result<()>;
 }
-struct NativeStore;
-impl Store for NativeStore {
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn native_checked(
+    call: crate::NativeCredentialCall,
+    check: &dyn Fn() -> Result<()>,
+) -> Result<Zeroizing<Vec<u8>>> {
+    crate::native_credentials::execute(call, &|| {
+        check().map_err(|_| crate::CaptureError::NativeCanceled)
+    })
+}
+struct NativeStore<'a>(&'a dyn Fn() -> Result<()>);
+impl Store for NativeStore<'_> {
     fn state(&self, target: &str, payload: &[u8]) -> Result<()> {
-        crate::save_provider_credentials(target, payload)
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        {
+            native_checked(
+                crate::NativeCredentialCall::Write {
+                    target: target.into(),
+                    payload: Zeroizing::new(payload.to_vec()),
+                },
+                self.0,
+            )
+            .map(|_| ())
+        }
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+        {
+            (self.0)()?;
+            crate::save_provider_credentials(target, payload)
+        }
     }
     fn access(&self, target: &str, token: &str) -> Result<()> {
-        crate::upload_credentials::save(target, crate::UploadAuthentication::Bearer, "", token)
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        {
+            native_checked(
+                crate::NativeCredentialCall::Write {
+                    target: target.into(),
+                    payload: crate::upload_credentials::credential_payload(
+                        crate::UploadAuthentication::Bearer,
+                        "",
+                        token,
+                    )?,
+                },
+                self.0,
+            )
+            .map(|_| ())
+        }
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+        {
+            (self.0)()?;
+            crate::upload_credentials::save(target, crate::UploadAuthentication::Bearer, "", token)
+        }
     }
 }
 fn persist(

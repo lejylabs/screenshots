@@ -31,6 +31,7 @@ struct State {
     seat: Option<wl_seat::WlSeat>,
     seats: usize,
     globals: usize,
+    mime: Option<&'static str>,
     transfers: Vec<Transfer>,
     stopped: bool,
     events: usize,
@@ -44,7 +45,12 @@ impl State {
         !self.stopped
     }
     fn send(&mut self, mime: String, fd: OwnedFd) {
-        if !self.event() || self.transfers.len() >= 4 || !matches!(mime.as_str(), URI | COPIED) {
+        if !self.event()
+            || self.transfers.len() >= 4
+            || !(mime == self.mime.unwrap_or(URI)
+                || (self.mime.unwrap_or(URI) == URI && mime == COPIED)
+                || (self.mime == Some("text/plain;charset=utf-8") && mime == "text/plain"))
+        {
             return;
         }
         let flags = unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_GETFL) };
@@ -205,7 +211,7 @@ macro_rules! offer_dispatch {
 offer_dispatch!(ext_offer, ExtDataControlOfferV1);
 offer_dispatch!(wlr_offer, ZwlrDataControlOfferV1);
 impl State {
-    fn write_transfers(&mut self, uri: &[u8]) {
+    fn write_transfers(&mut self, uri: &Bytes) {
         self.transfers.retain_mut(|transfer| {
             if Instant::now() >= transfer.deadline {
                 return false;
@@ -219,7 +225,7 @@ impl State {
                 let data = if transfer.position < prefix.len() {
                     &prefix[transfer.position..]
                 } else {
-                    &uri[transfer.position - prefix.len()..]
+                    uri.range(transfer.position - prefix.len(), 64 * 1024)
                 };
                 match transfer.file.write(data) {
                     Ok(0) => return false,
@@ -238,12 +244,21 @@ impl State {
         });
     }
 }
+#[cfg(test)]
 pub(super) fn serve(uri: &str, io: &mut transport::ActiveIo<'_>) -> Result<()> {
+    serve_output(&Bytes::from_slice(uri.as_bytes())?, URI, io)
+}
+pub(super) fn serve_output(
+    bytes: &Bytes,
+    mime: &'static str,
+    io: &mut transport::ActiveIo<'_>,
+) -> Result<()> {
     let connection = Connection::connect_to_env()?;
     let mut queue = connection.new_event_queue::<State>();
     let qh = queue.handle();
     let _registry = connection.display().get_registry(&qh, ());
     let mut state = State {
+        mime: Some(mime),
         transfers: Vec::with_capacity(4),
         ..Default::default()
     };
@@ -261,16 +276,26 @@ pub(super) fn serve(uri: &str, io: &mut transport::ActiveIo<'_>) -> Result<()> {
     let _wlr;
     if let Some(manager) = &state.ext {
         let source = manager.create_data_source(&qh, ());
-        source.offer(URI.into());
-        source.offer(COPIED.into());
+        source.offer(mime.into());
+        if mime == URI {
+            source.offer(COPIED.into());
+        }
+        if mime == "text/plain;charset=utf-8" {
+            source.offer("text/plain".into());
+        }
         let device = manager.get_data_device(seat, &qh, ());
         device.set_selection(Some(&source));
         _ext = Some((source, device));
         _wlr = None;
     } else if let Some(manager) = &state.wlr {
         let source = manager.create_data_source(&qh, ());
-        source.offer(URI.into());
-        source.offer(COPIED.into());
+        source.offer(mime.into());
+        if mime == URI {
+            source.offer(COPIED.into());
+        }
+        if mime == "text/plain;charset=utf-8" {
+            source.offer("text/plain".into());
+        }
         let device = manager.get_data_device(seat, &qh, ());
         device.set_selection(Some(&source));
         _wlr = Some((source, device));
@@ -291,7 +316,7 @@ pub(super) fn serve(uri: &str, io: &mut transport::ActiveIo<'_>) -> Result<()> {
         if state.stopped {
             return Ok(());
         }
-        state.write_transfers(uri.as_bytes());
+        state.write_transfers(bytes);
         let writing = match connection.flush() {
             Ok(()) => false,
             Err(wayland_client::backend::WaylandError::Io(error))
@@ -392,6 +417,7 @@ mod bounds_tests {
     #[test]
     fn outbound_descriptors_are_bounded_and_expired_transfers_release_without_copying_metadata() {
         let mut state = State {
+            mime: Some(URI),
             transfers: Vec::with_capacity(4),
             ..Default::default()
         };
@@ -408,7 +434,7 @@ mod bounds_tests {
         for transfer in &mut state.transfers {
             transfer.deadline = Instant::now();
         }
-        state.write_transfers(b"file:///owned");
+        state.write_transfers(&Bytes::from_slice(b"file:///owned").unwrap());
         assert!(state.transfers.is_empty());
         for mut peer in peers {
             assert_eq!(peer.read(&mut byte).unwrap(), 0);
