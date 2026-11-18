@@ -1,5 +1,4 @@
 //! Explicit official SXCU execution. The legacy native importer remains separate.
-use crate::sharex_process::RuntimeBundle;
 use crate::upload::upload_source::{TrackedUploadReader, UploadSourceGuard, verify_transfer};
 use anyhow::{Context, Result, ensure};
 use base64::Engine;
@@ -1035,7 +1034,6 @@ struct Prepared {
     kind: Option<ShareXInputKind>,
     credential: Option<crate::UploadDestination>,
     origin: Option<String>,
-    runtime: RuntimeBundle,
 }
 #[derive(Clone)]
 pub struct ShareXPrepared(Arc<Prepared>);
@@ -1056,7 +1054,7 @@ impl ShareXPrepared {
             hash.update(bytes);
         }
         hash.update(serde_json::to_vec(&self.0.kind)?);
-        hash.update(self.0.runtime.config_digest()?);
+        hash.update(b"in-process-interpreter-v1");
         Ok(hash.finalize().into())
     }
     pub fn read(profile: &Path, kind: ShareXInputKind, options: Option<&Path>) -> Result<Self> {
@@ -1113,7 +1111,6 @@ impl ShareXPrepared {
             !metadata.literal_auth || origin.is_some(),
             "SXCU authentication requires a fixed HTTPS origin or an explicit credential_origin binding"
         );
-        let runtime = RuntimeBundle::installed()?;
         let raw = Zeroizing::new(
             std::str::from_utf8(&bytes)
                 .map_err(|_| anyhow::anyhow!("SXCU profile must be UTF-8"))?
@@ -1126,7 +1123,6 @@ impl ShareXPrepared {
             kind,
             credential,
             origin,
-            runtime,
         })))
     }
     pub fn inspect(profile: &Path, options: Option<&Path>) -> Result<Value> {
@@ -1141,7 +1137,6 @@ impl ShareXPrepared {
         let _permit = Permit::acquire()?;
         let prepared = Self::load(profile, None, options)?;
         cancel.check()?;
-        prepared.0.runtime.verify(&cancel)?;
         prepared.interpret::<Value>("inspect", "", "", None, &cancel)
     }
     fn interpret<T: for<'de> Deserialize<'de>>(
@@ -1159,7 +1154,7 @@ impl ShareXPrepared {
             serde_json::to_vec(&request.0)
                 .map_err(|_| anyhow::anyhow!("Could not encode private SXCU request"))?,
         );
-        let bytes = crate::sharex_process::interpret(&self.0.runtime, request, cancel)?;
+        let bytes = crate::sharex_interpreter::interpret(&request, cancel)?;
         #[derive(Deserialize)]
         #[serde(deny_unknown_fields)]
         struct Envelope<T> {
@@ -1660,7 +1655,6 @@ impl ShareXPrepared {
         _permit: Permit,
     ) -> Result<ShareXOutcome> {
         cancel.check()?;
-        self.0.runtime.verify(&cancel)?;
         cancel.check()?;
         let kind = self
             .0

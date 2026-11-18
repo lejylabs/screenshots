@@ -231,7 +231,10 @@ dependencies = [
  "dbus-secret-service",
  "directories",
  "dispatch2",
+ "encoding_rs",
+ "fancy-regex",
  "flate2",
+ "getrandom 0.3.4",
  "gif",
  "global-hotkey",
  "harfrust 0.15.0",
@@ -764,6 +767,15 @@ dependencies = [
 
 [[package]]
 name = "bit-set"
+version = "0.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "08807e080ed7f9d5433fa9b275196cfc35414f66a0c79d864dc51a0d825231a3"
+dependencies = [
+ "bit-vec 0.8.0",
+]
+
+[[package]]
+name = "bit-set"
 version = "0.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "09ec2f926cc3060f09db9ebc5b52823d85268d24bb917e472c0c4bea35780a7d"
@@ -779,6 +791,12 @@ checksum = "56d87354e4229f54a44f7bf2435906a4656dba36026ab6eaca629a2c436a691c"
 dependencies = [
  "bit-vec 0.10.2",
 ]
+
+[[package]]
+name = "bit-vec"
+version = "0.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5e764a1d40d510daf35e07be9eb06e75770908c27d411ee6c92109c9840eaaf7"
 
 [[package]]
 name = "bit-vec"
@@ -2173,6 +2191,17 @@ name = "fallible-streaming-iterator"
 version = "0.1.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7360491ce676a36bf9bb3c56c1aa791658183a54d2744120f27285738d90465a"
+
+[[package]]
+name = "fancy-regex"
+version = "0.19.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d301f5bf187b3c295fce6468d3875037a0bccc5f6b151c63cac2f85babf21912"
+dependencies = [
+ "bit-set 0.8.0",
+ "regex-automata",
+ "regex-syntax",
+]
 
 [[package]]
 name = "fastrand"
@@ -7717,6 +7746,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "screenshots-install"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "base64 0.23.1",
+ "crc32fast",
+ "flate2",
+ "libc",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
 name = "seahash"
 version = "4.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -10551,6 +10597,23 @@ name = "xmlwriter"
 version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ec7a2a501ed189703dba8b08142f057e887dfc4b2cc4db2d343ac6376ba3e0b9"
+
+[[package]]
+name = "xtask"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "app-core",
+ "crc32fast",
+ "flate2",
+ "libc",
+ "reqwest",
+ "screenshots-install",
+ "serde_json",
+ "tokio",
+ "toml 1.2.1+spec-1.1.0",
+ "windows-sys 0.61.2",
+]
 
 [[package]]
 name = "y4m"

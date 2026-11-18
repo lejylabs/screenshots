@@ -2,19 +2,18 @@
 
 The workspace pins Rust 1.100.0 in `rust-toolchain.toml` and commits Cargo.lock.
 Build on the intended native OS/architecture with the system dependencies listed
-in `.github/workflows/rust.yml`. Python 3.11 or newer is required for packaging.
+in `.github/workflows/rust.yml`. Packaging is Rust-only (`cargo xtask`).
 Do not use `--ignore-rust-version` or update dependencies during release builds.
 
 ```sh
 python3 scripts/test-package.py
-python3 scripts/build-sharex-helper.py --output target/release/lib/screenshots-sxcu
-python3 scripts/package.py --target x86_64-unknown-linux-gnu
+cargo xtask package --target x86_64-unknown-linux-gnu
 ```
 
-On Windows use `python scripts/package.py --target x86_64-pc-windows-msvc`.
-On an Apple Silicon Mac use `python3 scripts/package.py --target aarch64-apple-darwin`.
+On Windows use `cargo xtask package --target x86_64-pc-windows-msvc`.
+On an Apple Silicon Mac use `cargo xtask package --target aarch64-apple-darwin`.
 The target must match the installed compiler's native host. Other architectures
-require a native build and their own runtime acceptance. `--binary PATH` packages
+require a native build and their own runtime acceptance. `--binary PATH` (with `--installer PATH`) packages
 an explicitly supplied prebuilt executable instead of running Cargo; its
 provenance is recorded as prebuilt and must be verified by the caller.
 Release binaries omit debug sections; optimized development/test builds retain
@@ -52,18 +51,18 @@ history and exported images. Back up user data before upgrades or downgrades;
 older versions may not understand newer database schemas.
 
 On Linux, retain the complete extracted version folder, including `BUILD-INFO.json`
-and `lib/screenshots-sxcu`. Expose its executable through a symlink in
+and `screenshots-install`. Expose its executable through a symlink in
 `~/.local/bin`, then point the optional desktop launcher at that symlink. Copying
-only the executable breaks private-runtime discovery. Confirm that PATH resolves
+only the executable loses the build information and installer. Confirm that PATH resolves
 to the selected version. For managed user installation, invoke the archive's
-`install-user.py install PACKAGE ROOT`; its owned launcher/version layout and
+`screenshots-install install PACKAGE ROOT`; its owned launcher/version layout and
 rollback/uninstall commands are described in [desktop integration](desktop-integration.md).
 To remove a manual install, remove its own symlink/launcher and version folder;
 retain user settings, history and exported images. Autostart and authenticated
 updates require explicit commands; no periodic updater is started.
 
 Windows portable executables are unsigned. Windows may display a SmartScreen
-warning; no reputation or code-signing acceptance is claimed. The macOS portable archive retains the executable and private runtime together.
+warning; no reputation or code-signing acceptance is claimed. The macOS portable archive retains the executable and installer together.
 Native `.app`/`.pkg` development bundles are also unsigned and not notarized. It does
 not establish stable Screen Recording permissions or macOS release readiness.
 Linux session/portal support remains as documented in PLAN.md; a Linux package
@@ -83,15 +82,8 @@ install/update/uninstall using the actual extracted binary on every supported
 platform before release. Tests must isolate configuration/data/cache paths and
 must not alter the user's real clipboard or capture the desktop implicitly.
 
-The full custom-uploader helper is a private self-contained bundle under
-`lib/screenshots-sxcu`. Build it with pinned .NET SDK 10.0.404 and locked packages;
-the build script stores mutable SDK/NuGet state under `target`. Packaging
-requires its native runtime manifest, validates every regular member/hash and
-its 512-file / 256 MiB aggregate bounds, preserves executable flags and records
-the manifest hash in build info. `--sharex-runtime PATH` supplies an explicit
-build bundle; it cannot change the application's runtime search path. The
-extracted-package smoke executes its self-tests and the application's profile
-inspection, with isolated user paths and no upload.
+The custom-uploader (SXCU) interpreter runs in-process in Rust; no separate
+runtime, helper process or runtime manifest is packaged.
 
 User installs retain each version's runtime with that version. An old running
 process uses its compiled version/target folder after an upgrade. macOS bundles
@@ -144,7 +136,7 @@ native CI, signing and standard-user installation acceptance.
 
 ## Explicit identity-backed native signing
 
-`scripts/package-app.py --package ARCHIVE --output DIRECTORY --sign-profile PROFILE`
+`cargo xtask package-app --package ARCHIVE --output DIRECTORY --sign-profile PROFILE`
 uses an existing native identity and verifies requested signatures before
 publishing. Profile JSON contains public selectors only, not private keys or
 passwords. macOS optionally accepts `--notary-profile EXISTING_KEYCHAIN_PROFILE`;
@@ -156,9 +148,9 @@ Windows profiles specify version 1, platform `windows`, a 40-digit certificate
 thumbprint, exact publisher DN and HTTPS timestamp URL. The generated MSIX uses
 that publisher with proper XML escaping. macOS profiles specify version 1,
 platform `macos`, stable application/installer identity names and ten-character
-team ID. The .NET helper receives only its required allow-jit exception; nested
-native signatures are verified and their changed hashes update the runtime
-manifest/anchor. The enclosing macOS bundle records the input binary hash with
+team ID. The bundle is signed with the hardened runtime and no extra
+entitlements; signatures are verified before publication.
+The enclosing macOS bundle records the input binary hash with
 an explicit pre-bundle-signature scope; final artifact SHA and native signatures
 cover the published output without a circular resource hash.
 

@@ -29,7 +29,7 @@ packages. The explicit `--exclude-dev` flag is used for listings and checks:
 the pinned listing route does not merge every graph flag from configuration
 like the check route.
 
-`scripts/vendored-advisory-view.py` creates a separately labeled published-base
+`cargo xtask vendored-advisory-view` creates a separately labeled published-base
 advisory view. Each selected local third-party package requires a reviewed
 name/version/path mapping in `config/vendored-upstream-advisories.json`. The
 script verifies its complete regular source-byte fingerprint, downloads the

@@ -69,7 +69,7 @@ jobs:
           actual = subprocess.check_output([str(binary), "--version"], text=True).strip()
           assert actual == f"cargo-deny {version}", actual
           inputs = ["Cargo.toml", "Cargo.lock", "rust-toolchain.toml", "deny.toml", ".github/workflows/dependencies.yml",
-                    "config/vendored-upstream-advisories.json", "scripts/vendored-advisory-view.py", "scripts/test-vendored-advisory-view.py",
+                    "config/vendored-upstream-advisories.json", "xtask/src/advisory.rs", "scripts/test-vendored-advisory-view.py",
                     "scripts/test-dependency-policy-engine.py"]
           provenance = {"source_commit": os.environ["GITHUB_SHA"], "rust_toolchain": toolchain,
                         "cargo_deny": actual, "tool_source_sha256": expected,
@@ -102,7 +102,7 @@ jobs:
         run: |
           set -euo pipefail
           python3 scripts/test-vendored-advisory-view.py -v 2>&1 | tee "$SCREENSHOTS_POLICY_EVIDENCE/provenance-controls.log"
-          python3 scripts/vendored-advisory-view.py prepare \
+          cargo xtask vendored-advisory-view prepare \
             --metadata "$SCREENSHOTS_POLICY_EVIDENCE/actual-metadata.json" \
             --selected "$SCREENSHOTS_POLICY_EVIDENCE/actual-selected.json" \
             --provenance config/vendored-upstream-advisories.json --root "$PWD" --policy deny.toml \
@@ -112,7 +112,7 @@ jobs:
             --config "$SCREENSHOTS_POLICY_EVIDENCE/upstream-view/upstream-advisory-policy.toml" \
             --metadata-path "$SCREENSHOTS_POLICY_EVIDENCE/upstream-view/upstream-advisory-only-view.json" \
             list --format json --layout crate --threshold 0.93 > "$SCREENSHOTS_POLICY_EVIDENCE/projected-selected.json"
-          python3 scripts/vendored-advisory-view.py verify-selection \
+          cargo xtask vendored-advisory-view verify-selection \
             "$SCREENSHOTS_POLICY_EVIDENCE/actual-selected.json" "$SCREENSHOTS_POLICY_EVIDENCE/projected-selected.json"
           "$SCREENSHOTS_DENY_ROOT/bin/cargo-deny" --offline --locked --workspace --exclude-dev \
             --config "$SCREENSHOTS_POLICY_EVIDENCE/upstream-view/upstream-advisory-policy.toml" \

@@ -98,7 +98,8 @@ failure use fixed error descriptions without the message text.
 
 ## Installer and package artifacts
 
-`scripts/install-user.py` provides explicit `install PACKAGE ROOT`, `status ROOT`,
+`screenshots-install` (crate `apps/installer`, shipped in every portable archive)
+provides explicit `install PACKAGE ROOT`, `status ROOT`,
 `rollback ROOT`, `recover ROOT current|previous` and `uninstall ROOT`, portable
 across Linux/Windows/macOS. It validates the
 existing archive/checksum/build-info contract, bounded regular archive entries
@@ -151,8 +152,8 @@ hostile process editing the same paths during the final unlink.
 Build a real macOS `.app` bundle with Info.plist/document claims as part of
 packaging. Linux desktop launcher and Windows registry registration remain
 explicit commands; the installer does not silently enable startup or claim
-default file types. `scripts/package-app.py` constructs an actual Debian `.deb`
-with bounded ar/tar members using the Python standard library, macOS `.app`
+default file types. `cargo xtask package-app` constructs an actual Debian `.deb`
+with bounded ar/tar members written by the xtask, macOS `.app`
 archive and native `.pkg` through pkgbuild, or Windows MSIX through the installed
 SDK MakeAppx. MSIX file activation uses `--open "%1"`. The packages are unsigned
 development artifacts; a production MSIX signature must match its publisher,
@@ -192,9 +193,9 @@ to leave registration, notifications or local upgrade logic unimplemented.
 Owned source: `apps/desktop/src/desktop_integration.rs` and, if useful, private
 `desktop_integration_windows.rs`; new `apps/desktop/tests/desktop_integration.rs`.
 Root owns main/CLI/Open-image routing. Packaging changes owned here:
-`scripts/install-user.py`, `scripts/test-install-user.py`, new bundle helper
-`scripts/package-app.py`, `scripts/test-package-app.py` and generated native
-manifests. `scripts/package.py` includes the standalone installer and this
+`apps/installer`, `scripts/test-install-user.py`, bundle helper
+`xtask/src/package_app.rs`, `scripts/test-package-app.py` and generated native
+manifests. `cargo xtask package` includes the standalone installer and this
 contract; `.github/workflows/rust.yml` runs installer/native package tests and
 builds the corresponding native artifacts.
 

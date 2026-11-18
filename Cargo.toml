@@ -2,6 +2,8 @@
 resolver = "3"
 members = [
     "apps/desktop",
+    "apps/installer",
+    "xtask",
     "crates/app-core",
     "crates/app-ui",
     "crates/shared",

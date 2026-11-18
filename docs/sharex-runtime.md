@@ -6,6 +6,13 @@ Status (2026-11-17): the corrected execution source passed fresh independent
 reviews 13/14 and the focused optimized/private HTTPS checks below. Native
 platform, account and release acceptance remain separate.
 
+Status (2026-11-19): the private .NET helper was replaced by an in-process Rust
+interpreter (`crates/app-core/src/sharex_interpreter/`) that keeps the same
+request/result JSON protocol, limits and refusal codes. The C# sources, SDK
+lock, build script and packaged `lib/screenshots-sxcu` runtime are gone. Evidence
+sections below dated before this note describe the former helper and are kept
+as history; they are not claims about the Rust implementation.
+
 This work implements the published ShareX custom-uploader request and function
 inventory. It does not rename the current static importer “full compatibility”.
 The current native JSON profile and object-valued Data extension keep their
@@ -53,12 +60,12 @@ imports retain their separate existing compatibility boundary.
 
 ## Interpreter strategy
 
-Use one private, self-contained .NET console helper, invoked only for an
-explicit preparation or response-interpretation stage. It performs no upload,
-credential lookup, browser/clipboard operation, process execution, arbitrary
-file read or script evaluation. Rust retains source admission, HTTP transport,
-credential-origin checks and result/link validation. No .NET runtime is loaded
-into the desktop process and no idle worker, timer or service is created.
+An in-process Rust interpreter runs only for an explicit inspection, preparation
+or response-interpretation stage, on the caller's upload worker thread. It
+performs no upload, credential lookup, browser/clipboard operation, process
+execution, arbitrary file read or script evaluation. Rust callers retain source
+admission, HTTP transport, credential-origin checks and result/link validation.
+No helper process, idle worker, timer or service is created.
 
 A clean-room bounded scanner builds function nodes and evaluates nested calls
 and backslash escapes. Function names and aliases are case-insensitive. Each
@@ -76,19 +83,22 @@ The complete function inventory is:
 | select | Select an explicitly supplied nonempty argument; never silently choose |
 | inputbox, prompt | Explicit supplied answer, with upstream title/default metadata |
 | outputbox | Bounded explicit output event, returns an empty string |
-| json | Json.NET JToken/SelectToken JSONPath, including filters/recursive descent |
-| regex | .NET Regex.Match, full/numeric/named group and lookaround/backreference syntax |
-| xml | .NET XPathDocument/SelectSingleNode XPath 1.0 and node.Value semantics |
+| json | Json.NET-style SelectToken JSONPath: names (incl. `-`), quoted names, indexes, slices, wildcards, recursive descent, `?()` filters with `==,!=,<,<=,>,>=,=~,&&,\|\|` |
+| regex | `fancy-regex`: numeric/named groups, lookaround and backreferences |
+| xml | XPath 1.0 subset over `roxmltree` for SelectSingleNode/node.Value: axes, `@attr`, `text()`, positional and comparison predicates, common string functions |
 
-A restricted Rust selector/linear-regex approximation cannot implement that
-contract. The helper uses pinned stable Newtonsoft.Json 13.0.4 (MIT), .NET
-10.0.15 LTS and SDK 10.0.404. Json.NET selector regex uses its explicit match
-timeout; direct Regex.Match also gets an explicit timeout. XML uses a bounded
-reader with DTD/external resolution disabled. Querying an array/object as a
-scalar, a multi-result SelectToken expression, or scalar XPath where
-SelectSingleNode expects a node follows the underlying .NET API result/error.
-The parser never uses TypeNameHandling, reflection-based deserialization of
-profile types, Dynamic LINQ, scripts or user-provided assemblies.
+Json.NET reading leniency is kept where profiles rely on it (comments, unquoted
+or single-quoted names, single-quoted strings); constructors are refused. A
+multi-result SelectToken expression or an array/object read as a scalar is an
+error, `true`/`false` read as `True`/`False`, and floats follow .NET's
+round-trip formatting. Known deviations from the former .NET engines: .NET-only
+regex constructs (balancing groups, `(?'name')`, conditional groups) are
+refused; catastrophic backtracking is bounded by a one-million-step backtrack
+limit (`regex_timeout`) instead of a 100 ms timer, and patterns without
+backtracking-only syntax run on a linear engine; XPath outside the documented
+subset (unions, prefixed names, non-node results) is refused; calendar names
+are English. XML forbids DTDs. Dependency cost: `fancy-regex` (plus `bit-set`/
+`bit-vec`); `roxmltree`, `encoding_rs` and `getrandom` were already in the graph.
 
 NameParser expansion covers its published date/time/month/week, increment/base,
 random-character/GUID/word/emoji, dimension/title/process, user/domain/computer
@@ -159,42 +169,28 @@ Failures after transfer identify that a remote object may remain.
 
 ## Bounds and isolation
 
-The helper gets one request on anonymous stdin and returns one JSON result.
-No secret/frame config file or secret-bearing argv is created. No user profile,
-source path or arbitrary runtime path is accepted by the helper protocol.
-Only the trusted helper under the application's private `lib/screenshots-sxcu`
-directory is launched; no PATH/runtime discovery or profile-specified program.
+The interpreter takes one request and returns one JSON result in memory.
+No secret/frame config file, argv or child process exists. No user profile
+source path or program path is accepted by the protocol.
 
-Each helper stage is bounded to five seconds, 4 MiB stdin and 2 MiB stdout.
+Each stage is bounded to five seconds (checked during evaluation, together with
+upload cancellation), 4 MiB request and 2 MiB result.
 The request carries profile/context/answers and a base64 bounded response body,
 never streamed file bytes. Template depth is at most 16, calls at most 128, intermediate expansion at most
 2 MiB with a 16 MiB materialization budget, ordinary final fields at most 64 KiB, aggregate headers/arguments at most
 64 KiB, encoded text body at most 512 KiB, result links at most 2048 bytes and
-at most sixteen output events of 4096 bytes. Regex timeout is 100 ms per match;
-the process deadline also bounds JSONPath/XPath work. Helper exceptions produce
-fixed error codes, never expression/input/response/stack dumps.
+at most sixteen output events of 4096 bytes. Regex work is bounded by the
+backtrack limit and JSONPath/XPath results by 65536 selected nodes. Refusals
+produce fixed error codes, never expression/input/response/stack dumps.
 
-Use the existing suspended-start/Job Object pattern on Windows and a private
-process group, parent-death protection and disabled core dumps on Linux. Kill,
-reap and join bounded pipe workers before returning on failure/cancellation.
-Windows Job process memory is bounded; .NET managed heap has a 64 MiB hard
-limit on every OS. Native runtime/resident overhead is measured separately,
-not mislabeled as part of that managed-heap limit. Runtime diagnostics/profiler/
-startup-hook/shared-store/extra-dependency environment is scrubbed; fixed GC and
-diagnostics settings are then set explicitly. There is no extracted single-file
-bundle or long-lived .NET host.
-
-Expected cost is two short helper launches per request (prepare/response),
-operation-local JSON/text copies bounded above, and a separately packaged native
-runtime. Report actual startup/RSS/archive cost before declaring the runtime
-accepted. These active costs do not change the app's resident idle budgets.
+Expected cost is operation-local JSON/text copies bounded above; no process
+launch or packaged runtime. These active costs do not change the app's resident
+idle budgets. Startup/RSS has not been re-measured for the Rust interpreter.
 
 ## Files and integration ownership
 
-This implementation owns new `crates/app-core/src/sharex.rs`,
-`sharex_process.rs` and narrowly scoped Unix/Windows process modules,
-`tools/sharex-helper/` (original C#, project, exact SDK/package lock, independent
-fixtures/resources/notices), `scripts/build-sharex-helper.py`,
+This implementation owns `crates/app-core/src/sharex.rs`,
+`crates/app-core/src/sharex_interpreter/` (with its ported fixture tests),
 `scripts/test-sharex-upload.py`, focused Rust tests and this document.
 Existing `upload.rs` changes are limited to shared private source/header/result
 helpers or official-vs-legacy routing where needed; do not replace native JSON
@@ -224,14 +220,9 @@ oversized, deep, catastrophic-regex, DTD/XXE, missing-answer, wrong-origin and
 runtime-unavailable cases fail safely and before secret/network access where
 applicable. Cancellation tests verify no blocked pipe/child survives.
 
-Native CI builds the self-contained helper for win-x64, linux-x64,
-linux-arm64, osx-arm64 and osx-x64 using the pinned SDK and locked NuGet package.
-Each native runner runs helper fixtures, presence/runtime smoke checks and
-optimized Rust integration. Packaging includes every runtime file and its
-notices in a hashed manifest; archive/install/uninstall tests check those files
-and do not claim success with a missing helper. Local Linux uses the same
-published runtime for real end-to-end server tests; cross-publishing alone is
-not counted as native execution on the other four targets.
+The interpreter fixtures (ported from the former helper self-test) run as
+ordinary `cargo test -p app-core` unit tests on every CI target; no separate
+runtime build or packaging step exists.
 
 Actual private loopback HTTPS tests execute binary multipart, binary request,
 text form/JSON/XML, bodyless URL requests, all methods, response/header/link/

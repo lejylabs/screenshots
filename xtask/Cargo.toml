@@ -1,0 +1,29 @@
+[package]
+name = "xtask"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+description = "Release tooling: portable packages, native bundles, signing and dependency advisory views"
+
+[lints]
+workspace = true
+
+[dependencies]
+anyhow.workspace = true
+crc32fast = "1.5.0"
+flate2 = "=1.1.11"
+reqwest.workspace = true
+screenshots-install = { path = "../apps/installer" }
+serde_json.workspace = true
+tokio.workspace = true
+toml.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2.191"
+
+[target.'cfg(windows)'.dependencies]
+app-core.workspace = true
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_System_Registry", "Win32_System_SystemInformation"] }

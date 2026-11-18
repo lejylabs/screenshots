@@ -18,12 +18,10 @@ in profile JSON, process arguments or logs. Unknown fields/types, nonnative
 profiles and invalid identities fail before signer invocation. Inputs are bounded
 private snapshots and only package staging is mutated.
 
-Sign nested executables before the enclosing package. The private .NET apphost
-is a separate stable signing identity; its macOS entitlement is only allow-jit,
-without debugger/task access or blanket library-validation exceptions. Sign all
-bundled Mach-O native libraries with the application team, then regenerate each
-changed runtime member hash and the outer runtime-manifest anchor. Existing
-managed assemblies/notices remain covered by that manifest and package seal.
+Sign nested executables before the enclosing package. On Windows both
+`screenshots.exe` and `screenshots-install.exe` are Authenticode-signed before
+MSIX packing. The macOS bundle is signed with the hardened runtime and no
+entitlements; there is no separate managed runtime to sign.
 Preserve SDK/runtime versions and exact file inventory; never accept an unsigned
 extra loader file to make signing pass.
 
@@ -46,10 +44,10 @@ self-signed trust or a test certificate.
 
 ## Files and checks
 
-- `scripts/native-signing-windows.py`: atomic owned Job/stdio native tool runner.
-- `scripts/native-signing.py`: strict public profile admission, bounded native
-  tool calls, nested-code signing, runtime hash refresh and native verification.
-- `scripts/package-app.py`: optional profile/public publisher routing inside its
+- `xtask/src/run.rs`: owned process-group (POSIX) / kill-on-close job (Windows) native tool runner.
+- `xtask/src/sign.rs`: strict public profile admission, bounded native
+  tool calls, nested-code signing and native verification.
+- `xtask/src/package_app.rs`: optional profile/public publisher routing inside its
   existing owned staging; unsigned development mode remains explicit.
 - `scripts/test-native-signing.py`: independent synthetic signer mutation,
   manifest/anchor agreement, publisher XML escaping, entitlement scope, rejected
@@ -64,8 +62,6 @@ never call a real signer or submit a real artifact.
 
 ## Primary contracts
 
-Microsoft documents the apphost's stable identity and allow-jit requirement in
-[.NET macOS publishing](https://learn.microsoft.com/en-us/dotnet/core/deploying/macos).
 Apple's [notarization workflow](https://developer.apple.com/documentation/security/customizing-the-notarization-workflow)
 describes notarytool and stapling. Windows package certificate selection,
 file/timestamp SHA-256 and publisher agreement follow

@@ -20,9 +20,6 @@ jobs:
       - name: Use repository-pinned Rust
         run: rustup show active-toolchain
       - uses: ilammy/msvc-dev-cmd@v1
-      - uses: actions/setup-dotnet@v6
-        with:
-          dotnet-version: '10.0.404'
       - uses: actions/cache@v4
         with:
           path: |
@@ -73,16 +70,6 @@ jobs:
           key: production-drop-instrumented-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}-${{ github.sha }}
           restore-keys: |
             production-drop-instrumented-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}-
-      - name: Build existing private SXCU runtime
-        shell: pwsh
-        run: |
-          python scripts/build-sharex-helper.py --rid win-x64
-          if ($LASTEXITCODE -ne 0) {exit $LASTEXITCODE}
-          New-Item -ItemType Directory -Force target/release-fast/lib | Out-Null
-          if (Test-Path -LiteralPath target/release-fast/lib/screenshots-sxcu) {
-            Remove-Item -LiteralPath target/release-fast/lib/screenshots-sxcu -Recurse -Force
-          }
-          Copy-Item -Recurse target/sharex-helper/publish/win-x64 target/release-fast/lib/screenshots-sxcu
       - name: Compile and parse actual owned native fixtures before application execution
         shell: pwsh
         run: |

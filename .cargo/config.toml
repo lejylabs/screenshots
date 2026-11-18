@@ -1,2 +1,5 @@
 [registry]
 global-min-publish-age = "3 days"
+
+[alias]
+xtask = "run --locked -p xtask --"

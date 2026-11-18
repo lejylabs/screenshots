@@ -189,7 +189,7 @@ mod selection;
 pub use pixelation::PixelationGrid;
 mod oauth_provider;
 mod sharex;
-mod sharex_process;
+mod sharex_interpreter;
 pub use sharex::{
     ClassifiedUploadProfile, ShareXEvent, ShareXInputKind, ShareXOutcome, ShareXPrepared,
     classify_upload_profile,
