@@ -1,8 +1,11 @@
-//! Finite owned-child controller; all pasteboard work is on the child native main thread.
+//! Finite owned-child controller; all pasteboard work is on child native main threads.
 #[cfg(target_os = "macos")]
 #[allow(dead_code)]
 #[path = "../src/clipboard_input_budget.rs"]
 mod budget;
+#[cfg(target_os = "macos")]
+#[path = "support/named_pasteboard_macos.rs"]
+mod named_pasteboard;
 #[cfg(target_os = "macos")]
 #[path = "../../../apps/desktop/src/file_clipboard_macos.rs"]
 mod publisher;
@@ -20,6 +23,7 @@ struct Native {
     child: std::process::Child,
     group: i32,
     status: Option<std::process::ExitStatus>,
+    keeper: bool,
 }
 #[cfg(target_os = "macos")]
 impl Native {
@@ -50,6 +54,10 @@ impl Native {
 #[cfg(target_os = "macos")]
 impl Drop for Native {
     fn drop(&mut self) {
+        if self.keeper && self.status.is_none() {
+            drop(self.child.stdin.take());
+            let _ = self.wait("release-private-board-after-failure");
+        }
         let _ = self.reap();
     }
 }
@@ -57,11 +65,6 @@ impl Drop for Native {
 #[cfg(target_os = "macos")]
 fn main() -> anyhow::Result<()> {
     use anyhow::{Context, ensure};
-    use std::{
-        os::unix::process::CommandExt,
-        process::{Command, Stdio},
-        time::{Duration, Instant},
-    };
     const CHILD: &str = "__owned-image-text-pasteboard-native";
     let args = std::env::args_os().skip(1).collect::<Vec<_>>();
     if !args.is_empty() {
@@ -87,6 +90,9 @@ fn main() -> anyhow::Result<()> {
         "screenshots.owned-image-text-fixture.{}",
         uuid::Uuid::new_v4()
     );
+    // A custom board needs one retained native reference between writer/reader processes.
+    let mut keeper = spawn_native(&name, "keep")?;
+    keeper.ready()?;
     for mode in [
         "publish-image",
         "read-image",
@@ -98,48 +104,73 @@ fn main() -> anyhow::Result<()> {
         "publish-image",
         "read-image",
     ] {
-        let deadline = Instant::now() + Duration::from_secs(5);
-        let mut command = Command::new(std::env::current_exe()?);
-        command
-            .arg(CHILD)
-            .arg(std::process::id().to_string())
-            .arg(&name)
-            .arg(mode)
-            .env_clear()
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::inherit())
-            .process_group(0);
-        for key in ["HOME", "PATH", "LANG", "LC_ALL", "LC_CTYPE", "TMPDIR"] {
-            if let Some(value) = std::env::var_os(key) {
-                command.env(key, value);
-            }
+        spawn_native(&name, mode)?.wait(mode)?;
+    }
+    drop(keeper.child.stdin.take());
+    keeper.wait("release-private-board")?;
+    // The controller never invokes a Pasteboard/CoreFoundation publisher, reader or cleanup API.
+    println!(
+        "{{\"owned_named_pasteboard\":true,\"image_alpha\":true,\"text_replacement\":true,\"child_reaped\":true}}"
+    );
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn spawn_native(name: &str, mode: &str) -> anyhow::Result<Native> {
+    use std::{
+        os::unix::process::CommandExt,
+        process::{Command, Stdio},
+    };
+    let mut command = Command::new(std::env::current_exe()?);
+    command
+        .arg("__owned-image-text-pasteboard-native")
+        .arg(std::process::id().to_string())
+        .arg(name)
+        .arg(mode)
+        .env_clear()
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
+        .process_group(0);
+    for key in ["HOME", "PATH", "LANG", "LC_ALL", "LC_CTYPE", "TMPDIR"] {
+        if let Some(value) = std::env::var_os(key) {
+            command.env(key, value);
         }
-        let mut child = command.spawn()?;
-        let group = match i32::try_from(child.id()) {
-            Ok(group) => group,
-            Err(error) => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err(error.into());
-            }
-        };
-        let mut native = Native {
-            child,
-            group,
-            status: None,
-        };
+    }
+    let mut child = command.spawn()?;
+    let group = match i32::try_from(child.id()) {
+        Ok(group) => group,
+        Err(error) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(error.into());
+        }
+    };
+    Ok(Native {
+        child,
+        group,
+        status: None,
+        keeper: mode == "keep",
+    })
+}
+
+#[cfg(target_os = "macos")]
+impl Native {
+    fn wait(&mut self, mode: &str) -> anyhow::Result<()> {
+        use anyhow::ensure;
+        use std::time::{Duration, Instant};
+        let deadline = Instant::now() + Duration::from_secs(5);
         loop {
-            if unix::exited_without_reaping(group, false)? {
-                let status = native.reap();
+            if unix::exited_without_reaping(self.group, false)? {
+                let status = self.reap();
                 ensure!(
                     status.success(),
                     "Owned native pasteboard phase {mode} failed ({status})"
                 );
-                break;
+                return Ok(());
             }
             if Instant::now() >= deadline {
-                let _ = native.reap();
+                let _ = self.reap();
                 anyhow::bail!(
                     "Owned native pasteboard phase exceeded its five-second deadline; actual cleanup completed"
                 );
@@ -147,11 +178,44 @@ fn main() -> anyhow::Result<()> {
             std::thread::park_timeout(Duration::from_millis(5));
         }
     }
-    // The controller never invokes a Pasteboard/CoreFoundation publisher, reader or cleanup API.
-    println!(
-        "{{\"owned_named_pasteboard\":true,\"image_alpha\":true,\"text_replacement\":true,\"child_reaped\":true}}"
-    );
-    Ok(())
+
+    fn ready(&mut self) -> anyhow::Result<()> {
+        use anyhow::{Context, ensure};
+        use std::{
+            io::Read,
+            os::fd::AsRawFd,
+            time::{Duration, Instant},
+        };
+        let pipe = self
+            .child
+            .stdout
+            .as_mut()
+            .context("Missing keeper readiness pipe")?;
+        let fd = pipe.as_raw_fd();
+        let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+        ensure!(
+            flags >= 0 && unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } == 0,
+            "Cannot bound private pasteboard readiness"
+        );
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut ready = [0];
+        loop {
+            match pipe.read(&mut ready) {
+                Ok(1) => {
+                    ensure!(ready == [1], "Invalid private pasteboard readiness");
+                    return Ok(());
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
+                Err(error) => return Err(error.into()),
+                _ => anyhow::bail!("Private pasteboard keeper exited before readiness"),
+            }
+            ensure!(
+                Instant::now() < deadline,
+                "Private pasteboard keeper readiness exceeded five seconds"
+            );
+            std::thread::park_timeout(Duration::from_millis(5));
+        }
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -228,6 +292,18 @@ fn native_round_trip(name: &str, mode: &str) -> anyhow::Result<()> {
         let bytes = unsafe { CFDataGetBytePtr(data.0) };
         ensure!(!bytes.is_null(), "Private native paste data missing");
         Ok(unsafe { std::slice::from_raw_parts(bytes, length as usize) }.to_vec())
+    }
+    if mode == "keep" {
+        use std::io::{Read, Write};
+        let _board = named_pasteboard::Retained::new(name)?;
+        std::io::stdout().write_all(&[1])?;
+        std::io::stdout().flush()?;
+        let mut release = [0];
+        ensure!(
+            std::io::stdin().read(&mut release)? == 0,
+            "Private pasteboard keeper expected controller EOF"
+        );
+        return Ok(());
     }
     let pixels = image::RgbaImage::from_fn(3, 2, |x, y| image::Rgba([x as u8, y as u8, 47, 83]));
     let text = "owned UTF-8 ä 🐾";
