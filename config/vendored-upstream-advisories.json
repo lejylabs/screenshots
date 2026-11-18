@@ -15,8 +15,16 @@
       "manifest": "apps/desktop/Cargo.toml"
     },
     {
+      "name": "screenshots-install",
+      "manifest": "apps/installer/Cargo.toml"
+    },
+    {
       "name": "shared",
       "manifest": "crates/shared/Cargo.toml"
+    },
+    {
+      "name": "xtask",
+      "manifest": "xtask/Cargo.toml"
     }
   ],
   "packages": [
