@@ -83,6 +83,30 @@ jobs:
             Remove-Item -LiteralPath target/release-fast/lib/screenshots-sxcu -Recurse -Force
           }
           Copy-Item -Recurse target/sharex-helper/publish/win-x64 target/release-fast/lib/screenshots-sxcu
+      - name: Compile and parse actual owned native fixtures before application execution
+        shell: pwsh
+        run: |
+          foreach ($Name in @('verification/windows-production-native-fixture/run.ps1','verification/windows-spool-native-fixture/run.ps1','verification/windows-spool-native-fixture/xps-oracle.ps1')) {
+            $Tokens=$null; $Errors=$null
+            $null=[System.Management.Automation.Language.Parser]::ParseFile((Join-Path $PWD $Name),[ref]$Tokens,[ref]$Errors)
+            if ($Errors.Count) {$Errors | Format-List; throw ('Actual fixture PowerShell parser rejected source: '+$Name)}
+          }
+          New-Item -ItemType Directory target/native-early-compile -Force | Out-Null
+          foreach ($Name in @('production_source','production_bridge','production_controller')) {
+            $Arguments=@('/nologo','/std:c++20','/EHsc','/W4','/O2','/D_WIN32_WINNT=0x0A00',(Join-Path $PWD ('verification/windows-production-native-fixture/native/'+$Name+'.cpp')),('/Fe:target/native-early-compile/'+$Name+'.exe'),('/Fo:target/native-early-compile/'+$Name+'.obj'),'ole32.lib','oleaut32.lib','user32.lib','psapi.lib','rpcrt4.lib','shell32.lib','uuid.lib','gdi32.lib')
+            if ($Name -eq 'production_bridge') {$Arguments += '/LD'}
+            & cl.exe @Arguments
+            if ($LASTEXITCODE -ne 0) {exit $LASTEXITCODE}
+          }
+          & cl.exe /nologo /std:c++20 /EHsc /W4 /O2 /D_WIN32_WINNT=0x0A00 verification/windows-spool-native-fixture/controller.cpp /Fe:target/native-early-compile/spool-controller.exe /Fo:target/native-early-compile/spool-controller.obj winspool.lib user32.lib gdi32.lib advapi32.lib ole32.lib
+          if ($LASTEXITCODE -ne 0) {exit $LASTEXITCODE}
+          New-Item -ItemType Directory target/production-drop-results -Force | Out-Null
+          'Actual MSVC compile/link of all three drop fixtures plus spool controller and PowerShell parse passed; native driver execution is a separate gate.' | Set-Content target/production-drop-results/native-early-compile.txt
+          $Inputs=@('verification/windows-production-native-fixture/native/production_source.cpp','verification/windows-production-native-fixture/native/production_support.cpp','verification/windows-production-native-fixture/native/production_bridge.cpp','verification/windows-production-native-fixture/native/production_controller.cpp','verification/windows-production-native-fixture/native/custom_marshal.hpp','verification/windows-production-native-fixture/run.ps1','verification/windows-spool-native-fixture/controller.cpp','verification/windows-spool-native-fixture/run.ps1','verification/windows-spool-native-fixture/xps-oracle.ps1')
+          $InputHashes=@($Inputs | ForEach-Object {[pscustomobject]@{path=$_;sha256=(Get-FileHash -LiteralPath $_ -Algorithm SHA256).Hash.ToLowerInvariant()}})
+          $BinaryHashes=@(Get-ChildItem -LiteralPath target/native-early-compile -File | Where-Object {$_.Extension -in @('.exe','.dll')} | ForEach-Object {[pscustomobject]@{name=$_.Name;sha256=(Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()}})
+          if ($BinaryHashes.Count -ne 4) {throw 'Exactly four compiled native fixtures required'}
+          [ordered]@{source_commit=$env:GITHUB_SHA;stage='sdk-compile-and-powershell-parse';native_execution=$false;source_hashes=$InputHashes;binary_hashes=$BinaryHashes} | ConvertTo-Json -Depth 5 | Set-Content target/production-drop-results/native-early-compile.json
       - name: Build actual instrumented application
         id: application_build
         shell: pwsh
@@ -96,6 +120,14 @@ jobs:
           $Parameters = @{Application=(Resolve-Path target/release-fast/screenshots.exe).Path; OutputDirectory=(Join-Path $PWD 'target/production-drop-results')}
           if ('${{ inputs.owned_input_desktop }}' -eq 'true') {$Parameters.OwnedHostedCiInputDesktop=$true}
           & ./verification/windows-production-native-fixture/run.ps1 @Parameters
+      - name: Retain completed owned native acceptance proof before later gates
+        if: ${{ always() && steps.application_build.outcome == 'success' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: actual-windows-native-acceptance-interim
+          path: target/production-drop-results
+          retention-days: 7
+          if-no-files-found: error
       - name: Verify owned native GDI raster and controlled document faults
         if: ${{ always() && steps.application_build.outcome == 'success' }}
         shell: pwsh
