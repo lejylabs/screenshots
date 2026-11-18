@@ -64,14 +64,20 @@ foreach ($Name in @('output.xps','synthetic.png','proof.json','oracle-control-go
 Import-Module PrintManagement
 $Driver = @(Get-PrinterDriver -Name 'Microsoft XPS Document Writer v4' -ErrorAction SilentlyContinue)
 if ($Driver.Count -ne 1 -or $Driver[0].MajorVersion -ne 4) {throw 'PREREQUISITE MISSING: installed Microsoft XPS Document Writer v4; no download/install/feature/reboot fallback'}
-$Signature = Get-AuthenticodeSignature -LiteralPath $Driver[0].DriverPath
+# PrintManagement exposes the identity; Win32_PrinterDriver supplies the actual DLL path.
+$NativeDriverName = $Driver[0].Name+','+$Driver[0].MajorVersion+','+$Driver[0].PrinterEnvironment
+$NativeDriver = @(Get-CimInstance -ClassName Win32_PrinterDriver | Where-Object {$_.Name -ceq $NativeDriverName})
+if ($NativeDriver.Count -ne 1 -or $NativeDriver[0].Version -ne 4 -or $NativeDriver[0].SupportedPlatform -cne $Driver[0].PrinterEnvironment -or -not $NativeDriver[0].DriverPath -or -not [IO.Path]::IsPathRooted($NativeDriver[0].DriverPath)) {throw 'Exact builtin XPS v4 native driver identity/path unavailable'}
+$DriverPath = (Resolve-Path -LiteralPath $NativeDriver[0].DriverPath).Path
+if (-not $DriverPath.StartsWith($env:SystemRoot.TrimEnd('\')+'\',[StringComparison]::OrdinalIgnoreCase)) {throw 'Builtin driver must remain under the installed Windows root'}
+$Signature = Get-AuthenticodeSignature -LiteralPath $DriverPath
 if ($Signature.Status -ne 'Valid' -or -not $Signature.SignerCertificate -or $Signature.SignerCertificate.Subject -notmatch 'Microsoft') {throw 'Builtin driver binary must have a valid Microsoft signature'}
 if ((Get-Service -Name Spooler).Status -ne 'Running') {throw 'PREREQUISITE MISSING: running spool service; never start/restart global spooler'}
 if ($Stage -eq 'Preflight' -and (@(Get-Printer -Name $Queue -ErrorAction SilentlyContinue).Count -or @(Get-PrinterPort -Name $Port -ErrorAction SilentlyContinue).Count)) {throw 'GUID collision: refuse existing queue/port; no creation authority acquired'}
 Add-Type -AssemblyName WindowsBase,PresentationCore,PresentationFramework,ReachFramework,System.IO.Compression
 if ($Stage -eq 'Preflight') {exit 0}
 . (Join-Path $PSScriptRoot 'xps-oracle.ps1')
-$Proof = [ordered]@{instrumented_downstream_only=$true;normal_policy_refused=$false;oracle_controls=$null;driver=$Driver[0].Name;driver_sha256=(Get-FileHash -Algorithm SHA256 -LiteralPath $Driver[0].DriverPath).Hash;cases=@();passed=$false}
+$Proof = [ordered]@{instrumented_downstream_only=$true;normal_policy_refused=$false;oracle_controls=$null;driver=$Driver[0].Name;driver_sha256=(Get-FileHash -Algorithm SHA256 -LiteralPath $DriverPath).Hash;cases=@();passed=$false}
 
 function Assert-OwnedQueue {
     $Printer = Get-Printer -Name $Queue -Full

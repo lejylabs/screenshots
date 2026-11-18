@@ -387,7 +387,7 @@ the backend defect. Provenance and the limited patch are recorded in
 `vendor/xcap/LOCAL-PATCH.md` with the original source/license.
 
 
-## Linux cursor DPI follow-up — source only
+## Linux cursor DPI follow-up — integrated 2026-11-18
 
 The cursor admission predicate distinguishes Linux root pixels from Xft UI scale,
 while keeping the existing rotation restriction and Windows/macOS routes. The
@@ -395,7 +395,7 @@ native source geometry, session checks, before/after comparison, cancellation
 and source byte admission remain unchanged. This adds one pure predicate and
 no native query, buffer, dependency, worker, timer, cache or idle operation.
 
-The private `scripts/test-capture-catalog.py` fixture now authors twelve real CLI
+The private `scripts/test-capture-catalog.py` fixture exercises twelve real CLI
 capture cases at each of 48/96/192 Xft DPI, with the same owned 3×3 cursor at the
 same native position. Display/region inclusion and exclusion, one-pixel hotspot,
 four clipped edges and the far display edge compare exact independent RGBA and
@@ -403,6 +403,10 @@ native dimensions, without resampling. Only its authenticated TCP-disabled Xvfb
 is used; the existing catalog/hotkey/source-preservation/deadline/reap checks
 remain. All Wayland session markers are removed from its private environment.
 
-These new source changes and fixtures have not been compiled or executed at
-this checkpoint. They establish no native DPI, latency, allocation, idle or
-hardware acceptance until the integrated optimized checks actually run.
+The actual optimized production predicate and the integrated fixture pass:
+56 CLI invocations check126,571 exact RGBA pixels, including36 native captures
+at48/96/192 Xft DPI with independent0.5/1/2 scale and unchanged128×96 root raster.
+All source-preservation, catalog/hotkey, isolated-state and cleanup controls pass.
+Evidence: `target/verification/current-linux-eight-integration/cursor-catalog-report.json`.
+This establishes the owned unrotated root-pixel cases, not mixed-monitor,
+rotation/transform, physical input/presentation or reference-hardware budgets.
