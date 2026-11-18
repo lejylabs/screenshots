@@ -271,13 +271,8 @@ mod tests {
             std::fs::write(&profile, serde_json::to_vec(&value)?)?;
             assert!(Task::read(&profile).is_err());
         }
-        let mut task = Task::read_selected(
-            &{
-                std::fs::write(&profile, serde_json::to_vec(&image_profile)?)?;
-                profile.clone()
-            },
-            None,
-        )?;
+        std::fs::write(&profile, serde_json::to_vec(&image_profile)?)?;
+        let mut task = Task::read_selected(&profile, None)?;
         task.source = Source::ClipboardText {
             allow_private_source: true,
         };
