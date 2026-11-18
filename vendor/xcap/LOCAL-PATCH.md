@@ -57,3 +57,23 @@ and a selected left monitor beside another root raster region; their execution
 status is recorded by the parent repository, not inferred from this patch.
 The application uses physical metadata for display/region admission. X11
 endpoint checks do not establish detection of restored A/B/A topology changes.
+
+
+## Verified native X11 ZPixmap layout
+
+The Linux still-image path now admits the actual TrueColor visual, RGB masks,
+image byte order, native scanline padding, request extent and complete reply
+extent before decoding. The legacy opaque-alpha contract is preserved. Depth30
+channels are rounded to8-bit SDR values; this does not identify an HDR transfer
+function, display profile or wide-gamut semantics. Unknown/invalid packing fails
+explicitly instead of guessing a depth-based RGB layout.
+
+The preflight adds one bounded metadata round trip on the existing connection.
+Decoded output remains one checked RGBA buffer under the256MiB limit. Aligned
+8-bit channel layouts use verified byte indexes; other layouts use precomputed
+shifts/maxima with the same integer rounding. The per-frame metadata is at most
+80stack bytes, with no extra image buffer, worker, connection, cache or idle work.
+The upstream archive/version identity stays unchanged. Native exact-pixel and
+optimized comparative evidence is recorded with the integration checks; these
+software fixtures do not establish physical HDR/profile or reference-hardware
+resource acceptance.

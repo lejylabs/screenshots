@@ -6,6 +6,7 @@ pub(super) struct Deadline {
     armed: bool,
     interval: u64,
     command: Option<u64>,
+    retiring: bool,
 }
 impl Deadline {
     pub(super) fn startup(now: Instant) -> Self {
@@ -14,6 +15,7 @@ impl Deadline {
             armed: false,
             interval: 0,
             command: None,
+            retiring: false,
         }
     }
     pub(super) fn unexpired(&self, now: Instant) -> bool {
@@ -42,10 +44,14 @@ impl Deadline {
         if self.command == Some(processed) {
             self.command = None;
         }
-        if self.command.is_none() {
+        if self.command.is_none() && !self.retiring {
             self.until = None;
         }
         true
+    }
+    pub(super) fn retire(&mut self, now: Instant) {
+        self.retiring = true;
+        self.until.get_or_insert(now + LIMIT);
     }
     pub(super) fn issue(&mut self, command: u64, now: Instant) -> bool {
         if !self.unexpired(now) || self.command.is_some() || command == 0 {
@@ -100,6 +106,38 @@ mod tests {
         assert!(guard.pending());
         assert!(guard.armed());
         assert_eq!(guard.expires_at(), Some(start + LIMIT));
+    }
+    #[test]
+    fn retiring_active_receiver_keeps_its_cutoff_through_done_stop_and_exit() {
+        let start = Instant::now();
+        let mut guard = Deadline::startup(start);
+        assert!(guard.arm(1, start));
+        guard.retire(start + Duration::from_secs(4));
+        assert!(guard.done(1, 0, start + Duration::from_secs(4)));
+        assert_eq!(guard.expires_at(), Some(start + LIMIT));
+        assert!(guard.issue(1, start + Duration::from_secs(4)));
+        assert!(guard.arm(2, start + Duration::from_secs(4)));
+        assert!(guard.done(2, 1, start + Duration::from_secs(4)));
+        assert!(!guard.pending());
+        assert_eq!(guard.expires_at(), Some(start + LIMIT));
+        assert!(!guard.unexpired(start + LIMIT));
+        assert!(!guard.arm(3, start + LIMIT));
+    }
+    #[test]
+    fn retiring_idle_receiver_gets_one_finite_nonrenewing_exit_budget() {
+        let start = Instant::now();
+        let mut guard = Deadline::startup(start);
+        assert!(guard.arm(1, start));
+        assert!(guard.done(1, 0, start));
+        assert_eq!(guard.expires_at(), None);
+        guard.retire(start);
+        assert!(guard.issue(1, start + Duration::from_secs(4)));
+        guard.retire(start + Duration::from_secs(4));
+        assert!(guard.arm(2, start + Duration::from_secs(4)));
+        assert!(guard.done(2, 1, start + Duration::from_secs(4)));
+        assert_eq!(guard.expires_at(), Some(start + LIMIT));
+        assert_eq!(guard.milliseconds(start + LIMIT), 0);
+        assert!(!guard.issue(2, start + LIMIT));
     }
     #[test]
     fn overdue_packet_cannot_grant_permit_or_clear_completion() {

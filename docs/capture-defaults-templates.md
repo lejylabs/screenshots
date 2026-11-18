@@ -194,9 +194,10 @@ ARGB flattening path. SDR/HDR/color-profile acceptance is unchanged.
 
 Linux cursor/template operations require an X11 session and one X screen, which
 may contain multiple RandR outputs. Native display/region cursor composition
-currently requires unrotated 100% physical-pixel coordinates. Template metadata
-and bounds use raw RandR physical geometry independently of Xft UI scale; the
-native before/after checks are endpoint checks, not a topology-generation witness.
+requires unrotated root-pixel geometry; Xft UI scale does not resize or reject
+that native raster or its XFixes cursor. Template metadata and bounds use raw
+RandR physical geometry independently of Xft UI scale; the native before/after
+checks are endpoint checks, not a topology-generation witness.
 Mirrored/ambiguous Windows identity mappings fail. The guarded macOS route covers
 default and explicit policies, requests/produces SDR sRGB8 and validates native
 stride/alpha/component metadata. Tagged SDR profiles can use public native color
@@ -384,3 +385,24 @@ Native execution of this added gate is pending the reviewed push/CI run. The
 existing strict caller geometry check was retained; it was not weakened to hide
 the backend defect. Provenance and the limited patch are recorded in
 `vendor/xcap/LOCAL-PATCH.md` with the original source/license.
+
+
+## Linux cursor DPI follow-up — source only
+
+The cursor admission predicate distinguishes Linux root pixels from Xft UI scale,
+while keeping the existing rotation restriction and Windows/macOS routes. The
+native source geometry, session checks, before/after comparison, cancellation
+and source byte admission remain unchanged. This adds one pure predicate and
+no native query, buffer, dependency, worker, timer, cache or idle operation.
+
+The private `scripts/test-capture-catalog.py` fixture now authors twelve real CLI
+capture cases at each of 48/96/192 Xft DPI, with the same owned 3×3 cursor at the
+same native position. Display/region inclusion and exclusion, one-pixel hotspot,
+four clipped edges and the far display edge compare exact independent RGBA and
+native dimensions, without resampling. Only its authenticated TCP-disabled Xvfb
+is used; the existing catalog/hotkey/source-preservation/deadline/reap checks
+remain. All Wayland session markers are removed from its private environment.
+
+These new source changes and fixtures have not been compiled or executed at
+this checkpoint. They establish no native DPI, latency, allocation, idle or
+hardware acceptance until the integrated optimized checks actually run.

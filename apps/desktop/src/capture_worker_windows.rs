@@ -62,7 +62,33 @@ pub(super) fn spawn(
     child.resume(Instant::now() + Duration::from_secs(5))?;
     Ok(Process { child })
 }
+#[cfg(test)]
+pub(super) fn spawn_fixture_diagnostic(
+    command: &Command,
+    container: &Container,
+) -> Result<(Process, std::fs::File)> {
+    let mut child = windows_child::spawn(
+        command,
+        container.0.as_handle(),
+        Streams {
+            stderr: windows_child::Stream::Pipe,
+            ..Streams::NULL
+        },
+        Environment::Explicit,
+        &[],
+    )?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| anyhow::anyhow!("Private fixture stderr unavailable"))?;
+    child.resume(Instant::now() + Duration::from_secs(5))?;
+    Ok((Process { child }, stderr))
+}
 impl Process {
+    #[cfg(test)]
+    pub(super) fn fixture_status(&mut self) -> Result<Option<std::process::ExitStatus>> {
+        Ok(self.child.try_wait()?)
+    }
     pub fn wait_ready(&self, duration: Duration) {
         self.child.wait_ready(duration);
     }
