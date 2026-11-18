@@ -104,3 +104,18 @@ New exact epoch/registration-stage/HRESULT and owned-process exit evidence retai
 the existing rejecting handshake and7-second budget. A stale GetLastError value
 is no longer reported as the cause of an admission timeout. These new corrections
 and diagnostics remain authored, without a new native pass claim.
+
+
+## Verified owned native run — 2026-11-18
+
+Run44338173429 on snapshot863e38c0808cac1d4282dfb5e9ef27afee524aae
+executed all108 cases and passed every full predicate, including same-HWND
+orderly idle cancellation/replacement, real cooperative shell helpers and the
+URL-to-editor path. The expanded native private-stream ownership, complete-data
+cursor, independent-snapshot and reentry self-check passed with exit0/no timeout.
+Artifact14443344299 was downloaded and verified against SHA256
+`377efabfff3e450112ce1352700da86e3df71cda029bc4e6c44f817777399252`.
+The four direct production deadline/broker regressions also ran individually
+and passed on native Windows (run44340411601, artifact14443787495).
+This establishes the owned software gate, not forced-kill same-HWND reclamation,
+physical input/display, general clipboard, full driver or resource acceptance.

@@ -1,4 +1,4 @@
-name: Owned Windows private clipboard exact acceptance
+name: Owned Windows 2022 real spool acceptance
 on:
   push:
     branches: [feat/windows-native-drop-probe]
@@ -15,13 +15,16 @@ permissions:
   contents: read
 jobs:
   production-drop:
-    runs-on: windows-latest
+    runs-on: windows-2022
     timeout-minutes: 180
     steps:
       - uses: actions/checkout@v4
       - name: Use repository-pinned Rust
         run: rustup show active-toolchain
       - uses: ilammy/msvc-dev-cmd@v1
+      - uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: '10.0.404'
       - uses: actions/cache@v4
         with:
           path: |
@@ -73,19 +76,84 @@ jobs:
           restore-keys: |
             production-drop-instrumented-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}-
             production-drop-instrumented-${{ runner.os }}-
-      - name: Verify private native clipboard formats and blocked payload containment
-        if: always()
+      - name: Build existing private SXCU runtime
+        shell: pwsh
+        run: |
+          python scripts/build-sharex-helper.py --rid win-x64
+          if ($LASTEXITCODE -ne 0) {exit $LASTEXITCODE}
+          New-Item -ItemType Directory -Force target/release-fast/lib | Out-Null
+          if (Test-Path -LiteralPath target/release-fast/lib/screenshots-sxcu) {
+            Remove-Item -LiteralPath target/release-fast/lib/screenshots-sxcu -Recurse -Force
+          }
+          Copy-Item -Recurse target/sharex-helper/publish/win-x64 target/release-fast/lib/screenshots-sxcu
+      - name: Compile and parse actual owned native fixtures before application execution
+        shell: pwsh
+        run: |
+          foreach ($Name in @('verification/windows-production-native-fixture/run.ps1','verification/windows-spool-native-fixture/run.ps1','verification/windows-spool-native-fixture/xps-oracle.ps1')) {
+            $Tokens=$null; $Errors=$null
+            $null=[System.Management.Automation.Language.Parser]::ParseFile((Join-Path $PWD $Name),[ref]$Tokens,[ref]$Errors)
+            if ($Errors.Count) {$Errors | Format-List; throw ('Actual fixture PowerShell parser rejected source: '+$Name)}
+          }
+          New-Item -ItemType Directory target/native-early-compile -Force | Out-Null
+          foreach ($Name in @('production_source','production_bridge','production_controller')) {
+            $Arguments=@('/nologo','/std:c++20','/EHsc','/W4','/O2','/D_WIN32_WINNT=0x0A00',(Join-Path $PWD ('verification/windows-production-native-fixture/native/'+$Name+'.cpp')),('/Fe:target/native-early-compile/'+$Name+'.exe'),('/Fo:target/native-early-compile/'+$Name+'.obj'),'ole32.lib','oleaut32.lib','user32.lib','psapi.lib','rpcrt4.lib','shell32.lib','uuid.lib','gdi32.lib')
+            if ($Name -eq 'production_bridge') {$Arguments += '/LD'}
+            & cl.exe @Arguments
+            if ($LASTEXITCODE -ne 0) {exit $LASTEXITCODE}
+          }
+          & cl.exe /nologo /std:c++20 /EHsc /W4 /O2 /D_WIN32_WINNT=0x0A00 verification/windows-spool-native-fixture/controller.cpp /Fe:target/native-early-compile/spool-controller.exe /Fo:target/native-early-compile/spool-controller.obj winspool.lib user32.lib gdi32.lib advapi32.lib ole32.lib
+          if ($LASTEXITCODE -ne 0) {exit $LASTEXITCODE}
+          New-Item -ItemType Directory target/production-drop-results -Force | Out-Null
+          'Actual MSVC compile/link of all three drop fixtures plus spool controller and PowerShell parse passed; native driver execution is a separate gate.' | Set-Content target/production-drop-results/native-early-compile.txt
+          $Inputs=@('verification/windows-production-native-fixture/native/production_source.cpp','verification/windows-production-native-fixture/native/production_support.cpp','verification/windows-production-native-fixture/native/production_bridge.cpp','verification/windows-production-native-fixture/native/production_controller.cpp','verification/windows-production-native-fixture/native/custom_marshal.hpp','verification/windows-production-native-fixture/run.ps1','verification/windows-spool-native-fixture/controller.cpp','verification/windows-spool-native-fixture/run.ps1','verification/windows-spool-native-fixture/xps-oracle.ps1')
+          $InputHashes=@($Inputs | ForEach-Object {[pscustomobject]@{path=$_;sha256=(Get-FileHash -LiteralPath $_ -Algorithm SHA256).Hash.ToLowerInvariant()}})
+          $BinaryHashes=@(Get-ChildItem -LiteralPath target/native-early-compile -File | Where-Object {$_.Extension -in @('.exe','.dll')} | ForEach-Object {[pscustomobject]@{name=$_.Name;sha256=(Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()}})
+          if ($BinaryHashes.Count -ne 4) {throw 'Exactly four compiled native fixtures required'}
+          [ordered]@{source_commit=$env:GITHUB_SHA;stage='sdk-compile-and-powershell-parse';native_execution=$false;source_hashes=$InputHashes;binary_hashes=$BinaryHashes} | ConvertTo-Json -Depth 5 | Set-Content target/production-drop-results/native-early-compile.json
+      - name: Build actual instrumented application
+        id: application_build
         shell: pwsh
         run: |
           $env:RUSTFLAGS = '--cfg screenshots_native_drop_acceptance --check-cfg=cfg(screenshots_native_drop_acceptance)'
-          New-Item -ItemType Directory -Force target/production-drop-results | Out-Null
-          foreach ($Case in @('file_clipboard::windows_tests::windows_private_clipboard_survives_helper_reap_and_cancellation_releases_job','file_clipboard::windows_tests::incompressible_4k_image_keeps_both_native_formats_without_a_fixed_png_cutoff')) {
-            $Listed = @(cargo test --locked --profile release-fast -p screenshots --bin screenshots -j 2 $Case -- --ignored --exact --list)
+          cargo build --locked --profile release-fast -p screenshots
+          if ($LASTEXITCODE -ne 0) {exit $LASTEXITCODE}
+      - name: Verify owned downstream Winspool and virtual-driver output
+        if: ${{ always() && steps.application_build.outcome == 'success' }}
+        shell: pwsh
+        run: |
+          Import-Module PrintManagement
+          $Driver = @(Get-PrinterDriver -Name 'Microsoft XPS Document Writer v4' -ErrorAction SilentlyContinue)
+          if ($Driver.Count -ne 1 -or $Driver[0].MajorVersion -ne 4) {throw 'PREREQUISITE MISSING: installed signed Microsoft XPS Document Writer v4; no automatic installation'}
+          $Normal = Join-Path $PWD 'target/spool-normal'
+          New-Item -ItemType Directory -Force $Normal | Out-Null
+          Copy-Item -LiteralPath target/release-fast/screenshots.exe -Destination (Join-Path $Normal 'screenshots.exe')
+          $ShippingApplication = (Resolve-Path (Join-Path $Normal 'screenshots.exe')).Path
+          $Script = (Resolve-Path verification/windows-spool-native-fixture/run.ps1).Path
+          $Fixture = & "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -NoLogo -NoProfile -NonInteractive -STA -File $Script -Stage Prepare | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0) {exit $LASTEXITCODE}
+          $BeforeFlags = $env:RUSTFLAGS
+          try {
+            $env:SCREENSHOTS_NATIVE_PRINT_QUEUE = $Fixture.queue
+            $env:SCREENSHOTS_NATIVE_PRINT_PORT = $Fixture.port
+            $env:RUSTFLAGS = '--cfg screenshots_native_drop_acceptance --check-cfg=cfg(screenshots_native_drop_acceptance) --cfg screenshots_native_print_acceptance --check-cfg=cfg(screenshots_native_print_acceptance)'
+            cargo build --locked --profile release-fast -p screenshots -j 2
             if ($LASTEXITCODE -ne 0) {exit $LASTEXITCODE}
-            if (@($Listed | Where-Object {$_.Trim() -eq ($Case+': test')}).Count -ne 1) {throw 'Exact private clipboard case missing'}
-            $Name = $Case.Split(':')[-1]
-            cargo test --locked --profile release-fast -p screenshots --bin screenshots -j 2 $Case -- --ignored --exact --test-threads=1 --nocapture 2>&1 | Tee-Object -FilePath (Join-Path target/production-drop-results ($Name+'.log'))
+            $InstrumentedApplication = (Resolve-Path target/release-fast/screenshots.exe).Path
+            $Controller = Join-Path $Fixture.directory 'controller.exe'
+            & cl.exe /nologo /std:c++20 /EHsc /W4 /O2 /D_WIN32_WINNT=0x0A00 verification/windows-spool-native-fixture/controller.cpp "/Fe:$Controller" "/Fo:$($Fixture.directory)\controller.obj" winspool.lib user32.lib gdi32.lib advapi32.lib ole32.lib
             if ($LASTEXITCODE -ne 0) {exit $LASTEXITCODE}
+            & $Controller supervise $Script $Fixture.directory $ShippingApplication $InstrumentedApplication 2>&1 | Tee-Object -FilePath target/production-drop-results/spool-controller.log
+            $Code = $LASTEXITCODE
+            if (Test-Path (Join-Path $Fixture.directory 'proof.json')) {Copy-Item (Join-Path $Fixture.directory 'proof.json') target/production-drop-results/spool-proof.json}
+            if ($Code -ne 0) {exit $Code}
+          } finally {
+            $env:RUSTFLAGS = $BeforeFlags
+            Remove-Item Env:SCREENSHOTS_NATIVE_PRINT_QUEUE -ErrorAction SilentlyContinue
+            Remove-Item Env:SCREENSHOTS_NATIVE_PRINT_PORT -ErrorAction SilentlyContinue
+            Copy-Item -LiteralPath $ShippingApplication -Destination target/release-fast/screenshots.exe -Force
+            Get-ChildItem -LiteralPath $Fixture.directory -File -ErrorAction SilentlyContinue |
+              Where-Object {$_.Extension -in @('.log','.txt') -and $_.Length -le 4194304} |
+              ForEach-Object {Copy-Item -LiteralPath $_.FullName -Destination (Join-Path target/production-drop-results ('spool-'+$_.Name))}
           }
       - uses: actions/cache/save@v4
         if: ${{ always() && steps.application_cache.outputs.cache-hit != 'true' }}
@@ -95,6 +163,6 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: actual-windows-private-clipboard-proof
+          name: actual-windows-production-drop-proof
           path: target/production-drop-results
           if-no-files-found: error
