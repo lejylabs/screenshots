@@ -28,6 +28,12 @@ unicode-segmentation = "1"
 raw-window-handle = "0.6.2"
 gpui-kit = { workspace = true, features = ["test-support"] }
 
+[target.'cfg(target_os = "macos")'.dependencies]
+raw-window-handle = "0.6.2"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+raw-window-handle = "0.6.2"
+
 [target.'cfg(target_os = "windows")'.dependencies]
 raw-window-handle = "0.6.2"
 gpui-windows = { package = "gpui-pre-windows", version = "=0.3.12" }

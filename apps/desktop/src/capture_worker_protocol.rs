@@ -227,6 +227,7 @@ pub(super) fn read_request(input: &mut impl Read) -> Result<NativeCaptureCall> {
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 enum Meta {
+    CaptureWindowHidden,
     PortalVideo {
         summary: app_core::PortalVideoSummary,
     },
@@ -303,6 +304,7 @@ pub(super) fn reply(output: &mut impl Write, reply: NativeCaptureReply) -> Resul
         return Ok(());
     }
     let (value, frames) = match reply {
+        NativeCaptureReply::CaptureWindowHidden => (Meta::CaptureWindowHidden, Vec::new()),
         NativeCaptureReply::PortalVideo { summary } => (Meta::PortalVideo { summary }, Vec::new()),
         NativeCaptureReply::PortalScroll { image, summary } => {
             (Meta::PortalScroll { count: 1, summary }, vec![image])
@@ -555,6 +557,7 @@ pub(super) fn read_reply_with_eof(
         "Native macOS desktop omitted its output grid metadata"
     );
     let reply = match value {
+        Meta::CaptureWindowHidden => NativeCaptureReply::CaptureWindowHidden,
         Meta::PortalVideo { summary } => NativeCaptureReply::PortalVideo { summary },
         Meta::NativeDrop {
             mime,
@@ -1232,5 +1235,22 @@ mod native_drop_wire_tests {
             assert!(read_reply(&mut input, &call(image)).is_err());
             assert_eq!(input.position(), metadata_end as u64);
         }
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod capture_visibility_wire_tests {
+    use super::*;
+    #[test]
+    fn native_visibility_proof_has_no_pixels_and_cannot_impersonate_capture_or_inventory() {
+        let call = NativeCaptureCall::HideCaptureWindow { window: 7 };
+        let mut bytes = Vec::new();
+        reply(&mut bytes, NativeCaptureReply::CaptureWindowHidden).unwrap();
+        assert!(matches!(read_reply(&mut bytes.as_slice(), &call).unwrap(), NativeCaptureReply::CaptureWindowHidden));
+        assert!(bytes.len() < 128);
+        assert!(read_reply(&mut bytes.as_slice(), &NativeCaptureCall::Windows).is_err());
+        let mut wrong = Vec::new();
+        reply(&mut wrong, NativeCaptureReply::Windows(vec![])).unwrap();
+        assert!(read_reply(&mut wrong.as_slice(), &call).is_err());
     }
 }

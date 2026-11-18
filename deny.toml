@@ -1,0 +1,56 @@
+# Native default-feature graph only; keep this list aligned with rust.yml.
+[graph]
+targets = [
+    "x86_64-unknown-linux-gnu",
+    "aarch64-unknown-linux-gnu",
+    "x86_64-pc-windows-msvc",
+    "aarch64-apple-darwin",
+    "x86_64-apple-darwin",
+]
+all-features = false
+no-default-features = false
+features = []
+exclude-dev = true
+exclude-unpublished = false
+exclude = []
+
+# Path-patched crates need the separate verified upstream advisory view in CI.
+[advisories]
+db-path = "target/dependency-audit/advisory-dbs"
+db-urls = ["https://github.com/RustSec/advisory-db"]
+unmaintained = "all"
+unsound = "all"
+yanked = "deny"
+ignore = []
+unused-ignored-advisory = "deny"
+
+[licenses]
+confidence-threshold = 0.93
+include-build = true
+include-dev = false
+allow = [
+    "0BSD",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "BSL-1.0",
+    "CC0-1.0",
+    "ISC",
+    "MIT",
+    "Unicode-3.0",
+    "Zlib",
+]
+unused-allowed-license = "warn"
+unused-license-exception = "warn"
+# Exact existing versions only. Keep MPL covered-source/notices obligations;
+# these entries do not approve other MPL packages or future versions.
+exceptions = [
+    { crate = "cbindgen@0.28.0", allow = ["MPL-2.0"] },
+    { crate = "dwrote@0.11.5", allow = ["MPL-2.0"] },
+    { crate = "option-ext@0.2.0", allow = ["MPL-2.0"] },
+]
+
+[licenses.private]
+ignore = false
+registries = []

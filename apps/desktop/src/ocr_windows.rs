@@ -57,10 +57,12 @@ fn await_result(
     engine: &mut Engine,
     messages: Receiver<Message>,
     deadline: Instant,
+    check: &app_core::NativeCaptureCheck<'_>,
 ) -> Result<String> {
     let mut completed = 0;
     let mut output = None;
     loop {
+        check()?;
         ensure!(
             Instant::now() < deadline,
             "OCR exceeded its 30 second deadline"
@@ -102,9 +104,19 @@ fn await_result(
     }
 }
 
+#[cfg(test)]
 fn run_command(command: Command, input: Vec<u8>, timeout: Duration) -> Result<String> {
+    run_command_with_cancel(command, input, timeout, &|| Ok(()))
+}
+
+fn run_command_with_cancel(
+    command: Command, input: Vec<u8>, timeout: Duration,
+    check: &app_core::NativeCaptureCheck<'_>,
+) -> Result<String> {
+    check()?;
     let deadline = Instant::now() + timeout;
     let job = job_object()?;
+    check()?;
     let child = windows_child::spawn(
         &command, job.as_handle(), Streams::PIPED, Environment::Inherit, &[],
     ).map_err(|_| anyhow::anyhow!("OCR engine is unavailable; install tesseract and the requested language data separately"))?;
@@ -166,16 +178,19 @@ fn run_command(command: Command, input: Vec<u8>, timeout: Duration) -> Result<St
             })
             .context("Could not start OCR diagnostic worker")?,
     );
+    check()?;
     engine.child.resume(deadline)?;
-    await_result(&mut engine, messages, deadline)
+    await_result(&mut engine, messages, deadline, check)
 }
 
-pub(crate) fn recognize(input: Vec<u8>, language: &str) -> Result<String> {
+pub(crate) fn recognize(
+    input: Vec<u8>, language: &str, check: &app_core::NativeCaptureCheck<'_>,
+) -> Result<String> {
     let mut command = Command::new("tesseract.exe");
     command
         .args(["stdin", "stdout", "-l", language, "--psm", "6"])
         .env("OMP_THREAD_LIMIT", "2");
-    run_command(command, input, DEADLINE)
+    run_command_with_cancel(command, input, DEADLINE, check)
 }
 
 #[cfg(test)]

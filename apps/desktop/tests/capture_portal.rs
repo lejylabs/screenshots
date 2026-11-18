@@ -5,6 +5,8 @@ use anyhow::{Context, Result, ensure};
 mod finite_adapter;
 #[path = "../src/capture_portal_formats.rs"]
 mod negotiated_formats;
+#[path = "fixtures/region_analysis_portal.rs"]
+mod region_analysis_fixture;
 
 use dbus::{
     Message, Path as BusPath,
@@ -109,6 +111,7 @@ struct Observed {
     closes: usize,
     selected: Vec<(u32, u32)>,
     owners: Vec<String>,
+    authorized_remotes: usize,
 }
 struct Portal {
     stop: Arc<AtomicBool>,
@@ -308,6 +311,9 @@ fn portal(address: &str, root: &Path, node: u32, serial: u64) -> Portal {
                     };
                     c.send(message.method_return().append1(unsafe { BusFd::new(fd) }))
                         .unwrap();
+                    if mode != "invalid-fd" {
+                        seen.lock().unwrap().authorized_remotes += 1;
+                    }
                 }
                 "Close" => {
                     let path = message.path().unwrap().to_string();
@@ -742,6 +748,8 @@ fn portal_cli_preflight_refuses_invalid_inputs_before_permission_access() -> Res
 fn portal_memory_capture_uses_the_authorized_fd_and_exact_serial() -> Result<()> {
     let performance = std::env::var("SCREENSHOTS_PORTAL_PERFORMANCE").as_deref() == Ok("1");
     let finite = std::env::var("SCREENSHOTS_PORTAL_FINITE").as_deref() == Ok("1");
+    let analysis = std::env::var("SCREENSHOTS_PORTAL_ANALYSIS").as_deref() == Ok("1");
+    ensure!(!analysis || (!performance && !finite), "Run analysis separately from timing/freshness modes");
     let color = color_fixture()?;
     let negotiation = negotiation_mode()?;
     match negotiation.as_deref() {
@@ -766,6 +774,7 @@ fn portal_memory_capture_uses_the_authorized_fd_and_exact_serial() -> Result<()>
         color.is_none() || (!performance && !finite),
         "Run native color fixtures separately from finite/performance fixture modes"
     );
+    ensure!(!analysis || (color.is_none() && negotiation.is_none()), "Analysis requires its own generated raster");
     let root = Folder::new();
     let config = configuration(&root.0)?;
     let bus_config = root.0.join("bus.conf");
@@ -810,7 +819,9 @@ fn portal_memory_capture_uses_the_authorized_fd_and_exact_serial() -> Result<()>
         .env("SCREENSHOTS_PORTAL_PUBLISHER", &root.0)
         .env(
             "SCREENSHOTS_PORTAL_WIDTH",
-            if performance {
+            if analysis {
+                "512"
+            } else if performance {
                 "3840"
             } else if finite {
                 "16"
@@ -820,7 +831,9 @@ fn portal_memory_capture_uses_the_authorized_fd_and_exact_serial() -> Result<()>
         )
         .env(
             "SCREENSHOTS_PORTAL_HEIGHT",
-            if performance {
+            if analysis {
+                "384"
+            } else if performance {
                 "2160"
             } else if finite {
                 "12"
@@ -843,6 +856,9 @@ fn portal_memory_capture_uses_the_authorized_fd_and_exact_serial() -> Result<()>
         node["serial"].as_u64().unwrap(),
     );
     eprintln!("Private generated-pixel publisher ready");
+    if analysis {
+        return region_analysis_fixture::run_case(&root.0, address, &portal);
+    }
     if let Some(mode) = negotiation {
         return negotiation_case(&root.0, address, &portal, &mode, color.as_ref());
     }
@@ -1232,6 +1248,12 @@ fn publisher(root: &Path) -> Result<()> {
                 .collect())
         })
         .transpose()?;
+    let payload = if std::env::var("SCREENSHOTS_PORTAL_ANALYSIS").as_deref() == Ok("1") {
+        ensure!((width, height) == (512, 384) && payload.is_none(), "Invalid private analysis publisher dimensions");
+        Some(region_analysis_fixture::pixels()?.into_raw())
+    } else {
+        payload
+    };
 
     let (wire, primaries, transfer) = if let Some(case) = &color {
         let source = &case["source"];
@@ -1296,8 +1318,13 @@ fn publisher(root: &Path) -> Result<()> {
     let mut freshness_mode = String::new();
     let mut freshness_frames = 0u32;
     let mut last_pts = 0i64;
+    let streaming = Rc::new(std::cell::Cell::new(false));
+    let stream_state = streaming.clone();
     let _listener = stream
         .add_local_listener_with_user_data(())
+        .state_changed(move |_, _, _, new| {
+            stream_state.set(matches!(new, pw::stream::StreamState::Streaming));
+        })
         .param_changed(move |stream, _, id, param| {
             if id != spa::param::ParamType::Format.as_raw() {
                 return;
@@ -1370,6 +1397,10 @@ fn publisher(root: &Path) -> Result<()> {
                 .unwrap();
         })
         .process(move |stream, _| {
+            if root_path.join("stall").exists() && streaming.get()
+                && format.borrow().is_some() && root_path.join("analysis-cancel-armed").exists() {
+                std::fs::write(root_path.join("analysis-stalled-stream"), b"streaming source withheld its frame").unwrap();
+            }
             if root_path.join("stall").exists()
                 || (finite
                     && (root_path.join("freshness-child-finished").exists()

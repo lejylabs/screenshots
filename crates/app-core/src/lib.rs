@@ -48,6 +48,8 @@ mod capture_macos_pixels;
 #[cfg(target_os = "macos")]
 mod capture_macos_sck;
 #[cfg(target_os = "macos")]
+pub use capture_macos_sck::hide_macos_capture_view;
+#[cfg(target_os = "macos")]
 mod capture_macos_video;
 #[cfg(any(target_os = "windows", test))]
 mod display_pixels;
@@ -69,6 +71,10 @@ pub use capture_macos_model::{
 };
 mod image_url;
 mod native_capture_job;
+#[cfg(target_os = "linux")]
+mod capture_visibility;
+#[cfg(target_os = "linux")]
+pub use capture_visibility::hide_capture_window;
 mod native_drop;
 pub use native_drop::{NativeDropMime, NativeDropReply, NativeDropSource, acquire_native_drop};
 mod portal_capture;

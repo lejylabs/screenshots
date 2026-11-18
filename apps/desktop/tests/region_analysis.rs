@@ -159,3 +159,27 @@ impl Drop for Fixture {
         let _ = std::fs::remove_dir_all(&self.0);
     }
 }
+
+#[test]
+fn portal_analysis_preflight_rejects_invalid_arguments_without_permission_or_state() {
+    let fixture = Fixture::new();
+    for name in ["ocr-portal-region", "qr-portal-region"] {
+        fixture.reject(name, &[], "Usage:", true);
+        fixture.reject(name, &args(&["fixture", "0", "0", "1", "1"]), "source must be", true);
+        fixture.reject(name, &args(&["display", "0", "0", "2049", "2048"]), "16 MiB", true);
+        fixture.reject(name, &args(&["display", "4294967295", "0", "2", "1"]), "coordinates overflow", true);
+        fixture.reject(name, &args(&["window", "-1", "0", "1", "1"]), "whole nonnegative", true);
+    }
+    fixture.reject("ocr-portal-region", &args(&["display", "0", "0", "1", "1", "--language", "../eng"]), "OCR language", true);
+    fixture.reject("qr-portal-region", &args(&["display", "0", "0", "4097", "1"]), "4096 pixels", true);
+    fixture.reject("qr-portal-region", &args(&["window", "0", "0", "1", "1", "--language", "eng"]), "Usage:", true);
+}
+
+#[cfg(not(target_os = "linux"))]
+#[test]
+fn portal_analysis_refuses_other_platforms_after_preflight() {
+    let fixture = Fixture::new();
+    for name in ["ocr-portal-region", "qr-portal-region"] {
+        fixture.reject(name, &args(&["display", "0", "0", "1", "1"]), "requires Linux", false);
+    }
+}

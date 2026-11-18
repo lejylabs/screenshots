@@ -90,6 +90,8 @@ Headless commands (no desktop UI; outputs and uploads require explicit actions):
   screenshots ocr INPUT [--language LANG]
   screenshots ocr-region DISPLAY X Y WIDTH HEIGHT [--language LANG]
   screenshots qr-region DISPLAY X Y WIDTH HEIGHT
+  screenshots ocr-portal-region display|window X Y WIDTH HEIGHT [--language LANG]
+  screenshots qr-portal-region display|window X Y WIDTH HEIGHT
   screenshots workflow RECIPE INPUT OUTPUT
   screenshots task run|validate PROFILE.json
   screenshots schedule add DATABASE ID PROFILE --at RFC3339 [--every-ms N --count N|--forever]
@@ -207,6 +209,12 @@ pub fn run(args: Vec<OsString>) -> Result<bool> {
         }
         "qr-region" => {
             crate::region_analysis::run(&args[1..], crate::region_analysis::Analysis::Qr)?
+        }
+        "ocr-portal-region" => {
+            crate::region_analysis::run_portal(&args[1..], crate::region_analysis::Analysis::Ocr)?
+        }
+        "qr-portal-region" => {
+            crate::region_analysis::run_portal(&args[1..], crate::region_analysis::Analysis::Qr)?
         }
         "workflow" => crate::workflow::run(&args[1..])?,
         "task" => crate::task::run(&args[1..])?,

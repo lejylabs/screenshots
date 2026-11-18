@@ -2357,7 +2357,7 @@ impl PlatformWindow for MacWindow {
                 );
 
                 // One built-in generic icon avoids LaunchServices or file-backed image providers.
-                let icon = NSImage::imageNamed(&ns_string("NSMultipleDocuments"));
+                let icon = NSImage::imageNamed(&NSString::from_str("NSMultipleDocuments"));
                 item.setDraggingFrame_contents(
                     frame,
                     icon.as_deref().map(|image| -> &AnyObject { image }),

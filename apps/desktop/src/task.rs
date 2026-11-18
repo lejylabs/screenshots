@@ -42,7 +42,7 @@ enum Source {
         #[serde(default)]
         allow_http: bool,
     },
-    Desktop,
+    Desktop {},
     PrimaryDisplay,
     ActiveDisplay,
     ActiveWindow,
@@ -271,7 +271,7 @@ impl Task {
                 "Portal still capture requires Linux"
             ),
             Source::None
-            | Source::Desktop
+            | Source::Desktop {}
             | Source::PrimaryDisplay
             | Source::ActiveDisplay
             | Source::ActiveWindow => {}
@@ -532,7 +532,7 @@ impl Task {
             Source::Portal { source, cursor } => {
                 app_core::capture_portal_with_cancel(*source, *cursor, &native_check)?
             }
-            Source::Desktop => app_core::capture_stitched_desktop_with_cancel(&backend, &native_check)?,
+            Source::Desktop {} => app_core::capture_stitched_desktop_with_cancel(&backend, &native_check)?,
             Source::PrimaryDisplay => {
                 let mut displays = backend
                     .list_displays_with_cancel(&native_check)?
