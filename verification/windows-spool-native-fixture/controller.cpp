@@ -313,4 +313,3 @@ int wmain(int argc,wchar_t** argv) {
         std::printf("{\"inner_exit\":%lu,\"outer_job_empty\":true,\"owned_spool_cleanup\":true,\"default_unchanged\":%s,\"ownership_controls_passed\":%s,\"collision_resources_untouched\":%s,\"pending_family_no_cleanup\":%s,\"passed\":%s}\n",exit,same_default?"true":"false",checks?"true":"false",checks?"true":"false",checks?"true":"false",passed?"true":"false");return passed?0:1;
     } catch(const std::exception& error) {std::fprintf(stderr,"owned print fixture: %s\n",error.what());return 1;}
 }
-

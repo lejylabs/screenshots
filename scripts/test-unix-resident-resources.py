@@ -13,6 +13,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import tempfile
 import time
 from xml.sax.saxutils import escape
 
@@ -21,6 +22,33 @@ PROC = Path('/proc')
 HELPER = b'__native-desktop-services-worker'
 MEMORY = ('Private_Clean', 'Private_Dirty', 'Private_Hugetlb', 'Pss', 'Rss', 'Swap', 'SwapPss', 'Shared_Clean', 'Shared_Dirty', 'Shared_Hugetlb')
 SOURCE_TREES = ('apps/desktop/src', 'crates/app-ui/src', 'crates/app-core/src', 'vendor/gpui-pre-linux/src')
+STARTUP_LOG_LIMIT = 64 * 1024
+
+
+def remove_empty_reserved(path, stream):
+    owned = os.fstat(stream.fileno())
+    try:
+        current = path.lstat()
+    except FileNotFoundError:
+        return
+    if owned.st_size == 0 and (owned.st_dev, owned.st_ino) == (current.st_dev, current.st_ino):
+        path.unlink()
+
+
+def reserve_outputs(path):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path = path.parent.resolve(strict=True) / path.name
+    private = lambda name, flags: os.open(name, flags, 0o600)
+    output = open(path, 'x', encoding='utf-8', opener=private)
+    try:
+        startup = open(path.with_suffix('.startup.log'), 'xb', opener=private)
+    except BaseException:
+        try:
+            remove_empty_reserved(path, output)
+        finally:
+            output.close()
+        raise
+    return path, output, startup
 
 
 def load_owner():
@@ -169,6 +197,57 @@ class Supervisor:
         self.watched = {}
         self.expected_exits = set()
         self.buffer = bytearray()
+        self.stderr_stream = None
+        self.stderr_token = object()
+        self.stderr_prefix = bytearray()
+        self.stderr_truncated = False
+        self.retain_stderr = True
+
+    def capture_stderr(self, stream):
+        self.stderr_stream = stream
+        os.set_blocking(stream.fileno(), False)
+
+    def drain_stderr(self):
+        if self.stderr_stream is None:
+            return
+        # A finite batch cannot starve pidfd checks or operation deadlines.
+        for _ in range(4):
+            try:
+                data = os.read(self.stderr_stream.fileno(), 16 * 1024)
+            except BlockingIOError:
+                return
+            if not data:
+                self.stderr_stream.close()
+                self.stderr_stream = None
+                return
+            if self.retain_stderr:
+                remaining = STARTUP_LOG_LIMIT - len(self.stderr_prefix)
+                self.stderr_prefix.extend(data[:remaining])
+                self.stderr_truncated |= len(data) > remaining
+
+    def wait(self, selector, seconds):
+        until = min(self.deadline, time.monotonic() + max(0, seconds))
+        if self.stderr_stream is not None:
+            selector.register(self.stderr_stream, selectors.EVENT_READ, self.stderr_token)
+        while True:
+            self.interrupts.check()
+            if time.monotonic() >= self.deadline:
+                raise RuntimeError('Whole observation deadline exceeded')
+            events = self.interrupts.wait(selector, max(0, until - time.monotonic()))
+            ready = []
+            for key, event in events:
+                if key.data is self.stderr_token:
+                    self.drain_stderr()
+                    if self.stderr_stream is None:
+                        selector.unregister(key.fd)
+                else:
+                    ready.append((key, event))
+            if ready or time.monotonic() >= until:
+                return ready
+
+    def startup_finished(self):
+        self.retain_stderr = False
+        self.stderr_prefix.clear()
 
     def watch(self, process):
         descriptor = os.pidfd_open(process.pid)
@@ -179,6 +258,7 @@ class Supervisor:
         self.interrupts.check()
         if time.monotonic() >= self.deadline:
             raise RuntimeError('Whole observation deadline exceeded')
+        self.drain_stderr()
         with selectors.DefaultSelector() as selector:
             for descriptor in self.watched:
                 if descriptor not in self.expected_exits:
@@ -192,7 +272,7 @@ class Supervisor:
             for descriptor in self.watched:
                 if descriptor not in self.expected_exits:
                     selector.register(descriptor, selectors.EVENT_READ)
-            if self.interrupts.wait(selector, max(0, min(seconds, self.deadline - time.monotonic()))):
+            if self.wait(selector, seconds):
                 raise RuntimeError('Required private service or application exited early')
         self.check()
 
@@ -205,7 +285,7 @@ class Supervisor:
                     if descriptor not in self.expected_exits:
                         selector.register(descriptor, selectors.EVENT_READ, 'exit')
                 selector.register(stream, selectors.EVENT_READ, 'line')
-                events = self.interrupts.wait(selector, max(0, until - time.monotonic()))
+                events = self.wait(selector, max(0, until - time.monotonic()))
             if not events:
                 raise RuntimeError('Private protocol deadline exceeded')
             for key, _ in events:
@@ -251,7 +331,7 @@ class Supervisor:
             until = min(self.deadline, time.monotonic() + seconds)
             with selectors.DefaultSelector() as selector:
                 selector.register(descriptor, selectors.EVENT_READ)
-                if not self.interrupts.wait(selector, max(0, until - time.monotonic())):
+                if not self.wait(selector, max(0, until - time.monotonic())):
                     raise RuntimeError('Owned process exit deadline exceeded')
             if process.wait():
                 raise RuntimeError('Owned process returned a failure')
@@ -261,9 +341,21 @@ class Supervisor:
             os.close(descriptor)
 
     def close_descriptors(self):
+        first_error = None
         for descriptor in self.watched:
-            os.close(descriptor)
+            try:
+                os.close(descriptor)
+            except OSError as error:
+                first_error = first_error or error
         self.watched.clear()
+        if self.stderr_stream is not None:
+            try:
+                self.stderr_stream.close()
+            except OSError as error:
+                first_error = first_error or error
+            self.stderr_stream = None
+        if first_error:
+            raise first_error
 
 
 def mapping_diagnostics(*pids):
@@ -299,7 +391,7 @@ def mapping_diagnostics(*pids):
     return result
 
 
-def exercise(args, owner, family, interrupts, report):
+def exercise(args, owner, family, interrupts, report, startup_log):
     supervisor = Supervisor(family, interrupts)
     runtime = family.create_runtime()
     report['phase'] = 'private_session_startup'
@@ -334,24 +426,16 @@ def exercise(args, owner, family, interrupts, report):
         if supervisor.line(host.stdout) != 'RESIDENT_HOST_READY':
             raise RuntimeError('Private host did not become ready')
         report['phase'] = 'actual_main_startup'
-        main_log = runtime / 'owned-main-startup.log'
         main_environment = environment | {'RUST_BACKTRACE': '1'}
         if args.heaptrack_preload:
             main_environment.update(LD_PRELOAD=str(args.heaptrack_preload), DUMP_HEAPTRACK_OUTPUT=str(args.heaptrack_raw))
-        with main_log.open('wb') as startup_log:
-            main = family.spawn([str(args.binary)], env=main_environment, stdin=subprocess.DEVNULL,
-                                stdout=subprocess.DEVNULL, stderr=startup_log)
+        main = family.spawn([str(args.binary)], env=main_environment, stdin=subprocess.DEVNULL,
+                            stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+        supervisor.capture_stderr(main.stderr)
         main_descriptor = supervisor.watch(main)
         until = time.monotonic() + 20
         while True:
-            try:
-                supervisor.check()
-            except RuntimeError:
-                # This fixture contains no user data; retain bounded local startup diagnostics.
-                if main_log.exists():
-                    diagnostic = args.output.with_suffix('.startup.log')
-                    diagnostic.write_bytes(main_log.read_bytes()[:65536])
-                raise
+            supervisor.check()
             try:
                 helper = identify(main.pid, args.binary)
                 break
@@ -365,6 +449,7 @@ def exercise(args, owner, family, interrupts, report):
         initial = snapshot(main.pid, helper)
         report['visible_initial'] = {'processes': initial, 'joint': aggregate(initial)}
         if args.mapping_diagnostics: report['mapping_diagnostics'] = {'visible': mapping_diagnostics(main.pid, helper)}
+        supervisor.startup_finished()
         report['phase'] = 'close_show_cycles'
         cycles = []
         for index in range(args.cycles):
@@ -381,7 +466,7 @@ def exercise(args, owner, family, interrupts, report):
             try:
                 with selectors.DefaultSelector() as selector:
                     selector.register(descriptor, selectors.EVENT_READ)
-                    if not interrupts.wait(selector, 10):
+                    if not supervisor.wait(selector, 10):
                         raise RuntimeError('Actual secondary Show deadline exceeded')
                 if secondary.wait() != 0:
                     raise RuntimeError('Actual secondary Show failed')
@@ -441,11 +526,23 @@ def exercise(args, owner, family, interrupts, report):
         report['status'] = 'observed'
         report['phase'] = 'finished'
     finally:
-        if report.get('phase') == 'actual_main_startup':
-            startup = runtime / 'owned-main-startup.log'
-            if startup.exists():
-                args.output.with_suffix('.startup.log').write_bytes(startup.read_bytes()[:65536])
-        supervisor.close_descriptors()
+        primary_failure = sys.exc_info()[0] is not None
+        try:
+            if primary_failure and report.get('phase') == 'actual_main_startup':
+                supervisor.drain_stderr()
+                report['startup_stderr_retained_bytes'] = len(supervisor.stderr_prefix)
+                report['startup_stderr_truncated'] = supervisor.stderr_truncated
+                startup_log.write(supervisor.stderr_prefix)
+                startup_log.flush()
+        except Exception as error:
+            report['startup_diagnostic_failure_type'] = type(error).__name__
+        finally:
+            try:
+                supervisor.close_descriptors()
+            except Exception as error:
+                report['descriptor_cleanup_failure_type'] = type(error).__name__
+                if not primary_failure:
+                    raise
 
 
 def self_test():
@@ -473,7 +570,77 @@ def self_test():
         pass
     else:
         raise AssertionError('PID identity change accepted')
-    print('PASS pure metric guards; no native or process checks')
+    class TestInterrupts:
+        def check(self):
+            pass
+        def wait(self, selector, seconds):
+            return selector.select(seconds)
+    capture = Supervisor(None, TestInterrupts())
+    reader_fd, writer = os.pipe()
+    reader = os.fdopen(reader_fd, 'rb', buffering=0)
+    try:
+        capture.capture_stderr(reader)
+        for index in range(20):
+            assert os.write(writer, bytes([index]) * 4096) == 4096
+            with selectors.DefaultSelector() as selector:
+                assert capture.wait(selector, 0) == []
+        assert capture.stderr_prefix == b''.join(bytes([index]) * 4096 for index in range(16))
+        assert len(capture.stderr_prefix) == STARTUP_LOG_LIMIT and capture.stderr_truncated
+        capture.startup_finished()
+        os.write(writer, b'discarded after startup')
+        capture.check()
+        assert not capture.stderr_prefix
+        os.close(writer)
+        writer = None
+        capture.check()
+        assert reader.closed and capture.stderr_stream is None
+    finally:
+        if writer is not None:
+            os.close(writer)
+        capture.close_descriptors()
+    reader_fd, writer = os.pipe()
+    reader = os.fdopen(reader_fd, 'rb', buffering=0)
+    capture = Supervisor(None, TestInterrupts())
+    capture.capture_stderr(reader)
+    capture.watched[-1] = 0
+    try:
+        capture.close_descriptors()
+    except OSError:
+        assert reader.closed and not capture.watched
+    else:
+        raise AssertionError('Descriptor cleanup error was hidden')
+    finally:
+        os.close(writer)
+    with tempfile.TemporaryDirectory(prefix='owned-resident-output-') as directory:
+        requested = Path(directory) / 'new-parent/report.json'
+        output_path, output, startup = reserve_outputs(requested)
+        try:
+            assert output_path.is_absolute() and output_path.parent.is_dir()
+            assert output_path.stat().st_mode & 0o077 == 0
+            assert output_path.with_suffix('.startup.log').stat().st_mode & 0o077 == 0
+            output.write('{"prior_proof":true}\n')
+            output.flush()
+            remove_empty_reserved(output_path.with_suffix('.startup.log'), startup)
+        finally:
+            startup.close()
+            output.close()
+        assert not output_path.with_suffix('.startup.log').exists()
+        try:
+            reserve_outputs(output_path)
+        except FileExistsError:
+            assert output_path.read_text() == '{"prior_proof":true}\n'
+        else:
+            raise AssertionError('Existing JSON proof was admitted')
+        collision = Path(directory) / 'sidecar-collision.json'
+        collision.with_suffix('.startup.log').write_bytes(b'prior diagnostic')
+        try:
+            reserve_outputs(collision)
+        except FileExistsError:
+            assert collision.with_suffix('.startup.log').read_bytes() == b'prior diagnostic'
+            assert not collision.exists()
+        else:
+            raise AssertionError('Existing startup proof was admitted')
+    print('PASS metric, bounded pipe/EOF/cleanup and exclusive evidence guards; no native app/session')
 
 
 def main():
@@ -515,27 +682,35 @@ def main():
             parser.error('Required private fixture executable is unavailable')
         setattr(args, name, executable)
     report = {'schema': 1, 'label': args.label, 'status': 'failed', 'binary_sha256': digest(args.binary), 'fixture_sha256': digest(args.fixture), 'source_tree_sha256_at_observation': source_digest(), 'software_icd_sha256': digest(args.software_vulkan_icd), 'clock_ticks_per_second': os.sysconf('SC_CLK_TCK'), 'scope': 'actual normal main and actual Linux native helper, authenticated private software Xvfb, private D-Bus/SNI host, no capture or clipboard read/write', 'limits': 'no GPU memory, physical display/input, reference hardware, wakeup inference from context switches, peak between endpoints or old/new equivalence claim', 'targets': {'joint_private_bytes': 50 * 1024 * 1024, 'one_core_cpu_percent': 0.1}}
-    owner = load_owner()
+    args.output, output, startup_log = reserve_outputs(args.output)
     failed = False
     try:
-        with owner.Interrupts() as interrupts:
-            family = owner.OwnedChildren()
-            try:
-                exercise(args, owner, family, interrupts, report)
-            finally:
-                # Preserve pidfds/subreaper/runtime authority until kernel-confirmed exit/reap.
-                family.close()
-                report['cleanup_reaped_all_owned_children'] = not family.handles and family.runtime is None and not Path(f'/proc/self/task/{os.getpid()}/children').read_text().split()
-                if not report['cleanup_reaped_all_owned_children']:
-                    raise RuntimeError('Owned cleanup did not finish')
-    except BaseException as error:
-        report['status'] = 'failed'
-        report['failure_type'] = type(error).__name__  # Never retain native stderr, paths or secrets.
-        failed = True
-    args.output.parent.mkdir(parents=True, exist_ok=True)
-    with args.output.open('x', encoding='utf-8') as output:
+        owner = load_owner()
+        try:
+            with owner.Interrupts() as interrupts:
+                family = owner.OwnedChildren()
+                try:
+                    exercise(args, owner, family, interrupts, report, startup_log)
+                finally:
+                    # Preserve pidfds/subreaper/runtime authority until kernel-confirmed exit/reap.
+                    family.close()
+                    report['cleanup_reaped_all_owned_children'] = not family.handles and family.runtime is None and not Path(f'/proc/self/task/{os.getpid()}/children').read_text().split()
+                    if not report['cleanup_reaped_all_owned_children']:
+                        raise RuntimeError('Owned cleanup did not finish')
+        except BaseException as error:
+            report['status'] = 'failed'
+            report['failure_type'] = type(error).__name__  # Never put native log content or paths in JSON.
+            failed = True
         json.dump(report, output, indent=2)
         output.write('\n')
+    finally:
+        try:
+            remove_empty_reserved(args.output.with_suffix('.startup.log'), startup_log)
+        finally:
+            try:
+                startup_log.close()
+            finally:
+                output.close()
     budgets = report.get('idle', {})
     print('Private resident observation complete; inspect aggregate JSON and scope limits')
     if failed or not budgets.get('private_budget_observed') or not budgets.get('cpu_budget_observed'):
