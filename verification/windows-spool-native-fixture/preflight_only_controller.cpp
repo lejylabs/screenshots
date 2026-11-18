@@ -283,8 +283,8 @@ int wmain(int argc,wchar_t** argv) {
             const auto command=quote(argv[2])+L" print-image "+quote(argv[3])+L" --printer "+quote(argv[4])+L" --paper "+quote(argv[5]);
             const DWORD code=launch(argv[2],command,argv[6],argv[7],70000,!wcscmp(argv[8],L"broken-stdout"),nullptr);std::printf("{\"application_exit\":%lu}\n",code);return 0;
         }
-        const bool preflight_only=!wcscmp(argv[1],L"preflight-only");
-        need((!wcscmp(argv[1],L"supervise") || preflight_only) && argc==6,"supervise script/directory/shipping/instrumented");
+        const bool ownership_only=!wcscmp(argv[1],L"ownership-only");
+        need((!wcscmp(argv[1],L"supervise") || ownership_only) && argc==6,"supervise script/directory/shipping/instrumented");
         const std::wstring directory=argv[3],queue=owned_queue(directory),port=directory+L"\\output.xps",original_default=default_printer();Ownership owner(queue,port);
         Handle job(CreateJobObjectW(nullptr,nullptr));need(job.value!=nullptr,"outer owned Job");JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits{};
         limits.BasicLimitInformation.LimitFlags=JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE|JOB_OBJECT_LIMIT_ACTIVE_PROCESS|JOB_OBJECT_LIMIT_PROCESS_MEMORY;limits.BasicLimitInformation.ActiveProcessLimit=8;limits.ProcessMemoryLimit=1024ull*1024*1024;
@@ -297,27 +297,33 @@ int wmain(int argc,wchar_t** argv) {
         const auto suffix=L" -FixtureDirectory "+quote(directory)+L" -ShippingApplication "+quote(argv[4])+L" -InstrumentedApplication "+quote(argv[5])+L" -Controller "+quote(argv[0])+L" -OwnerPid "+std::to_wstring(GetCurrentProcessId());
         DWORD exit=99;bool ran=false,checks=false;
         try {
+            std::fprintf(stderr,"OWNED-PHASE preflight-start\n");
             need(launch(shell,prefix+L" -Stage Preflight"+suffix,directory+L"\\preflight.stdout.log",directory+L"\\preflight.stderr.log",60000,false,job.value,desktop_path)==0,"read-only preflight/prerequisite/collision refusal");
             need(wait_empty(job.value),"preflight family reaped before native acquisition");
-            if(preflight_only) {
-                need(family_empty(job.value),"preflight-only actual family empty");
-                need(!owner.queue_created && !owner.port_created && !owner.pixels_authorized && !owner.printer && owner.destructive_calls==0,"preflight-only acquired no mutation authority");
-                need(default_printer()==original_default,"preflight-only default unchanged");
-                CloseDesktop(desktop);CloseWindowStation(station);
-                std::printf("{\"scope\":\"metadata-preflight-only\",\"preflight_passed\":true,\"outer_job_empty\":true,\"queue_or_port_acquired\":false,\"default_unchanged\":true,\"product_executed\":false,\"ownership_controls_passed\":false}\n");
-                return 0;
-            }
+            std::fprintf(stderr,"OWNED-PHASE preflight-complete-acquire-start\n");
             need(acquire(owner),"exclusive native ownership acquisition refused collision");need(queue_identity(owner) && port_identity(port)==Port::Local,"acquired private queue and Local Port identity");
+            std::fprintf(stderr,"OWNED-PHASE acquire-complete-controls-start\n");
             controls(job.value,owner,argv[0],desktop_path);checks=true;
-            owner.pixels_authorized=true;exit=launch(shell,prefix+L" -Stage Execute"+suffix,directory+L"\\run.stdout.log",directory+L"\\run.stderr.log",300000,false,job.value,desktop_path);ran=true;
+            std::fprintf(stderr,"OWNED-PHASE controls-complete\n");
+            if(!ownership_only) {owner.pixels_authorized=true;exit=launch(shell,prefix+L" -Stage Execute"+suffix,directory+L"\\run.stdout.log",directory+L"\\run.stderr.log",300000,false,job.value,desktop_path);ran=true;}
+            else exit=0;
         } catch(const std::exception& error) {std::fprintf(stderr,"supervised execution: %s\n",error.what());}
         TerminateJobObject(job.value,98);
         if(!wait_empty(job.value)) retain("family has not actually reaped; no spool/port/pixel cleanup attempted");
+        std::fprintf(stderr,"OWNED-PHASE family-empty-cleanup-start\n");
         Cleanup result=Cleanup::Failed;
         try {result=guarded_cleanup(job.value,owner);} catch(...) {std::fprintf(stderr,"Owned cleanup raised; acquired authority retained\n");}
         if(result==Cleanup::Pending) retain("fresh family-empty/uncertain-acquisition gate; no destructive cleanup");
         if(result!=Cleanup::Done) retain("owned spool/port/pixel cleanup incomplete");
         bool same_default=false;try {same_default=default_printer()==original_default;} catch(...) {}
+        std::fprintf(stderr,"OWNED-PHASE cleanup-complete\n");
+        if(ownership_only) {
+            need(!owner.pixels_authorized,"ownership-only granted no pixel authority");
+            CloseDesktop(desktop);CloseWindowStation(station);
+            const bool success=exit==0 && checks && same_default;
+            std::printf("{\"scope\":\"ownership-controls-only\",\"product_executed\":false,\"pixel_output_tested\":false,\"outer_job_empty\":true,\"owned_spool_cleanup\":true,\"default_unchanged\":%s,\"ownership_controls_passed\":%s,\"passed\":%s}\n",same_default?"true":"false",checks?"true":"false",success?"true":"false");
+            return success?0:1;
+        }
         CloseDesktop(desktop);CloseWindowStation(station);const bool passed=ran && exit==0 && checks && same_default;
         std::printf("{\"inner_exit\":%lu,\"outer_job_empty\":true,\"owned_spool_cleanup\":true,\"default_unchanged\":%s,\"ownership_controls_passed\":%s,\"collision_resources_untouched\":%s,\"pending_family_no_cleanup\":%s,\"passed\":%s}\n",exit,same_default?"true":"false",checks?"true":"false",checks?"true":"false",checks?"true":"false",passed?"true":"false");return passed?0:1;
     } catch(const std::exception& error) {std::fprintf(stderr,"owned print fixture: %s\n",error.what());return 1;}

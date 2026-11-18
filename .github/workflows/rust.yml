@@ -1,4 +1,4 @@
-name: Owned Windows 2022 exact native read-only spool preflight
+name: Owned Windows 2022 native ownership controls only
 on:
   push:
     branches: [feat/windows-native-drop-probe]
@@ -17,7 +17,7 @@ jobs:
           New-Item -ItemType Directory target/preflight-only-proof -Force | Out-Null
           & cl.exe /nologo /std:c++20 /EHsc /W4 /O2 /D_WIN32_WINNT=0x0A00 verification/windows-spool-native-fixture/preflight_only_controller.cpp /Fe:target/preflight-only-proof/controller.exe /Fo:target/preflight-only-proof/controller.obj winspool.lib user32.lib gdi32.lib advapi32.lib ole32.lib
           if ($LASTEXITCODE -ne 0) {exit $LASTEXITCODE}
-      - name: Execute only original private-desktop Job preflight
+      - name: Execute original preflight ownership controls and cleanup only
         shell: pwsh
         timeout-minutes: 3
         run: |
@@ -28,15 +28,15 @@ jobs:
           $ExistenceOnlyOne=(Resolve-Path "$env:SystemRoot\System32\cmd.exe").Path
           $ExistenceOnlyTwo=(Resolve-Path "$env:SystemRoot\System32\where.exe").Path
           # These distinct paths are resolved ONLY by Stage Preflight; neither is executed.
-          & $Controller preflight-only $Script $Fixture.directory $ExistenceOnlyOne $ExistenceOnlyTwo 2>&1 | Tee-Object -FilePath target/preflight-only-proof/controller.log
+          & $Controller ownership-only $Script $Fixture.directory $ExistenceOnlyOne $ExistenceOnlyTwo 2>&1 | Tee-Object -FilePath target/preflight-only-proof/controller.log
           $Code=$LASTEXITCODE
           Get-ChildItem -LiteralPath $Fixture.directory -File | Where-Object {$_.Extension -in @('.log','.txt') -and $_.Length -le 4194304} | ForEach-Object {Copy-Item -LiteralPath $_.FullName -Destination (Join-Path target/preflight-only-proof $_.Name)}
-          [ordered]@{source_commit=$env:GITHUB_SHA;scope='metadata-preflight-only';product_executed=$false;queues_or_ports_acquired=$false;controller_exit=$Code} | ConvertTo-Json | Set-Content target/preflight-only-proof/scope.json
+          [ordered]@{source_commit=$env:GITHUB_SHA;scope='ownership-controls-only';product_executed=$false;controller_exit=$Code} | ConvertTo-Json | Set-Content target/preflight-only-proof/scope.json
           if ($Code -ne 0) {exit $Code}
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: actual-native-spool-preflight-only
+          name: actual-native-spool-ownership-only
           path: target/preflight-only-proof
           retention-days: 7
           if-no-files-found: error
