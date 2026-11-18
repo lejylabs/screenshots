@@ -66,7 +66,7 @@ libc = "0.2.191"
 [target.'cfg(target_os = "linux")'.dependencies]
 dbus = "=0.9.12"
 dbus-secret-service = { version = "=4.1.0", default-features = false }
-x11rb = { version = "=0.13.2", default-features = false, features = ["randr", "xfixes", "xkb"] }
+x11rb = { version = "=0.13.2", default-features = false, features = ["randr", "xfixes", "xkb", "composite"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 tray-icon.workspace = true

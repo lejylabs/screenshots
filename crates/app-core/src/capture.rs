@@ -11,7 +11,7 @@ use std::{
     time::Instant,
 };
 
-use crate::ExportSize;
+use crate::{CaptureOptions, ExportSize};
 use image::RgbaImage;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -144,9 +144,19 @@ struct PreparedCaptureReservation {
     reserved_bytes: u64,
     #[cfg(target_os = "windows")]
     windows: crate::capture_native::WindowsCaptureAdmission,
+    #[cfg(target_os = "linux")]
+    linux_window: Option<crate::capture_native::LinuxWindowAdmission>,
 }
 impl PreparedCaptureReservation {
-    fn freeze(source: PreparedCapture) -> Result<Self, CaptureError> {
+    fn freeze(source: PreparedCapture, _options: &CaptureOptions) -> Result<Self, CaptureError> {
+        #[cfg(target_os = "linux")]
+        let linux_window = match &source {
+            PreparedCapture::Window(window, ..) => Some(
+                crate::capture_native::linux_window_admission(window, _options)
+                    .map_err(backend_error)?,
+            ),
+            _ => None,
+        };
         #[cfg(target_os = "windows")]
         let windows = match &source {
             PreparedCapture::Display(monitor, _) => {
@@ -170,16 +180,23 @@ impl PreparedCaptureReservation {
         .map_err(backend_error)?;
         #[cfg(target_os = "windows")]
         let reserved_bytes = windows.bytes();
-        #[cfg(not(target_os = "windows"))]
+        #[cfg(target_os = "linux")]
+        let reserved_bytes = match &linux_window {
+            Some(admitted) => admitted.bytes(),
+            None => source.admission_bytes()?,
+        };
+        #[cfg(not(any(target_os = "windows", target_os = "linux")))]
         let reserved_bytes = source.admission_bytes()?;
         Ok(Self {
             source,
             reserved_bytes,
             #[cfg(target_os = "windows")]
             windows,
+            #[cfg(target_os = "linux")]
+            linux_window,
         })
     }
-    fn verify(&self) -> Result<(), CaptureError> {
+    fn verify(&self, _options: &CaptureOptions) -> Result<(), CaptureError> {
         #[cfg(target_os = "windows")]
         return match &self.source {
             PreparedCapture::Display(monitor, _) => {
@@ -202,6 +219,13 @@ impl PreparedCaptureReservation {
             }
         }
         .map_err(backend_error);
+        #[cfg(target_os = "linux")]
+        if let (PreparedCapture::Window(window, ..), Some(admitted)) =
+            (&self.source, &self.linux_window)
+        {
+            return crate::capture_native::check_linux_window_admission(window, _options, admitted)
+                .map_err(backend_error);
+        }
         #[cfg(not(target_os = "windows"))]
         if self.source.admission_bytes()? != self.reserved_bytes {
             return Err(CaptureError::StaleRegion);
@@ -833,7 +857,8 @@ impl XcapBackend {
             .into_iter()
             .map(|request| {
                 self.check_native(check)?;
-                let prepared = PreparedCaptureReservation::freeze(self.prepare(request)?)?;
+                let prepared =
+                    PreparedCaptureReservation::freeze(self.prepare(request)?, &self.options)?;
                 budget.admit_bytes(prepared.reserved_bytes)?;
                 Ok(prepared)
             })
@@ -846,13 +871,15 @@ impl XcapBackend {
                 self.check_native(check)?;
                 #[cfg(target_os = "windows")]
                 topology.check().map_err(backend_error)?;
-                reservation.verify()?;
+                reservation.verify(&self.options)?;
                 // Retain cumulative native charges even after earlier frames normalize to RGBA8.
                 admitted_sources.admit_bytes(reservation.reserved_bytes)?;
                 let PreparedCaptureReservation {
                     source: prepared,
                     #[cfg(target_os = "windows")]
                     windows,
+                    #[cfg(target_os = "linux")]
+                    linux_window,
                     ..
                 } = reservation;
                 let started = Instant::now();
@@ -918,9 +945,16 @@ impl XcapBackend {
                             &|| self.check_native(check),
                         )
                         .map_err(checked_native_error)?;
-                        #[cfg(not(target_os = "windows"))]
-                        let image = crate::capture_native::capture_window(&window, &self.options)
-                            .map_err(backend_error)?;
+                        #[cfg(target_os = "linux")]
+                        let image = crate::capture_native::capture_window(
+                            &window,
+                            &self.options,
+                            linux_window
+                                .as_ref()
+                                .ok_or(CaptureError::Unsupported("Missing X11 window admission"))?,
+                            &|| self.check_native(check),
+                        )
+                        .map_err(checked_native_error)?;
                         if expected_process
                             .is_some_and(|expected| window.pid().ok() != Some(expected))
                         {
@@ -1437,7 +1471,7 @@ fn linux_x11_windows_available(display: Option<&std::ffi::OsStr>) -> bool {
         .is_some_and(|display| !display.trim().is_empty())
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "linux"))]
 fn checked_native_error(error: anyhow::Error) -> CaptureError {
     error
         .downcast::<CaptureError>()
@@ -1551,7 +1585,7 @@ pub fn capture_output_dir() -> PathBuf {
 mod tests {
     use super::*;
 
-    #[cfg(target_os = "windows")]
+    #[cfg(any(target_os = "windows", target_os = "linux"))]
     #[test]
     fn row_cancellation_keeps_its_category_through_native_error_delivery() {
         assert!(matches!(
