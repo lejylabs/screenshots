@@ -22,9 +22,13 @@ jobs:
           $Driver=@(Get-PrinterDriver -Name 'Microsoft XPS Document Writer v4' -ErrorAction SilentlyContinue)
           $Running=(Get-Service -Name Spooler).Status -eq 'Running'
           $Available=$Driver.Count -eq 1 -and $Driver[0].MajorVersion -eq 4
+          $Native=@(Get-CimInstance -ClassName Win32_PrinterDriver | Select-Object Name,Version,SupportedPlatform,DriverPath,InfName)
+          $Native | ConvertTo-Json -Depth 3 | Set-Content target/spool-prerequisite/native-driver-catalog.json
+          $Mapped=@()
+          if ($Available) {$Expected=$Driver[0].Name+','+$Driver[0].MajorVersion+','+$Driver[0].PrinterEnvironment; $Mapped=@($Native | Where-Object {$_.Name -ceq $Expected})}
           $Signature=$null; $Hash=$null
-          if ($Available) {$Signature=Get-AuthenticodeSignature -LiteralPath $Driver[0].DriverPath; $Hash=(Get-FileHash -Algorithm SHA256 -LiteralPath $Driver[0].DriverPath).Hash.ToLowerInvariant()}
-          $Signed=$Available -and $Signature.Status -eq 'Valid' -and $Signature.SignerCertificate -and $Signature.SignerCertificate.Subject -match 'Microsoft'
+          if ($Mapped.Count -eq 1 -and $Mapped[0].DriverPath -and [IO.Path]::IsPathRooted($Mapped[0].DriverPath)) {$Signature=Get-AuthenticodeSignature -LiteralPath $Mapped[0].DriverPath; $Hash=(Get-FileHash -Algorithm SHA256 -LiteralPath $Mapped[0].DriverPath).Hash.ToLowerInvariant()}
+          $Signed=$Available -and $Mapped.Count -eq 1 -and $Signature -and $Signature.Status -eq 'Valid' -and $Signature.SignerCertificate -and $Signature.SignerCertificate.Subject -match 'Microsoft'
           [ordered]@{source_commit=$env:GITHUB_SHA;runner='windows-2022';driver_present=$Available;driver_signed_by_microsoft=[bool]$Signed;driver_sha256=$Hash;spooler_running=$Running;read_only=$true;queues_or_ports_modified=$false;passed=[bool]($Available -and $Signed -and $Running)} | ConvertTo-Json -Depth 3 | Set-Content target/spool-prerequisite/prerequisite.json
           if (-not ($Available -and $Signed -and $Running)) {throw 'PREREQUISITE MISSING: exact installed signed XPS v4 and running spooler; no installation or service changes'}
       - uses: actions/upload-artifact@v4

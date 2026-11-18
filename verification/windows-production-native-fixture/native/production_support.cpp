@@ -408,7 +408,8 @@ static HRESULT snapshot_private_stream(IStream* source,STGMEDIUM* owned,SIZE_T* 
         if(SUCCEEDED(result) && read!=0) result=STG_E_MEDIUMFULL;
     }
     if(SUCCEEDED(result) && private_stream_canceled()) result=E_ABORT;
-    if(SUCCEEDED(result)) {LARGE_INTEGER original{};original.QuadPart=static_cast<LONGLONG>(position.QuadPart);result=output->Seek(original,STREAM_SEEK_SET,nullptr);}
+    // IDataObject::GetData describes [0, returned cursor), not the caller's cursor.
+    if(SUCCEEDED(result)) result=output->Seek(zero,STREAM_SEEK_END,nullptr);
     if(SUCCEEDED(result) && private_stream_canceled()) result=E_ABORT;
     input->Release();
     if(SUCCEEDED(result) && private_stream_canceled()) result=E_ABORT;
