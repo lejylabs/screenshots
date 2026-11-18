@@ -6,6 +6,14 @@
 
 ## Non-UI follow-up (2026-11-14)
 
+Tooling update (2026-11-19): production and release tooling is Rust-only. The
+.NET SXCU helper is replaced by an in-process Rust interpreter, `install-user.py`
+by the `screenshots-install` binary and the packaging/signing/policy scripts by
+`cargo xtask`. Part of the test tooling is ported; the remaining Python, C, C++,
+Objective-C, Swift and PowerShell test fixtures and the open verification items
+are listed in [the current checklist](docs/non-ui-status.md#checkpoint-2026-11-19-rust-only-tooling-uncommitted-working-tree).
+No acceptance gate changed.
+
 Implementation and verification for the unattended non-UI delivery are tracked in
 [the delivery plan](docs/non-ui-delivery.md). Read that before interpreting older
 pending statements below. The UI redesign is excluded from this task. Headless

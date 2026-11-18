@@ -1,8 +1,76 @@
 # Non-UI delivery: current checklist
 
-Date: 2026-11-18
+Date: 2026-11-19
 Scope: the user's complete major-feature list, with final GPUI redesign and new
 UI controls excluded. The workstation stays on. The full backlog is **open**.
+
+## Checkpoint 2026-11-19: Rust-only tooling (uncommitted working tree)
+
+Goal: every first-party non-Rust language (C, C#, C++, Swift, Python) is removed.
+This checkpoint completes the production and release-tooling part; part of the
+test tooling is ported. No feature behavior or acceptance gate changed.
+
+Replaced in this checkpoint:
+
+- **ShareX/SXCU interpreter:** the private .NET helper (`tools/sharex-helper`,
+  Newtonsoft.Json, packaged `lib/screenshots-sxcu` runtime and its manifest
+  verification, `sharex_process*.rs`) is replaced by the in-process Rust module
+  `crates/app-core/src/sharex_interpreter/` with the same request/result protocol,
+  limits and refusal codes. Documented deviations: .NET-only regex constructs are
+  refused, catastrophic backtracking is bounded by a step limit instead of a
+  100 ms timer, XPath is a documented subset, calendar names are English.
+  New dependency: `fancy-regex` (plus `bit-set`/`bit-vec`).
+  [Contract](sharex-runtime.md).
+- **User installer:** `scripts/install-user.py` is replaced by the
+  `screenshots-install` binary (`apps/installer`), shipped in every portable
+  archive. On-disk layout and metadata stay compatible; signed updates still
+  verify Ed25519 through the system `openssl` tool. Debug builds alone expose
+  failpoints and a test trust root for the recovery tests.
+- **Release tooling:** `package.py`, `package-app.py`, `native-signing*.py`,
+  `vendored-advisory-view.py`, `build-sharex-helper.py` and the inline workflow
+  Python steps are replaced by `cargo xtask` (`package`, `package-app`,
+  `package-smoke`, `vendored-advisory-view`, `dependency-policy-controls`, `ci`).
+  Signing runs release tools in a process group (POSIX) or kill-on-close job
+  (Windows). The unreferenced `scripts/mac-native-diagnostic.c` is deleted.
+- **Ported tests:** the former advisory-view, dependency-policy, signing,
+  package, package-app, package-smoke and install-user tests now run as Rust
+  tests; the CI workflows call them.
+- **Dependencies:** the unused `chrono` workspace dependency and the rusqlite
+  `chrono` feature are removed, so RUSTSEC-2026-0543 has no edge in the resolved
+  graph (chrono remains in `Cargo.lock` only as an inactive optional dependency
+  of `gpui-fast`). Call sites follow the Jiff 1.0 renames (`ZonedDateTime`,
+  `to_zoned_datetime`).
+- **Clippy:** zero errors on the full workspace; the specific warnings reviewed
+  on 2026-11-19 are fixed without `allow(dead_code)`.
+
+Verified on Windows (x86_64-pc-windows-msvc) in this session:
+
+- `sharex_interpreter`: 10 tests, including the ported helper self-test fixtures.
+- `screenshots-install`: 5 unit and 20 integration tests (crash/recovery
+  failpoints, signed update, local HTTPS update with request-order check).
+- `xtask`: 41 tests. `file_logging`: 15 tests.
+- `cargo clippy --workspace --all-targets`: zero errors.
+
+Not verified or open:
+
+- No fresh complete workspace test run exists for this source; the totals below
+  belong to earlier snapshots. Three `history::file_ops::format_tests` failed in
+  one run during the Jiff 1.0 transition and are not yet classified.
+- `sharex::tests::multipart_tracks_each_argument_and_file_with_exact_limits_and_refuses_early_2xx`
+  fails on Windows; it fails identically on the pre-change source.
+- `cargo xtask package` was not run end to end (no vcpkg environment here);
+  real signing, `.deb`, `.app` and `.msix` builds are unverified. `cargo-deny`
+  was not run locally.
+- The `uuid` 1.29.3 requirement violates the repository's 3-day minimum publish
+  age; builds currently need `CARGO_RESOLVER_INCOMPATIBLE_PUBLISH_AGE=allow`.
+- Remaining non-Rust files: about 45 Python end-to-end scripts (not run by CI;
+  `test-sharex-upload.py` and `test-task-clipboard-private.py` still reference
+  removed tooling), `verify-image-print-virtual-ipp.py` (macOS CI), the oracle
+  generators, the C fault preloads and SPA fixture, the Objective-C pasteboard
+  fixture, the Swift `MacCaptureFixture`, the C++ `WindowsDropTopology` and
+  `verification/*` fixtures, and PowerShell runners.
+- The interpreter's resident cost was not re-measured; earlier helper evidence
+  in [sharing](sharex-runtime.md) describes the former .NET helper.
 
 Last complete optimized workspace checkpoint (2026-11-18, before the eight
 additional Linux controls): **1,262 passed, zero failures, 96 ignored, 59 outer
