@@ -1,0 +1,167 @@
+name: Dependency policy
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dependency-policy-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  native-dependency-policy:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      CARGO_TERM_COLOR: never
+      CARGO_BUILD_JOBS: "2"
+      SCREENSHOTS_RUST_TOOLCHAIN: "1.100.0"
+      SCREENSHOTS_DENY_VERSION: "0.20.2"
+      SCREENSHOTS_DENY_SOURCE_SHA256: e528dfcbe739af7ce37a77d3d6df1b29dd6887b1c701d888820c0f16b864f737
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Scope policy tools outside the application workspace
+        shell: bash
+        run: |
+          echo "SCREENSHOTS_DENY_ROOT=$RUNNER_TEMP/screenshots-cargo-deny" >> "$GITHUB_ENV"
+          echo "SCREENSHOTS_DENY_SOURCE=$RUNNER_TEMP/screenshots-cargo-deny-source" >> "$GITHUB_ENV"
+          echo "SCREENSHOTS_POLICY_EVIDENCE=$RUNNER_TEMP/screenshots-dependency-policy-evidence" >> "$GITHUB_ENV"
+      - name: Install exact Rust and cargo-deny from verified registry source
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$SCREENSHOTS_POLICY_EVIDENCE"
+          rustup toolchain install "$SCREENSHOTS_RUST_TOOLCHAIN" --profile minimal --no-self-update
+          rustc +"$SCREENSHOTS_RUST_TOOLCHAIN" --version --verbose | tee "$SCREENSHOTS_POLICY_EVIDENCE/rustc.txt"
+          python3 - <<'PY'
+          import hashlib, io, os, pathlib, tarfile, tomllib, urllib.request
+          version = os.environ["SCREENSHOTS_DENY_VERSION"]
+          url = f"https://static.crates.io/crates/cargo-deny/cargo-deny-{version}.crate"
+          with urllib.request.urlopen(url, timeout=60) as response:
+              archive = response.read(4 * 1024 * 1024 + 1)
+          assert len(archive) <= 4 * 1024 * 1024, "cargo-deny source archive is oversized"
+          assert hashlib.sha256(archive).hexdigest() == os.environ["SCREENSHOTS_DENY_SOURCE_SHA256"], "cargo-deny source checksum mismatch"
+          source = pathlib.Path(os.environ["SCREENSHOTS_DENY_SOURCE"])
+          source.mkdir()
+          with tarfile.open(fileobj=io.BytesIO(archive), mode="r:gz") as package:
+              package.extractall(source, filter="data")
+          manifest = tomllib.loads((source / f"cargo-deny-{version}/Cargo.toml").read_text())
+          assert manifest["package"]["name"] == "cargo-deny" and manifest["package"]["version"] == version
+          PY
+          cargo +"$SCREENSHOTS_RUST_TOOLCHAIN" install --locked \
+            --path "$SCREENSHOTS_DENY_SOURCE/cargo-deny-$SCREENSHOTS_DENY_VERSION" --root "$SCREENSHOTS_DENY_ROOT" \
+            2>&1 | tee "$SCREENSHOTS_POLICY_EVIDENCE/tool-install.log"
+          python3 - <<'PY'
+          import hashlib, json, os, pathlib, subprocess, tomllib
+          evidence = pathlib.Path(os.environ["SCREENSHOTS_POLICY_EVIDENCE"])
+          toolchain = os.environ["SCREENSHOTS_RUST_TOOLCHAIN"]
+          assert tomllib.loads(pathlib.Path("rust-toolchain.toml").read_text())["toolchain"]["channel"] == toolchain
+          version = os.environ["SCREENSHOTS_DENY_VERSION"]
+          expected = os.environ["SCREENSHOTS_DENY_SOURCE_SHA256"]
+          source = pathlib.Path(os.environ["SCREENSHOTS_DENY_SOURCE"]) / f"cargo-deny-{version}"
+          binary = pathlib.Path(os.environ["SCREENSHOTS_DENY_ROOT"]) / "bin/cargo-deny"
+          actual = subprocess.check_output([str(binary), "--version"], text=True).strip()
+          assert actual == f"cargo-deny {version}", actual
+          inputs = ["Cargo.toml", "Cargo.lock", "rust-toolchain.toml", "deny.toml", ".github/workflows/dependencies.yml",
+                    "config/vendored-upstream-advisories.json", "scripts/vendored-advisory-view.py", "scripts/test-vendored-advisory-view.py",
+                    "scripts/test-dependency-policy-engine.py"]
+          provenance = {"source_commit": os.environ["GITHUB_SHA"], "rust_toolchain": toolchain,
+                        "cargo_deny": actual, "tool_source_sha256": expected,
+                        "tool_binary_sha256": hashlib.sha256(binary.read_bytes()).hexdigest(),
+                        "tool_lock_sha256": hashlib.sha256((source / "Cargo.lock").read_bytes()).hexdigest(),
+                        "tool_cache": "none; compiled after exact registry archive checksum verification",
+                        "advisory_cache": "none; fresh job checkout/fetch, commit recorded after check",
+                        "inputs": {path: hashlib.sha256(pathlib.Path(path).read_bytes()).hexdigest() for path in inputs}}
+          (evidence / "provenance.json").write_text(json.dumps(provenance, indent=2) + "\n")
+          PY
+      - name: Check registry advisories and actual-source licenses
+        shell: bash
+        env:
+          RUSTUP_TOOLCHAIN: "1.100.0"
+        run: |
+          set -euo pipefail
+          cargo metadata --format-version 1 --locked > "$SCREENSHOTS_POLICY_EVIDENCE/actual-metadata.json"
+          "$SCREENSHOTS_DENY_ROOT/bin/cargo-deny" --locked --workspace --exclude-dev --config deny.toml \
+            --metadata-path "$SCREENSHOTS_POLICY_EVIDENCE/actual-metadata.json" \
+            check advisories licenses 2>&1 | tee "$SCREENSHOTS_POLICY_EVIDENCE/registry-and-licenses.log"
+          "$SCREENSHOTS_DENY_ROOT/bin/cargo-deny" --locked --workspace --exclude-dev --config deny.toml \
+            --metadata-path "$SCREENSHOTS_POLICY_EVIDENCE/actual-metadata.json" \
+            list --format json --layout crate --threshold 0.93 > "$SCREENSHOTS_POLICY_EVIDENCE/actual-selected.json"
+      - name: Check verified vendored published-base advisory identities
+        shell: bash
+        env:
+          RUSTUP_TOOLCHAIN: "1.100.0"
+          PYTHONDONTWRITEBYTECODE: "1"
+          SCREENSHOTS_POLICY_TEST_ROOT: ${{ runner.temp }}/screenshots-dependency-policy-controls
+        run: |
+          set -euo pipefail
+          python3 scripts/test-vendored-advisory-view.py -v 2>&1 | tee "$SCREENSHOTS_POLICY_EVIDENCE/provenance-controls.log"
+          python3 scripts/vendored-advisory-view.py prepare \
+            --metadata "$SCREENSHOTS_POLICY_EVIDENCE/actual-metadata.json" \
+            --selected "$SCREENSHOTS_POLICY_EVIDENCE/actual-selected.json" \
+            --provenance config/vendored-upstream-advisories.json --root "$PWD" --policy deny.toml \
+            --advisory-db-root target/dependency-audit/advisory-dbs \
+            --output "$SCREENSHOTS_POLICY_EVIDENCE/upstream-view"
+          "$SCREENSHOTS_DENY_ROOT/bin/cargo-deny" --offline --locked --workspace --exclude-dev \
+            --config "$SCREENSHOTS_POLICY_EVIDENCE/upstream-view/upstream-advisory-policy.toml" \
+            --metadata-path "$SCREENSHOTS_POLICY_EVIDENCE/upstream-view/upstream-advisory-only-view.json" \
+            list --format json --layout crate --threshold 0.93 > "$SCREENSHOTS_POLICY_EVIDENCE/projected-selected.json"
+          python3 scripts/vendored-advisory-view.py verify-selection \
+            "$SCREENSHOTS_POLICY_EVIDENCE/actual-selected.json" "$SCREENSHOTS_POLICY_EVIDENCE/projected-selected.json"
+          "$SCREENSHOTS_DENY_ROOT/bin/cargo-deny" --offline --locked --workspace --exclude-dev \
+            --config "$SCREENSHOTS_POLICY_EVIDENCE/upstream-view/upstream-advisory-policy.toml" \
+            --metadata-path "$SCREENSHOTS_POLICY_EVIDENCE/upstream-view/upstream-advisory-only-view.json" \
+            check advisories 2>&1 | tee "$SCREENSHOTS_POLICY_EVIDENCE/vendored-upstream-advisories.log"
+      - name: Prove actual engine advisory and license rejection controls
+        shell: bash
+        env:
+          RUSTUP_TOOLCHAIN: "1.100.0"
+          PYTHONDONTWRITEBYTECODE: "1"
+        run: |
+          set -euo pipefail
+          python3 scripts/test-dependency-policy-engine.py \
+            --tool "$SCREENSHOTS_DENY_ROOT/bin/cargo-deny" \
+            --evidence "$SCREENSHOTS_POLICY_EVIDENCE" --policy deny.toml \
+            --advisory-db-root target/dependency-audit/advisory-dbs \
+            2>&1 | tee "$SCREENSHOTS_POLICY_EVIDENCE/engine-controls.log"
+          touch "$SCREENSHOTS_POLICY_EVIDENCE/check-succeeded"
+      - name: Record exact advisory and lockfile provenance
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$SCREENSHOTS_POLICY_EVIDENCE"
+          python3 - <<'PY'
+          import hashlib, json, os, pathlib, subprocess
+          evidence = pathlib.Path(os.environ["SCREENSHOTS_POLICY_EVIDENCE"])
+          snapshots = []
+          for path in sorted(pathlib.Path("target/dependency-audit/advisory-dbs").glob("*")):
+              if not path.is_dir():
+                  continue
+              if not ((path / ".git").exists() or (path / "HEAD").is_file()):
+                  continue
+              snapshots.append({"directory": path.name,
+                                "origin": subprocess.check_output(["git", "-C", str(path), "remote", "get-url", "origin"], text=True).strip(),
+                                "commit": subprocess.check_output(["git", "-C", str(path), "rev-parse", "HEAD"], text=True).strip()})
+          (evidence / "advisory-snapshots.json").write_text(json.dumps(snapshots, indent=2) + "\n")
+          if (evidence / "check-succeeded").exists():
+              assert len(snapshots) == 1, "Successful check must identify its exact advisory database"
+              assert snapshots[0]["origin"].rstrip("/").lower() == "https://github.com/rustsec/advisory-db"
+          before = evidence / "provenance.json"
+          if before.exists():
+              expected = json.loads(before.read_text())["inputs"]["Cargo.lock"]
+              assert hashlib.sha256(pathlib.Path("Cargo.lock").read_bytes()).hexdigest() == expected, "Dependency check changed Cargo.lock"
+          PY
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: dependency-policy-evidence
+          path: ${{ env.SCREENSHOTS_POLICY_EVIDENCE }}
+          retention-days: 7
+          if-no-files-found: error
