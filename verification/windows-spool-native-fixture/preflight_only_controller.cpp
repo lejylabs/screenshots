@@ -168,7 +168,7 @@ static bool acquire(Ownership& owner) {
     PRINTER_INFO_2W info{}; info.pPrinterName=owner.queue.data(); info.pPortName=owner.port.data();
     info.pDriverName=const_cast<wchar_t*>(L"Microsoft XPS Document Writer v4"); info.pPrintProcessor=const_cast<wchar_t*>(L"winprint"); info.pDatatype=const_cast<wchar_t*>(L"RAW");
     info.Attributes=PRINTER_ATTRIBUTE_LOCAL|PRINTER_ATTRIBUTE_QUEUED; info.Priority=1; info.DefaultPriority=1; info.pSecurityDescriptor=security;
-    owner.uncertain=true; owner.printer=AddPrinterW(nullptr,2,reinterpret_cast<BYTE*>(&info)); const DWORD error=GetLastError(); LocalFree(security);
+    owner.uncertain=true; owner.printer=AddPrinterW(nullptr,2,reinterpret_cast<BYTE*>(&info)); const DWORD error=GetLastError(); LocalFree(security); if(!owner.printer) std::fprintf(stderr,"OWNED-ERROR AddPrinterW=%lu\n",error);
     if(!owner.printer && error==ERROR_PRINTER_ALREADY_EXISTS) {owner.uncertain=false;return false;}
     need(owner.printer!=nullptr,"exclusive native queue creation"); owner.queue_created=true; owner.uncertain=false;
     return true;
