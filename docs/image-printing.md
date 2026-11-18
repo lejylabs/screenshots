@@ -280,3 +280,34 @@ oracles and verified whole-family/queue/port/pixel cleanup before the downstream
 real-driver gate can pass. Even a passing instrumented run would not establish
 unmodified shipping file-port acceptance, other drivers, native hangs,
 calibrated physical output or the reference-hardware resource budgets.
+
+
+## Real-driver gate blocked on the current CI host — 2026-11-18
+
+Actual MSVC compilation/linking and PowerShell parsing pass. The exact native
+CreateProcess/environment/private-desktop/Job preflight independently passes
+with the original ACL and signature checks, no queue/port acquisition and no
+product execution (run44373977655, verified artifact14460011667).
+
+A no-Rust probe of the original acquisition/ownership-control boundary then
+observes AddPrinterW error1726. Verified Application event1000 records
+`spoolsv.exe`10.0.20348.5756 faulting in `localspl.dll`10.0.20348.5866 with
+access violation0xc0000005 at0x12dfa; SCM7031/7036 record OS-initiated service
+recovery. The test made no service restart/install/default change. The
+read-only service/crash artifact14460229686 (run44377124632) was verified at
+SHA256 `9b9feedb6464acae469e9fa0143da37461f9737ec2ed89d7ef93d222f95f278c`.
+
+This blocks real Winspool/driver qualification on that host before product or
+pixel execution.1726 does not prove nonexecution of the RPC: the original
+uncertain-acquisition gate retains authority and refuses destructive cleanup.
+The bounded ownership probe reaches its three-minute cap; queue/port cleanup is
+not claimed, and the disposable host must be discarded. No malformed source
+API field was established by the targeted review, and no ACL, API parameter or
+output oracle is relaxed to obtain a pass.
+
+The existing full run44355258320 remains a separate pending observation, with
+its configured hard cap at2026-11-18 20:08:29UTC; the smaller probes do not
+simulate its product result. Exact source/event/error hashes and scope are in
+`target/verification/windows-spool-blocked-host-final/evidence-index.json`.
+The50MiB resident target still fails, and physical printing, GPU/reference
+hardware, account and signing/certificate gates remain separate.

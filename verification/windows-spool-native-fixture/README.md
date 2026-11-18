@@ -136,3 +136,25 @@ spool/output behavior under a disclosed admission seam; it would not establish
 unmodified shipping file-port acceptance, calibrated hardware output,
 reference-hardware performance, blocked-driver fault coverage, driver
 compatibility beyond MXDW or any physical delivery.
+
+
+## Current host result — blocked before product execution
+
+The actual Windows2022 host has the exact installed Microsoft-signed XPSv4
+driver and running spooler. Original native preflight now passes through the
+same private-desktop/Job boundary. Original acquisition subsequently returns
+AddPrinterW1726 while Windows records spoolsv/localspl access violation
+0xc0000005; event and error evidence was downloaded and hash-verified.
+Product printing, ownership controls after acquisition and pixel output were
+not executed by these probes. They establish a blocked host gate, not a pass.
+
+The original uncertain-acquisition retention remains in force; no destructive
+queue/port/pixel cleanup is authorized from that ambiguous RPC failure. The
+three-minute ownership probe is bounded by its disposable CI host. No queue or
+port cleanup success is fabricated. No service restart, driver install, ACL
+change or generic-driver substitution is used as a workaround.
+
+The full run44355258320 is separately pending with hard cap20:08:29UTC on
+2026-11-18 and remains untouched. Detailed source hashes, verified preflight and
+crash artifact identities, event versions/offset and scope are retained in
+`target/verification/windows-spool-blocked-host-final/evidence-index.json`.
