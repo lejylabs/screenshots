@@ -120,6 +120,14 @@ jobs:
           $Parameters = @{Application=(Resolve-Path target/release-fast/screenshots.exe).Path; OutputDirectory=(Join-Path $PWD 'target/production-drop-results')}
           if ('${{ inputs.owned_input_desktop }}' -eq 'true') {$Parameters.OwnedHostedCiInputDesktop=$true}
           & ./verification/windows-production-native-fixture/run.ps1 @Parameters
+      - name: Retain completed owned native acceptance proof before later gates
+        if: ${{ always() && steps.application_build.outcome == 'success' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: actual-windows-native-acceptance-interim
+          path: target/production-drop-results
+          retention-days: 7
+          if-no-files-found: error
       - name: Verify owned native GDI raster and controlled document faults
         if: ${{ always() && steps.application_build.outcome == 'success' }}
         shell: pwsh
