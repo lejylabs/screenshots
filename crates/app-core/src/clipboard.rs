@@ -74,7 +74,8 @@ pub fn load_editor_image_with_cancel(
     )
 }
 
-/// Verify the actual opened object and decode that same retained handle.
+/// Compare the opened object's metadata version before and after decoding the retained handle.
+/// This detects observable changes; it is not an immutable filesystem snapshot.
 pub fn load_editor_image_with_identity(
     path: &std::path::Path,
     expected: &crate::FileIdentity,
@@ -209,7 +210,7 @@ fn load_image_input_guarded_dimensions_with_cancel(
         use std::os::unix::fs::OpenOptionsExt;
         options.custom_flags(libc::O_NONBLOCK);
     }
-    let file = options.open(path)?;
+    let mut file = options.open(path)?;
     if let Some(expected) = expected {
         expected.verify_file(&file)?;
     }
@@ -221,19 +222,25 @@ fn load_image_input_guarded_dimensions_with_cancel(
         "Image file exceeds the 32 MiB input limit"
     );
     let reader = image::ImageReader::new(std::io::BufReader::new(EditorFile {
-        file,
+        file: &mut file,
         length,
         position: 0,
     }))
     .with_guessed_format()?;
-    decode_image_reader_dimensions_with_cancel(
+    let pixels = decode_image_reader_dimensions_with_cancel(
         reader,
         length,
         max_decoded_bytes,
         png_only,
         expected_dimensions,
         cancelled,
-    )
+    )?;
+    if let Some(expected) = expected {
+        expected
+            .verify_file(&file)
+            .context("Image input changed during consumption")?;
+    }
+    Ok(pixels)
 }
 
 /// Explicit encoded clipboard, drop or URL input; decode on a blocking worker.
@@ -1651,5 +1658,82 @@ mod encoded_input_tests {
             64 * 1024,
             "snapshot stops at the next bounded read"
         );
+    }
+
+    #[test]
+    fn opened_image_identity_rejects_same_size_in_place_change_between_snapshot_chunks()
+    -> Result<()> {
+        use std::{
+            cell::{Cell, RefCell},
+            fs::{FileTimes, OpenOptions},
+            io::{Seek, SeekFrom, Write},
+            time::{Duration, SystemTime},
+        };
+        let root = std::env::temp_dir().join(format!(
+            "screenshots-image-consumption-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir(&root)?;
+        let path = root.join("source.bmp");
+        let pixels = image::RgbaImage::from_pixel(256, 128, image::Rgba([17, 23, 29, 255]));
+        crate::save_bmp(&pixels, &path)?;
+        let result = (|| -> Result<()> {
+            let (admitted_file, expected) = crate::FileIdentity::open(&path)?;
+            let length = admitted_file.metadata()?.len();
+            assert!(length > 2 * 65536);
+            assert_eq!(load_editor_image_with_identity(&path, &expected)?, pixels);
+            let writer = RefCell::new(OpenOptions::new().write(true).open(&path)?);
+            let checkpoints = Cell::new(0u32);
+            let mutated = Cell::new(false);
+            let error = load_editor_image_with_identity_and_limit_with_cancel(
+                &path,
+                &expected,
+                crate::MAX_CAPTURE_BYTES,
+                &|| {
+                    let checkpoint = checkpoints.get() + 1;
+                    checkpoints.set(checkpoint);
+                    // Admission, decoder entry, then one checkpoint per 64 KiB read.
+                    // At four, the first chunk has been consumed and more input remains.
+                    if checkpoint == 4 {
+                        let mut file = writer.borrow_mut();
+                        file.seek(SeekFrom::Start(length - 1)).unwrap();
+                        file.write_all(&[128]).unwrap();
+                        file.set_times(
+                            FileTimes::new()
+                                .set_modified(SystemTime::UNIX_EPOCH + Duration::from_secs(1)),
+                        )
+                        .unwrap();
+                        assert_eq!(file.metadata().unwrap().len(), length);
+                        mutated.set(true);
+                    }
+                    false
+                },
+            )
+            .unwrap_err();
+            assert!(
+                mutated.get(),
+                "Fixture did not mutate during the bounded read loop"
+            );
+            assert!(
+                error.to_string().contains("changed during consumption"),
+                "{error:#}"
+            );
+            let current = crate::FileIdentity::from_file(&admitted_file)?;
+            assert!(
+                expected.same_object(&current),
+                "Fixture must keep the same native file object"
+            );
+            assert_ne!(
+                expected, current,
+                "Fixture must make the metadata change observable without timing assumptions"
+            );
+            // The modified input is valid: refusal must be the final source guard, not a codec error.
+            let changed = load_editor_image(&path)?;
+            assert_eq!(changed.dimensions(), pixels.dimensions());
+            assert_ne!(changed, pixels, "Fixture must rewrite actual pixel data");
+            Ok(())
+        })();
+        std::fs::remove_dir_all(root)?;
+        result
     }
 }
