@@ -293,7 +293,8 @@ A no-Rust probe of the original acquisition/ownership-control boundary then
 observes AddPrinterW error1726. Verified Application event1000 records
 `spoolsv.exe`10.0.20348.5756 faulting in `localspl.dll`10.0.20348.5866 with
 access violation0xc0000005 at0x12dfa; SCM7031/7036 record OS-initiated service
-recovery. The test made no service restart/install/default change. The
+recovery. No manual service restart, installation or default-printer change was
+requested; post-fault queue/port/default state is not certified. The
 read-only service/crash artifact14460229686 (run44377124632) was verified at
 SHA256 `9b9feedb6464acae469e9fa0143da37461f9737ec2ed89d7ef93d222f95f278c`.
 
