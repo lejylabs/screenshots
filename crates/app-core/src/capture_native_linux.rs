@@ -69,6 +69,11 @@ pub(super) fn monitor_geometry(monitor: &xcap::Monitor) -> Result<crate::Display
 #[path = "../../../vendor/xcap/src/linux/physical_region_bounds.rs"]
 mod xcap_linux_region_bounds;
 
+// Exercise the exact legacy TrueColor decoder without enabling the vendor test suite.
+#[cfg(test)]
+#[path = "../../../vendor/xcap/src/linux/zpixmap_decode.rs"]
+mod xcap_linux_zpixmap_decode;
+
 pub(super) fn validate_template_session() -> Result<()> {
     session_display().map(|_| ())
 }
@@ -260,6 +265,75 @@ mod tests {
         assert!(monitor.capture_region(70, 30, 1, 1).is_err());
         assert!(monitor.capture_region(48, 0, 1, 1).is_err());
         assert!(monitor.capture_region(u32::MAX, 0, 1, 1).is_err());
+    }
+
+    #[test]
+    #[ignore = "requires scripts/test-x11-native-pixels.py owned authenticated depth16/24/30 Xvfb"]
+    fn private_x11_truecolor_root_region_and_window_pixels() {
+        use std::os::unix::fs::MetadataExt;
+        assert_eq!(
+            std::env::var("SCREENSHOTS_PRIVATE_X11_PIXELS").as_deref(),
+            Ok("owned-truecolor")
+        );
+        let display = std::env::var("DISPLAY").unwrap();
+        let number = display.strip_prefix(':').unwrap().parse::<u16>().unwrap();
+        assert!((480..540).contains(&number));
+        assert!(std::env::var_os("WAYLAND_DISPLAY").is_none());
+        assert!(std::env::var_os("WAYLAND_SOCKET").is_none());
+        let authority = std::path::PathBuf::from(std::env::var_os("XAUTHORITY").unwrap());
+        let directory = std::fs::symlink_metadata(authority.parent().unwrap()).unwrap();
+        let file = std::fs::symlink_metadata(&authority).unwrap();
+        assert!(directory.is_dir() && directory.mode() & 0o077 == 0);
+        assert!(file.is_file() && file.mode() & 0o077 == 0);
+        assert_eq!(file.uid(), unsafe { libc::getuid() });
+        assert!(
+            authority
+                .parent()
+                .unwrap()
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with("screenshots-x11-pixels-private-")
+        );
+        let depth: u8 = std::env::var("SCREENSHOTS_PRIVATE_X11_DEPTH")
+            .unwrap()
+            .parse()
+            .unwrap();
+        // Literal quantized expectations are independent of the production mask decoder.
+        let middle = match depth {
+            16 => [123, 125, 123, 255],
+            24 => [127, 128, 129, 255],
+            30 => [127, 128, 128, 255],
+            _ => panic!("unexpected private server depth"),
+        };
+        let palette = [
+            [0, 0, 0, 255],
+            [255, 0, 0, 255],
+            [0, 255, 0, 255],
+            [0, 0, 255, 255],
+            middle,
+        ];
+        let (conn, screen) = connection().unwrap();
+        let root = &conn.setup().roots[screen];
+        assert_eq!(
+            (root.width_in_pixels, root.height_in_pixels, root.root_depth),
+            (96, 64, depth)
+        );
+        drop(conn);
+        let monitors = xcap::Monitor::all().unwrap();
+        assert_eq!(monitors.len(), 1);
+        let region = monitors[0].capture_region(3, 4, 5, 3).unwrap();
+        let windows = xcap::Window::all().unwrap();
+        assert_eq!(windows.len(), 1);
+        let window = windows[0].capture_image().unwrap();
+        for image in [&region, &window] {
+            assert_eq!(image.dimensions(), (5, 3));
+            for y in 0..3 {
+                for x in 0..5 {
+                    assert_eq!(image.get_pixel(x, y).0, palette[((x + y) % 5) as usize]);
+                }
+            }
+        }
     }
 
     #[test]

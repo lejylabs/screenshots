@@ -93,3 +93,37 @@ PipeWire color/refusal/dual-format cases pass; exact evidence and producer limit
 are recorded in [finite Wayland capture](wayland-finite-capture.md). Exact current source/checkpoint evidence lives under
 `target/verification/hdr-integration/` and the independently reviewed frozen
 packets under `target/verification/hdr-capture-delivery-held/`.
+
+
+Legacy X11 GetImage capture now verifies the returned window visual against its
+setup screen/depth and requires TrueColor RGB masks. It uses native image byte
+order, pixmap bits per pixel and padded scanlines, with checked protocol extents,
+source/wire lengths and RGBA admission before indexing. This accepts proven
+RGB565, packed RGB888, XRGB8888 and depth-30 RGB101010 packing; other byte-aligned
+TrueColor layouts use their validated masks. Missing/non-TrueColor/invalid format
+proof fails. The existing Composite alpha-preservation route is unchanged;
+legacy output remains opaque. Integer channel rescaling into RGBA8 is SDR
+quantization. Neither depth 30 nor a TrueColor visual proves sRGB, PQ, HLG, HDR
+tone mapping, a wide gamut, ICC conversion or physical display color matching.
+
+The exact vendored pure decoder is also included through an app-core test seam.
+The owned authenticated `scripts/test-x11-native-pixels.py` fixture paints literal
+native colors on separate depth-16/24/30 Xvfb servers and checks odd-width root
+regions plus window capture against independent RGBA literals. All seven decoder
+controls pass in the current617-test optimized core run, and the actual owned
+16/24/30-bit root/window fixture passes. Evidence:
+`target/verification/current-linux-eight-integration/native-pixels-report.json`.
+
+A controlled optimized private24-bit CLI pair (two warmups and ten interleaved
+samples per binary/resolution) verifies the full saved RGBA raster.1440p p95 wall
+moves22.80→16.86ms and waited-family CPU22.76→16.83ms;4K moves40.15→25.50ms and
+40.55→25.64ms. Maximum single-process RSS is48,344/48,536KiB and84,420/84,224KiB,
+respectively. The aligned8-bit fast path avoids the initially measured generic
+channel-scaling regression. This includes process startup, metadata, capture,
+PNG and save; it is not joint private/GPU memory or a100-sample reference-hardware
+acceptance run. Evidence:
+`target/verification/current-linux-eight-integration/cli-performance-pair.json`.
+Real X11 profile/HDR, physical color/transform and hardware/cancellation gates
+remain open. Existing capture-process deadline,
+cancel, stale-result and reap ownership applies; the legacy XCap API exposes no
+row cancellation callback, so this decoder adds no in-process cancellation claim.

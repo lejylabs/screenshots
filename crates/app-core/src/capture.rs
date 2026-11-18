@@ -1496,12 +1496,23 @@ fn cursor_geometry(
         return Ok(None);
     }
     let geometry = monitor_geometry(monitor)?;
-    if !cfg!(target_os = "windows") && (geometry.scale_factor != 1.0 || geometry.rotation != 0.0) {
+    if !cursor_geometry_is_calibrated(&geometry) {
         return Err(CaptureError::Unsupported(
-            "still cursor composition requires unrotated 100% physical-pixel display coordinates",
+            "still cursor composition requires unrotated calibrated physical-pixel display coordinates",
         ));
     }
     Ok(Some(geometry))
+}
+
+fn cursor_geometry_is_calibrated(geometry: &DisplayGeometry) -> bool {
+    // Linux capture and XFixes both use root pixels; Xft scale is only UI metadata.
+    cfg!(target_os = "windows")
+        || (geometry.rotation == 0.0
+            && if cfg!(target_os = "linux") {
+                geometry.scale_factor.is_finite() && geometry.scale_factor > 0.0
+            } else {
+                geometry.scale_factor == 1.0
+            })
 }
 
 fn monitor_geometry(monitor: &Monitor) -> Result<DisplayGeometry, CaptureError> {
@@ -1584,6 +1595,33 @@ pub fn capture_output_dir() -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn x11_cursor_admission_keeps_native_pixels_at_each_ui_scale() {
+        let mut geometry = DisplayGeometry {
+            mac_coordinates: None,
+            x: 120,
+            y: 80,
+            width: 128,
+            height: 96,
+            scale_factor: 1.0,
+            rotation: 0.0,
+        };
+        for scale in [0.5, 1.0, 2.0] {
+            geometry.scale_factor = scale;
+            assert!(cursor_geometry_is_calibrated(&geometry));
+        }
+        for rotation in [90.0, 180.0, 270.0, f32::NAN] {
+            geometry.rotation = rotation;
+            assert!(!cursor_geometry_is_calibrated(&geometry));
+        }
+        geometry.rotation = 0.0;
+        for scale in [0.0, -1.0, f32::NAN, f32::INFINITY] {
+            geometry.scale_factor = scale;
+            assert!(!cursor_geometry_is_calibrated(&geometry));
+        }
+    }
 
     #[cfg(any(target_os = "windows", target_os = "linux"))]
     #[test]

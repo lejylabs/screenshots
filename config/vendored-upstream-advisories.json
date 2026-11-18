@@ -340,9 +340,9 @@
       "published_manifest_sha256": "49295b4ad89d023118c8edba630ea0df45c7c7c4ff5903cfad8a8198fe651ec1",
       "published_checksum_api": "https://crates.io/api/v1/crates/xcap/0.9.10",
       "local_source": {
-        "sha256": "72b03ba68cbb363718b53708ee3ebdee322f630c45379ffccf144abaa6d82531",
-        "files": 68,
-        "bytes": 352043
+        "sha256": "543724471f2951c6f4a4328635b94e2d37485c3aa98cafb768145b655861da6c",
+        "files": 69,
+        "bytes": 365998
       }
     },
     {
