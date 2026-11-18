@@ -470,7 +470,7 @@ mod tests {
             y: 2,
             width: 104,
             height: 88,
-            ..client.clone()
+            ..client
         };
         assert!(frame_matches(&client, &frame, [4, 4, 20, 4]));
         frame.width += 1;

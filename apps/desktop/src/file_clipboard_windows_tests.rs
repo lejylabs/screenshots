@@ -127,9 +127,48 @@ fn fixture() {
         return;
     };
     let station = std::env::var("PRIVATE_OUTPUT_STATION").unwrap();
-    let _private = Private::enter(&station, mode == "controller").unwrap();
+    let _private = Private::enter(
+        &station,
+        matches!(mode.as_str(), "controller" | "controller-4k"),
+    )
+    .unwrap();
     if mode == "native" {
         try_child(&[output::CHILD.into()]).unwrap();
+        return;
+    }
+    if mode == "controller-4k" {
+        let result = (|| -> Result<()> {
+            let mut seed = 0x12345678u32;
+            let pixels = Arc::new(image::RgbaImage::from_fn(3840, 2160, |_, _| {
+                let mut rgba = [0; 4];
+                for byte in &mut rgba {
+                    seed ^= seed << 13;
+                    seed ^= seed >> 17;
+                    seed ^= seed << 5;
+                    *byte = seed as u8;
+                }
+                image::Rgba(rgba)
+            }));
+            let owner = spawn_input(
+                Input::Output(app_core::NativeClipboardOutput::Image(pixels.clone())),
+                false,
+                command("native", &station),
+                &|| Ok(()),
+            )?;
+            owner.retire()?;
+            let formats = image_windows::read_owned_formats()?;
+            ensure!(
+                formats
+                    .png
+                    .as_ref()
+                    .is_some_and(|bytes| bytes.len() > 15 * 1024 * 1024),
+                "The 4K fixture did not exercise an incompressible PNG above the rejected fixed cutoff"
+            );
+            drop(formats);
+            assert_owned_image(&pixels, true)
+        })();
+        drain_owned_workers();
+        result.unwrap();
         return;
     }
     if mode == "stall-payload" {
@@ -144,17 +183,31 @@ fn fixture() {
             deadline: Instant::now() + Duration::from_secs(5),
             check: &|| Ok(()),
         };
-        io.write_all(b"SCOUTP01").unwrap();
+        io.write_all(b"SCOUTP02").unwrap();
         io.write_all(&nonce).unwrap();
         let mut header = [0; 42];
         io.read_exact(&mut header).unwrap();
-        assert_eq!(&header[..8], b"SCOUTP01");
+        assert_eq!(&header[..8], b"SCOUTP02");
         assert_eq!(&header[8..24], nonce);
         assert_eq!(header[24], 1);
         assert_eq!(
             u64::from_be_bytes(header[33..41].try_into().unwrap()),
             4 * 1024 * 1024
         );
+        let prepared = image_windows::prepare(
+            &mut io,
+            u32::from_be_bytes(header[25..29].try_into().unwrap()),
+            u32::from_be_bytes(header[29..33].try_into().unwrap()),
+            4 * 1024 * 1024,
+        )
+        .unwrap();
+        io.write_all(&[3]).unwrap();
+        let mut gate = [0];
+        io.read_exact(&mut gate).unwrap();
+        assert_eq!(gate, [1]);
+        // This is a real private PNG transfer, not a fabricated setter-success acknowledgement.
+        let _publishing = prepared.begin().unwrap();
+        io.write_all(&[4]).unwrap();
         let (read, _write) = io.transport.into_windows_files();
         let mut capacity = 0;
         assert_ne!(
@@ -203,7 +256,7 @@ fn fixture() {
         unsafe {
             windows_sys::Win32::Foundation::CloseHandle(event);
         }
-        // No payload byte is drained and no native clipboard setter/acknowledgement is fabricated.
+        // No raw DIB byte is drained and no full-image success acknowledgement is fabricated.
         loop {
             std::thread::park();
         }
@@ -245,6 +298,7 @@ fn fixture() {
         assert_eq!(pasted.bytes.as_ref(), pixels.as_raw());
         drop(pasted);
         drop(reader);
+        assert_owned_image(&pixels, true)?;
         let text = "owned Unicode ä 🐾";
         let owner = spawn_input(
             Input::Output(app_core::NativeClipboardOutput::Text(text)),
@@ -328,7 +382,6 @@ fn fixture() {
             );
             std::thread::park_timeout(Duration::from_millis(1));
         }
-        let previous_files = arboard::Clipboard::new()?.get().file_list()?;
         for cancel_blocked_write in [true, false] {
             let event_name = format!("Local\\screenshots-payload-full-{}", uuid::Uuid::new_v4());
             let wide = event_name.encode_utf16().chain(Some(0)).collect::<Vec<_>>();
@@ -380,14 +433,17 @@ fn fixture() {
                 image::Rgba([17, 31, 47, 83]),
             ));
             let started = Instant::now();
-            assert!(
-                spawn_input(
-                    Input::Output(app_core::NativeClipboardOutput::Image(image)),
-                    false,
-                    stalled,
-                    &check
-                )
-                .is_err()
+            let failure = spawn_input(
+                Input::Output(app_core::NativeClipboardOutput::Image(image)),
+                false,
+                stalled,
+                &check,
+            )
+            .err()
+            .context("Blocked image output incorrectly reported success")?;
+            ensure!(
+                failure.to_string().contains("PNG may already be available"),
+                "Partial image failure was not reported explicitly"
             );
             ensure!(
                 observed_blocked.get(),
@@ -417,12 +473,10 @@ fn fixture() {
                 probe.entered.load(Ordering::Acquire) == probe.finished.load(Ordering::Acquire),
                 "Synchronous native write remained outstanding after actual Job cleanup"
             );
-            let current_files = arboard::Clipboard::new()?.get().file_list()?;
-            ensure!(
-                current_files == previous_files,
-                "Blocked payload fixture changed the private clipboard"
-            );
+            let partial = image::RgbaImage::from_pixel(1024, 1024, image::Rgba([17, 31, 47, 83]));
+            assert_owned_image(&partial, false)?;
         }
+        native_preparation_and_partial_format_faults()?;
         Ok(())
     })();
     drain_owned_workers();
@@ -431,11 +485,19 @@ fn fixture() {
 #[test]
 #[ignore = "native Windows only: dedicated subprocess, fresh private station/desktop, actual image/text/file paste and Job cancellation"]
 fn windows_private_clipboard_survives_helper_reap_and_cancellation_releases_job() -> Result<()> {
+    run_owned_controller("controller")
+}
+#[test]
+#[ignore = "native Windows only: owned private station/Job, noisy 4K PNG+DIBV5 paste after helper reap"]
+fn incompressible_4k_image_keeps_both_native_formats_without_a_fixed_png_cutoff() -> Result<()> {
+    run_owned_controller("controller-4k")
+}
+fn run_owned_controller(mode: &str) -> Result<()> {
     let station = format!("screenshots-fixture-{}", uuid::Uuid::new_v4());
     // The outer controller is itself inside an owned Job. Failure/timeout retains that Job
     // through actual family cleanup, including all nested clipboard-helper Jobs.
     let container = Arc::new(windows::container()?);
-    let child = windows::spawn(&command("controller", &station), &container, &[])?;
+    let child = windows::spawn(&command(mode, &station), &container, &[])?;
     let mut native = Native { child, container };
     let until = Instant::now() + Duration::from_secs(30);
     loop {
@@ -448,4 +510,111 @@ fn windows_private_clipboard_survives_helper_reap_and_cancellation_releases_job(
         }
         std::thread::park_timeout(Duration::from_millis(1));
     }
+}
+
+fn framed_png(pixels: &image::RgbaImage) -> Result<Vec<u8>> {
+    let mut png = Vec::new();
+    output::encode_png_stream(pixels, &mut png, &|| Ok(()))?;
+    let mut framed = Vec::new();
+    for chunk in png.chunks(64 * 1024) {
+        framed.extend_from_slice(&(chunk.len() as u32).to_be_bytes());
+        framed.extend_from_slice(chunk);
+    }
+    framed.extend_from_slice(&0u32.to_be_bytes());
+    Ok(framed)
+}
+fn publish_direct(pixels: &image::RgbaImage) -> Result<()> {
+    let mut framed = std::io::Cursor::new(framed_png(pixels)?);
+    let prepared = image_windows::prepare(
+        &mut framed,
+        pixels.width(),
+        pixels.height(),
+        pixels.as_raw().len(),
+    )?;
+    let mut publication = prepared.begin()?;
+    publication.read_rows(&mut std::io::Cursor::new(pixels.as_raw()))?;
+    publication.finish()
+}
+fn assert_owned_image(pixels: &image::RgbaImage, complete: bool) -> Result<()> {
+    let formats = image_windows::read_owned_formats()?;
+    let png = formats.png.context("Owned PNG format is missing")?;
+    let decoded = image::load_from_memory(&png)?.into_rgba8();
+    ensure!(
+        &decoded == pixels,
+        "Owned PNG/alpha differs after helper exit"
+    );
+    // The OS may synthesize formats; partial output never claims DIBV5 was transferred by us.
+    if !complete {
+        return Ok(());
+    }
+    let dib = formats.dib.context("Owned DIBV5 format is missing")?;
+    let word = |offset: usize| u32::from_le_bytes(dib[offset..offset + 4].try_into().unwrap());
+    ensure!(
+        dib.len() >= 124 + pixels.as_raw().len()
+            && word(0) == 124
+            && word(4) == pixels.width()
+            && word(8) == pixels.height()
+            && word(16) == 3
+            && word(20) as usize == pixels.as_raw().len()
+            && dib[12..16] == [1, 0, 32, 0]
+            && word(40) == 0x00ff0000
+            && word(44) == 0x0000ff00
+            && word(48) == 0x000000ff
+            && word(52) == 0xff000000
+            && word(56) == 0x73524742
+            && word(108) == 4
+            && word(112) == 0
+            && word(116) == 0,
+        "Owned DIBV5 extent/masks/sRGB differ"
+    );
+    for y in 0..pixels.height() {
+        for x in 0..pixels.width() {
+            let rgba = pixels.get_pixel(x, pixels.height() - 1 - y).0;
+            let offset = 124 + (y as usize * pixels.width() as usize + x as usize) * 4;
+            ensure!(
+                dib[offset..offset + 4] == [rgba[2], rgba[1], rgba[0], rgba[3]],
+                "Owned DIBV5 rows/alpha differ"
+            );
+        }
+    }
+    Ok(())
+}
+fn native_preparation_and_partial_format_faults() -> Result<()> {
+    use image_windows::stats;
+    let previous = image::RgbaImage::from_pixel(3, 2, image::Rgba([91, 71, 51, 31]));
+    let next = image::RgbaImage::from_fn(3, 2, |x, y| image::Rgba([x as u8, y as u8, 47, 83]));
+    for fault in 1..=8 {
+        stats::FAULT.store(0, Ordering::Release);
+        publish_direct(&previous)?;
+        stats::FAULT.store(fault, Ordering::Release);
+        let result = publish_direct(&next);
+        stats::FAULT.store(0, Ordering::Release);
+        ensure!(
+            result.is_err(),
+            "Private native publication fault did not fail"
+        );
+        ensure!(
+            stats::FREE_FAILED.load(Ordering::Acquire) == 0
+                && stats::APP_BYTES.load(Ordering::Acquire) == 0,
+            "Failed native preparation retained an application-owned allocation"
+        );
+        ensure!(
+            stats::ALLOCATED.load(Ordering::Acquire)
+                == stats::FREED.load(Ordering::Acquire)
+                    + stats::TRANSFERRED.load(Ordering::Acquire),
+            "Native allocation did not end in exactly free or successful ownership transfer"
+        );
+        if fault <= 3 {
+            assert_owned_image(&previous, true)?;
+        } else if fault == 4 {
+            let empty = image_windows::read_owned_formats()?;
+            ensure!(
+                empty.png.is_none() && empty.dib.is_none(),
+                "Failure after EmptyClipboard fabricated a format"
+            );
+        } else {
+            assert_owned_image(&next, fault == 8)?;
+        }
+    }
+    Ok(())
 }

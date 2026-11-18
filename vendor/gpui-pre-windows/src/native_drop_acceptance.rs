@@ -1209,15 +1209,21 @@ pub(super) fn request_completion() -> futures::channel::oneshot::Receiver<Comple
     let mut waiter = COMPLETION_WAITER.lock().unwrap();
     assert!(waiter.is_none(), "One bounded completion request");
     *waiter = Some(tx);
-    drop(waiter);
     let reaps = COMPLETION.lock().unwrap().reaps;
     if !CHILD_ACTIVE.load(std::sync::atomic::Ordering::Acquire)
         && reaps > 0
         && FAILURE_READY.load(std::sync::atomic::Ordering::Acquire)
     {
-        completion_done(FAILURE_ACK.load(std::sync::atomic::Ordering::Acquire), true);
+        let sender = waiter.take().unwrap();
+        drop(waiter);
+        let mut proof = *COMPLETION.lock().unwrap();
+        proof.acknowledged = FAILURE_ACK.load(std::sync::atomic::Ordering::Acquire);
+        proof.reaped = true;
+        let _ = sender.send(proof);
     } else {
+        // Arm before publication can take the waiter and clear this request.
         COMPLETION_REQUEST.store(true, std::sync::atomic::Ordering::Release);
+        drop(waiter);
     }
     rx
 }
@@ -1362,12 +1368,28 @@ pub(super) fn before_failure_transition() {
     }
 }
 pub(super) fn failure_published(version: u64) {
-    COMPLETION.lock().unwrap().failure_version = version;
-    let acknowledged = !BARRIER_ISSUED.swap(false, std::sync::atomic::Ordering::AcqRel);
+    // Serialize failure readiness/request clearing with waiter installation and arming.
+    let mut waiter = COMPLETION_WAITER.lock().unwrap();
+    let acknowledged = {
+        let mut proof = COMPLETION.lock().unwrap();
+        proof.failure_version = version;
+        !CHILD_ACTIVE.load(std::sync::atomic::Ordering::Acquire) && proof.reaps > 0
+    };
+    // The broker invokes this only after exact process reap, pipe-reader join and
+    // protected target invalidation/version publication. That fence supersedes
+    // a native barrier that could not reply before cancellation/native failure.
+    // A live reader's omitted barrier still completes with acknowledged=false.
+    BARRIER_ISSUED.store(false, std::sync::atomic::Ordering::Release);
     FAILURE_ACK.store(acknowledged, std::sync::atomic::Ordering::Release);
     FAILURE_READY.store(true, std::sync::atomic::Ordering::Release);
     COMPLETION_REQUEST.store(false, std::sync::atomic::Ordering::Release);
-    completion_done(acknowledged, true);
+    if let Some(sender) = waiter.take() {
+        let mut proof = *COMPLETION.lock().unwrap();
+        proof.acknowledged = acknowledged;
+        proof.reaped = true;
+        let _ = sender.send(proof);
+    }
+    drop(waiter);
     publication_changed();
 }
 struct OwnerWake;

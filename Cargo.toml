@@ -24,7 +24,7 @@ rust-version = "1.100"
 publish = false
 
 [workspace.lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ["cfg(screenshots_native_drop_acceptance)"] }
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(screenshots_native_drop_acceptance)", "cfg(screenshots_native_print_acceptance)"] }
 
 [workspace.lints.clippy]
 enum_glob_use = "deny"

@@ -250,7 +250,11 @@ contract. No complete HDR, named Wayland monitor/region binding, Retina/mixed-DP
 cross-monitor selection, persisted scheduler or physical-monitor hotplug gate is
 closed by this slice.
 
-## Following delivery: durable scheduling and desktop regions
+## Historical following-delivery plan: durable scheduling and desktop regions
+
+The following plan records the earlier handoff. Durable task scheduling and
+desktop-region backends are now implemented; see the current scheduler and
+desktop contracts above. Their remaining native/hardware gates are unchanged.
 
 Persist a bounded schedule of existing task profiles with an explicit owner,
 UTC start, interval/count/end, missed-run policy and no overlap/backlog. Prefer

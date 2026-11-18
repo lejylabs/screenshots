@@ -66,7 +66,7 @@ fn main() -> anyhow::Result<()> {
     let args = std::env::args_os().skip(1).collect::<Vec<_>>();
     if !args.is_empty() {
         ensure!(
-            args.len() == 3 && args[0] == CHILD,
+            args.len() == 4 && args[0] == CHILD,
             "Invalid private pasteboard child arguments"
         );
         let parent = args[1]
@@ -80,57 +80,71 @@ fn main() -> anyhow::Result<()> {
         let _ = uuid::Uuid::parse_str(suffix)?;
         let _lifeline = transport::Lifeline::new(parent)?;
         let _budget = budget::Budget::enter()?;
-        return native_round_trip(name);
+        let mode = args[3].to_str().context("Invalid private fixture mode")?;
+        return native_round_trip(name, mode);
     }
     let name = format!(
         "screenshots.owned-image-text-fixture.{}",
         uuid::Uuid::new_v4()
     );
-    let deadline = Instant::now() + Duration::from_secs(5);
-    let mut command = Command::new(std::env::current_exe()?);
-    command
-        .arg(CHILD)
-        .arg(std::process::id().to_string())
-        .arg(name)
-        .env_clear()
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .process_group(0);
-    for key in ["HOME", "PATH", "LANG", "LC_ALL", "LC_CTYPE", "TMPDIR"] {
-        if let Some(value) = std::env::var_os(key) {
-            command.env(key, value);
+    for mode in [
+        "publish-image",
+        "read-image",
+        "publish-text",
+        "abort-before-wrap",
+        "read-text",
+        "abort-after-wrap",
+        "read-text",
+        "publish-image",
+        "read-image",
+    ] {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut command = Command::new(std::env::current_exe()?);
+        command
+            .arg(CHILD)
+            .arg(std::process::id().to_string())
+            .arg(&name)
+            .arg(mode)
+            .env_clear()
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .process_group(0);
+        for key in ["HOME", "PATH", "LANG", "LC_ALL", "LC_CTYPE", "TMPDIR"] {
+            if let Some(value) = std::env::var_os(key) {
+                command.env(key, value);
+            }
         }
-    }
-    let mut child = command.spawn()?;
-    let group = match i32::try_from(child.id()) {
-        Ok(group) => group,
-        Err(error) => {
-            let _ = child.kill();
-            let _ = child.wait();
-            return Err(error.into());
+        let mut child = command.spawn()?;
+        let group = match i32::try_from(child.id()) {
+            Ok(group) => group,
+            Err(error) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(error.into());
+            }
+        };
+        let mut native = Native {
+            child,
+            group,
+            status: None,
+        };
+        loop {
+            if unix::exited_without_reaping(group, false)? {
+                ensure!(
+                    native.reap().success(),
+                    "Owned native pasteboard phase failed"
+                );
+                break;
+            }
+            if Instant::now() >= deadline {
+                let _ = native.reap();
+                anyhow::bail!(
+                    "Owned native pasteboard phase exceeded its five-second deadline; actual cleanup completed"
+                );
+            }
+            std::thread::park_timeout(Duration::from_millis(5));
         }
-    };
-    let mut native = Native {
-        child,
-        group,
-        status: None,
-    };
-    loop {
-        if unix::exited_without_reaping(group, false)? {
-            ensure!(
-                native.reap().success(),
-                "Owned native pasteboard child failed"
-            );
-            break;
-        }
-        if Instant::now() >= deadline {
-            let _ = native.reap();
-            anyhow::bail!(
-                "Owned native pasteboard child exceeded its five-second deadline; actual cleanup completed"
-            );
-        }
-        std::thread::park_timeout(Duration::from_millis(5));
     }
     // The controller never invokes a Pasteboard/CoreFoundation publisher, reader or cleanup API.
     println!(
@@ -140,7 +154,7 @@ fn main() -> anyhow::Result<()> {
 }
 
 #[cfg(target_os = "macos")]
-fn native_round_trip(name: &str) -> anyhow::Result<()> {
+fn native_round_trip(name: &str, mode: &str) -> anyhow::Result<()> {
     use anyhow::ensure;
     use std::{
         ffi::{CString, c_void},
@@ -215,21 +229,52 @@ fn native_round_trip(name: &str) -> anyhow::Result<()> {
         Ok(unsafe { std::slice::from_raw_parts(bytes, length as usize) }.to_vec())
     }
     let pixels = image::RgbaImage::from_fn(3, 2, |x, y| image::Rgba([x as u8, y as u8, 47, 83]));
-    let mut png = Cursor::new(Vec::new());
-    pixels.write_to(&mut png, image::ImageFormat::Png)?;
-    publisher::publish_bytes(png.get_ref(), "public.png", &name)?;
-    drop(png);
-    let pasted = read(&name, "public.png", 65536)?;
-    ensure!(
-        image::load_from_memory(&pasted)?.into_rgba8() == pixels,
-        "Private PNG pixels differ"
-    );
     let text = "owned UTF-8 ä 🐾";
-    publisher::publish_bytes(text.as_bytes(), "public.utf8-plain-text", &name)?;
-    ensure!(
-        read(&name, "public.utf8-plain-text", 65536)? == text.as_bytes(),
-        "Private text differs"
-    );
+    match mode {
+        "publish-image" | "abort-after-wrap" => {
+            let mut png = Cursor::new(Vec::new());
+            pixels.write_to(&mut png, image::ImageFormat::Png)?;
+            let mut data = publisher::ImageData::new(pixels.as_raw().len() + 16 * 1024 * 1024)?;
+            ensure!(
+                data.allocation_bytes() <= pixels.as_raw().len() + 16 * 1024 * 1024 + 64 * 1024,
+                "Native preparation exceeds its admitted extent"
+            );
+            for chunk in png.get_ref().chunks(7) {
+                data.append(chunk)?;
+            }
+            drop(png);
+            let prepared = data.finish()?;
+            if mode == "publish-image" {
+                prepared.publish(name)?;
+            } else {
+                drop(prepared);
+            }
+        }
+        "read-image" => {
+            let pasted = read(name, "public.png", 65536)?;
+            ensure!(
+                image::load_from_memory(&pasted)?.into_rgba8() == pixels,
+                "Private PNG pixels differ after publisher exit"
+            );
+        }
+        "publish-text" => {
+            publisher::publish_bytes(text.as_bytes(), "public.utf8-plain-text", name)?
+        }
+        "read-text" => ensure!(
+            read(name, "public.utf8-plain-text", 65536)? == text.as_bytes(),
+            "Private text changed after aborted native preparation"
+        ),
+        "abort-before-wrap" => {
+            let mut data = publisher::ImageData::new(1)?;
+            ensure!(
+                data.append(b"invalid").is_err(),
+                "Native append bound did not reject before publication"
+            );
+            drop(data);
+        }
+        _ => anyhow::bail!("Invalid private pasteboard phase"),
+    }
+
     Ok(())
 }
 #[cfg(not(target_os = "macos"))]

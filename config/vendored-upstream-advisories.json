@@ -197,9 +197,9 @@
       "published_manifest_sha256": "bc447800775eecc6d4abea6871735e1e1cc1c29f8f077a140bd89a38c5a01c39",
       "published_checksum_api": "https://crates.io/api/v1/crates/gpui-pre/0.3.12",
       "local_source": {
-        "sha256": "8fa010172daf158de1938fddd8102ae0076ad7442bf49ff2c896fe7ebd46e25d",
+        "sha256": "58657fdd0259a026e12fa3958675a5b5cdd50f34a793a35856a890b97006ffb0",
         "files": 173,
-        "bytes": 9012864
+        "bytes": 9013855
       }
     },
     {
@@ -223,9 +223,9 @@
       "published_manifest_sha256": "7f721b65b56f64af2e61931d1680db535c91843ece93fee3cc1ec23fbe9ca98a",
       "published_checksum_api": "https://crates.io/api/v1/crates/gpui-pre-macos/0.3.12",
       "local_source": {
-        "sha256": "b05d3d3487c3e319be27c87ee8c1bf343dd291cd3191090d8d301a4c79948d37",
+        "sha256": "68429cd4f93b33021eebcbbae652f58f0d3e116eb7cd4fcf644f1fe1b700ff62",
         "files": 17,
-        "bytes": 536072
+        "bytes": 536629
       }
     },
     {
@@ -275,9 +275,9 @@
       "published_manifest_sha256": "487f6fb8650782588e18ea6ca3f5dd704fc9e7d54a6a4e0cce19ca4d40769d66",
       "published_checksum_api": "https://crates.io/api/v1/crates/gpui-pre-windows/0.3.12",
       "local_source": {
-        "sha256": "ccbd195ab0b7725c3582d2add0949fa6b6003ba2541138d2ac84b0584388d33a",
+        "sha256": "9068ffc95a04a5627a4527ae1b2e4f52b0df81860244685a0c5caf0f0dc2a7b2",
         "files": 43,
-        "bytes": 775603
+        "bytes": 780195
       }
     },
     {

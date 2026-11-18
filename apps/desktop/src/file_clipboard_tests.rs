@@ -162,11 +162,16 @@ fn owned_file_writer_child_fixture() {
             let _ = io.read_exact(&mut never);
             return;
         }
-        io.write_all(b"SCOUTP01").unwrap();
+        let magic = if cfg!(target_os = "macos") {
+            b"SCOUTP02"
+        } else {
+            b"SCOUTP01"
+        };
+        io.write_all(magic).unwrap();
         io.write_all(&nonce).unwrap();
         let mut header = [0; 42];
         io.read_exact(&mut header).unwrap();
-        assert_eq!(&header[..8], b"SCOUTP01");
+        assert_eq!(&header[..8], magic);
         assert_eq!(&header[8..24], nonce);
         assert!(matches!(header[24], 1 | 2));
         let length =
@@ -190,6 +195,10 @@ fn owned_file_writer_child_fixture() {
         } else {
             bytes.resize(length, 0);
             io.read_exact(&mut bytes).unwrap();
+        }
+        #[cfg(target_os = "macos")]
+        if header[24] == 1 {
+            io.write_all(&[3]).unwrap();
         }
         let mut gate = [0];
         io.read_exact(&mut gate).unwrap();
@@ -667,7 +676,7 @@ fn image_and_text_outer_deadline_contains_a_stalled_native_setter() -> Result<()
     let _serial = SERIAL.lock().unwrap();
     let image = image::RgbaImage::new(1, 1);
     for value in [
-        app_core::NativeClipboardOutput::Image(Arc::new(image.clone())),
+        app_core::NativeClipboardOutput::Image(Arc::new(image)),
         app_core::NativeClipboardOutput::Text("synthetic"),
     ] {
         let now = Instant::now();

@@ -139,7 +139,8 @@ def main():
             env.pop(name, None)
         for name in ("HOME", "USERPROFILE", "APPDATA", "LOCALAPPDATA", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME", "XDG_RUNTIME_DIR"):
             env[name] = str(directory / name)
-        env.update(DISPLAY=display, XAUTHORITY=str(authority), XDG_SESSION_TYPE="x11")
+        env.update(DISPLAY=display, XAUTHORITY=str(authority), XDG_SESSION_TYPE="x11",
+                   MESA_SHADER_CACHE_DISABLE="true")
         subprocess.run([xauth, "-f", str(authority), "add", display, ".", secrets.token_hex(16)],
                        env=env, capture_output=True, timeout=5, check=True)
         authority.chmod(0o600)
@@ -232,7 +233,8 @@ def main():
                                         capture_output=True, timeout=15)
                 require(identity() == admitted_binary, "Executable changed during fixture")
                 require((result.returncode == 0) == success,
-                        f"Unexpected CLI result: {result.stderr.decode(errors='replace')}")
+                        f"Unexpected owned CLI result ({arguments!r}, exit={result.returncode}): "
+                        f"stderr={result.stderr.decode(errors='replace')} stdout={result.stdout.decode(errors='replace')}")
                 if not success:
                     require(not result.stdout, "Failed capture published a success result")
                 return result
@@ -296,10 +298,14 @@ def main():
             capture("child-hierarchy", argb, {"window_transparency": "preserve"})
             x.XDestroyWindow(connection, child); x.XSync(connection, 0)
             capture("wayland", argb, {"window_transparency": "preserve"}, extra_env={"WAYLAND_DISPLAY": "owned-denied-fixture"})
-            composite.XCompositeUnredirectWindow(connection, argb, 0); x.XSync(connection, 0)
-            capture("no-backing", argb, {"window_transparency": "preserve"})
-            require(all(not Path(env[name]).exists() for name in ("XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME")),
-                    "Capture initialized unrelated persistent state")
+            # Different-depth ARGB windows can keep implicit server redirection.
+            # Use the root-depth opaque frame to require a genuinely absent backing.
+            composite.XCompositeUnredirectWindow(connection, frame, 0); x.XSync(connection, 0)
+            capture("no-backing", client, {"window_frame": "include"})
+            state_paths = [str(path.relative_to(directory)) for name in
+                           ("XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME")
+                           if Path(env[name]).exists() for path in Path(env[name]).rglob("*")]
+            require(not state_paths, f"Owned capture initialized unrelated state: {state_paths}")
         finally:
             if connection:
                 if gc:

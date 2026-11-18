@@ -5,7 +5,10 @@ alpha preservation. It leaves Linux compositor shadows, Windows native
 shadow/alpha preservation and macOS foreign-window client-only capture
 unsupported. It adds no UI controls. Source implementation, compilation, private
 fixture results and actual native desktop/resource acceptance are separate
-claims; the initial HELD proposal has not been compiled or executed.
+claims. Integrated optimized Linux checks and the owned Composite fixture pass:
+twelve CLI invocations, 24,456 exact RGBA pixels and one explicitly discovered
+and executed post-readback identity/geometry/cancellation case. Real desktop,
+compositor and resource acceptance remain open.
 
 ## Source contract
 
@@ -153,3 +156,9 @@ full-size content and custom decorations. Current client-only requests remain
 unsupported before capture. This is a precise constraint of the selected public
 adapter, not a claim that external application cooperation can never expose
 content geometry.
+
+## Integrated owned fixture evidence — 2026-11-18
+
+The complete private runner passes twelve real CLI invocations and compares24,456RGBA pixels, including an occluded decorated frame, verified premultiplied ARGB, opaque flattening, forbidden shadows/extent mismatch/independent-client backing/child hierarchy/Wayland and absent-backing refusals. The exact core post-readback identity/geometry/row-cancellation case is discovered and executed once. CLI SHA256 `e7c3975641a25e0152265c9037e23cb9734db1e097a9cdd77c0f9a1ebdb38d18`; core test SHA256 `ee223e845ad31631c4aeec3fb42cebda534f96b0e4ce23b40c08982ce878ce87`.
+
+The first absent-backing fixture incorrectly assumed an ARGB depth-different window loses implicit server redirection after explicit unredirect. The corrected negative case uses the root-depth opaque frame; no production policy was weakened. Mesa shader caching is disabled in the private fixture so its no-persistent-state assertion reflects application capture, and the outer owner reaps the whole family before deleting private authority. These tiny software results do not establish physical-WM compatibility, native HDR/alpha on other systems or resource/latency budgets.

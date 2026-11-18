@@ -3,7 +3,7 @@
 Integrated source, 2026-11-18. Optimized Linux metadata checks, all 17 focused
 resident lifecycle regressions and the private X11 graphics-owner probe pass.
 Windows GNU metadata checking also passes; this is not Windows runtime evidence.
-Whole-process memory, idle CPU and reference-hardware budgets remain open.
+The owned actual-main/helper 300-second idle check records zero CPU ticks, context-switch and I/O deltas. Its private-memory target still fails (~221 MiB versus50MiB); reference-hardware/GPU budgets remain open.
 
 When the singleton-owned main app has a real tray host, Close removes its native
 control and overlay windows. The existing ResidentController global owns the
@@ -174,3 +174,13 @@ Private software-compositor results expose real source regressions and memory
 costs but do not establish physical display/input latency or the documented
 reference-hardware budgets. A repeatable failed budget requires further source
 remediation; it must not be closed by the logical release assertions here.
+
+## Actual main/helper observation and allocation diagnosis — 2026-11-18
+
+The optimized normal app and its same-executable native-services child passed eight real WM Close/secondary Show cycles, remained windowless through30seconds warmup plus300seconds idle, reopened and quit through the actual tray route. All owned processes reaped before private runtime removal. Observed300.0058seconds: jointCPU0ticks (0.0% ofonecore), context-switch deltas0, all I/O deltas0. Scheduler wakeup counters were unavailable and remain null, not inferredzero.
+
+Jointprivate mappings ended232,255,488bytes in the first successful run and231,153,664bytes in the repeat with explicit mapping diagnostics. Both fail50MiB. The signed privately extracted Mesa26.2.5 Lavapipe workload is software-rendered development evidence, not the integrated-GPU reference machine. No working-set trimming, allocator trim or image disposal was used.
+
+A separate explicitly instrumented heaptrack run is diagnostic only: tracked live allocations peak93,019,417bytes and fall to5,564,218bytes throughout the windowless plateau. The graphics-pipeline allocation domain falls tozero; file-backed compiler/driver mappings and resident allocator capacity still dominate the observed footprint. This does not prove a continuing live pipeline leak or a50MiBpass. Removing one pipeline that has no supported draw consumer is separately reviewed; its individual savings require same-source A/B measurement.
+
+The actual startup run found a reentrant controller update in listener registration. Both native launch paths now finish extracting the controller entity before registering the listener; the successful full observation exercises this corrected ordering.

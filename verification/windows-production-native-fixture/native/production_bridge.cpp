@@ -192,6 +192,16 @@ static bool final_source_oracle(DWORD helper,DWORD helper_tid,bool helper_reaped
     std::printf("{\"source_final_oracle\":true,\"expected_outcome\":\"%s\",\"ole_route\":%s,\"result_verified\":%s,\"payload_counts_verified\":%s,\"source_oracle_passed\":%s,\"source_cleanup_done\":%ld,\"source_exit\":%lu,\"source_natural_exit\":%s,\"enter_returned\":%ld,\"enter_hresult\":%ld,\"enter_effect\":%ld,\"drop_returned\":%ld,\"drop_hresult\":%ld,\"drop_effect\":%ld,\"cached_provider_query\":%s,\"cached_provider_get\":%s,\"mutation_id\":%ld,\"mutation_applied\":%ld,\"mutation_guard_verified\":%s,\"duplicate_release_calls\":%ld,\"mutation_actor\":%ld,\"mutation_context_verified\":%s,\"raw_ole_returned\":%ld,\"raw_ole_hresult\":%ld,\"raw_ole_effect\":%ld,\"source_adapter_applied\":%ld,",outcome,ole_route?"true":"false",result?"true":"false",counts?"true":"false",ok?"true":"false",state->source_cleanup_done,source_exit,source_natural?"true":"false",state->returned_enter,state->enter_result,state->returned_enter_effect,state->returned_drop,state->returned_drop_hresult,state->returned_drop_effect,cached_query?"true":"false",cached_get?"true":"false",mutation.id,applied,mutation_guard?"true":"false",mutation.duplicate_release_calls,mutation.actor,mutation_context?"true":"false",state->raw_ole_returned,state->raw_ole_hresult,state->raw_ole_effect,state->source_adapter_applied);
     std::printf("\"helper_queries\":%ld,\"helper_positive\":%ld,\"helper_gets\":%ld,\"helper_get_success\":%ld,\"helper_releases\":%ld,\"helper_release_ends\":%ld,\"source_selected_queries\":%ld,\"source_positive\":%ld,\"source_gets\":%ld,\"source_created\":%ld,\"source_released\":%ld,\"outside_positive\":%ld,\"outside_gets\":%ld,\"outside_created\":%ld,\"outside_released\":%ld,\"submits\":%ld,\"phase_bad\":%ld}\n",d.helper_queries,d.helper_positive,d.helper_gets,d.helper_get_success,d.helper_releases,d.helper_release_ends,d.source_selected_queries,d.source_positive,d.source_gets,d.source_created,d.source_released,d.outside_positive,d.outside_gets,d.outside_created,d.outside_released,d.submits,d.phase_bad);std::fflush(stdout);return ok;
 }
+static LONG printed_private_trace;
+static void report_private_calls() {
+    LONG count=InterlockedCompareExchange(&state->private_trace_count,0,0);if(count>32)count=32;
+    for(;printed_private_trace<count;++printed_private_trace) {
+        const auto& row=state->private_trace[printed_private_trace];
+        if(!row.completed) break;
+        std::printf("{\"private_source_call\":true,\"operation\":%lu,\"format\":%lu,\"aspect\":%lu,\"requested_tymed\":%lu,\"medium_tymed\":%lu,\"cooperative\":%lu,\"caller_release\":%lu,\"native_called\":%lu,\"native_release\":%lu,\"native_hresult\":%ld,\"result\":%ld,\"actor_pid\":%lu,\"actor_tid\":%lu}\n",row.operation,row.format,row.aspect,row.requested_tymed,row.medium_tymed,row.cooperative,row.release,row.native_called,row.native_release,row.native_result,row.result,row.pid,row.tid);
+    }
+    std::fflush(stdout);
+}
 static int finish_drive(HANDLE source_job,DWORD helper,DWORD helper_tid,LONG prior_queries,LONG prior_data) {
     bool source_death = !std::wcscmp(scenario, L"source-death");
     bool finished = source_death ? bridge_wait(offered_process.hProcess, 2000) : bridge_wait(done_event, 7000);
@@ -221,6 +231,7 @@ static int finish_drive(HANDLE source_job,DWORD helper,DWORD helper_tid,LONG pri
     if (deferred) {std::printf("{\"teardown_validation_deferred\":true,\"helper_alive_after_delivery\":%s,\"helper_pid\":%lu}\n",alive_after_delivery?"true":"false",helper);std::fflush(stdout);}
     std::printf("{\"native_operation_diagnostics\":true,\"helper_pid\":%lu,\"phase_helper_pid\":%ld,\"current_receiver_pid\":%lu,\"operation_stage\":%ld,\"failed_operation_stage\":%ld,\"operation_hresult\":%ld}\n",helper,state->phase_helper_pid,state->receiver_pid,state->operation_stage,state->failed_operation_stage,state->operation_hresult);std::fflush(stdout);
     std::printf("{\"shell_visual_evidence\":true,\"visual_format_refusals\":%ld,\"visual_unexpected_count\":%ld,\"visual_unexpected_hresult\":%ld,\"private_sets\":%ld,\"private_gets\":%ld,\"private_refusals\":%ld,\"private_live_slots\":%ld,\"private_live_bytes\":%ld,\"private_peak_slots\":%ld,\"private_peak_bytes\":%ld,\"drag_image_initialized\":%ld,\"unknown_control_calls\":%ld,\"unknown_inner_hresult\":%ld}\n",state->visual_format_refusals,state->visual_unexpected_count,state->visual_unexpected_hresult,state->private_set_calls,state->private_get_calls,state->private_refusals,state->private_live_slots,state->private_live_bytes,state->private_peak_slots,state->private_peak_bytes,state->drag_image_initialized,state->helper_unknown_control_calls,state->helper_unknown_inner_hresult);std::fflush(stdout);
+    report_private_calls();
     bool source_valid=final_source_oracle(helper,helper_tid,helper_reaped,finished,source_exit,source_natural);
     bool ok=source_valid && owned_input && no_description && positive && helper!=state->owner_pid && first && provider && allocation && (!stall || helper_reaped) && (stall || finished) && (!deferred || alive_after_delivery);
     if (expected_busy && ok) {CloseHandle(offered_process.hProcess);CloseHandle(source_job);return 0;}
@@ -444,6 +455,7 @@ extern "C" __declspec(dllexport) int __cdecl acceptance_finish_ordered() {
     if (!done) TerminateJobObject(ordered_source_job,99);
     require(WaitForSingleObject(offered_process.hProcess,2000)==WAIT_OBJECT_0,"exact ordered source reap");
     CloseHandle(offered_process.hProcess);CloseHandle(ordered_source_job);ordered_source_job=nullptr;
+    report_private_calls();
     std::printf("{\"actual_drop_after_consumed_enter\":%s,\"returned_drop_effect\":%ld,\"source_reaped\":true,\"ordered_source_passed\":%s}\n",state->returned_drop?"true":"false",state->returned_drop_effect,ok?"true":"false");std::fflush(stdout);return ok?0:1;
 }
 
