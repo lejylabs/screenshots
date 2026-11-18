@@ -64,7 +64,13 @@ Source-level costs and limits, not measurements:
 - One active and one staged main-app portal session. Six main-app descriptions are bounded to 256 bytes each and paths to 512 bytes. The task-only mode admits 16 existing task IDs.
 - A 4 KiB icon representation per serialization plus native/serialization copies; no screenshot source, texture, image undo, PNG round trip or background capture stream.
 
-There are no measured process/private/PSS, idle CPU/wakeup, startup, physical input or GPU results for this candidate. The held diagnostic script reports the whole owned process family without reading pixels; standalone fixture figures would not establish production GUI acceptance. The resident graphics source change removes minimized-shell retention; its actual joint memory and reopen latency still require optimized measurements. Visibility-delay debt remains separate.
+The original service candidate had no joint process/private/PSS or idle results.
+Earlier lifecycle observations retain their explicit failed memory evidence;
+the current actual-main/helper remeasurement remains a separate gate. The native
+graphics-owner probe proves retirement/reopen, not a private-memory saving.
+Physical input/presentation, native-session and GPU budgets remain open. The
+[capture lifecycle](capture-lifecycle.md) now replaces the unconditional visibility
+delay with scoped native proof; compositor presentation is still separate.
 
 ## Verification handoff
 

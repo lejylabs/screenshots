@@ -1746,14 +1746,18 @@ Windows implementation: normal startup uses SID/session-scoped named kernel obje
 
 
 Linux/macOS main-app ownership and Show/reopen are implemented in the
-[Unix lifecycle slice](docs/unix-app-lifecycle.md), with verification pending.
+[Unix lifecycle slice](docs/unix-app-lifecycle.md). Owned Linux singleton,
+native-services and controller/graphics lifecycle checks pass; current joint
+resource and remaining native-session acceptance stay open.
 An ordinary launch acquires worker-free user/session ownership before platform
 and logger startup; one bounded native Unix listener begins only once startup
 environment is consumed and the existing control window exists. File-editor
 `--open` and resource probes bypass Show-only ownership. Unknown stable authority
 retains a truthful visible-only fallback with global services disabled. The
-existing Unix Close-to-quit window remains the accessible fallback; main-app
-native tray and capture hotkeys remain follow-ups. macOS uses GPUI native reopen.
+existing Unix Close-to-quit window remains the no-tray fallback. Native tray and
+capture shortcuts are integrated through the owned service/controller path;
+macOS uses GPUI native reopen. See the exact
+[service/runtime scope](docs/unix-native-services.md).
 Quit stops launch admission and ownership survives GPUI teardown. Cost is one
 parked 256 KiB requested-stack waiter, five owned fds and one coalescing token;
 no idle polling or performance acceptance is claimed. Native runtime, platform

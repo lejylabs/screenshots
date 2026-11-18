@@ -3,7 +3,7 @@
 Integrated source, 2026-11-18. Optimized Linux metadata checks, all 17 focused
 resident lifecycle regressions and the private X11 graphics-owner probe pass.
 Windows GNU metadata checking also passes; this is not Windows runtime evidence.
-Whole-process memory, idle CPU and reference-hardware budgets remain open.
+The owned actual-main/helper 300-second idle check records zero CPU ticks, context-switch and I/O deltas. Its private-memory target still fails (latest~215 MiB versus50MiB); reference-hardware/GPU budgets remain open.
 
 When the singleton-owned main app has a real tray host, Close removes its native
 control and overlay windows. The existing ResidentController global owns the
@@ -174,3 +174,26 @@ Private software-compositor results expose real source regressions and memory
 costs but do not establish physical display/input latency or the documented
 reference-hardware budgets. A repeatable failed budget requires further source
 remediation; it must not be closed by the logical release assertions here.
+
+## Actual main/helper observation and allocation diagnosis — 2026-11-18
+
+The optimized normal app and its same-executable native-services child passed eight real WM Close/secondary Show cycles, remained windowless through30seconds warmup plus300seconds idle, reopened and quit through the actual tray route. All owned processes reaped before private runtime removal. Observed300.0058seconds: jointCPU0ticks (0.0% ofonecore), context-switch deltas0, all I/O deltas0. Scheduler wakeup counters were unavailable and remain null, not inferredzero.
+
+Jointprivate mappings ended232,255,488bytes in the first successful run and231,153,664bytes in the repeat with explicit mapping diagnostics. Both fail50MiB. The signed privately extracted Mesa26.2.5 Lavapipe workload is software-rendered development evidence, not the integrated-GPU reference machine. No working-set trimming, allocator trim or image disposal was used.
+
+A separate explicitly instrumented heaptrack run is diagnostic only: tracked live allocations peak93,019,417bytes and fall to5,564,218bytes throughout the windowless plateau. The graphics-pipeline allocation domain falls tozero; file-backed compiler/driver mappings and resident allocator capacity still dominate the observed footprint. This does not prove a continuing live pipeline leak or a50MiBpass. The separately reviewed unused-pipeline deletion completed an exact same-other-source optimized A/B diagnostic pair: peak tracked live bytes fell from93,021,212 to91,476,989 (1,544,223 fewer bytes), with53,222 fewer allocation calls. It did not improve the observed idle private footprint or pass50MiB. This single sequential profiled pair used a five-second diagnostic interval, not the normal300-second acceptance interval; full-process/GPU/reference-hardware gates remain open. Evidence: `target/verification/unix-resident-memory-analysis/ab/ab-comparison.json`.
+
+The actual startup run found a reentrant controller update in listener registration. Both native launch paths now finish extracting the controller entity before registering the listener; the successful full observation exercises this corrected ordering.
+
+
+The fresh normal-binary repeat after the bounded evidence-harness correction
+completed eight Close/Show cycles,30seconds warmup and300.006seconds idle, then
+Show/Quit with every owned child reaped. Joint private mappings moved from
+227,184,640 to225,824,768bytes and still fail52,428,800bytes. CPU ticks,
+context-switch and I/O deltas were zero; scheduler wakeups remain unavailable.
+Startup diagnostics are held in a bounded64KiB pipe prefix and retained only on
+startup failure; this successful run left no sidecar. The original application
+binary was not stripped, trimmed or otherwise modified for this observation.
+This repeat is not a controlled source A/B comparison and attributes no saving
+to a particular change. Evidence:
+`target/verification/unix-resident-resource-harness-final/revision2/actual-normal-300s.json`.

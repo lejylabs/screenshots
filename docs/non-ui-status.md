@@ -1,10 +1,28 @@
 # Non-UI delivery: current checklist
 
-Date: 2026-11-17
+Date: 2026-11-18
 Scope: the user's complete major-feature list, with final GPUI redesign and new
 UI controls excluded. The workstation stays on. The full backlog is **open**.
 
-Current dependency gate (2026-11-17): the active application graph now uses
+Current verification checkpoint (2026-11-18): the optimized normal workspace
+passes **1,262 tests, zero failures, 96 ignored, 59 outer test artifacts**.
+Ignored native cases are excluded from that total. Separate owned Linux
+clipboard, credential, X11-window and private IPP checks pass. Both exact Windows
+memory-DC GDI raster/fault cases have passed; full Winspool/driver acceptance is
+still open. Complete Windows COM/OLE/editor acceptance remains failing/open, and
+the Mac named image/text board fixture has an unresolved native phase failure.
+
+Resident private memory is an observed failed gate: earlier actual-main/helper
+runs ended at 232,255,488 and 231,153,664 bytes against the unchanged 52,428,800-byte
+(50 MiB) target. A fresh bounded-harness repeat ends at225,824,768 bytes and
+still fails that target. CPU/context-switch/I/O deltas were zero in these runs;
+software-rendered observations do not establish reference-hardware/GPU acceptance. Hosted dependency
+policy passes with checked provenance and seven actual-engine controls.
+[Resident evidence](unix-resident-graphics.md), [clipboard scope](clipboard-import-output.md),
+[printing scope](image-printing.md), [dependency policy](dependency-policy.md).
+The dated checkpoints below retain their historical totals and narrower scopes.
+
+Historical dependency checkpoint (2026-11-17): the active application graph now uses
 Jiff 0.2.43/jiff-core 0.1.5; default `cargo deny check advisories` passes again
 without ignores or version spoofing. The earlier Chrono maintenance failure
 RUSTSEC-2026-0543 is retained as historical evidence. All current timestamp/
@@ -28,8 +46,10 @@ real-compositor or reference-hardware acceptance. [Exact scope](wayland-finite-c
 Native macOS/Windows HDR acquisition and a declared SDR rendition are now
 integrated in development source. Optimized Linux and Windows GNU metadata,
 89 affected capture controls (four opt-ins ignored) and Clippy pass. Native SDK/
-frame/runtime/hardware/resource gates and the larger Windows tiled extension
-remain separate. [HDR contract](hdr-capture.md).
+frame/runtime/hardware/resource gates remain separate. The larger Windows tiled
+extension is implemented; its exact owned WARP case passed 4K/5K/8K texture and
+failure-cleanup checks. This does not establish physical HDR/WGC acceptance.
+[HDR contract](hdr-capture.md).
 
 Windows incoming native file/image/URL data now uses the isolated non-agile
 receiver source for all eligible windows. Linux and GNU workspace/vendor-test
@@ -79,8 +99,8 @@ metadata, optimized Clippy and formatting pass. Native ARM macOS snapshot
 `b85db926` (application source `9f2e135`) now also passes fresh-process memory
 limit enforcement, three core/six desktop print controls and the actual private
 IPP CLI fixture. Intel job 134043931578 was canceled during later compilation and establishes
-no full runtime pass; Windows native GDI output/fault
-and resource gates remain open. [Printing](image-printing.md).
+no full runtime pass. The later owned Windows memory-DC GDI raster/fault checks
+pass; full Winspool/driver and resource gates remain open. [Printing](image-printing.md).
 
 Chronological capture/upload history sorting is now integrated in core and CLI,
 with exact fractional UTC ordering and self-contained timestamp/ID cursors.
@@ -95,8 +115,10 @@ The preceding Windows file-drop/window-ownership correction is committed as
 passed **1,065 regular tests**, zero failures, with 71 opt-ins excluded across 60
 outer suites. Linux/Windows GNU all-target metadata, Windows dependency-unit
 metadata, optimized Clippy and focused pure/GPUI/font/style regressions pass.
-Native COM acquisition containment remains an implementation gap; Windows native
-COM/resource acceptance remains open. [Drop contract](clipboard-import-output.md#windows-existing-file-drop-metadata-bounds).
+At that historical checkpoint native COM acquisition containment was still an
+implementation gap. The current isolated receiver implements it; complete owned
+COM/OLE/editor and aggregate resource acceptance remain open.
+[Drop contract](clipboard-import-output.md#windows-existing-file-drop-metadata-bounds).
 The earlier format/Wayland source is committed as
 `fd98138633de4a15b028b62b54c0a2a9af301ec9`; its 1,044-test/private CLI/Wayland
 results remain a separate checkpoint. These totals are different source snapshots,
@@ -269,10 +291,11 @@ completion is listed separately.
   final design remain excluded. Native presentation and performance acceptance
   remain in the separate matrix. [Contract](editor-document.md).
 - [ ] **Import/output:** explicit URL CLI/Task input, bounded native clipboard
-  and existing cross-platform Paste are committed. Remaining native raw image/URL
-  drops and drag-out need integration. Explicit isolated image printing is now
-  integrated and passes optimized pure/process and real private IPP checks; native
-  Windows GDI output/fault injection, macOS runtime and resource acceptance remain
+  and existing cross-platform Paste are committed. Native raw image/URL/drop and
+  drag-out adapters are integrated; owned X11 transfer checks pass. Complete
+  Windows COM/editor, Mac named-board/gesture and real-compositor acceptance remain
+  open. Printing passes private IPP and owned Windows memory-DC raster/fault checks;
+  full Winspool/driver, current-source Mac and resource acceptance remain
   open. [Printing contract](image-printing.md). Descriptor-only Wayland GUI startup
   and capture/Library format policy are integrated with local functional checks
   passed and source/document review completed in the committed delivery.
@@ -296,9 +319,11 @@ completion is listed separately.
   missing-reference removal, portable move/transfer, journaled trash/restore/
   purge and explicit retention are implemented. Thumbnail prefetch/cache/filter
   controls are UI consumer work, with no speculative idle cache added.
-- [ ] **Major native capabilities/utilities:** finish macOS/Wayland scrolling and
-  recording adapters beyond implemented X11/Windows live scrolling and optional
-  finite video/GIF/native audio/combined A/V. Native screen-color sampling,
+- [ ] **Major native capabilities/utilities:** finite macOS and portal-owned
+  Wayland scrolling/recording adapters are implemented alongside X11/Windows live
+  scrolling and optional finite video/GIF/native audio/combined A/V. Exact native
+  permission, lifecycle, hardware and resource acceptance remains open; automatic
+  target-bound Wayland scrolling is unsupported. Native screen-color sampling,
   ruler/measurement and bounded clipboard inspection are committed tested subsets.
   Existing file pixel/hash and
   combine/compare/split tools remain completed subsets. Pin windows and new
@@ -412,18 +437,14 @@ themes and editor controls are preserved, not redesigned.
   the [delivery request](non-ui-delivery.md#request-and-constraints) and PLAN's
   performance/privacy contract.
 
-Coverage update: the earlier hidden-path sweep inventoried **160 Markdown files**
-(94 project and 66 vendor), excluding target and .git. The subsequently authored
-and reviewed Unix lifecycle contract increases the current source inventory to
-163 (96 project and 67 vendor) after the independently reviewed image-printing
-contract and the renderer provenance/evidence note were integrated. The earlier 161-file count included the Unix lifecycle
-contract; original snapshot hashes remain historical. Its snapshot hashes,
-requirement/status extracts and exact per-file reading depth are recorded in the
-local reconciliation reports. All 160 complete bodies have now been semantically read (94 project, 66
-vendor), with exact per-file hashes and full-body read reports in
-`target/verification/all-markdown-full-read-complete.json`. Later corrections
-are reviewed explicit documentation deltas with new hashes; the original
-snapshot hashes are not relabeled current. This is full prose review, not a
+Coverage update (2026-11-18): the current inventory contains **180 Markdown
+files**, all with full-body prose coverage. The consolidated proof is
+`target/verification/final-markdown-delta/full-read-proof.json`: 166 bodies exactly
+reuse earlier full-read hashes and 14 changed/new bodies were read in full again.
+The previous 160-file full-read checkpoint and subsequent 163-file inventory are
+historical, with their original hashes and reading-depth reports preserved at
+`target/verification/all-markdown-full-read-complete.json`. Corrections receive
+new hashes; the earlier snapshots are not relabeled current. This is full prose review, not a
 whole-code audit or implementation/native/performance acceptance. Current code checks include the PLAN performance, phase and
 Definition-of-Done requirements; logging/fuzz follow-ups are implemented,
 while the remaining resident/platform work above stays open. Historical evidence remains dated; this checklist does not declare

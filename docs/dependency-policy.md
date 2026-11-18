@@ -129,8 +129,12 @@ published-base advisory view, exact selected-list equality and all seven actual
 engine controls. Expected exits are 0,0,1,1,4,4,1; each negative also requires its
 specific advisory/license/fetch evidence. RustSec snapshot:
 `472a4c9a785030434f15d7da84964d60fbe789ab`. Cargo.lock and protected inputs remain
-unchanged. Two fresh source reviews are clean. Hosted execution of the current
-workflow remains pending; local or synthetic checks are not a hosted CI pass.
+unchanged. Two fresh source reviews are clean. Hosted run44317516920 on source
+`12c6f97` also passes the complete workflow. Its downloaded evidence archive
+`14434050589` was verified against SHA256
+`9b9a0e3ffa5c742e5fe750799d5d1ff7f9a8f4e60cd883dee994c19806fce7a2`;
+the success marker, source-commit provenance and all seven actual-engine results
+were checked. Earlier local-only results are retained separately.
 
 References: [Cargo Deny configuration](https://embarkstudios.github.io/cargo-deny/checks/cfg.html),
 [pinned advisory matching](https://github.com/EmbarkStudios/cargo-deny/blob/bca0dde53651ee946720e4540b5ce2610bec8f06/src/advisories/helpers/db.rs),
