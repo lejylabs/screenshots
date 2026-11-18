@@ -2363,3 +2363,7 @@ mod display_mode_tests {
 #[cfg(all(test, feature = "wayland", feature = "x11"))]
 #[path = "wayland_startup_tests.rs"]
 mod wayland_startup_tests;
+
+#[cfg(all(test, any(feature = "wayland", feature = "x11")))]
+#[path = "resident_graphics_tests.rs"]
+mod resident_graphics_tests;

@@ -69,6 +69,8 @@ pub use capture_macos_model::{
 };
 mod image_url;
 mod native_capture_job;
+mod native_drop;
+pub use native_drop::{NativeDropMime, NativeDropReply, NativeDropSource, acquire_native_drop};
 mod portal_capture;
 pub use image_url::{ImageUrlSource, MAX_IMAGE_URL_BYTES};
 pub use native_capture_job::{

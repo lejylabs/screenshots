@@ -117,7 +117,7 @@ pub fn run(case: &str) -> Result<()> {
             && std::env::var("SCREENSHOTS_OWNED_PRODUCTION_ACCEPTANCE").as_deref() == Ok("1"),
         "Owned hosted Windows CI opt-in is required"
     );
-    let _desktop = PrivateDesktop::new(case.starts_with("ci-"))?;
+    let _desktop = PrivateDesktop::new(case.starts_with("ci-"), false)?;
     let window = unsafe {
         CreateWindowExW(
             WINDOW_EX_STYLE::default(),
@@ -153,7 +153,7 @@ struct PrivateDesktop {
     old_input: Option<HDESK>,
 }
 impl PrivateDesktop {
-    fn new(owned_input: bool) -> Result<Self> {
+    fn new(owned_input: bool, graphical: bool) -> Result<Self> {
         let expected = std::env::var("SCREENSHOTS_DROP_ACCEPTANCE_DESKTOP").map_err(|_| {
             anyhow::anyhow!("Outer owned controller must launch the app on its startup desktop")
         })?;
@@ -183,7 +183,7 @@ impl PrivateDesktop {
             actual == expected,
             "Startup desktop does not match exact owned controller"
         );
-        let required = if owned_input {
+        let required = if owned_input || graphical {
             format!("WinSta0\\ScreenshotsDropProbe-{owner}")
         } else {
             format!("ScreenshotsProductionAcceptance-{owner}\\owned")
@@ -638,6 +638,8 @@ fn provider(case: &str, hwnd: HWND) -> Result<()> {
             hwnd,
         );
     }
+    let mut expected_point = POINT { x: 48, y: 40 };
+    unsafe { windows::Win32::Graphics::Gdi::ClientToScreen(hwnd, &mut expected_point) }.ok()?;
     let broker = NativeDropBroker::default();
     let mut registration = broker.register(hwnd.0 as usize, 1)?;
     let mut handle = registration.handle();
@@ -702,10 +704,10 @@ fn provider(case: &str, hwnd: HWND) -> Result<()> {
             ensure!(
                 packet.packet.header.kind == wire::SUBMIT
                     && (if case.starts_with("ci-") {
-                        (48..=49).contains(&packet.packet.header.x)
-                            && (40..=41).contains(&packet.packet.header.y)
+                        (expected_point.x..=expected_point.x + 1).contains(&packet.packet.header.x)
+                            && (expected_point.y..=expected_point.y + 1).contains(&packet.packet.header.y)
                     } else {
-                        packet.packet.header.x == 48 && packet.packet.header.y == 40
+                        packet.packet.header.x == expected_point.x && packet.packet.header.y == expected_point.y
                     })
                     && handle.current(&packet),
                 "Actual submitted final point/generation"
@@ -1015,7 +1017,7 @@ pub fn run_ui(case: &str, work: impl FnOnce() -> Result<()>) -> Result<()> {
             && std::env::var("SCREENSHOTS_OWNED_PRODUCTION_ACCEPTANCE").as_deref() == Ok("1"),
         "Owned hosted Windows CI opt-in is required"
     );
-    let _desktop = PrivateDesktop::new(case.starts_with("gpui-ole-"))?;
+    let _desktop = PrivateDesktop::new(case.starts_with("gpui-ole-"), true)?;
     let module = library()?;
     let context = format!(
         "Local\\ScreenshotsProductionAcceptance-{}",

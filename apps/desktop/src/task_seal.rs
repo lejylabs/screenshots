@@ -204,10 +204,17 @@ mod tests {
             image::Rgba([19, 23, 29, 255]),
         ));
         *LAST_FRAME.lock().unwrap() = Some(Arc::downgrade(&pixels));
+        #[cfg(target_os = "macos")]
+        let desktop_layout = matches!(call, C::Desktop { .. }).then(|| Arc::new(
+            app_core::MacDesktopLayout::new(&[synthetic_mac_coordinates()]).unwrap()
+        ));
+        #[cfg(not(target_os = "macos"))]
+        let desktop_layout = None;
         Ok(R::Frames(vec![CapturedImage {
-            desktop_layout: None,
+            desktop_layout,
             display_id: match &call {
                 C::Portal { source, .. } => source.identifier().into(),
+                C::Desktop { .. } => "desktop".into(),
                 _ => "1".into(),
             },
             window_id: window,
@@ -277,6 +284,7 @@ mod tests {
             )?,
         )?;
         let sources = vec![
+            serde_json::json!({"type":"desktop"}),
             serde_json::json!({"type":"primary_display"}),
             serde_json::json!({"type":"active_display"}),
             serde_json::json!({"type":"active_window"}),
@@ -343,6 +351,7 @@ mod tests {
             .env("XDG_SESSION_TYPE", "x11")
             .env("DISPLAY", ":schedule-private")
             .env_remove("WAYLAND_DISPLAY")
+            .env_remove("WAYLAND_SOCKET")
             .output()?;
         ensure!(
             child.status.success(),
@@ -354,7 +363,7 @@ mod tests {
                 .filter_map(|e| e.ok())
                 .filter(|e| e.path().extension().is_some_and(|v| v == "png"))
                 .count(),
-            if cfg!(target_os = "linux") { 9 } else { 7 }
+            if cfg!(target_os = "linux") { 10 } else { 8 }
         );
         std::fs::remove_dir_all(root)?;
         Ok(())

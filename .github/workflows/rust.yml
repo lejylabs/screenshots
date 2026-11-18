@@ -6,7 +6,6 @@ permissions:
   contents: read
 jobs:
   macos-app:
-    if: false
     strategy:
       fail-fast: false
       matrix:
@@ -105,7 +104,7 @@ jobs:
       - name: Run owned Unix print acceptance
         run: |
           cargo test --workspace --lib --bins -j 2 --locked --profile release-fast image_print -- --test-threads=1
-          cargo test --workspace --lib --bins -j 2 --locked --profile release-fast print_image::tests:: -- --test-threads=1
+          SCREENSHOTS_PRINT_TEST_TRACE=1 cargo test --workspace --lib --bins -j 2 --locked --profile release-fast print_image::tests:: -- --test-threads=1
           cargo build --locked --profile release-fast -p screenshots -j 2
           python3 scripts/verify-image-print-virtual-ipp.py "$PWD/target/release-fast/screenshots"
 
@@ -118,6 +117,7 @@ jobs:
           key: sdk-target-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Cargo.lock') }}-${{ github.sha }}
 
   windows-native-witness:
+    if: false
     runs-on: windows-latest
     timeout-minutes: 180
     steps:

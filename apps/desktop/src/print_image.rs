@@ -175,6 +175,10 @@ impl Native {
                 .stdin(Stdio::null())
                 .stdout(Stdio::null())
                 .stderr(Stdio::null());
+            #[cfg(test)]
+            if std::env::var_os("SCREENSHOTS_PRINT_TEST_TRACE").is_some() {
+                command.stderr(Stdio::inherit());
+            }
             #[cfg(target_os = "linux")]
             unsafe {
                 command.pre_exec(move || {
@@ -250,11 +254,21 @@ impl Native {
     fn try_exit(&mut self) -> Result<Option<ExitStatus>> {
         #[cfg(unix)]
         {
-            if !unix::exited_without_reaping(self.group, false)? {
+            let exited = unix::exited_without_reaping(self.group, false)?;
+            #[cfg(all(test, target_os = "macos"))]
+            if std::env::var_os("SCREENSHOTS_PRINT_TEST_TRACE").is_some() {
+                eprintln!("OWNED print mock: pid={}, exited={exited}, state={:?}", self.group, unix::process_state(self.group));
+            }
+            if !exited {
                 return Ok(None);
             }
             unix::signal_owned_group(self.group);
-            if !unix::live_members(self.group)?.is_empty() {
+            let members = unix::live_members(self.group)?;
+            #[cfg(all(test, target_os = "macos"))]
+            if std::env::var_os("SCREENSHOTS_PRINT_TEST_TRACE").is_some() {
+                eprintln!("OWNED print mock: pid={}, remaining={members:?}", self.group);
+            }
+            if !members.is_empty() {
                 return Ok(None);
             }
             let status = self.child.try_wait()?;

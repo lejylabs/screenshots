@@ -111,6 +111,8 @@ fn main() {
             #[cfg(target_os = "linux")]
             desktop_services_process::install()?;
             capture_worker::install()?;
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
+            app_ui::install_unix_native_drop_reader()?;
             #[cfg(target_os = "windows")]
             windows_drop_spawn::install()?;
             Ok(())

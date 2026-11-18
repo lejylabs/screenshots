@@ -288,7 +288,11 @@ impl Target {
             return factory();
         }
         unsafe { CoCreateInstance(&CLSID_DragDropHelper, None, CLSCTX_INPROC_SERVER) }
-            .map_err(|_| anyhow::anyhow!("Native helper unavailable"))
+            .map_err(|_error| {
+                #[cfg(screenshots_native_drop_acceptance)]
+                super::native_drop_acceptance::hook(82, _error.code().0 as u32 as u64, std::ptr::null_mut());
+                anyhow::anyhow!("Native helper unavailable")
+            })
     }
     fn failed(&self, operation: Operation) -> Result<()> {
         if self.operation.get() != Some(operation) {
@@ -303,6 +307,8 @@ impl Target {
         Ok(())
     }
     fn finish_operation(&self, operation: Operation, result: Result<bool>) -> Result<bool> {
+        #[cfg(screenshots_native_drop_acceptance)]
+        super::native_drop_acceptance::hook(81, u64::from(result.is_err()), std::ptr::null_mut());
         match result {
             Ok(accepted) => {
                 if self.operation.get() == Some(operation) {
@@ -338,12 +344,16 @@ impl Target {
             .begin_operation()?
             .ok_or_else(|| anyhow::anyhow!("Native gesture unavailable"))?;
         let result = (|| {
+            #[cfg(screenshots_native_drop_acceptance)]
+            super::native_drop_acceptance::hook(80, 1, std::ptr::null_mut());
             let format = self
                 .receiver
                 .formats
                 .negotiate(source, &|| self.check_operation(operation))?;
             self.check_operation(operation)?;
             self.format.set(Some(format));
+            #[cfg(screenshots_native_drop_acceptance)]
+            super::native_drop_acceptance::hook(80, 2, std::ptr::null_mut());
             let (code, body) =
                 if matches!(format, Format::Files | Format::UrlWide | Format::UrlAscii) {
                     payload_bytes(
@@ -356,17 +366,27 @@ impl Target {
                 };
             self.check_operation(operation)?;
             *self.metadata.borrow_mut() = Some((code, body.clone()));
+            #[cfg(screenshots_native_drop_acceptance)]
+            super::native_drop_acceptance::hook(80, 3, std::ptr::null_mut());
             let helper = Rc::new(self.make_helper()?);
             self.check_operation(operation)?;
             *self.helper.borrow_mut() = Some(helper.clone());
             self.open.set(true);
+            #[cfg(screenshots_native_drop_acceptance)]
+            super::native_drop_acceptance::hook(80, 4, std::ptr::null_mut());
             let result =
                 unsafe { helper.DragEnter(self.hwnd, source, &POINT { x: pt.x, y: pt.y }, effect) }
-                    .map_err(|_| anyhow::anyhow!("Native drag helper failed"));
+                    .map_err(|_error| {
+                        #[cfg(screenshots_native_drop_acceptance)]
+                        super::native_drop_acceptance::hook(82, _error.code().0 as u32 as u64, std::ptr::null_mut());
+                        anyhow::anyhow!("Native drag helper failed")
+                    });
             self.check_operation(operation)?;
             drop(helper);
             self.check_operation(operation)?;
             result?;
+            #[cfg(screenshots_native_drop_acceptance)]
+            super::native_drop_acceptance::hook(80, 5, std::ptr::null_mut());
             self.stage(operation.generation, wire::ENTER, code, pt, body)?;
             Ok(true)
         })();

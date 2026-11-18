@@ -42,6 +42,8 @@ struct Shared {
     LONG admission_epoch,allow_epoch,registration_probe_epoch,probe_reclaim;
     DWORD allow_pid,allow_tid,registration_probe_pid;
     DWORD controller_pid;
+    LONG phase_helper_pid,operation_stage,failed_operation_stage,operation_hresult;
+    DWORD phase_helper_tid;
     DWORD receiver_pid, receiver_tid, source_pid, source_tid;
     DWORD enter_pid, enter_tid, query_pid, query_tid, data_pid, data_tid, query_client_pid;
     DWORD owner_pid, owner_tid; UINT_PTR owner_hwnd;
@@ -150,7 +152,7 @@ static bool injection_enabled(InjectionId id) {
     auto& trace=state->injections[id];
     if (InterlockedCompareExchange(&trace.claimed,1,0)==0) {
         trace.pid=GetCurrentProcessId();trace.tid=GetCurrentThreadId();
-        trace.helper_pid=state->receiver_pid;trace.helper_tid=state->receiver_tid;
+        trace.helper_pid=state->phase_helper_pid?static_cast<DWORD>(state->phase_helper_pid):state->receiver_pid;trace.helper_tid=state->phase_helper_pid?state->phase_helper_tid:state->receiver_tid;
         trace.guard=InterlockedCompareExchange(&state->pump_guard_active,0,0);
         trace.sequence=InterlockedCompareExchange(&state->pump_sequence,0,0);
         trace.armed_sequence=InterlockedCompareExchange(&state->controller_armed_sequence,0,0);
@@ -171,7 +173,7 @@ static void broker_deadline_observed() {
     InterlockedIncrement(&state->deadline_count);
     if (InterlockedCompareExchange(&state->deadline_claimed,1,0)!=0) return;
     state->deadline_pid=GetCurrentProcessId();state->deadline_tid=GetCurrentThreadId();
-    state->deadline_helper_pid=state->receiver_pid;
+    state->deadline_helper_pid=state->phase_helper_pid?static_cast<DWORD>(state->phase_helper_pid):state->receiver_pid;
     state->deadline_sequence=InterlockedCompareExchange(&state->pump_sequence,0,0);
     state->deadline_guard=InterlockedCompareExchange(&state->pump_guard_active,0,0);
     state->deadline_tick=GetTickCount64();MemoryBarrier();InterlockedExchange(&state->deadline_ready,1);
@@ -449,7 +451,7 @@ struct DropSource final : IDropSource {
     ULONG STDMETHODCALLTYPE Release() override { LONG n = InterlockedDecrement(&refs); if (!n) delete this; return n; }
     HRESULT STDMETHODCALLTYPE QueryContinueDrag(BOOL, DWORD) override {
         InterlockedIncrement(&state->source_continue_calls);
-        if (custom_source && state->external_unmarshal_calls && (state->first_unmarshal_pid != static_cast<LONG>(state->receiver_pid) || state->unmarshal_memory_refused)) return DRAGDROP_S_CANCEL;
+        if (custom_source && state->external_unmarshal_calls && (state->first_unmarshal_pid != (state->phase_helper_pid?state->phase_helper_pid:static_cast<LONG>(state->receiver_pid)) || state->unmarshal_memory_refused)) return DRAGDROP_S_CANCEL;
         return state->enter_pid ? DRAGDROP_S_DROP : S_OK;
     }
     HRESULT STDMETHODCALLTYPE GiveFeedback(DWORD) override { InterlockedIncrement(&state->source_feedback_calls); return DRAGDROP_S_USEDEFAULTCURSORS; }

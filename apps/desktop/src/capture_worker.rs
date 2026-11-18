@@ -743,7 +743,9 @@ fn operation_timeout(call: &NativeCaptureCall) -> Duration {
     }
     if matches!(
         call,
-        NativeCaptureCall::ClipboardImage { .. } | NativeCaptureCall::ClipboardInspect { .. }
+        NativeCaptureCall::ClipboardImage { .. }
+            | NativeCaptureCall::ClipboardInspect { .. }
+            | NativeCaptureCall::NativeDrop { .. }
     ) {
         Duration::from_secs(5)
     } else if matches!(
@@ -2533,6 +2535,197 @@ mod tests {
             "children_context_switches":children.ru_nvcsw+children.ru_nivcsw-baseline_children.ru_nvcsw-baseline_children.ru_nivcsw,
             "descriptors_before":descriptors_before,"descriptors_after":descriptors_after,"pending_owner":false,"exact_generated_pixels":true})
         );
+        Ok(())
+    }
+}
+
+#[cfg(all(test, feature = "native-drop-probe", target_os = "linux"))]
+mod native_drop_probe_tests {
+    use super::*;
+    fn executor(
+        call: NativeCaptureCall,
+        check: &NativeCaptureCheck<'_>,
+        _: app_core::NativeCaptureContext,
+    ) -> std::result::Result<NativeCaptureReply, CaptureError> {
+        let binary = std::env::var_os("SCREENSHOTS_NATIVE_DROP_BINARY")
+            .ok_or_else(|| CaptureError::Backend("Missing owned native drop binary".into()))?;
+        let mut command = Command::new(binary);
+        command
+            .arg(CHILD_ARGUMENT)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        // Positive transfers must use the descriptor's captured display, not this decoy.
+        command.env(
+            "DISPLAY",
+            std::env::var_os("SCREENSHOTS_NATIVE_DROP_DECOY_DISPLAY")
+                .ok_or_else(|| CaptureError::Backend("Missing private decoy display".into()))?,
+        );
+        let timeout = operation_timeout(&call);
+        execute_command(command, call, check, timeout)
+    }
+    #[test]
+    #[ignore = "real GPUI X11→owned Xdnd source→production isolated worker; scripts/test-native-unix-drop.py only"]
+    fn native_x11_drop_end_to_end() {
+        assert_eq!(
+            std::env::var("SCREENSHOTS_NATIVE_DROP_PRIVATE").as_deref(),
+            Ok("1")
+        );
+        app_core::install_native_capture_executor(executor).unwrap();
+        app_ui::install_unix_native_drop_reader().unwrap();
+        app_ui::run_native_x11_drop_probe();
+    }
+}
+
+#[cfg(all(test, feature = "native-drop-probe", target_os = "macos"))]
+mod native_mac_drop_probe_tests {
+    use super::*;
+    use std::{io::Read, os::fd::AsRawFd};
+    struct Provider(std::process::Child);
+    impl Drop for Provider {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+    #[test]
+    #[ignore = "private named pasteboard and actual isolated native worker; explicit owned macOS fixture only"]
+    fn native_mac_drop_worker_from_owned_pasteboard() -> Result<()> {
+        ensure!(
+            std::env::var("SCREENSHOTS_NATIVE_DROP_PRIVATE").as_deref() == Ok("1"),
+            "Private opt-in required"
+        );
+        let provider = std::env::var_os("SCREENSHOTS_NATIVE_DROP_PROVIDER")
+            .context("Missing owned provider executable")?;
+        let binary = std::env::var_os("SCREENSHOTS_NATIVE_DROP_BINARY")
+            .context("Missing production native worker executable")?;
+        for mode in ["direct", "file", "uri", "stall", "over-limit", "change"] {
+            let mut child = Provider(
+                Command::new(&provider)
+                    .arg(mode)
+                    .stdin(Stdio::null())
+                    .stdout(Stdio::piped())
+                    .stderr(Stdio::null())
+                    .spawn()?,
+            );
+            let output = child
+                .0
+                .stdout
+                .take()
+                .context("Owned provider descriptor stream missing")?;
+            let mut output = output;
+            let fd = output.as_raw_fd();
+            let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+            ensure!(
+                flags >= 0
+                    && unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } >= 0,
+                "Cannot bound owned provider descriptor read"
+            );
+            let mut descriptor = Vec::new();
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while descriptor.last() != Some(&b'\n') {
+                ensure!(
+                    descriptor.len() < 1024 && Instant::now() < deadline,
+                    "Owned provider descriptor exceeds byte/time bound"
+                );
+                let mut poll = libc::pollfd {
+                    fd,
+                    events: libc::POLLIN,
+                    revents: 0,
+                };
+                let timeout = deadline
+                    .saturating_duration_since(Instant::now())
+                    .as_millis()
+                    .min(i32::MAX as u128) as i32;
+                ensure!(
+                    unsafe { libc::poll(&mut poll, 1, timeout) } > 0,
+                    "Owned provider descriptor timed out"
+                );
+                let mut byte = [0];
+                match output.read(&mut byte) {
+                    Ok(1) => descriptor.push(byte[0]),
+                    Err(error)
+                        if matches!(
+                            error.kind(),
+                            std::io::ErrorKind::WouldBlock | std::io::ErrorKind::Interrupted
+                        ) => {}
+                    _ => anyhow::bail!("Owned provider descriptor closed"),
+                }
+            }
+            let value: serde_json::Value = serde_json::from_slice(&descriptor)?;
+            let source = app_core::NativeDropSource::MacPasteboard {
+                name: value["name"]
+                    .as_str()
+                    .context("Missing private pasteboard name")?
+                    .to_owned(),
+                change_count: value["change_count"]
+                    .as_i64()
+                    .context("Missing private ownership count")?,
+            };
+            source.validate()?;
+            let run = |image| {
+                let mut command = Command::new(&binary);
+                command
+                    .arg(CHILD_ARGUMENT)
+                    .stdin(Stdio::null())
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null());
+                execute_command(
+                    command,
+                    NativeCaptureCall::NativeDrop {
+                        source: source.clone(),
+                        image,
+                    },
+                    &|| Ok(()),
+                    Duration::from_secs(5),
+                )
+            };
+            let NativeCaptureReply::NativeDrop(probe) = run(false)? else {
+                anyhow::bail!("Wrong native probe kind");
+            };
+            if mode == "file" {
+                ensure!(
+                    probe.mime == app_core::NativeDropMime::UriList
+                        && probe.bytes == b"file:///private/fixture-%FF.png\r\n",
+                    "Native file reference bytes changed"
+                );
+                continue;
+            }
+            if mode == "uri" {
+                ensure!(
+                    probe.mime == app_core::NativeDropMime::UriList
+                        && probe.bytes == b"https://example.invalid/image.png?private-query-token",
+                    "Native URL bytes changed"
+                );
+                continue;
+            }
+            ensure!(
+                probe.mime == app_core::NativeDropMime::Png && probe.bytes.is_empty(),
+                "Hover acquired a raster body"
+            );
+            let started = Instant::now();
+            match (mode, run(true)) {
+                ("direct", Ok(NativeCaptureReply::NativeDrop(reply))) => {
+                    ensure!(
+                        reply.mime == app_core::NativeDropMime::Png && !reply.bytes.is_empty(),
+                        "Native encoded image absent"
+                    );
+                    let pixels = image::load_from_memory(&reply.bytes)?.to_rgba8();
+                    ensure!(
+                        pixels.dimensions() == (2, 1)
+                            && pixels.as_raw() == &[11, 23, 37, 255, 43, 59, 71, 128],
+                        "Private native raster pixels differ"
+                    );
+                }
+                ("stall" | "over-limit" | "change", Err(_)) => {}
+                _ => anyhow::bail!("Native promised-data refusal/positive oracle failed"),
+            }
+            ensure!(
+                started.elapsed() < Duration::from_secs(7),
+                "Native provider exceeded its owned deadline"
+            );
+            drop(child);
+        }
         Ok(())
     }
 }

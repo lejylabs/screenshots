@@ -307,7 +307,7 @@ impl Render for CaptureWorkspace {
             .on_action(cx.listener(|this, _: &OpenFullscreenOverlays, _, cx| {
                 this.open_overlays(OverlayMode::Fullscreen, cx)
             }))
-            .on_action(cx.listener(|this, _: &CloseOverlay, _, cx| this.close_overlays(cx)))
+            .on_action(cx.listener(|this, _: &CloseOverlay, _, cx| this.cancel_overlays(cx)))
             .on_action(cx.listener(|this, _: &CapturePrimary, _, cx| this.capture_primary(cx)))
             .on_action(cx.listener(|this, _: &CaptureAll, _, cx| this.capture_all(cx)))
             .on_action(
@@ -1247,7 +1247,7 @@ impl Render for CaptureWorkspace {
                             "close-overlays",
                             "Close overlays",
                             false,
-                            cx.listener(|this, _, _, cx| this.close_overlays(cx)),
+                            cx.listener(|this, _, _, cx| this.cancel_overlays(cx)),
                         )),
                 )
             })

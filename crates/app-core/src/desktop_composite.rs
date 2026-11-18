@@ -4,6 +4,10 @@ use crate::{CaptureError, CaptureRequest, CapturedImage, DisplayInfo, PixelForma
 use image::RgbaImage;
 use std::{collections::HashSet, path::PathBuf, sync::Arc};
 
+#[cfg(target_os = "linux")]
+#[path = "desktop_composite_linux.rs"]
+mod linux;
+
 const MAX_DISPLAYS: usize = 32;
 
 struct Layout {
@@ -162,10 +166,15 @@ pub fn capture_stitched_desktop_with_cancel(
     check: &crate::NativeCaptureCheck<'_>,
 ) -> Result<CapturedImage, CaptureError> {
     check()?;
-    // Other adapters have no admitted desktop composition coordinate policy.
-    if !cfg!(any(target_os = "windows", target_os = "macos")) {
+    #[cfg(target_os = "linux")]
+    if !crate::CaptureBackend::capabilities(backend).capture_display {
         return Err(CaptureError::Unsupported(
-            "stitched desktop capture requires a calibrated Windows or macOS display adapter",
+            "Wayland desktop coordinates are not physical pixels; use an explicit portal source",
+        ));
+    }
+    if !cfg!(any(target_os = "windows", target_os = "macos", target_os = "linux")) {
+        return Err(CaptureError::Unsupported(
+            "stitched desktop capture requires a calibrated native display adapter",
         ));
     }
     backend.capture_physical_desktop_with_cancel(check)
@@ -175,14 +184,19 @@ pub(crate) fn capture_stitched_desktop_in_worker(
     backend: &XcapBackend,
     check: &crate::NativeCaptureCheck<'_>,
 ) -> Result<CapturedImage, CaptureError> {
-    if !cfg!(any(target_os = "windows", target_os = "macos"))
+    if !cfg!(any(target_os = "windows", target_os = "macos", target_os = "linux"))
         || crate::native_capture_job::executor().is_some()
     {
         return Err(CaptureError::Unsupported(
             "Desktop assembly requires its native isolated worker",
         ));
     }
+    check()?;
+    #[cfg(target_os = "linux")]
+    let topology = linux::Guard::new(check)?;
     let before = backend.list_capture_displays_with_cancel(check)?;
+    #[cfg(target_os = "linux")]
+    topology.validate_displays(&before)?;
     #[cfg(not(target_os = "macos"))]
     layout(&before)?;
     #[cfg(target_os = "macos")]
@@ -238,6 +252,8 @@ pub(crate) fn capture_stitched_desktop_in_worker(
         return Err(error);
     }
     let mut output = result?;
+    #[cfg(target_os = "linux")]
+    topology.finish(check)?;
     output.display_id = "desktop".into();
     #[cfg(target_os = "macos")]
     {
@@ -329,6 +345,35 @@ mod tests {
         frame.display_geometry.as_mut().unwrap().x += 1;
         assert!(validate_native_frames(&[display], &[frame]).is_err());
     }
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn owned_wayland_authority_refuses_desktop_before_native_dispatch() {
+        let backend = XcapBackend::new(PathBuf::new()).with_native_context(crate::NativeCaptureContext {
+            wayland_session: true,
+        });
+        assert!(matches!(capture_stitched_desktop(&backend), Err(CaptureError::Unsupported(_))));
+        assert!(matches!(capture_stitched_desktop_with_cancel(&backend, &|| Err(CaptureError::NativeCanceled)), Err(CaptureError::NativeCanceled)));
+    }
+
+    #[test]
+    fn rotated_sources_copy_already_oriented_pixels_and_reject_bad_provenance() {
+        let a = display("a", -3, -2, 2, 3);
+        let mut b = display("b", -1, -2, 3, 2);
+        b.rotation = 90.0;
+        b.scale_factor = 2.0;
+        let frames = [frame(&a, [11, 22, 33, 255]), frame(&b, [44, 55, 66, 128])];
+        let output = stitch_desktop(&[a.clone(), b.clone()], &frames).unwrap();
+        assert_eq!(output.pixels.dimensions(), (5, 3));
+        assert_eq!(output.pixels.get_pixel(4, 1).0, [44, 55, 66, 128]);
+        assert_eq!(output.pixels.get_pixel(4, 2).0, [0, 0, 0, 0]);
+        let mut wrong = frames[1].clone();
+        wrong.window_id = Some("window".into());
+        assert!(stitch_desktop(&[a.clone(), b.clone()], &[frames[0].clone(), wrong]).is_err());
+        let mut mirror = b;
+        mirror.x = a.x;
+        assert!(layout(&[a, mirror]).is_err());
+    }
+
     #[test]
     fn negative_origins_and_gaps_preserve_exact_alpha() {
         let a = display("a", -2, 0, 2, 2);

@@ -33,7 +33,9 @@ Example:
 Sources are `file` (bounded existing image loader), `display`/`window` with `id`,
 or `region` with `display,x,y,width,height`. The optional existing image recipe
 runs in memory before any action, so every output/upload uses finalized pixels.
-`primary_display`, `active_window` and `active_display` choose their native
+`desktop` captures the complete admitted [stitched desktop](desktop-composite.md)
+through its existing isolated operation; unsupported/incomplete native layouts
+fail before any action. `primary_display`, `active_window` and `active_display` choose their native
 target at invocation, with focus/process guards. `raw_file` streams an arbitrary
 file unchanged for HTTP/provider/S3 transfers; it cannot use image recipes,
 image save or image copy. `none` runs command/utility tasks without creating a

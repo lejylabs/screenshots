@@ -59,6 +59,10 @@ pub enum NativeCaptureCall {
     PortalScroll {
         request: crate::PortalScrollRequest,
     },
+    NativeDrop {
+        source: crate::NativeDropSource,
+        image: bool,
+    },
     MacScroll {
         request: crate::MacScrollRequest,
     },
@@ -112,6 +116,7 @@ pub enum NativeCaptureReply {
         image: CapturedImage,
         summary: crate::PortalScrollSummary,
     },
+    NativeDrop(crate::NativeDropReply),
     MacScroll {
         image: CapturedImage,
         summary: crate::MacScrollSummary,
@@ -330,6 +335,7 @@ impl NativeCaptureCall {
         match self {
             Self::PortalVideo { request } => request.validate()?,
             Self::PortalScroll { request } => request.validate()?,
+            Self::NativeDrop { source, .. } => source.validate()?,
             Self::MacScroll { request } => request.validate().map_err(|_| invalid())?,
             Self::MacVideo { request } => request.validate().map_err(|_| invalid())?,
             Self::Inventory
@@ -476,6 +482,16 @@ impl NativeCaptureCall {
                 ));
             }
         }
+        if let Self::NativeDrop { source, image } = &self {
+            let reply = NativeCaptureReply::NativeDrop(crate::clipboard_input::native_drop_inline(
+                source,
+                *image,
+                originating_pid,
+                &|| Ok(()),
+            )?);
+            self.validate_reply(&reply)?;
+            return Ok(reply);
+        }
         if let Self::ClipboardImage { backend } = &self {
             let reply = NativeCaptureReply::Frames(vec![crate::clipboard_input::image_inline(
                 *backend,
@@ -609,6 +625,7 @@ impl NativeCaptureCall {
             Self::ClipboardImage { .. } | Self::ClipboardInspect { .. } => {
                 unreachable!("Clipboard was handled before capture metadata")
             }
+            Self::NativeDrop { .. } => unreachable!("Native drop precedes source enumeration"),
             Self::ImageUrl { .. } => {
                 unreachable!("URL import was handled before native source enumeration")
             }
@@ -651,6 +668,9 @@ impl NativeCaptureCall {
                     image.height,
                     image.display_geometry,
                 )
+            }
+            (Self::NativeDrop { source, image }, NativeCaptureReply::NativeDrop(reply)) => {
+                reply.validate(source, *image).map_err(|_| invalid())
             }
             (Self::MacVideo { request }, NativeCaptureReply::MacVideo { summary }) => {
                 summary.validate(*request).map_err(|_| invalid())

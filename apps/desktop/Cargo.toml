@@ -11,6 +11,9 @@ description = "Desktop capture and sharing application"
 [lints]
 workspace = true
 
+[features]
+native-drop-probe = ["app-ui/native-drop-probe"]
+
 [dependencies]
 crossbeam-queue = "=0.3.14"
 curl-sys = { version = "=0.4.91", default-features = false, features = ["ssl", "protocol-ftp"] }
