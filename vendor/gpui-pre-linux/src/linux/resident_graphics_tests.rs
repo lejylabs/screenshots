@@ -132,6 +132,7 @@ fn private_last_window_releases_graphics_and_reopens_on_same_connection() {
         _ => panic!("private backend must be x11 or wayland"),
     }
     assert!(std::env::var_os("ZED_HEADLESS").is_none());
+    eprintln!("PRIVATE graphics: constructing native platform");
     let platform = Rc::new(LinuxPlatform::new(WindowingModes::all()));
     let finished = Rc::new(Cell::new(false));
     gpui::Application::with_platform(platform.clone())
@@ -139,6 +140,7 @@ fn private_last_window_releases_graphics_and_reopens_on_same_connection() {
         .run({
             let finished = finished.clone();
             move |cx| {
+                eprintln!("PRIVATE graphics: native launch callback");
                 assert_eq!(
                     cx.compositor_name(),
                     if backend == "wayland" {
@@ -151,7 +153,8 @@ fn private_last_window_releases_graphics_and_reopens_on_same_connection() {
                 assert!(slot.borrow().is_none());
                 let mut expected_hint = compositor_hint(&platform);
                 let mut expected_adapter = None;
-                for _ in 0..8 {
+                for iteration in 0..8 {
+                    eprintln!("PRIVATE graphics: cycle {iteration} opening first window");
                     let first = cx
                         .open_window(WindowOptions::default(), |_, cx| cx.new(|_| Blank))
                         .unwrap();
@@ -180,6 +183,7 @@ fn private_last_window_releases_graphics_and_reopens_on_same_connection() {
                         );
                         expected_hint = Some((adapter.0, adapter.1));
                     }
+                    eprintln!("PRIVATE graphics: cycle {iteration} opening second window");
                     let second = cx
                         .open_window(WindowOptions::default(), |_, cx| cx.new(|_| Blank))
                         .unwrap();
@@ -193,6 +197,7 @@ fn private_last_window_releases_graphics_and_reopens_on_same_connection() {
                         "additional windows preserve the next recreation's adapter preference"
                     );
                     assert_eq!(adapter_identity(&slot), adapter);
+                    eprintln!("PRIVATE graphics: cycle {iteration} closing first window");
                     first
                         .update(cx, |_, window, _| window.remove_window())
                         .unwrap();
@@ -200,9 +205,11 @@ fn private_last_window_releases_graphics_and_reopens_on_same_connection() {
                         slot.borrow().is_some(),
                         "the second consumer still owns graphics"
                     );
+                    eprintln!("PRIVATE graphics: cycle {iteration} closing last window");
                     second
                         .update(cx, |_, window, _| window.remove_window())
                         .unwrap();
+                    eprintln!("PRIVATE graphics: cycle {iteration} last window closed");
                     assert!(
                         slot.borrow().is_none(),
                         "last native window must retire the shared graphics owner"
@@ -219,7 +226,15 @@ fn private_last_window_releases_graphics_and_reopens_on_same_connection() {
                 }
                 assert!(cx.windows().is_empty());
                 finished.set(true);
-                cx.quit();
+                // Linux starts calloop after the launch callback; stopping it here
+                // would be reset by run(). Quit once dispatch has actually started.
+                cx.spawn(async move |cx| {
+                    cx.background_executor()
+                        .timer(std::time::Duration::from_millis(1))
+                        .await;
+                    cx.update(|cx| cx.quit());
+                })
+                .detach();
             }
         });
     assert!(finished.get());

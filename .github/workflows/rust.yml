@@ -80,7 +80,11 @@ jobs:
         shell: pwsh
         run: |
           python scripts/build-sharex-helper.py --rid win-x64
+          if ($LASTEXITCODE -ne 0) {exit $LASTEXITCODE}
           New-Item -ItemType Directory -Force target/release-fast/lib | Out-Null
+          if (Test-Path -LiteralPath target/release-fast/lib/screenshots-sxcu) {
+            Remove-Item -LiteralPath target/release-fast/lib/screenshots-sxcu -Recurse -Force
+          }
           Copy-Item -Recurse target/sharex-helper/publish/win-x64 target/release-fast/lib/screenshots-sxcu
       - name: Build actual instrumented application
         shell: pwsh
