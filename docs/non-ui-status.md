@@ -4,13 +4,20 @@ Date: 2026-11-18
 Scope: the user's complete major-feature list, with final GPUI redesign and new
 UI controls excluded. The workstation stays on. The full backlog is **open**.
 
-Current verification checkpoint (2026-11-18): the optimized normal workspace
-passes **1,262 tests, zero failures, 96 ignored, 59 outer test artifacts**.
-Ignored native cases are excluded from that total. Separate owned Linux
-clipboard, credential, X11-window and private IPP checks pass. Both exact Windows
+Last complete optimized workspace checkpoint (2026-11-18, before the eight
+additional Linux controls): **1,262 passed, zero failures, 96 ignored, 59 outer
+test artifacts**. Ignored native cases are excluded from that total. The latest
+targeted optimized core run passes **617 tests, zero failures, 57 ignored**;
+its new Linux source is also checked by56 actual cursor/catalog CLI invocations
+and the exact16/24/30-bit root/window fixtures. This is not a fresh full-workspace
+total. Separate owned Linux clipboard, credential, X11-window and private IPP
+checks pass. Both exact Windows
 memory-DC GDI raster/fault cases have passed; full Winspool/driver acceptance is
-still open. Complete Windows COM/OLE/editor acceptance remains failing/open, and
-the Mac named image/text board fixture has an unresolved native phase failure.
+still open. The actual owned Windows COM/OLE/editor gate now passes108/108 with
+the expanded native stream self-check and four direct deadline/broker regressions.
+Mac private image/text and file-reference checks pass on both ARM and Intel after
+the named-board lifetime fixture and native reader ABI corrections. The separate
+Windows clipboard two-case gate also passes; the real-spool run remains in progress.
 
 Resident private memory is an observed failed gate: earlier actual-main/helper
 runs ended at 232,255,488 and 231,153,664 bytes against the unchanged 52,428,800-byte

@@ -798,8 +798,20 @@ separate earlier eight-case log is retained at
 No general user clipboard, keyring or desktop was used. These ignored native
 cases are separate from the 1,262 regular workspace-test total.
 
-Windows and macOS native runtime qualification remains open. The current Mac
-named image/text board fixture has an actual phase failure under diagnosis;
-source isolation and SDK checking do not turn it into a pass. Windows native
-clipboard execution, physical recipient paste/input, whole-process/GPU memory
-and PLAN reference-hardware budgets remain independent gates.
+The actual Mac ARM and Intel native runs now pass image/alpha/text transfer after
+publisher reap and the private file-reference round trip. The earlier named-board
+failure was a fixture lifetime defect; the Intel file crash exposed an LP64 native
+item-count/index ABI defect. Both corrections retain the original assertions and
+bounded ownership. Proof:
+`target/verification/mac-file-board-crash-integration/revision1/verified-native-summary.json`.
+
+The owned Windows COM/OLE/editor gate separately passes108/108 full predicates,
+the expanded stream ownership/reentry self-check and four direct deadline/broker
+regressions. Both exact owned Windows clipboard cases also pass: real native
+image/text/file formats after helper reap, cancellation/blocked-write/fault
+containment and incompressible4K PNG+DIBV5 preservation. Artifact14446873123
+(run44346137147) was downloaded and verified against SHA256
+`209162adb4fcc681258c6beb2ea00ba356574f92502e6834b97134985d85a9a7`.
+Physical recipient paste/input, general user clipboard, whole-process/GPU memory
+and PLAN reference-hardware budgets remain independent gates; these successful
+owned subsets do not certify them.

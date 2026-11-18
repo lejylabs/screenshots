@@ -1,7 +1,7 @@
 {
   "origin": "Reviewed HELD revision6 native fixture plus root correction from actual applied-source review11",
   "source_patch_sha256": "58d915d226a30f570f815b79458046bb3580c7aeecd41dd52334b63e2fc2d45f",
-  "authoring_status": "108 authored exact cases with owned hosted CI input;95 without. Actual96be run executed108:104passed4failed, privateHGLOBALself-checkPASS. FinalfourR2 expandedstream/reentryself-check and native108 executionpending.",
+  "authoring_status": "Actual owned snapshot863e38c executed all108 cases with allfullpredicatesPASS andexpandedprivatestreamself-checkPASS;fourdirectdeadline/brokerregressionsPASS. Othernativeclipboard,spool,hardwareandresourcegatesarespecificallyscopedelsewhere.",
   "root_compatibility_corrections": [
     "IsWindow(Some(window))",
     "DESKTOP_ACCESS_FLAGS raw bitmask constructor",
@@ -101,6 +101,17 @@
     "prior_failed_case": "same-hwnd-reclaim",
     "prior_stream_selfcheck": "failedreturnedcursorassertion;originalcallercursorpreserved",
     "scope": "AtomicDONE/cancelcutoff;orderlySTOPonoriginalSTAonlywhenidle;typedEOF;MicrosoftGetDatacompletestreamcursor/bytecontract;forced-deathreclaimnotclaimed",
-    "current_native": "pendingactualnew108+selfcheck+targetedunitregressions"
+    "current_native": {
+      "run": 44338173429,
+      "head": "863e38c0808cac1d4282dfb5e9ef27afee524aae",
+      "executed": 108,
+      "full_predicate_passed": 108,
+      "expanded_stream_self_check": "PASSexit0notimeout",
+      "artifact": 14443344299,
+      "artifact_sha256": "377efabfff3e450112ce1352700da86e3df71cda029bc4e6c44f817777399252",
+      "direct_regression_run": 44340411601,
+      "direct_regressions_passed": 4,
+      "scope": "Ownedsoftwaregateonly;forced-killreclaim/physical/hardware/generalclipboard/spool/resourcesnotcertified"
+    }
   }
 }
