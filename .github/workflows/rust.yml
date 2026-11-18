@@ -1,32 +1,54 @@
-name: Owned Windows 2022 read-only AddPrinter API prerequisites
+name: Owned Windows 2022 native ownership controls only
 on:
   push:
     branches: [feat/windows-native-drop-probe]
 permissions:
   contents: read
 jobs:
-  api-prerequisites-readonly:
+  native-preflight-only:
     runs-on: windows-2022
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - uses: ilammy/msvc-dev-cmd@v1
-      - name: Compile same native controller with read-only observation mode
+      - name: Compile exact native boundary with read-only return mode
         shell: pwsh
         run: |
-          New-Item -ItemType Directory target/api-prerequisite-proof -Force | Out-Null
-          & cl.exe /nologo /std:c++20 /EHsc /W4 /O2 /D_WIN32_WINNT=0x0A00 verification/windows-spool-native-fixture/api_prerequisites_controller.cpp /Fe:target/api-prerequisite-proof/controller.exe /Fo:target/api-prerequisite-proof/controller.obj winspool.lib user32.lib gdi32.lib advapi32.lib ole32.lib
+          New-Item -ItemType Directory target/preflight-only-proof -Force | Out-Null
+          & cl.exe /nologo /std:c++20 /EHsc /W4 /O2 /D_WIN32_WINNT=0x0A00 verification/windows-spool-native-fixture/preflight_only_controller.cpp /Fe:target/preflight-only-proof/controller.exe /Fo:target/preflight-only-proof/controller.obj winspool.lib user32.lib gdi32.lib advapi32.lib ole32.lib
           if ($LASTEXITCODE -ne 0) {exit $LASTEXITCODE}
-      - name: Observe actual token privilege and installed processor/datatype without adjustment
+      - name: Execute original preflight ownership controls and cleanup only
         shell: pwsh
-        timeout-minutes: 2
+        timeout-minutes: 3
         run: |
-          & ./target/api-prerequisite-proof/controller.exe prerequisites-only 2>&1 | Tee-Object -FilePath target/api-prerequisite-proof/result.json
+          $Script=(Resolve-Path verification/windows-spool-native-fixture/run.ps1).Path
+          $Fixture=& "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -NoLogo -NoProfile -NonInteractive -STA -File $Script -Stage Prepare | ConvertFrom-Json
           if ($LASTEXITCODE -ne 0) {exit $LASTEXITCODE}
+          $Controller=(Resolve-Path target/preflight-only-proof/controller.exe).Path
+          $ExistenceOnlyOne=(Resolve-Path "$env:SystemRoot\System32\cmd.exe").Path
+          $ExistenceOnlyTwo=(Resolve-Path "$env:SystemRoot\System32\where.exe").Path
+          # These distinct paths are resolved ONLY by Stage Preflight; neither is executed.
+          & $Controller ownership-only $Script $Fixture.directory $ExistenceOnlyOne $ExistenceOnlyTwo 2>&1 | Tee-Object -FilePath target/preflight-only-proof/controller.log
+          $Code=$LASTEXITCODE
+          Get-ChildItem -LiteralPath $Fixture.directory -File | Where-Object {$_.Extension -in @('.log','.txt') -and $_.Length -le 4194304} | ForEach-Object {Copy-Item -LiteralPath $_.FullName -Destination (Join-Path target/preflight-only-proof $_.Name)}
+          [ordered]@{source_commit=$env:GITHUB_SHA;scope='ownership-controls-only';product_executed=$false;controller_exit=$Code} | ConvertTo-Json | Set-Content target/preflight-only-proof/scope.json
+          if ($Code -ne 0) {exit $Code}
+      - name: Read only spooler service and bounded matching crash events
+        if: always()
+        shell: pwsh
+        timeout-minutes: 1
+        run: |
+          $Service=Get-Service -Name Spooler
+          [ordered]@{name=$Service.Name;status=$Service.Status.ToString();read_only=$true;service_changed=$false} | ConvertTo-Json | Set-Content target/preflight-only-proof/spooler-status.json
+          foreach ($Log in @('Application','System')) {
+            $Events=@(Get-WinEvent -FilterHashtable @{LogName=$Log;StartTime=(Get-Date).AddMinutes(-10)} -MaxEvents 64 -ErrorAction SilentlyContinue)
+            $Rows=@($Events | Where-Object {$_.Message -match 'spoolsv[.]exe|PrintIsolationHost|Print Spooler|Spooler'} | Select-Object -First 8 | ForEach-Object {[ordered]@{id=$_.Id;time=$_.TimeCreated.ToUniversalTime().ToString('o');provider=$_.ProviderName;message=$_.Message.Substring(0,[Math]::Min(8192,$_.Message.Length))}})
+            $Rows | ConvertTo-Json -Depth 4 | Set-Content ('target/preflight-only-proof/'+$Log+'-spooler-events.json')
+          }
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: actual-AddPrinter-api-prerequisites-readonly
-          path: target/api-prerequisite-proof
+          name: actual-native-spool-ownership-only
+          path: target/preflight-only-proof
           retention-days: 7
           if-no-files-found: error

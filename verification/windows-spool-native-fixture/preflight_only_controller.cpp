@@ -154,6 +154,54 @@ static DWORD port_command(HANDLE monitor,const wchar_t* command,const std::wstri
     need(XcvDataW(monitor,command,reinterpret_cast<PBYTE>(const_cast<wchar_t*>(name.c_str())),static_cast<DWORD>((name.size()+1)*sizeof(wchar_t)),nullptr,0,&needed,&status)!=0,"Localmon command transport");
     return status;
 }
+// AddPrinter requires the caller's already-assigned SeLoadDriverPrivilege.
+class ScopedLoadDriverPrivilege {
+    Handle token;
+    LUID luid{};
+    DWORD previous{};
+    bool active=false;
+    bool attributes(DWORD& result) const {
+        DWORD needed{};GetTokenInformation(token.value,TokenPrivileges,nullptr,0,&needed);
+        if(needed<FIELD_OFFSET(TOKEN_PRIVILEGES,Privileges)||needed>65536) return false;
+        std::vector<BYTE> bytes(needed);
+        if(!GetTokenInformation(token.value,TokenPrivileges,bytes.data(),needed,&needed)||needed>bytes.size()) return false;
+        const auto* values=reinterpret_cast<const TOKEN_PRIVILEGES*>(bytes.data());
+        if(values->PrivilegeCount>4096||FIELD_OFFSET(TOKEN_PRIVILEGES,Privileges)+static_cast<SIZE_T>(values->PrivilegeCount)*sizeof(LUID_AND_ATTRIBUTES)>needed) return false;
+        bool found=false;
+        for(DWORD index=0;index<values->PrivilegeCount;++index) {
+            const auto& value=values->Privileges[index];
+            if(value.Luid.LowPart==luid.LowPart&&value.Luid.HighPart==luid.HighPart) {if(found)return false;found=true;result=value.Attributes;}
+        }
+        return found;
+    }
+    bool change(DWORD value) const {
+        TOKEN_PRIVILEGES request{};request.PrivilegeCount=1;request.Privileges[0].Luid=luid;request.Privileges[0].Attributes=value;
+        SetLastError(ERROR_SUCCESS);
+        const BOOL changed=AdjustTokenPrivileges(token.value,FALSE,&request,0,nullptr,nullptr);
+        const DWORD error=GetLastError();return changed&&error==ERROR_SUCCESS;
+    }
+public:
+    bool enable() {
+        if(token.value) return false;
+        HANDLE raw{};if(!OpenProcessToken(GetCurrentProcess(),TOKEN_QUERY|TOKEN_ADJUST_PRIVILEGES,&raw))return false;token.value=raw;
+        if(!LookupPrivilegeValueW(nullptr,L"SeLoadDriverPrivilege",&luid)||!attributes(previous)||(previous&SE_PRIVILEGE_REMOVED))return false;
+        active=true; // A failed/partial adjustment must still restore the observed prior state.
+        if(!change(previous|SE_PRIVILEGE_ENABLED))return false;
+        DWORD current{};const bool verified=attributes(current)&&current==(previous|SE_PRIVILEGE_ENABLED);
+        std::fprintf(stderr,"PRIVILEGE before=%lu during=%lu enabled_verified=%s\n",previous,current,verified?"true":"false");return verified;
+    }
+    bool restore() noexcept {
+        if(!active)return true;
+        try {DWORD current{};if(!change(previous)||!attributes(current)||current!=previous)return false;active=false;std::fprintf(stderr,"PRIVILEGE restored=%lu prior=%lu restoration_verified=true\n",current,previous);return true;}
+        catch(...) {return false;}
+    }
+    ~ScopedLoadDriverPrivilege() {
+        if(active&&!restore())retain("own process privilege restoration not verified; acquired authority retained");
+    }
+    ScopedLoadDriverPrivilege()=default;
+    ScopedLoadDriverPrivilege(const ScopedLoadDriverPrivilege&)=delete;
+    ScopedLoadDriverPrivilege& operator=(const ScopedLoadDriverPrivilege&)=delete;
+};
 static bool acquire(Ownership& owner) {
     // Metadata collisions confer no authority, even if identity happens to match.
     if(queue_exists(owner.queue) || port_identity(owner.port)!=Port::Missing) return false;
@@ -165,10 +213,14 @@ static bool acquire(Ownership& owner) {
     need(status==ERROR_SUCCESS,"exclusive native port creation"); owner.port_created=true; owner.uncertain=false;
     const std::wstring sddl=L"O:"+owner.sid+L"G:SYD:P(A;;0x000F000C;;;"+owner.sid+L")(A;;0x000F000C;;;SY)(A;;0x000F000C;;;BA)";
     PSECURITY_DESCRIPTOR security{}; need(ConvertStringSecurityDescriptorToSecurityDescriptorW(sddl.c_str(),SDDL_REVISION_1,&security,nullptr)!=0,"private queue descriptor");
+    std::unique_ptr<void,decltype(&LocalFree)> security_owner(security,&LocalFree);
     PRINTER_INFO_2W info{}; info.pPrinterName=owner.queue.data(); info.pPortName=owner.port.data();
     info.pDriverName=const_cast<wchar_t*>(L"Microsoft XPS Document Writer v4"); info.pPrintProcessor=const_cast<wchar_t*>(L"winprint"); info.pDatatype=const_cast<wchar_t*>(L"RAW");
     info.Attributes=PRINTER_ATTRIBUTE_LOCAL|PRINTER_ATTRIBUTE_QUEUED; info.Priority=1; info.DefaultPriority=1; info.pSecurityDescriptor=security;
-    owner.uncertain=true; owner.printer=AddPrinterW(nullptr,2,reinterpret_cast<BYTE*>(&info)); const DWORD error=GetLastError(); LocalFree(security);
+    ScopedLoadDriverPrivilege privilege;
+    need(privilege.enable(),"assigned own-process SeLoadDriverPrivilege enabled and verified");
+    owner.uncertain=true; owner.printer=AddPrinterW(nullptr,2,reinterpret_cast<BYTE*>(&info)); const DWORD error=GetLastError(); security_owner.reset(); if(!owner.printer)std::fprintf(stderr,"OWNED-ERROR AddPrinterW=%lu\n",error);
+    if(!privilege.restore())retain("own process privilege restoration not verified; acquired authority retained");
     if(!owner.printer && error==ERROR_PRINTER_ALREADY_EXISTS) {owner.uncertain=false;return false;}
     need(owner.printer!=nullptr,"exclusive native queue creation"); owner.queue_created=true; owner.uncertain=false;
     return true;
@@ -277,26 +329,14 @@ static void controls(HANDLE job,Ownership& owner,const std::wstring& application
 int wmain(int argc,wchar_t** argv) {
     try {
         hosted(); need(argc>=2,"fixture mode");
-        if(!wcscmp(argv[1],L"prerequisites-only")) {
-            need(argc==2,"read-only prerequisites arguments");
-            HANDLE raw{};need(OpenProcessToken(GetCurrentProcess(),TOKEN_QUERY,&raw)!=0,"query controller token");Handle token(raw);
-            DWORD needed{};GetTokenInformation(token.value,TokenPrivileges,nullptr,0,&needed);need(needed>=sizeof(TOKEN_PRIVILEGES)&&needed<=65536,"privilege metadata bound");
-            std::vector<BYTE> values(needed);need(GetTokenInformation(token.value,TokenPrivileges,values.data(),needed,&needed)!=0,"read controller privileges");
-            const auto* privileges=reinterpret_cast<const TOKEN_PRIVILEGES*>(values.data());need(privileges->PrivilegeCount<=4096 && FIELD_OFFSET(TOKEN_PRIVILEGES,Privileges)+static_cast<SIZE_T>(privileges->PrivilegeCount)*sizeof(LUID_AND_ATTRIBUTES)<=values.size(),"privilege entry bounds");
-            LUID wanted{};need(LookupPrivilegeValueW(nullptr,L"SeLoadDriverPrivilege",&wanted)!=0,"required privilege identifier");bool present=false,enabled=false;DWORD flags{};
-            for(DWORD index=0;index<privileges->PrivilegeCount;++index) {const auto& value=privileges->Privileges[index];if(value.Luid.LowPart==wanted.LowPart&&value.Luid.HighPart==wanted.HighPart){present=true;flags=value.Attributes;enabled=(flags&SE_PRIVILEGE_ENABLED)!=0;}}
-            DWORD bytes{},count{};EnumPrintProcessorsW(nullptr,const_cast<wchar_t*>(L"Windows x64"),1,nullptr,0,&bytes,&count);need(bytes>=sizeof(PRINTPROCESSOR_INFO_1W)&&bytes<=65536,"processor metadata bound");std::vector<BYTE> processors(bytes);need(EnumPrintProcessorsW(nullptr,const_cast<wchar_t*>(L"Windows x64"),1,processors.data(),bytes,&bytes,&count)!=0 && count<=128 && static_cast<SIZE_T>(count)*sizeof(PRINTPROCESSOR_INFO_1W)<=processors.size(),"read installed print processors");
-            bool winprint=false;const auto* names=reinterpret_cast<const PRINTPROCESSOR_INFO_1W*>(processors.data());for(DWORD index=0;index<count;++index)if(!_wcsicmp(text_in(processors,names[index].pName).c_str(),L"winprint"))winprint=true;
-            bool raw_type=false;DWORD type_count{};if(winprint){bytes=0;EnumPrintProcessorDatatypesW(nullptr,const_cast<wchar_t*>(L"winprint"),1,nullptr,0,&bytes,&type_count);need(bytes>=sizeof(DATATYPES_INFO_1W)&&bytes<=65536,"datatype metadata bound");std::vector<BYTE> types(bytes);need(EnumPrintProcessorDatatypesW(nullptr,const_cast<wchar_t*>(L"winprint"),1,types.data(),bytes,&bytes,&type_count)!=0&&type_count<=128&&static_cast<SIZE_T>(type_count)*sizeof(DATATYPES_INFO_1W)<=types.size(),"read winprint datatypes");const auto* typed=reinterpret_cast<const DATATYPES_INFO_1W*>(types.data());for(DWORD index=0;index<type_count;++index)if(!_wcsicmp(text_in(types,typed[index].pName).c_str(),L"RAW"))raw_type=true;}
-            std::printf("{\"scope\":\"api-prerequisites-readonly\",\"SeLoadDriverPrivilege_present\":%s,\"SeLoadDriverPrivilege_enabled\":%s,\"privilege_attributes\":%lu,\"winprint_present\":%s,\"RAW_supported\":%s,\"processor_count\":%lu,\"datatype_count\":%lu,\"privilege_adjusted\":false,\"resources_acquired\":false,\"product_executed\":false}\n",present?"true":"false",enabled?"true":"false",flags,winprint?"true":"false",raw_type?"true":"false",count,type_count);return 0;
-        }
         if(!wcscmp(argv[1],L"hold")) {BOOL assigned{};need(argc==2 && IsProcessInJob(GetCurrentProcess(),nullptr,&assigned) && assigned,"owned parked control Job");Sleep(INFINITE);return 1;}
         if(!wcscmp(argv[1],L"invoke")) {
             need(argc==9,"invoke app/input/queue/paper/stdout/stderr/mode");BOOL assigned{};need(IsProcessInJob(GetCurrentProcess(),nullptr,&assigned) && assigned,"invoke requires outer owned Job");
             const auto command=quote(argv[2])+L" print-image "+quote(argv[3])+L" --printer "+quote(argv[4])+L" --paper "+quote(argv[5]);
             const DWORD code=launch(argv[2],command,argv[6],argv[7],70000,!wcscmp(argv[8],L"broken-stdout"),nullptr);std::printf("{\"application_exit\":%lu}\n",code);return 0;
         }
-        need(!wcscmp(argv[1],L"supervise") && argc==6,"supervise script/directory/shipping/instrumented");
+        const bool ownership_only=!wcscmp(argv[1],L"ownership-only");
+        need((!wcscmp(argv[1],L"supervise") || ownership_only) && argc==6,"supervise script/directory/shipping/instrumented");
         const std::wstring directory=argv[3],queue=owned_queue(directory),port=directory+L"\\output.xps",original_default=default_printer();Ownership owner(queue,port);
         Handle job(CreateJobObjectW(nullptr,nullptr));need(job.value!=nullptr,"outer owned Job");JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits{};
         limits.BasicLimitInformation.LimitFlags=JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE|JOB_OBJECT_LIMIT_ACTIVE_PROCESS|JOB_OBJECT_LIMIT_PROCESS_MEMORY;limits.BasicLimitInformation.ActiveProcessLimit=8;limits.ProcessMemoryLimit=1024ull*1024*1024;
@@ -309,19 +349,33 @@ int wmain(int argc,wchar_t** argv) {
         const auto suffix=L" -FixtureDirectory "+quote(directory)+L" -ShippingApplication "+quote(argv[4])+L" -InstrumentedApplication "+quote(argv[5])+L" -Controller "+quote(argv[0])+L" -OwnerPid "+std::to_wstring(GetCurrentProcessId());
         DWORD exit=99;bool ran=false,checks=false;
         try {
+            std::fprintf(stderr,"OWNED-PHASE preflight-start\n");
             need(launch(shell,prefix+L" -Stage Preflight"+suffix,directory+L"\\preflight.stdout.log",directory+L"\\preflight.stderr.log",60000,false,job.value,desktop_path)==0,"read-only preflight/prerequisite/collision refusal");
             need(wait_empty(job.value),"preflight family reaped before native acquisition");
+            std::fprintf(stderr,"OWNED-PHASE preflight-complete-acquire-start\n");
             need(acquire(owner),"exclusive native ownership acquisition refused collision");need(queue_identity(owner) && port_identity(port)==Port::Local,"acquired private queue and Local Port identity");
+            std::fprintf(stderr,"OWNED-PHASE acquire-complete-controls-start\n");
             controls(job.value,owner,argv[0],desktop_path);checks=true;
-            owner.pixels_authorized=true;exit=launch(shell,prefix+L" -Stage Execute"+suffix,directory+L"\\run.stdout.log",directory+L"\\run.stderr.log",300000,false,job.value,desktop_path);ran=true;
+            std::fprintf(stderr,"OWNED-PHASE controls-complete\n");
+            if(!ownership_only) {owner.pixels_authorized=true;exit=launch(shell,prefix+L" -Stage Execute"+suffix,directory+L"\\run.stdout.log",directory+L"\\run.stderr.log",300000,false,job.value,desktop_path);ran=true;}
+            else exit=0;
         } catch(const std::exception& error) {std::fprintf(stderr,"supervised execution: %s\n",error.what());}
         TerminateJobObject(job.value,98);
         if(!wait_empty(job.value)) retain("family has not actually reaped; no spool/port/pixel cleanup attempted");
+        std::fprintf(stderr,"OWNED-PHASE family-empty-cleanup-start\n");
         Cleanup result=Cleanup::Failed;
         try {result=guarded_cleanup(job.value,owner);} catch(...) {std::fprintf(stderr,"Owned cleanup raised; acquired authority retained\n");}
         if(result==Cleanup::Pending) retain("fresh family-empty/uncertain-acquisition gate; no destructive cleanup");
         if(result!=Cleanup::Done) retain("owned spool/port/pixel cleanup incomplete");
         bool same_default=false;try {same_default=default_printer()==original_default;} catch(...) {}
+        std::fprintf(stderr,"OWNED-PHASE cleanup-complete\n");
+        if(ownership_only) {
+            need(!owner.pixels_authorized,"ownership-only granted no pixel authority");
+            CloseDesktop(desktop);CloseWindowStation(station);
+            const bool success=exit==0 && checks && same_default;
+            std::printf("{\"scope\":\"ownership-controls-only\",\"product_executed\":false,\"pixel_output_tested\":false,\"outer_job_empty\":true,\"owned_spool_cleanup\":true,\"default_unchanged\":%s,\"ownership_controls_passed\":%s,\"passed\":%s}\n",same_default?"true":"false",checks?"true":"false",success?"true":"false");
+            return success?0:1;
+        }
         CloseDesktop(desktop);CloseWindowStation(station);const bool passed=ran && exit==0 && checks && same_default;
         std::printf("{\"inner_exit\":%lu,\"outer_job_empty\":true,\"owned_spool_cleanup\":true,\"default_unchanged\":%s,\"ownership_controls_passed\":%s,\"collision_resources_untouched\":%s,\"pending_family_no_cleanup\":%s,\"passed\":%s}\n",exit,same_default?"true":"false",checks?"true":"false",checks?"true":"false",checks?"true":"false",passed?"true":"false");return passed?0:1;
     } catch(const std::exception& error) {std::fprintf(stderr,"owned print fixture: %s\n",error.what());return 1;}
