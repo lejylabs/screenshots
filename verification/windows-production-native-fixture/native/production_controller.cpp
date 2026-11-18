@@ -31,7 +31,7 @@ int wmain(int argc, wchar_t** argv) {
     HANDLE error = CreateFileW(argv[4], GENERIC_WRITE, FILE_SHARE_READ, &security, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr); require(error != INVALID_HANDLE_VALUE, "fresh owned error log");
     HANDLE null_input = CreateFileW(L"NUL", GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, &security, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr); require(null_input != INVALID_HANDLE_VALUE, "owned null stdin");
     HANDLE job = CreateJobObjectW(nullptr, nullptr); require(job != nullptr, "outer owned Job");
-    JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits{}; limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE | JOB_OBJECT_LIMIT_ACTIVE_PROCESS | JOB_OBJECT_LIMIT_PROCESS_MEMORY; limits.BasicLimitInformation.ActiveProcessLimit = 3; limits.ProcessMemoryLimit = 1024ull * 1024 * 1024;
+    JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits{}; limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE | JOB_OBJECT_LIMIT_ACTIVE_PROCESS | JOB_OBJECT_LIMIT_PROCESS_MEMORY; limits.BasicLimitInformation.ActiveProcessLimit = selected==L"gpui-url"?4:3; limits.ProcessMemoryLimit = 1024ull * 1024 * 1024;
     require(SetInformationJobObject(job, JobObjectExtendedLimitInformation, &limits, sizeof(limits)), "outer Job limits");
     HANDLE completion = CreateIoCompletionPort(INVALID_HANDLE_VALUE, nullptr, 0, 1); require(completion != nullptr, "outer Job completion port");
     JOBOBJECT_ASSOCIATE_COMPLETION_PORT association{job, completion}; require(SetInformationJobObject(job, JobObjectAssociateCompletionPortInformation, &association, sizeof(association)), "outer Job completion binding");

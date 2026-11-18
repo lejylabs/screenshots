@@ -875,6 +875,17 @@ fn run_one(shared: &Arc<Shared>) -> Result<()> {
     child.reap();
     drop(rx);
     let joined = reader.join();
+    #[cfg(screenshots_native_drop_acceptance)]
+    {
+        let mut code = 259u32;
+        let queried =
+            unsafe { GetExitCodeProcess(event::raw(&child.0.process), &mut code) }.is_ok();
+        let pid = unsafe { GetProcessId(event::raw(&child.0.process)) };
+        let verified = queried && pid > 0 && code != 259;
+        println!(
+            "{{\"actual_receiver_exit\":true,\"pid\":{pid},\"exit_code\":{code},\"verified\":{verified}}}"
+        );
+    }
     ensure!(joined.is_ok(), "Native pipe reader failed");
     #[cfg(screenshots_native_drop_acceptance)]
     super::native_drop_acceptance::reader_reaped();
