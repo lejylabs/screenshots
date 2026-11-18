@@ -2,8 +2,9 @@
 
 Author: NewtTheWolf
 Date: 2026-11-15
-Status: implemented; focused compatibility/admission, release and packaging
-checks passed. Full regression results are recorded in the delivery log.
+Status: the original saved-PNG admission is implemented. The metadata-memory
+continuation described below is staged for review and has not been compiled,
+executed or measured. Earlier passing evidence applies to the original path.
 
 ## Problem and scope
 
@@ -97,12 +98,45 @@ interruptible. Do not add retry loops or claim a hard native I/O deadline.
 
 ## Decoder and pixel admission
 
-Construct `image::codecs::png::PngDecoder::with_limits(buffered_reader, limits)`
-with `limits.max_alloc = Some(MAX_CAPTURE_BYTES)` before any header parsing.
-Keep other image limits at their existing defaults: no new arbitrary dimension
-limit or PNG format restriction. The pinned wrapper uses `png::Limits` during
-header/metadata parsing and enables its existing EXPAND transformation. Keep
-that behavior; do not switch to `PngDecoder::new` then call `set_limits`.
+Before decoder construction, the fixed-size streaming metadata reader reads and
+replays the original 33-byte signature/IHDR. It checks positive dimensions,
+RGBA admission and a necessary native-raster bound before any ancillary payload
+can reach the codec. The codec still validates IHDR CRC and all actual PNG
+syntax; this reader does not replace its validation. The later native check
+still covers tRNS expansion. No file reopen, rewind or whole-file pass is added.
+
+Construct `image::codecs::png::PngDecoder::with_limits(guarded_reader, limits)`
+with parser allocation allowance `min(256 MiB, maximum_expanded_row + 1 + 8 MiB)`.
+The maximum expanded row includes possible tRNS channels and preserved 16-bit
+samples. This is separate from the unchanged 256 MiB native/RGBA raster admission:
+the pinned png allocation limit charges metadata and transformed row storage,
+not the full caller-owned raster. A fixed 8 MiB parser limit would wrongly reject
+wide admitted rasters. Other image limits and EXPAND behavior stay unchanged.
+
+Before exposing each subsequent original chunk header, the reader admits the
+cumulative declared payload bytes of tEXt/zTXt/iTXt/eXIf/iCCP at at most 1 MiB
+and their count at at most 4096. Charge before payload exposure, and latch refusal.
+The count also bounds retained record/vector overhead for thousands of tiny text
+chunks. The byte limit bounds raw chunk capacity, EXIF copies, compressed text
+and Latin-1 to UTF-8 growth. The parser allowance additionally bounds ICC
+inflation. Successful ICC inflation and the transformed row share this parser
+allowance. A formerly accepted PNG can therefore be refused even when its
+compressed ICC payload fits the 1 MiB encoded metadata cap: a 3,000,000×1 RGBA8
+row plus a successfully inflated 16 MiB profile exceeds the combined allowance.
+This is an explicit additional compatibility limit, covered against the former
+256 MiB loader. png 0.18.1 already ignores failed ICC parsing, including inflation
+allocation failure, so a still larger profile may instead be ignored and decode.
+Acceptance is not monotonic in expanded ICC size. Saved-PNG pixels never applied
+ICC; pixel equivalence is promised only when the bounded decoder admits the file.
+Compressed zTXt/iTXt is not eagerly expanded by this path.
+
+All encoded bytes are forwarded unchanged, including metadata, chunk lengths,
+CRC and ordering. Unknown ancillary payloads and IDAT are streamed without a new
+payload cap because the pinned decoder does not retain those whole chunks.
+The existing 272 MiB whole-file admission remains unchanged. The adapter uses
+one 33-byte replay array and scalar counters, reusing the existing 64 KiB input
+buffer. The pinned still decoder does not seek; the adapter supports position
+queries and refuses other seeks so a dependency change cannot reset accounting.
 
 After construction and before `DynamicImage::from_decoder`:
 
@@ -139,8 +173,10 @@ filename. Keep EXIF orientation **ignored** on this saved-image path; the direct
 editor path's orientation handling remains distinct. APNG continues to return
 the decoder's default still image from IDAT, including when that default is not
 one of the animation frames. Do not enumerate frames, allocate a frame collection,
-or promise complete APNG validation. Existing decoder behavior for trailing data,
-ancillary chunks, CRCs and metadata remains unchanged within the new byte cap.
+or promise complete APNG validation. Existing decoder behavior for trailing data, CRCs, critical ordering and
+metadata parsing remains unchanged within the explicit metadata limits. An
+oversized retained-metadata header that the codec visits fails admission even
+if that still decoder would not read its payload. No EOF validation is added.
 Do not force an EOF scan or call the animation/metadata APIs just for admission.
 
 Oversized encoded files and oversized native/RGBA decoded representations fail
@@ -153,8 +189,8 @@ failure follows the existing page/revision guard. Pixel export/upload wrappers
 must not publish or upload on load failure. Their existing prior-success and
 partial-result semantics remain unchanged.
 
-Compatibility is intentionally reduced only for inputs outside the new limits
-or nonregular sources. An old PNG with more than 272 MiB of metadata/trailing
+Compatibility is intentionally reduced for nonregular sources and inputs
+outside the encoded, pixel or retained-metadata limits. An old PNG with more than 272 MiB of metadata/trailing
 data is now rejected even if its pixels are small. A 16-bit PNG must fit both
 its native decoded representation and RGBA8 output. Do not claim every possible
 PNG written by an unlimited external producer is accepted, or reduce the limit
@@ -169,13 +205,21 @@ native raster and the RGBA8 result, each independently at most 256 MiB. Thus up
 to 512 MiB of pixel representations can coexist during conversion, in addition
 to decoder/metadata scratch. They are released when their consumers finish.
 
-The pinned PNG limit is a library allocation control, not a measured strict
-aggregate process-memory ceiling. It does not include every allocator capacity,
-buffer clone, row/unfilter buffer or external caller representation; ancillary
-metadata handling also has library-specific accounting. Retaining the existing
-256 MiB setting does not establish that all PNG scratch stays inside PLAN's
-32 MiB allowance. Record that residual memory acceptance gap; do not silently
-relax the active-image budget or present this admission fix as its closure.
+The earlier unconditional 256 MiB parser setting allowed a valid 1x1 image
+with 64 MiB ASCII text to retain roughly 128 MiB of raw/text metadata before
+pixel admission. The staged reader rejects that header before exposing payload,
+and scales ICC inflation allowance to the admitted row. Its fixed ancillary
+cost model fits below 32 MiB for tiny images: at most 1 MiB retained encoded
+payload, bounded raw/copy/UTF-8 capacities and 4096 records, plus an ICC vector
+whose capacity may approach twice the row-plus-8-MiB parser allowance. The
+provided allocator probe must verify actual requested-live heap peaks; no
+measurement has been run for this continuation.
+
+This is not a measured aggregate process-memory ceiling. In particular, wide
+rows, unfilter growth/reallocations, native-to-RGBA conversion and caller-owned
+representations must still be measured against PLAN's pixel-scaled budget.
+The pinned PNG limit alone does not establish all row scratch or process/RSS
+acceptance. Keep that gate open and do not relax the active-image budget.
 
 No worker, thread, runtime, queue, cache, timer or GPU allocation is introduced.
 All current callers continue to run loading off the foreground executor.
@@ -190,7 +234,9 @@ Modify `crates/app-core/src/clipboard.rs` for the private bound/opener/decoder
 helper and public loader implementation. Reuse `EditorFile`; add focused tests
 in `crates/app-core/src/saved_png_tests.rs`, included as a private test child of
 the clipboard module so it can exercise the private helpers.
-No dependency, Cargo feature, production UI or CLI schema change is required.
+Add the opt-in isolated Rust allocator probe at
+`crates/app-core/tests/saved_png_metadata_alloc.rs`. No dependency, Cargo feature,
+production UI or CLI schema change is required.
 Call sites keep their signatures. Update the saved-image/thumbnail descriptions
 in PLAN/README and the delivery/status records after verified behavior; link
 this contract from `docs/sanitized-export.md` without rewriting the separate
@@ -254,3 +300,40 @@ Three isolated executions of the complete comparison fixture observed median
 peak RSS 312,536 KiB, including encoding and overlapping old/new decoder results;
 that number must not be presented as the production loader's peak memory.
 Exact commands and raw samples are in `target/verification/saved-png-performance.json`.
+
+## Staged metadata continuation verification
+
+All new production logic and checks are Rust. The frozen source and contract are
+under `target/verification/saved-png-metadata-held`; only formatting was run.
+Fresh review, optimized fixtures, allocator/timing measurements, Clippy, Windows
+compilation and the affected regressions remain unrun for this continuation.
+
+Required added fixtures cover 64 MiB retained-metadata headers before payload
+reads, the cumulative 1 MiB and 4096-record boundaries, Latin-1 expansion,
+compressed 24 MiB ICC/text, malformed CRC/critical ordering/truncation parity,
+sub-byte grayscale/indexed/tRNS and 16-bit alpha, row-scaled budgets, refusal
+latching, and opt-in wide/tall rasters exceeding fixed scratch. The isolated
+allocator fixture streams a valid 64 MiB text file without a whole-file fixture
+allocation, compares the former/current loaders and checks exact ICC pixels.
+It counts requested live Rust heap bytes, excluding allocator retention,
+reallocation overlap, non-Rust/native allocations, RSS and GPU memory.
+
+## Integrated metadata guard verification (2026-11-18)
+
+Two independent source reviews of the corrected revision2 packet are clean.
+The optimized saved-PNG suite passes19 regular cases; the separate allocator,
+wide/tall raster and interleaved4K cost probes also pass. Project-policy Clippy
+and workspace formatting pass; these are not claims of zero existing warnings.
+
+The isolated synthetic64MiB tEXt case measures134,311,994 requested live Rust
+heap bytes with the former decoder versus85,487 with the new admission refusal.
+For24MiB expanded ICC, peaks are34,837,752 and8,885,496 bytes with identical
+small-image pixels. These are allocator-requested bytes, not process RSS or GPU
+memory. The wide/tall probe admits3,000,000×1 and1×3,000,000 rasters.
+
+Ten interleaved optimized4K samples after two warmups show median3.62→3.43ms
+for RGBA8 and13.24→12.21ms for RGBA16; observed p95 is4.39→4.47ms and
+13.69→13.02ms respectively. These synthetic development observations establish
+no reference-hardware or whole-app budget. The standalone process-memory, native
+codec/clipboard and full resource gates remain separate. Exact commands, source
+and logs are retained under `target/verification/saved-png-metadata-integration/`.

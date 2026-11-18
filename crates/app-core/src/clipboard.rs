@@ -672,6 +672,164 @@ fn open_saved_png_after_preflight(path: &std::path::Path) -> Result<EditorFile> 
     })
 }
 
+// image 0.25.10 / png 0.18.1 retain text and EXIF before pixel admission.
+// Bound those allocations without snapshotting or rewriting the encoded PNG.
+const MAX_SAVED_PNG_METADATA_BYTES: u64 = 1024 * 1024;
+const MAX_SAVED_PNG_METADATA_CHUNKS: u32 = 4096;
+const SAVED_PNG_FIXED_SCRATCH_BYTES: u64 = 8 * 1024 * 1024;
+
+struct SavedPngMetadataReader<R> {
+    inner: R,
+    header: [u8; 33],
+    header_position: usize,
+    header_length: usize,
+    remaining: u64,
+    metadata_bytes: u64,
+    metadata_chunks: u32,
+    position: u64,
+    failed: bool,
+}
+
+impl<R: std::io::BufRead> SavedPngMetadataReader<R> {
+    fn new(mut inner: R, max_decoded_bytes: u64) -> Result<(Self, u64)> {
+        let mut header = [0; 33];
+        inner.read_exact(&mut header)?;
+        anyhow::ensure!(
+            &header[..8] == b"\x89PNG\r\n\x1a\n"
+                && header[8..12] == 13u32.to_be_bytes()
+                && &header[12..16] == b"IHDR",
+            "Invalid saved PNG header"
+        );
+        let width = u32::from_be_bytes(header[16..20].try_into()?);
+        let height = u32::from_be_bytes(header[20..24].try_into()?);
+        crate::validate_image_size(width, height)
+            .context("Saved PNG dimensions exceed the decoded image limit")?;
+        anyhow::ensure!(
+            u64::from(width) * u64::from(height) * 4 <= max_decoded_bytes,
+            "Saved PNG RGBA pixels exceed the decoded image limit"
+        );
+        let (channels, expanded_channels) = match header[25] {
+            0 => (1, 2),
+            2 => (3, 4),
+            3 => (1, 4),
+            4 => (2, 2),
+            6 => (4, 4),
+            _ => anyhow::bail!("Invalid saved PNG color type"),
+        };
+        let depth = header[24];
+        anyhow::ensure!(
+            matches!(
+                (header[25], depth),
+                (0, 1 | 2 | 4 | 8 | 16) | (3, 1 | 2 | 4 | 8) | (2 | 4 | 6, 8 | 16)
+            ),
+            "Invalid saved PNG bit depth"
+        );
+        // EXPAND preserves 16-bit samples. tRNS may increase the channel count;
+        // retain the decoder's final native-byte check after read_info as well.
+        let sample_bytes = if depth == 16 { 2 } else { 1 };
+        let native_bytes = u64::from(width) * u64::from(height) * channels * sample_bytes;
+        anyhow::ensure!(
+            native_bytes <= max_decoded_bytes,
+            "Saved PNG native pixels exceed the decoded image limit"
+        );
+        let max_row_bytes = u64::from(width) * expanded_channels * sample_bytes + 1;
+        Ok((
+            Self {
+                inner,
+                header,
+                header_position: 0,
+                header_length: 33,
+                remaining: 0,
+                metadata_bytes: 0,
+                metadata_chunks: 0,
+                position: 0,
+                failed: false,
+            },
+            (max_row_bytes + SAVED_PNG_FIXED_SCRATCH_BYTES).min(crate::MAX_CAPTURE_BYTES),
+        ))
+    }
+}
+
+impl<R: std::io::BufRead> std::io::BufRead for SavedPngMetadataReader<R> {
+    fn fill_buf(&mut self) -> std::io::Result<&[u8]> {
+        if self.failed {
+            return Err(std::io::Error::other("Saved PNG metadata admission failed"));
+        }
+        if self.header_position == self.header_length && self.remaining == 0 {
+            if self.inner.fill_buf()?.is_empty() {
+                return Ok(&[]);
+            }
+            self.inner.read_exact(&mut self.header[..8])?;
+            let length = u32::from_be_bytes(self.header[..4].try_into().unwrap());
+            if matches!(
+                &self.header[4..8],
+                b"tEXt" | b"zTXt" | b"iTXt" | b"eXIf" | b"iCCP"
+            ) {
+                self.metadata_bytes += u64::from(length);
+                self.metadata_chunks += 1;
+                if self.metadata_bytes > MAX_SAVED_PNG_METADATA_BYTES
+                    || self.metadata_chunks > MAX_SAVED_PNG_METADATA_CHUNKS
+                {
+                    self.failed = true;
+                    return Err(std::io::Error::other(
+                        "Saved PNG metadata exceeds its 1 MiB / 4096-chunk limit",
+                    ));
+                }
+            }
+            self.remaining = u64::from(length) + 4;
+            self.header_position = 0;
+            self.header_length = 8;
+        }
+        if self.header_position < self.header_length {
+            return Ok(&self.header[self.header_position..self.header_length]);
+        }
+        let available = self.inner.fill_buf()?;
+        let maximum = usize::try_from(self.remaining).unwrap_or(usize::MAX);
+        Ok(&available[..available.len().min(maximum)])
+    }
+
+    fn consume(&mut self, amount: usize) {
+        if self.header_position < self.header_length {
+            let count = amount.min(self.header_length - self.header_position);
+            self.header_position += count;
+            self.position += count as u64;
+        } else {
+            let count = (amount as u64).min(self.remaining) as usize;
+            self.inner.consume(count);
+            self.remaining -= count as u64;
+            self.position += count as u64;
+        }
+    }
+}
+
+impl<R: std::io::BufRead> std::io::Read for SavedPngMetadataReader<R> {
+    fn read(&mut self, output: &mut [u8]) -> std::io::Result<usize> {
+        use std::io::BufRead;
+        if output.is_empty() {
+            return Ok(0);
+        }
+        let available = self.fill_buf()?;
+        let count = available.len().min(output.len());
+        output[..count].copy_from_slice(&available[..count]);
+        self.consume(count);
+        Ok(count)
+    }
+}
+
+impl<R> std::io::Seek for SavedPngMetadataReader<R> {
+    fn seek(&mut self, from: std::io::SeekFrom) -> std::io::Result<u64> {
+        // The pinned still-PNG decoder never seeks. Refuse rewinds that would
+        // reset metadata accounting if a future codec starts seeking.
+        match from {
+            std::io::SeekFrom::Current(0) => Ok(self.position),
+            _ => Err(std::io::Error::new(
+                std::io::ErrorKind::Unsupported,
+                "Saved PNG decoder unexpectedly requested a seek",
+            )),
+        }
+    }
+}
+
 pub(crate) fn decode_saved_png(
     reader: impl std::io::BufRead + std::io::Seek,
     max_decoded_bytes: u64,
@@ -681,8 +839,9 @@ pub(crate) fn decode_saved_png(
         max_decoded_bytes > 0 && max_decoded_bytes <= crate::MAX_CAPTURE_BYTES,
         "Invalid saved PNG decoded image budget"
     );
+    let (reader, scratch_bytes) = SavedPngMetadataReader::new(reader, max_decoded_bytes)?;
     let mut limits = image::Limits::default();
-    limits.max_alloc = Some(crate::MAX_CAPTURE_BYTES);
+    limits.max_alloc = Some(scratch_bytes);
     let decoder = image::codecs::png::PngDecoder::with_limits(reader, limits)?;
     let (width, height) = decoder.dimensions();
     crate::validate_image_size(width, height)
