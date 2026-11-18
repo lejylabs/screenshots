@@ -1,7 +1,5 @@
 //! In-memory clipboard images. Keep the clipboard alive for clipboard ownership on Linux.
 
-use std::borrow::Cow;
-
 use anyhow::{Context, Result};
 
 const MAX_EDITOR_FILE_BYTES: u64 = 32 * 1024 * 1024;
@@ -886,11 +884,20 @@ pub fn load_png_thumbnail(
 }
 
 /// Drop requests retirement without waiting; the installed owner retains cleanup responsibility.
-#[cfg(unix)]
 #[doc(hidden)]
 pub trait FileClipboardOwner: Send {
     /// Explicit worker-side replacement may wait for bounded completion; Drop itself never waits.
-    fn retire(self: Box<Self>) -> Result<()>;
+    fn retire(self: Box<Self>) -> Result<()> {
+        self.retire_with_cancel(
+            std::time::Instant::now() + std::time::Duration::from_secs(5),
+            &|| Ok(()),
+        )
+    }
+    fn retire_with_cancel(
+        self: Box<Self>,
+        deadline: std::time::Instant,
+        check: &crate::NativeCaptureCheck<'_>,
+    ) -> Result<()>;
 }
 #[cfg(unix)]
 type FileClipboardSpawner =
@@ -913,6 +920,28 @@ pub fn install_file_clipboard_spawner(
     FILE_CLIPBOARD_SPAWNER
         .set(FileClipboardService { spawn, quiescent })
         .map_err(|_| anyhow::anyhow!("File clipboard owner is already installed"))
+}
+/// In-memory output passed only to an operation-owned native helper.
+#[doc(hidden)]
+pub enum NativeClipboardOutput<'a> {
+    Image(std::sync::Arc<image::RgbaImage>),
+    Text(&'a str),
+    #[cfg(target_os = "windows")]
+    File(&'a std::path::Path),
+}
+pub const MAX_CLIPBOARD_TEXT_BYTES: usize = 1024 * 1024;
+type NativeClipboardSpawner = fn(
+    NativeClipboardOutput<'_>,
+    &crate::NativeCaptureCheck<'_>,
+) -> Result<Box<dyn FileClipboardOwner>>;
+static NATIVE_CLIPBOARD_SPAWNER: std::sync::OnceLock<NativeClipboardSpawner> =
+    std::sync::OnceLock::new();
+/// Installs a function pointer only; the first explicit output starts native work.
+#[doc(hidden)]
+pub fn install_native_clipboard_spawner(spawn: NativeClipboardSpawner) -> Result<()> {
+    NATIVE_CLIPBOARD_SPAWNER
+        .set(spawn)
+        .map_err(|_| anyhow::anyhow!("Native clipboard output is already installed"))
 }
 /// Pure wire admission. Filesystem checks belong to the isolated native owner.
 #[doc(hidden)]
@@ -964,21 +993,30 @@ pub fn prepare_file_clipboard_uri(path: &std::path::Path) -> Result<String> {
 
 #[derive(Default)]
 pub struct ImageClipboard {
-    clipboard: Option<arboard::Clipboard>,
-    #[cfg(unix)]
     file_owner: Option<Box<dyn FileClipboardOwner>>,
 }
 
 impl ImageClipboard {
     /// Explicit worker-side finish/replacement; Drop requests the same cleanup without waiting.
-    #[cfg(unix)]
     #[doc(hidden)]
     pub fn retire_file_owner(&mut self) -> Result<()> {
+        self.retire_file_owner_with_cancel(
+            std::time::Instant::now() + std::time::Duration::from_secs(5),
+            &|| Ok(()),
+        )
+    }
+    fn retire_file_owner_with_cancel(
+        &mut self,
+        deadline: std::time::Instant,
+        check: &crate::NativeCaptureCheck<'_>,
+    ) -> Result<()> {
+        check()?;
         if let Some(owner) = self.file_owner.take() {
             owner
-                .retire()
-                .context("File clipboard owner cleanup is pending")?;
+                .retire_with_cancel(deadline, check)
+                .context("Native clipboard owner cleanup is pending")?;
         }
+        check()?;
         Ok(())
     }
     pub fn copy_file(&mut self, path: &std::path::Path) -> Result<()> {
@@ -989,12 +1027,22 @@ impl ImageClipboard {
         path: &std::path::Path,
         check: &crate::NativeCaptureCheck<'_>,
     ) -> Result<()> {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let bounded_check = || {
+            check()?;
+            if std::time::Instant::now() >= deadline {
+                Err(crate::CaptureError::NativeTimeout)
+            } else {
+                Ok(())
+            }
+        };
+        let check: &crate::NativeCaptureCheck<'_> = &bounded_check;
         check()?;
         validate_file_clipboard_path(path)?;
         #[cfg(unix)]
         {
-            // A retired native owner cannot publish into a later copy operation.
-            self.retire_file_owner()?;
+            // Retirement and publication consume the same operation deadline.
+            self.retire_file_owner_with_cancel(deadline, check)?;
             let spawn = FILE_CLIPBOARD_SPAWNER
                 .get()
                 .context("Native file clipboard owner is not installed")?;
@@ -1003,73 +1051,122 @@ impl ImageClipboard {
             Ok(())
         }
         #[cfg(target_os = "windows")]
-        {
-            anyhow::ensure!(
-                std::fs::metadata(path)
-                    .context("Saved file is unavailable")?
-                    .is_file(),
-                "Saved path is not a file"
-            );
-            check()?;
-            if self.clipboard.is_none() {
-                self.clipboard = Some(arboard::Clipboard::new().context("open clipboard")?);
-            }
-            self.clipboard
-                .as_mut()
-                .unwrap()
-                .set()
-                .file_list(&[path])
-                .context("copy file to clipboard; native contents may already have changed")
-        }
+        self.publish_native_until(NativeClipboardOutput::File(path), deadline, check)
     }
 
-    #[cfg(unix)]
-    fn finish_file_output_before_publication(&mut self) -> Result<()> {
-        self.retire_file_owner()?;
+    fn publish_native(
+        &mut self,
+        output: NativeClipboardOutput<'_>,
+        check: &crate::NativeCaptureCheck<'_>,
+    ) -> Result<()> {
+        self.publish_native_until(
+            output,
+            std::time::Instant::now() + std::time::Duration::from_secs(5),
+            check,
+        )
+    }
+    fn publish_native_until(
+        &mut self,
+        output: NativeClipboardOutput<'_>,
+        deadline: std::time::Instant,
+        check: &crate::NativeCaptureCheck<'_>,
+    ) -> Result<()> {
+        let bounded_check = || {
+            check()?;
+            if std::time::Instant::now() >= deadline {
+                Err(crate::CaptureError::NativeTimeout)
+            } else {
+                Ok(())
+            }
+        };
+        let check: &crate::NativeCaptureCheck<'_> = &bounded_check;
+        check()?;
+        self.retire_file_owner_with_cancel(deadline, check)?;
+        #[cfg(unix)]
         if let Some(service) = FILE_CLIPBOARD_SPAWNER.get() {
             (service.quiescent)()?;
         }
+        let spawn = NATIVE_CLIPBOARD_SPAWNER
+            .get()
+            .context("Operation-owned native clipboard output is not installed")?;
+        check()?;
+        self.file_owner = Some(spawn(output, check)?);
         Ok(())
     }
 
-    /// Explicit text output; retain ownership using the same native clipboard instance.
+    /// Explicit text output. A failure can follow a native content change; never retry implicitly.
     pub fn copy_text(&mut self, text: String) -> Result<()> {
-        #[cfg(unix)]
-        self.finish_file_output_before_publication()?;
-        if self.clipboard.is_none() {
-            self.clipboard = Some(arboard::Clipboard::new().context("open clipboard")?);
-        }
-        self.clipboard
-            .as_mut()
-            .unwrap()
-            .set_text(text)
-            .context("copy text to clipboard")
+        self.copy_text_with_cancel(&text, &|| Ok(()))
+    }
+    pub fn copy_text_with_cancel(
+        &mut self,
+        text: &str,
+        check: &crate::NativeCaptureCheck<'_>,
+    ) -> Result<()> {
+        check()?;
+        anyhow::ensure!(
+            text.len() <= MAX_CLIPBOARD_TEXT_BYTES,
+            "Clipboard text exceeds the 1 MiB output limit"
+        );
+        self.publish_native(NativeClipboardOutput::Text(text), check)
     }
 
     /// Explicit recopy only; the live capture/selection pipeline stays in memory.
     pub fn copy_saved_image(&mut self, path: &std::path::Path) -> Result<(u32, u32)> {
-        self.copy_image(&crate::load_saved_image(path, || false)?)
+        self.copy_shared_image(std::sync::Arc::new(crate::load_saved_image(path, || {
+            false
+        })?))
     }
 
     pub fn copy_saved_png(&mut self, path: &std::path::Path) -> Result<(u32, u32)> {
-        self.copy_image(&load_saved_png(path)?)
+        self.copy_shared_image(std::sync::Arc::new(load_saved_png(path)?))
     }
 
     pub fn copy_image(&mut self, image: &image::RgbaImage) -> Result<(u32, u32)> {
-        #[cfg(unix)]
-        self.finish_file_output_before_publication()?;
+        self.copy_image_with_cancel(image, &|| Ok(()))
+    }
+    /// Compatibility path: adds one bounded RGBA copy. Internal capture paths share their Arc.
+    pub fn copy_image_with_cancel(
+        &mut self,
+        image: &image::RgbaImage,
+        check: &crate::NativeCaptureCheck<'_>,
+    ) -> Result<(u32, u32)> {
+        check()?;
         let (width, height) = image.dimensions();
-        if self.clipboard.is_none() {
-            self.clipboard = Some(arboard::Clipboard::new().context("open clipboard")?);
+        crate::validate_image_size(width, height)?;
+        anyhow::ensure!(
+            u64::from(width) * u64::from(height) * 4 == image.as_raw().len() as u64,
+            "Clipboard pixels do not match their dimensions"
+        );
+        let mut pixels = Vec::new();
+        pixels.try_reserve_exact(image.as_raw().len())?;
+        for chunk in image.as_raw().chunks(64 * 1024) {
+            check()?;
+            pixels.extend_from_slice(chunk);
         }
-        let clipboard = self.clipboard.as_mut().unwrap();
-        clipboard
-            .set_image(arboard::ImageData {
-                width: width as usize,
-                height: height as usize,
-                bytes: Cow::Borrowed(image.as_raw()),
-            })
-            .context("copy image to clipboard")?;
+        let image = image::RgbaImage::from_raw(width, height, pixels)
+            .context("Invalid clipboard raster")?;
+        self.copy_shared_image_with_cancel(std::sync::Arc::new(image), check)
+    }
+    pub fn copy_shared_image(
+        &mut self,
+        image: std::sync::Arc<image::RgbaImage>,
+    ) -> Result<(u32, u32)> {
+        self.copy_shared_image_with_cancel(image, &|| Ok(()))
+    }
+    pub fn copy_shared_image_with_cancel(
+        &mut self,
+        image: std::sync::Arc<image::RgbaImage>,
+        check: &crate::NativeCaptureCheck<'_>,
+    ) -> Result<(u32, u32)> {
+        check()?;
+        let (width, height) = image.dimensions();
+        crate::validate_image_size(width, height)?;
+        anyhow::ensure!(
+            u64::from(width) * u64::from(height) * 4 == image.as_raw().len() as u64,
+            "Clipboard pixels do not match their dimensions"
+        );
+        self.publish_native(NativeClipboardOutput::Image(image), check)?;
         Ok((width, height))
     }
 }
@@ -1165,61 +1262,122 @@ mod tests {
         assert!(result.unwrap_err().to_string().contains("regular file"));
     }
 
-    #[cfg(target_os = "windows")]
-    #[test]
-    fn file_copy_rejects_invalid_sources_before_opening_the_clipboard() -> Result<()> {
-        let mut clipboard = ImageClipboard::default();
-        let missing = std::env::temp_dir().join(format!("missing-{}.png", uuid::Uuid::new_v4()));
-        for path in [
-            std::path::Path::new("relative.png"),
-            missing.as_path(),
-            std::env::temp_dir().as_path(),
-        ] {
-            assert!(clipboard.copy_file(path).is_err());
-            assert!(clipboard.clipboard.is_none());
-        }
-        Ok(())
-    }
-
-    #[cfg(target_os = "windows")]
-    #[test]
-    #[ignore = "uses the system clipboard and replaces its contents with a synthetic file reference"]
-    fn copied_file_list_round_trip() -> Result<()> {
-        let root = std::env::temp_dir().join(format!(
-            "screenshots-file-clipboard-{}",
-            uuid::Uuid::new_v4()
-        ));
-        std::fs::create_dir_all(&root)?;
-        let path = root.join("Grüße image.png");
-        std::fs::write(&path, b"synthetic file reference, not decoded")?;
-        let mut clipboard = ImageClipboard::default();
-        let result = (|| -> Result<()> {
-            clipboard.copy_file(&path)?;
-            let paths = clipboard.clipboard.as_mut().unwrap().get().file_list()?;
-            assert_eq!(paths.len(), 1);
-            assert_eq!(
-                std::fs::canonicalize(&paths[0])?,
-                std::fs::canonicalize(&path)?
-            );
-            assert_eq!(
-                std::fs::read(&path)?,
-                b"synthetic file reference, not decoded"
-            );
+    #[cfg(unix)]
+    struct FixtureRetirement;
+    #[cfg(unix)]
+    impl FileClipboardOwner for FixtureRetirement {
+        fn retire_with_cancel(
+            self: Box<Self>,
+            deadline: std::time::Instant,
+            check: &crate::NativeCaptureCheck<'_>,
+        ) -> Result<()> {
+            let until = std::time::Instant::now() + std::time::Duration::from_secs(3);
+            while std::time::Instant::now() < until {
+                check()?;
+                anyhow::ensure!(
+                    std::time::Instant::now() < deadline,
+                    "Fixture retirement timed out"
+                );
+                std::thread::park_timeout(std::time::Duration::from_millis(10));
+            }
             Ok(())
-        })();
-        std::fs::remove_file(path)?;
-        std::fs::remove_dir(root)?;
-        result
+        }
+    }
+    #[cfg(unix)]
+    #[test]
+    fn cancelled_file_replacement_interrupts_retirement_without_starting_publication() {
+        let mut clipboard = ImageClipboard {
+            file_owner: Some(Box::new(FixtureRetirement)),
+        };
+        let started = std::time::Instant::now();
+        let check = || {
+            if started.elapsed() >= std::time::Duration::from_millis(50) {
+                Err(crate::CaptureError::NativeCanceled)
+            } else {
+                Ok(())
+            }
+        };
+        let failure = clipboard
+            .copy_file_with_cancel(std::path::Path::new("/owned-fixture"), &check)
+            .unwrap_err();
+        assert!(matches!(
+            failure.downcast_ref::<crate::CaptureError>(),
+            Some(crate::CaptureError::NativeCanceled)
+        ));
+        assert!(started.elapsed() < std::time::Duration::from_secs(1));
+    }
+    #[cfg(unix)]
+    #[test]
+    #[ignore = "five-second pure replacement deadline fixture; installs a private no-native spawner once"]
+    fn file_replacement_uses_one_deadline_for_retirement_and_publication() {
+        static START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+        fn publication(
+            _: &std::path::Path,
+            check: &crate::NativeCaptureCheck<'_>,
+        ) -> Result<Box<dyn FileClipboardOwner>> {
+            loop {
+                check()?;
+                anyhow::ensure!(
+                    START.get().unwrap().elapsed() < std::time::Duration::from_secs(6),
+                    "The original operation deadline was not carried into publication"
+                );
+                std::thread::park_timeout(std::time::Duration::from_millis(10));
+            }
+        }
+        assert!(
+            FILE_CLIPBOARD_SPAWNER
+                .set(FileClipboardService {
+                    spawn: publication,
+                    quiescent: || Ok(())
+                })
+                .is_ok()
+        );
+        let started = std::time::Instant::now();
+        START.set(started).unwrap();
+        let mut clipboard = ImageClipboard {
+            file_owner: Some(Box::new(FixtureRetirement)),
+        };
+        let failure = clipboard
+            .copy_file_with_cancel(std::path::Path::new("/owned-fixture"), &|| Ok(()))
+            .unwrap_err();
+        assert!(matches!(
+            failure.downcast_ref::<crate::CaptureError>(),
+            Some(crate::CaptureError::NativeTimeout)
+        ));
+        assert!(started.elapsed() >= std::time::Duration::from_millis(4800));
+        assert!(started.elapsed() < std::time::Duration::from_millis(5800));
     }
 
     #[test]
-    #[ignore = "uses the system clipboard and replaces its contents with a synthetic path"]
-    fn file_path_text_round_trip() -> Result<()> {
+    fn output_validation_precedes_native_access() {
         let mut clipboard = ImageClipboard::default();
-        let text = "C:\\Saved captures\\Grüße image.png".to_string();
-        clipboard.copy_text(text.clone())?;
-        assert_eq!(clipboard.clipboard.as_mut().unwrap().get_text()?, text);
-        Ok(())
+        assert!(clipboard.copy_image(&image::RgbaImage::new(0, 1)).is_err());
+        let excess = image::RgbaImage::from_raw(1, 1, vec![0; 8]).unwrap();
+        assert!(
+            clipboard
+                .copy_image(&excess)
+                .unwrap_err()
+                .to_string()
+                .contains("dimensions")
+        );
+        assert!(
+            clipboard
+                .copy_text("x".repeat(MAX_CLIPBOARD_TEXT_BYTES + 1))
+                .is_err()
+        );
+        assert!(clipboard.file_owner.is_none());
+        let check = || Err(crate::CaptureError::NativeCanceled);
+        assert!(
+            clipboard
+                .copy_text_with_cancel("private fixture", &check)
+                .is_err()
+        );
+        assert!(
+            clipboard
+                .copy_image_with_cancel(&image::RgbaImage::new(1, 1), &check)
+                .is_err()
+        );
+        assert!(clipboard.file_owner.is_none());
     }
 
     #[test]
@@ -1684,52 +1842,6 @@ mod tests {
             decode[2], previews[2]
         );
         std::fs::remove_file(path)?;
-        Ok(())
-    }
-
-    #[test]
-    #[ignore = "uses the system clipboard and replaces its contents"]
-    fn png_round_trip() -> Result<()> {
-        let path =
-            std::env::temp_dir().join(format!("clipboard-spike-{}.png", uuid::Uuid::new_v4()));
-        let image = image::RgbaImage::from_fn(3, 2, |x, y| {
-            image::Rgba([(x * 80) as u8, (y * 120) as u8, 47, 255])
-        });
-        image.save(&path)?;
-        let mut clipboard = ImageClipboard::default();
-        let result = clipboard.copy_image(&image);
-        let blocked_parent =
-            std::env::temp_dir().join(format!("save-failure-{}", uuid::Uuid::new_v4()));
-        std::fs::write(&blocked_parent, b"not a directory")?;
-        let shot = crate::CapturedImage {
-            desktop_layout: None,
-            display_id: "test".into(),
-            window_id: None,
-            width: image.width(),
-            height: image.height(),
-            pixels: std::sync::Arc::new(image.clone()),
-            png_path: blocked_parent.join("capture.png"),
-            elapsed_ms: 0,
-            source_format: crate::PixelFormat::Rgba8UnormSrgb,
-            display_geometry: None,
-        };
-        assert!(shot.save_png().is_err());
-        std::fs::remove_file(blocked_parent)?;
-        let pasted = clipboard
-            .clipboard
-            .as_mut()
-            .unwrap()
-            .get_image()
-            .context("read clipboard image")?;
-        anyhow::ensure!(
-            pasted.width == image.width() as usize
-                && pasted.height == image.height() as usize
-                && pasted.bytes.as_ref() == image.as_raw().as_slice(),
-            "clipboard round trip changed image dimensions or RGBA pixels"
-        );
-
-        std::fs::remove_file(path)?;
-        assert_eq!(result?, (3, 2));
         Ok(())
     }
 }

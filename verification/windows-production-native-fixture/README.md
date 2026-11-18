@@ -53,8 +53,16 @@ same operation/reentrancy checks, while preserving all real helper notifications
 Release calls and unknown-error rejection. Basic sources still refuse private
 SetData/GetData. Two added cooperative source cases use the real Shell drag-image
 manager and bounded private-format storage; an unknown-HRESULT control must be
-rejected. This correction and its added controls still require native compilation
-and execution. Full COM/OLE/editor/fault acceptance remains open.
+rejected. The next actual5e65 hosted run44282974497 executed108 cases;52 failed
+complete predicates and the private-format self-check failed. Basic sources now
+returned DV_E_TYMED because fixture validation checked requested medium before
+checking whether the private format existed. The follow-up restores the original
+DV_E_FORMATETC for an unavailable format and preserves medium rejection for an
+actually stored format. Borrowed private media are copied before giving the
+native Shell store ownership. Bounded numeric private-call traces identify the
+remaining cooperative manager medium refusal without widening production HRESULT
+acceptance. These follow-up corrections are authored and still need native
+execution. Full COM/OLE/editor/fault acceptance remains open.
 Physical input, mixed DPI, hardware presentation and joint main/helper resource
 acceptance remain separate from this owned synthetic suite.
 
@@ -63,8 +71,13 @@ formats through SetData/GetData. A basic IDataObject may legitimately return
 E_NOTIMPL from SetData. Payload support is checked independently of those visual
 formats. The cooperative fixture delegates private storage to SHCreateDataObject,
 limited to eight registered HGLOBAL formats,64KiB each and256KiB total; it validates
-FORMATETC and tests borrowed/transferred/replaced/refused medium ownership. It
-never admits helper formats as capture/editor payloads. The source's synthetic
+FORMATETC and tests borrowed/transferred/replaced/refused medium ownership.
+fRelease=FALSE media use an explicit OleDuplicateData copy and native fRelease=TRUE;
+the original medium remains caller-owned. A failed native store frees only that
+new copy. At most32 numeric private-call rows are retained per case, without
+payloads, paths, private format names or error text. The cooperative Shell manager's
+second rejected medium remains an open native finding until those descriptors
+are observed. The fixture never admits helper formats as capture/editor payloads. The source's synthetic
 two-pixel drag bitmap is transferred to the real drag-image manager.
 
 Primary contracts: [IDropTargetHelper](https://learn.microsoft.com/en-us/windows/win32/api/shobjidl_core/nn-shobjidl_core-idroptargethelper),

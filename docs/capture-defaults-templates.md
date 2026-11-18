@@ -146,10 +146,51 @@ Template never executes catalog profile metadata recursively.
 | Policy | Linux X11 | Windows | macOS |
 | --- | --- | --- | --- |
 | Still cursor | XFixes premultiplied ARGB, clipped by native hotspot | Snapshot icon; premultiplied alpha or native AND/XOR mask semantics | Native compositor cursor on 14+; checked public system-cursor fallback on older API paths; native acceptance pending |
-| Window frame | Native/client drawable; decorated inclusion unsupported | Native/included DWM frame; client crop uses physical native client bounds | Native/included window; client-only unsupported |
+| Window frame | Omitted/native and client retain legacy drawable behavior; explicit inclusion uses an exactly verified native frame and existing Composite storage, with the restrictions below | Native/included DWM frame; client crop uses physical native client bounds | Native/included window; client-only unsupported |
 | Shadow | Native/exclude client drawable; inclusion unsupported | Native/exclude DWM frame; inclusion unsupported | Exclusion/native frame; unclipped inclusion requires content-sized 26+ screenshot or supported legacy API, never guessed padding |
-| Transparency | Native legacy behavior or explicit opaque background; preserve unsupported | Opaque GDI RGB8 or explicit opaque background; preserve unsupported | Explicit RGBA8/sRGB alpha preservation or opaque background |
+| Transparency | Omitted/native retain legacy behavior; preserve reads verified packed RGB8/ARGB8 from existing Composite storage; included frames can flatten that alpha against an explicit background | Opaque GDI RGB8 or explicit opaque background; preserve unsupported | Explicit RGBA8/sRGB alpha preservation or opaque background |
 | Monitor identity | Connector + validated EDID SHA-256; connector-only requires explicit choice | Active DisplayConfig target device path | ColorSync display UUID |
+
+Linux explicit frame inclusion and alpha preservation require an X11 session,
+one X screen, Composite 0.2+, Render and Shape. They read an already redirected,
+viewable drawable; an unredirected source is refused. The application never
+redirects a user window, samples root pixels, creates a compositor overlay or
+guesses decoration/shadow padding. A selected client must be a rectangular,
+zero-border InputOutput leaf. Included decorations must be the direct root-child
+frame with only that client as its child; all four native `_NET_FRAME_EXTENTS`
+must exactly match the observed geometry. Independently redirected clients,
+other child hierarchies, shaped/native-border windows and unsupported visuals
+are refused rather than returning missing or unrelated pixels. These are
+conditional native policies, not a claim of support for every X11 window manager.
+
+Packed 32-bit RGB8/ARGB8 is verified against the selected visual's Render format,
+image byte order and pixmap format. ARGB is decoded from native premultiplied
+channels to straight RGBA; invalid channels are refused. Verified RGB visuals
+have opaque alpha because Render declares no alpha channel, not because a
+missing alpha byte was relabeled. The source backing must match the admitted
+physical dimensions/depth. Client PID, client/frame relationship, extents,
+visual, depth, viewability and physical geometry are checked before allocation,
+after native readback and before publication. These are endpoint checks, not
+an atomic compositor snapshot or a resource-generation witness. Native source
+identity still uses the existing X11 PID property; it is not an XRes-authenticated
+process identity. Explicit new policies are unavailable on Wayland, including
+XWayland sessions; existing XWayland client listing/legacy window capture does
+not enumerate native Wayland clients or invent monitor coordinates.
+
+The decorated source, rather than just its client area, is charged against the
+existing aggregate 256 MiB source limit before pixels are read. Native reply
+pixels plus one decoded RGBA output coexist during conversion. Decoding and
+included-frame background flattening check cancellation each row. The existing
+isolated native worker bounds uninterruptible native calls; core consumers that
+do not install the worker executor retain their documented inline limitation.
+One operation connection and named pixmap reference are released on every
+return. No server grab, new worker, timer, runtime, cache, PNG round trip or
+background stream is introduced. The already locked x11rb package gains its
+Composite binding feature; Render/Shape were already enabled through XFixes.
+Legacy omitted/client/opaque-only paths retain their existing behavior. In
+particular, opaque-only legacy capture does not newly preserve an ARGB source;
+use explicit included-frame capture with an RGB background for the verified
+ARGB flattening path. SDR/HDR/color-profile acceptance is unchanged.
 
 Linux cursor/template operations require an X11 session and one X screen, which
 may contain multiple RandR outputs. Native display/region cursor composition
@@ -163,6 +204,12 @@ conversion; float/high-bit/HDR support is not inferred from that conversion.
 See [macOS native completion](macos-capture-completion.md) for current SDK/runtime
 evidence and version-dependent policy limits. Existing Linux/Windows omitted
 policy behavior is unchanged by that Mac route.
+
+The conditional Linux source contract and finite owned-window gate are described
+in [native window policies](native-window-policies.md). That document separates
+the remaining Windows alpha/shadow and macOS client-area constraints from
+implemented behavior. The source proposal does not close those capabilities or
+native performance acceptance.
 
 The legacy macOS shadow exclusion uses Apple's
 [boundsIgnoreFraming](https://developer.apple.com/documentation/coregraphics/cgwindowimageoption/boundsignoreframing)

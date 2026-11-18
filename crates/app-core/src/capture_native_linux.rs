@@ -14,6 +14,13 @@ use x11rb::{
     },
 };
 
+#[path = "capture_native_linux_window.rs"]
+mod window_policy;
+pub(crate) use window_policy::Admission as WindowAdmission;
+pub(super) use window_policy::{
+    admit as window_admission, capture as capture_window, verify as check_window_admission,
+};
+
 fn session_display() -> Result<String> {
     ensure!(
         !crate::linux_wayland_session(),
@@ -129,7 +136,12 @@ fn valid_edid(bytes: &[u8]) -> bool {
 pub(super) fn validate_options(options: &CaptureOptions, window: bool) -> Result<()> {
     if window {
         // XCap's X11 drawable is the client's own window, without compositor shadows.
-        super::validate_native_window_policy(options, true, false, false, false)?;
+        super::validate_native_window_policy(options, true, true, false, true)?;
+        if options.window_frame == crate::CaptureWindowFrame::Include
+            || options.window_transparency == crate::CaptureWindowTransparency::Preserve
+        {
+            session_display()?;
+        }
     }
     if options.cursor == CaptureCursor::Include {
         ensure!(
@@ -170,7 +182,7 @@ pub(super) fn apply_cursor(image: &mut RgbaImage, x: i32, y: i32) -> Result<()> 
     }
     .compose(image, x, y)
 }
-pub(super) fn capture_window(window: &xcap::Window, options: &CaptureOptions) -> Result<RgbaImage> {
+fn capture_window_legacy(window: &xcap::Window, options: &CaptureOptions) -> Result<RgbaImage> {
     let (connection, screen) = connection()?;
     let id = window.id()?;
     let before = connection.get_geometry(id)?.reply()?;

@@ -6452,7 +6452,7 @@ impl CaptureWorkspace {
                     .background_spawn(async move {
                         let mut clipboard = clipboard.lock().map_err(|error| error.to_string())?;
                         match pixels {
-                            Some(pixels) => clipboard.copy_image(&pixels),
+                            Some(pixels) => clipboard.copy_shared_image(pixels),
                             None => clipboard.copy_saved_image(&path),
                         }
                         .map_err(|error| format!("{error:#}"))
@@ -7732,6 +7732,17 @@ fn listen_unix_reopen(
     }
 }
 
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn listen_unix_reopen_from_window(
+    handle: WindowHandle<CaptureWorkspace>,
+    instance: Option<UnixLaunchOwner>,
+    cx: &mut App,
+) {
+    if let Ok(owner) = handle.update(cx, |_, _, cx| cx.entity()) {
+        listen_unix_reopen(owner, instance, cx);
+    }
+}
+
 fn run_image_window(
     path: Option<PathBuf>,
     native_services: bool,
@@ -7849,9 +7860,7 @@ fn run_image_window(
             })
             .ok();
         #[cfg(any(target_os = "linux", target_os = "macos"))]
-        handle
-            .update(cx, |_, _, cx| listen_unix_reopen(cx.entity(), listener, cx))
-            .ok();
+        listen_unix_reopen_from_window(handle, listener, cx);
         #[cfg(target_os = "macos")]
         handle
             .update(cx, |_, window, cx| {
@@ -8024,9 +8033,7 @@ fn run_prepared(
                 )
                 .expect("failed to open spike window");
             #[cfg(target_os = "linux")]
-            handle
-                .update(cx, |_, _, cx| listen_unix_reopen(cx.entity(), listener, cx))
-                .ok();
+            listen_unix_reopen_from_window(handle, listener, cx);
             #[cfg(not(target_os = "linux"))]
             let _ = handle;
             cx.activate(true);

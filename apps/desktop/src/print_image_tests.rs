@@ -202,7 +202,9 @@ fn mock(mode: &str) -> Command {
     if std::env::var_os("SCREENSHOTS_PRINT_TEST_TRACE").is_some() {
         eprintln!("OWNED print mock mode={mode}");
     }
-    let mut command = Command::new("/usr/bin/python3");
+    let python = std::env::var_os("SCREENSHOTS_PRINT_TEST_PYTHON")
+        .unwrap_or_else(|| "/usr/bin/python3".into());
+    let mut command = Command::new(python);
     command
         .arg(
             std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -211,6 +213,9 @@ fn mock(mode: &str) -> Command {
         .arg(mode)
         .env_clear()
         .env("LC_ALL", "C");
+    if std::env::var_os("SCREENSHOTS_PRINT_TEST_TRACE").is_some() {
+        command.env("SCREENSHOTS_PRINT_TEST_TRACE", "1");
+    }
     command
 }
 

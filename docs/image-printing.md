@@ -258,3 +258,7 @@ ARM runtime check after the earlier pre-exec EINVAL failure; Intel job 134043931
 pass. Windows GDI output/driver faults, calibrated physical output and reference
 hardware resource acceptance remain separate gates. Later source changes are
 not covered by this snapshot.
+
+## Owned native Windows GDI evidence — 2026-11-18
+
+Both exact optimized ignored GDI cases executed and passed in Windows job134704173055, run44276006510 (snapshot55a202af57187a63f9ebcbbc405ef4d39186a50d). The independent step requires exactly two discovered cases and retained the native output log even though the earlier unrelated drop-fixture C++ compile failed. This establishes actual owned memory-DC raster geometry/color/alpha-composition/cleanup and native StartDoc refusal, plus the separately labeled controlled document-fault branches. It does not establish real Winspool/driver submission, physical printing or resource budgets. The exact source changes are committed in `b411f73`.

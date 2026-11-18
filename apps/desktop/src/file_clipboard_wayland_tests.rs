@@ -23,6 +23,7 @@ struct Capture {
     name: &'static str,
 }
 struct State {
+    names: Vec<&'static str>,
     captures: Vec<Capture>,
     output: mpsc::SyncSender<(&'static str, Vec<u8>)>,
 }
@@ -102,7 +103,11 @@ macro_rules! protocol {
                 if let $source::Request::Offer { mime_type } = request {
                     assert!(matches!(
                         mime_type.as_str(),
-                        "text/uri-list" | "x-special/gnome-copied-files"
+                        "text/uri-list"
+                            | "x-special/gnome-copied-files"
+                            | "image/png"
+                            | "text/plain;charset=utf-8"
+                            | "text/plain"
                     ));
                 }
             }
@@ -125,7 +130,7 @@ macro_rules! protocol {
                         state.captures.is_empty(),
                         "Unexpected second native publication"
                     );
-                    for name in ["text/uri-list", "x-special/gnome-copied-files"] {
+                    for name in state.names.clone() {
                         let (stream, writer) = UnixStream::pair().unwrap();
                         stream.set_nonblocking(true).unwrap();
                         source.send(name.into(), writer.as_fd());
@@ -164,6 +169,19 @@ struct Private {
 }
 impl Private {
     fn new(root: &Path, ext: bool, supported: bool) -> Result<Self> {
+        Self::new_types(
+            root,
+            ext,
+            supported,
+            vec!["text/uri-list", "x-special/gnome-copied-files"],
+        )
+    }
+    fn new_types(
+        root: &Path,
+        ext: bool,
+        supported: bool,
+        names: Vec<&'static str>,
+    ) -> Result<Self> {
         let socket = root.join("wayland-owned");
         let listener = UnixListener::bind(&socket)?;
         listener.set_nonblocking(true)?;
@@ -182,6 +200,7 @@ impl Private {
                 }
             }
             let mut state = State {
+                names,
                 captures: Vec::new(),
                 output,
             };
@@ -203,7 +222,7 @@ impl Private {
                                 return false;
                             }
                             Ok(count) => {
-                                assert!(capture.bytes.len() + count <= 16 * 1024);
+                                assert!(capture.bytes.len() + count <= 1024 * 1024);
                                 capture.bytes.extend_from_slice(&bytes[..count]);
                             }
                             Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
@@ -313,5 +332,45 @@ fn missing_wayland_data_control_fails_explicitly_without_x11_or_text_fallback() 
     assert!(spawn_with_command(&path, true, command).is_err());
     cleaned();
     assert!(server.output.try_recv().is_err());
+    Ok(())
+}
+
+#[test]
+#[ignore = "private ext/wlr data-control server and owned output helper; no real compositor access"]
+fn image_and_text_paste_on_owned_wayland_offer_one_retained_representation() -> Result<()> {
+    let _serial = SERIAL.lock().unwrap();
+    for ext in [true, false] {
+        for image_output in [true, false] {
+            let root = Root::new()?;
+            let mime = if image_output {
+                "image/png"
+            } else {
+                "text/plain;charset=utf-8"
+            };
+            let server = Private::new_types(&root.0, ext, true, vec![mime])?;
+            let mut command = child("output-native");
+            command
+                .env("WAYLAND_DISPLAY", &server.socket)
+                .env("XDG_SESSION_TYPE", "wayland")
+                .env("DISPLAY", ":invalid-no-xwayland-fallback");
+            let image =
+                image::RgbaImage::from_fn(3, 2, |x, y| image::Rgba([x as u8, y as u8, 47, 83]));
+            let text = "private UTF-8 ä 🐾";
+            let value = if image_output {
+                app_core::NativeClipboardOutput::Image(Arc::new(image.clone()))
+            } else {
+                app_core::NativeClipboardOutput::Text(text)
+            };
+            let owner = spawn_input(Input::Output(value), true, command, &|| Ok(()))?;
+            let (actual_mime, bytes) = server.output.recv_timeout(Duration::from_secs(5))?;
+            assert_eq!(actual_mime, mime);
+            if image_output {
+                assert_eq!(image::load_from_memory(&bytes)?.into_rgba8(), image);
+            } else {
+                assert_eq!(bytes, text.as_bytes());
+            }
+            owner.retire()?;
+        }
+    }
     Ok(())
 }

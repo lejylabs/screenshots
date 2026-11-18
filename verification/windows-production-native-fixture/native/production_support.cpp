@@ -38,10 +38,15 @@ struct PayloadCounters {
     LONG outside_positive,outside_gets,outside_created,outside_released,submits,phase_bad;
 };
 struct SourceMutation {LONG id,applied,guard,sequence,armed,duplicate_release_calls,actor;DWORD pid,tid;};
+struct PrivateCallTrace {
+    DWORD operation,format,aspect,requested_tymed,medium_tymed,release,cooperative,pid,tid,native_called,native_release;
+    LONG native_result,result,completed;
+};
 struct Shared {
     LONG admission_epoch,allow_epoch,registration_probe_epoch,probe_reclaim;
     DWORD allow_pid,allow_tid,registration_probe_pid;
     DWORD controller_pid;
+    LONG private_trace_count;PrivateCallTrace private_trace[32];
     LONG phase_helper_pid,operation_stage,failed_operation_stage,operation_hresult;
     LONG visual_format_refusals,visual_unexpected_count,visual_unexpected_hresult,helper_unknown_control_calls,helper_unknown_inner_hresult;
     LONG private_set_calls,private_get_calls,private_refusals,private_live_slots,private_live_bytes,private_peak_bytes,private_peak_slots,drag_image_initialized;
@@ -359,6 +364,17 @@ struct FormatsEnum final : IEnumFORMATETC {
     HRESULT STDMETHODCALLTYPE Reset() override { consumed = false; return S_OK; }
     HRESULT STDMETHODCALLTYPE Clone(IEnumFORMATETC** out) override { if (!out) return E_POINTER; auto* copy = new FormatsEnum; copy->consumed = consumed; *out = copy; return S_OK; }
 };
+static PrivateCallTrace private_call(unsigned operation,FORMATETC* format,STGMEDIUM* medium,BOOL release,bool cooperative) {
+    PrivateCallTrace row{};row.operation=operation;row.format=format?format->cfFormat:0;row.aspect=format?format->dwAspect:0;row.requested_tymed=format?format->tymed:0;row.medium_tymed=medium?medium->tymed:0;row.release=release?1:0;row.cooperative=cooperative?1:0;row.pid=GetCurrentProcessId();row.tid=GetCurrentThreadId();return row;
+}
+static HRESULT record_private_call(PrivateCallTrace row,HRESULT result) {
+    LONG slot=InterlockedIncrement(&state->private_trace_count)-1;
+    if(slot>=0 && slot<32) {
+        row.result=result;row.completed=0;state->private_trace[slot]=row;MemoryBarrier();InterlockedExchange(&state->private_trace[slot].completed,1);
+        std::fprintf(stderr,"{\"private_source_call\":true,\"operation\":%lu,\"format\":%lu,\"requested_tymed\":%lu,\"medium_tymed\":%lu,\"cooperative\":%lu,\"caller_release\":%lu,\"native_called\":%lu,\"native_release\":%lu,\"native_hresult\":%ld,\"result\":%ld}\n",row.operation,row.format,row.requested_tymed,row.medium_tymed,row.cooperative,row.release,row.native_called,row.native_release,row.native_result,row.result);
+    }
+    return result;
+}
 struct Source final : IDataObject {
     LONG refs = 1;
     IDataObject* private_data = nullptr;
@@ -386,7 +402,9 @@ struct Source final : IDataObject {
     ULONG STDMETHODCALLTYPE AddRef() override { return InterlockedIncrement(&refs); }
     ULONG STDMETHODCALLTYPE Release() override { LONG n = InterlockedDecrement(&refs); if (!n) delete this; return n; }
     HRESULT STDMETHODCALLTYPE QueryGetData(FORMATETC* format) override {
-        if (cooperative() && format && format->cfFormat!=production_format() && SUCCEEDED(private_descriptor(format)) && private_data && has_private(format->cfFormat) && private_data->QueryGetData(format)==S_OK) return S_OK;
+        if (cooperative() && format && format->cfFormat!=production_format() && private_data && has_private(format->cfFormat)) {
+            HRESULT descriptor=private_descriptor(format);return FAILED(descriptor)?descriptor:private_data->QueryGetData(format);
+        }
         bool target_entered=InterlockedCompareExchange(&state->payload_phase,0,0)==1 && state->payload_format==(format?format->cfFormat:0);
         bool selected=format && format->cfFormat==production_format() && (format->tymed&TYMED_HGLOBAL)!=0;
         if (target_entered && selected) InterlockedIncrement(&state->payload.source_selected_queries);
@@ -413,11 +431,14 @@ struct Source final : IDataObject {
         *medium = STGMEDIUM{};
         if (format->cfFormat != production_format()) {
             InterlockedIncrement(&state->private_get_calls);
+            auto trace=private_call(1,format,nullptr,FALSE,cooperative());
+            // Format availability precedes descriptor validation, including for basic sources.
+            if (!cooperative() || !private_data || !has_private(format->cfFormat)) {InterlockedIncrement(&state->private_refusals);return record_private_call(trace,DV_E_FORMATETC);}
             HRESULT descriptor=private_descriptor(format);
-            if (!cooperative() || FAILED(descriptor) || !private_data || !has_private(format->cfFormat)) {InterlockedIncrement(&state->private_refusals);return FAILED(descriptor)?descriptor:DV_E_FORMATETC;}
-            HRESULT result=private_data->GetData(format,medium);
+            if (FAILED(descriptor)) {InterlockedIncrement(&state->private_refusals);return record_private_call(trace,descriptor);}
+            trace.native_called=1;HRESULT result=private_data->GetData(format,medium);trace.native_result=result;trace.medium_tymed=medium->tymed;
             if (FAILED(result)) InterlockedIncrement(&state->private_refusals);
-            return result;
+            return record_private_call(trace,result);
         }
         if ((format->tymed & TYMED_HGLOBAL) == 0) return DV_E_FORMATETC;
         bool target_entered=InterlockedCompareExchange(&state->payload_phase,0,0)==2 && state->payload_format==format->cfFormat;
@@ -454,6 +475,10 @@ struct Source final : IDataObject {
     HRESULT STDMETHODCALLTYPE GetCanonicalFormatEtc(FORMATETC*, FORMATETC* out) override { if (out) out->ptd = nullptr; return E_NOTIMPL; }
     HRESULT STDMETHODCALLTYPE SetData(FORMATETC* format, STGMEDIUM* medium, BOOL release) override {
         InterlockedIncrement(&state->private_set_calls);
+        auto trace=private_call(2,format,medium,release,cooperative());
+        HRESULT result=store_private(format,medium,release,trace);return record_private_call(trace,result);
+    }
+    HRESULT store_private(FORMATETC* format,STGMEDIUM* medium,BOOL release,PrivateCallTrace& trace) {
         if (!cooperative()) {InterlockedIncrement(&state->private_refusals);return E_NOTIMPL;}
         HRESULT descriptor=private_descriptor(format);
         if (FAILED(descriptor)) return descriptor;
@@ -467,7 +492,18 @@ struct Source final : IDataObject {
         if (private_busy) return E_UNEXPECTED;
         private_busy=true;struct StoreGuard {bool& busy;~StoreGuard(){busy=false;}} guard{private_busy};
         if (!private_data) {HRESULT result=SHCreateDataObject(nullptr,0,nullptr,nullptr,IID_PPV_ARGS(&private_data));if(FAILED(result))return result;}
-        HRESULT result=private_data->SetData(format,medium,release);
+        STGMEDIUM owned=*medium;
+        if (!release) {
+            owned.hGlobal=static_cast<HGLOBAL>(OleDuplicateData(medium->hGlobal,format->cfFormat,GMEM_MOVEABLE|GMEM_ZEROINIT));owned.pUnkForRelease=nullptr;
+            if (!owned.hGlobal) return E_OUTOFMEMORY;
+            SIZE_T copied_bytes=GlobalSize(owned.hGlobal);
+            if (!copied_bytes || copied_bytes>64*1024 || private_bytes-slot->bytes+copied_bytes>256*1024) {ReleaseStgMedium(&owned);return STG_E_MEDIUMFULL;}
+            bytes=copied_bytes;
+        }
+        // Own borrowed data before transferring it to the native Shell store.
+        trace.native_called=1;trace.native_release=1;
+        HRESULT result=private_data->SetData(format,&owned,TRUE);trace.native_result=result;
+        if (FAILED(result) && !release) ReleaseStgMedium(&owned);
         if (SUCCEEDED(result)) {
             if (!slot->format) ++state->private_live_slots;
             private_bytes=private_bytes-slot->bytes+bytes;*slot={format->cfFormat,bytes};

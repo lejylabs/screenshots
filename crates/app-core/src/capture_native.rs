@@ -57,12 +57,30 @@ pub(crate) fn validate_template_session() -> Result<()> {
 
 #[cfg(target_os = "macos")]
 pub(crate) use crate::capture_macos_image::PreparedWindow as MacPreparedWindow;
+#[cfg(target_os = "linux")]
+pub(crate) use platform::WindowAdmission as LinuxWindowAdmission;
+#[cfg(target_os = "linux")]
+pub(crate) fn linux_window_admission(
+    window: &xcap::Window,
+    options: &CaptureOptions,
+) -> Result<LinuxWindowAdmission> {
+    platform::window_admission(window, options)
+}
+#[cfg(target_os = "linux")]
+pub(crate) fn check_linux_window_admission(
+    window: &xcap::Window,
+    options: &CaptureOptions,
+    admitted: &LinuxWindowAdmission,
+) -> Result<()> {
+    platform::check_window_admission(window, options, admitted)
+}
 #[cfg(not(target_os = "macos"))]
 pub(crate) fn capture_window(
     window: &xcap::Window,
     options: &CaptureOptions,
     #[cfg(target_os = "windows")] admission: &WindowsCaptureAdmission,
-    #[cfg(target_os = "windows")] cancel: &crate::NativeCaptureCheck<'_>,
+    #[cfg(target_os = "linux")] admission: &LinuxWindowAdmission,
+    #[cfg(any(target_os = "windows", target_os = "linux"))] cancel: &crate::NativeCaptureCheck<'_>,
 ) -> Result<RgbaImage> {
     validate_options(options, true)?;
     let native = CaptureOptions {
@@ -77,9 +95,9 @@ pub(crate) fn capture_window(
     {
         platform::capture_window(window, &native, admission, cancel)
     }
-    #[cfg(not(target_os = "windows"))]
+    #[cfg(target_os = "linux")]
     {
-        platform::capture_window(window, &native)
+        platform::capture_window(window, &native, admission, cancel)
     }
 }
 #[cfg(target_os = "macos")]

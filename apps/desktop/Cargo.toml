@@ -51,6 +51,7 @@ async-io = "=2.6.0"
 futures-lite = "=2.6.1"
 
 [target.'cfg(unix)'.dependencies]
+png = "=0.18.1"
 signal-hook = "=0.3.18"
 libc = "0.2.191"
 

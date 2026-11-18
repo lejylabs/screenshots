@@ -34,17 +34,27 @@ fn string(value: &str) -> Result<Owned> {
 }
 pub(super) fn publish(uri: &str, name: &str) -> Result<()> {
     ensure!(
-        unsafe { pthread_main_np() } != 0,
-        "File pasteboard requires the native main thread"
-    );
-    ensure!(
         uri.len() <= app_core::CLIPBOARD_FILE_BYTES * 3 && uri.starts_with("file:///"),
         "Invalid file pasteboard URL"
     );
+    publish_bytes(uri.as_bytes(), "public.file-url", name)
+}
+pub(super) fn publish_bytes(bytes: &[u8], flavor: &str, name: &str) -> Result<()> {
+    ensure!(
+        unsafe { pthread_main_np() } != 0,
+        "Pasteboard requires the native main thread"
+    );
+    let bound = match flavor {
+        "public.file-url" => app_core::CLIPBOARD_FILE_BYTES * 3,
+        "public.png" => app_core::MAX_CAPTURE_BYTES as usize + 16 * 1024 * 1024,
+        "public.utf8-plain-text" => app_core::MAX_CLIPBOARD_TEXT_BYTES,
+        _ => anyhow::bail!("Unsupported pasteboard output type"),
+    };
+    ensure!(bytes.len() <= bound, "Pasteboard output exceeds its bound");
     // Prepare every bounded native data object before the irreversible clear.
     let name = string(name)?;
-    let flavor = string("public.file-url")?;
-    let data = unsafe { CFDataCreate(std::ptr::null(), uri.as_ptr(), uri.len() as isize) };
+    let flavor = string(flavor)?;
+    let data = unsafe { CFDataCreate(std::ptr::null(), bytes.as_ptr(), bytes.len() as isize) };
     ensure!(!data.is_null(), "Could not prepare file pasteboard data");
     let data = Owned(data);
     let mut board = std::ptr::null_mut();

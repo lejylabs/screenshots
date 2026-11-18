@@ -364,7 +364,7 @@ fn saved_png_open_handle_survives_path_replacement_and_failures_do_not_publish()
     std::fs::write(&invalid, b"not PNG!").unwrap();
     let mut clipboard = ImageClipboard::default();
     assert!(clipboard.copy_saved_png(&invalid).is_err());
-    assert!(clipboard.clipboard.is_none());
+    assert!(clipboard.file_owner.is_none());
     let destination = fixture.path("result.jpg");
     assert!(
         crate::export_saved_png_as(&invalid, &destination, 90, crate::ExportSize::Original)

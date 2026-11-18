@@ -5,7 +5,7 @@ use zeroize::Zeroizing;
 
 const MAX_PAYLOAD_BYTES: usize = 4096;
 
-fn validate_target(target: &str) -> Result<()> {
+pub(crate) fn validate_target(target: &str) -> Result<()> {
     ensure!(
         target.len() <= 2304 && !target.chars().any(char::is_control),
         "S3 credential target is invalid"
@@ -69,8 +69,7 @@ fn validate_payload(payload: &[u8]) -> Result<()> {
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
-#[path = "upload_credentials_native.rs"]
-mod native;
+use crate::native_credentials as native;
 
 /// Save opaque credential bytes after the caller has validated their versioned format.
 pub fn save_s3_credentials(target: &str, payload: &[u8]) -> Result<()> {
