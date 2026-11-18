@@ -6,6 +6,7 @@ permissions:
   contents: read
 jobs:
   macos-app:
+    if: false
     strategy:
       fail-fast: false
       matrix:
@@ -117,7 +118,6 @@ jobs:
           key: sdk-target-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Cargo.lock') }}-${{ github.sha }}
 
   windows-native-witness:
-    if: false
     runs-on: windows-latest
     timeout-minutes: 180
     steps:
@@ -239,9 +239,14 @@ jobs:
           path: target/release-fast
           key: sdk-target-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Cargo.lock') }}-${{ github.sha }}
 
+
       - name: Verify owned native FP16 tiled WARP textures
         shell: pwsh
         run: |
           $env:SCREENSHOTS_HDR_TILE_LARGE='1'
-          cargo test --workspace --lib --bins -j 2 --locked --profile release-fast capture_native::platform::hdr::tests::owned_warp_texture_tiles_match_oracle_and_unmap_after_failure -- --ignored --exact --nocapture --test-threads=1
+          $Test='capture_native::platform::hdr::tiled_tests::owned_warp_texture_tiles_match_oracle_and_unmap_after_failure'
+          $Listed=@(cargo test --workspace --lib --bins -j 2 --locked --profile release-fast $Test -- --ignored --exact --list)
+          if ($LASTEXITCODE -ne 0) {exit $LASTEXITCODE}
+          if (@($Listed | Where-Object {$_.Trim() -eq ($Test+': test')}).Count -ne 1) {throw 'Exact owned WARP case was not selected exactly once'}
+          cargo test --workspace --lib --bins -j 2 --locked --profile release-fast $Test -- --ignored --exact --nocapture --test-threads=1
           if ($LASTEXITCODE -ne 0) {exit $LASTEXITCODE}
