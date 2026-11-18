@@ -22,7 +22,7 @@ jobs:
         timeout-minutes: 3
         run: |
           $Script=(Resolve-Path verification/windows-spool-native-fixture/run.ps1).Path
-          $Fixture=& "$env:SystemRoot\System32\WindowsPowerShell1.0\powershell.exe" -NoLogo -NoProfile -NonInteractive -STA -File $Script -Stage Prepare | ConvertFrom-Json
+          $Fixture=& "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -NoLogo -NoProfile -NonInteractive -STA -File $Script -Stage Prepare | ConvertFrom-Json
           if ($LASTEXITCODE -ne 0) {exit $LASTEXITCODE}
           $Controller=(Resolve-Path target/preflight-only-proof/controller.exe).Path
           $ExistenceOnlyOne=(Resolve-Path "$env:SystemRoot\System32\cmd.exe").Path
