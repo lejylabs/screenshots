@@ -290,7 +290,12 @@ impl Render for CaptureWorkspace {
             .bg(colors.background)
             .text_color(colors.foreground)
             .can_drop(move |value, _, cx| (value.is::<gpui::ExternalPaths>()||value.is::<gpui::ExternalImageDrop>()||value.is::<gpui::ExternalUrlDrop>())
-                && drop_owner.upgrade().is_some_and(|owner| !owner.read(cx).image_input_busy()))
+                && drop_owner.upgrade().is_some_and(|owner| {
+                    let busy = owner.read(cx).image_input_busy();
+                    #[cfg(all(target_os = "windows", screenshots_native_drop_acceptance))]
+                    if busy { gpui_windows::native_drop_acceptance_busy_admission(); }
+                    !busy
+                }))
             .on_drop(cx.listener(|this, paths: &gpui::ExternalPaths, _, cx| {
                 this.open_dropped_image(paths.paths(), cx);
             }))
@@ -302,7 +307,7 @@ impl Render for CaptureWorkspace {
             .on_action(cx.listener(|this, _: &OpenFullscreenOverlays, _, cx| {
                 this.open_overlays(OverlayMode::Fullscreen, cx)
             }))
-            .on_action(cx.listener(|this, _: &CloseOverlay, _, cx| this.close_overlays(cx)))
+            .on_action(cx.listener(|this, _: &CloseOverlay, _, cx| this.cancel_overlays(cx)))
             .on_action(cx.listener(|this, _: &CapturePrimary, _, cx| this.capture_primary(cx)))
             .on_action(cx.listener(|this, _: &CaptureAll, _, cx| this.capture_all(cx)))
             .on_action(
@@ -1242,7 +1247,7 @@ impl Render for CaptureWorkspace {
                             "close-overlays",
                             "Close overlays",
                             false,
-                            cx.listener(|this, _, _, cx| this.close_overlays(cx)),
+                            cx.listener(|this, _, _, cx| this.cancel_overlays(cx)),
                         )),
                 )
             })

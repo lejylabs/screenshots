@@ -23,6 +23,7 @@ const META: u32 = 4;
 const FRAME: u32 = 5;
 const ERROR: u32 = 6;
 const END: u32 = 7;
+const DROP_BODY: u32 = 11;
 fn packet(output: &mut impl Write, kind: u32, metadata: &[u8], pixels: u64) -> Result<()> {
     let mut header = [0; HEADER];
     header[..8].copy_from_slice(MAGIC);
@@ -111,6 +112,7 @@ pub(super) fn read_request(input: &mut impl Read) -> Result<NativeCaptureCall> {
         Some("mac_video" | "portal_video" | "portal_scroll") => &["operation", "request"],
         Some("portal") => &["operation", "source", "cursor"],
         Some("image_url") => &["operation", "source"],
+        Some("native_drop") => &["operation", "source", "image"],
         Some("clipboard_image") => &["operation", "backend"],
         Some("clipboard_inspect") => &["operation", "kind", "backend"],
         _ => anyhow::bail!("Unknown native operation"),
@@ -225,12 +227,18 @@ pub(super) fn read_request(input: &mut impl Read) -> Result<NativeCaptureCall> {
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 enum Meta {
+    CaptureWindowHidden,
     PortalVideo {
         summary: app_core::PortalVideoSummary,
     },
     PortalScroll {
         count: usize,
         summary: app_core::PortalScrollSummary,
+    },
+    NativeDrop {
+        mime: app_core::NativeDropMime,
+        bytes: usize,
+        root_offset: Option<[i16; 2]>,
     },
     MacVideo {
         summary: app_core::MacVideoSummary,
@@ -275,11 +283,33 @@ struct Frame {
     display_geometry: Option<DisplayGeometry>,
 }
 pub(super) fn reply(output: &mut impl Write, reply: NativeCaptureReply) -> Result<()> {
+    if let NativeCaptureReply::NativeDrop(reply) = reply {
+        ensure!(
+            reply.bytes.len() <= reply.mime.maximum(),
+            "Native drop exceeds its bound"
+        );
+        let value = Meta::NativeDrop {
+            mime: reply.mime,
+            bytes: reply.bytes.len(),
+            root_offset: reply.root_offset,
+        };
+        let metadata = serde_json::to_vec(&value)?;
+        packet(output, META, &metadata, 0)?;
+        packet(output, DROP_BODY, &[], reply.bytes.len() as u64)?;
+        for bytes in reply.bytes.chunks(CHUNK) {
+            output.write_all(bytes)?;
+        }
+        packet(output, END, &[], 0)?;
+        output.flush()?;
+        return Ok(());
+    }
     let (value, frames) = match reply {
+        NativeCaptureReply::CaptureWindowHidden => (Meta::CaptureWindowHidden, Vec::new()),
         NativeCaptureReply::PortalVideo { summary } => (Meta::PortalVideo { summary }, Vec::new()),
         NativeCaptureReply::PortalScroll { image, summary } => {
             (Meta::PortalScroll { count: 1, summary }, vec![image])
         }
+        NativeCaptureReply::NativeDrop(_) => unreachable!("Native drop has its bounded wire body"),
         NativeCaptureReply::MacVideo { summary } => (Meta::MacVideo { summary }, Vec::new()),
         NativeCaptureReply::MacScroll { image, summary } => {
             (Meta::MacScroll { count: 1, summary }, vec![image])
@@ -527,7 +557,38 @@ pub(super) fn read_reply_with_eof(
         "Native macOS desktop omitted its output grid metadata"
     );
     let reply = match value {
+        Meta::CaptureWindowHidden => NativeCaptureReply::CaptureWindowHidden,
         Meta::PortalVideo { summary } => NativeCaptureReply::PortalVideo { summary },
+        Meta::NativeDrop {
+            mime,
+            bytes,
+            root_offset,
+        } => {
+            let NativeCaptureCall::NativeDrop { source, image } = call else {
+                anyhow::bail!("Unexpected native drop reply");
+            };
+            app_core::NativeDropReply::validate_shape(mime, bytes, *image)?;
+            ensure!(
+                root_offset.is_some() == matches!(source, app_core::NativeDropSource::X11 { .. }),
+                "Native drop coordinate authority differs from its request"
+            );
+            let (kind, metadata, body) = header(input)?;
+            ensure!(
+                kind == DROP_BODY && metadata == 0 && body == bytes as u64,
+                "Invalid native drop body framing"
+            );
+            let mut body = Vec::new();
+            body.try_reserve_exact(bytes)?;
+            body.resize(bytes, 0);
+            for chunk in body.chunks_mut(CHUNK) {
+                input.read_exact(chunk)?;
+            }
+            NativeCaptureReply::NativeDrop(app_core::NativeDropReply {
+                mime,
+                bytes: body,
+                root_offset,
+            })
+        }
         Meta::MacVideo { summary } => NativeCaptureReply::MacVideo { summary },
         Meta::Clipboard { snapshot } => {
             snapshot.validate()?;
@@ -1093,5 +1154,106 @@ mod portal_stream_tests {
             error.downcast_ref::<app_core::CaptureError>(),
             Some(app_core::CaptureError::PermissionDenied)
         ));
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod native_drop_wire_tests {
+    use super::*;
+    fn call(image: bool) -> NativeCaptureCall {
+        NativeCaptureCall::NativeDrop {
+            source: app_core::NativeDropSource::X11 {
+                display: ":65534".into(),
+                source: 7,
+                target: 11,
+                types: [1, 0, 0],
+                extended: false,
+                timestamp: 123,
+            },
+            image,
+        }
+    }
+    #[test]
+    fn original_encoded_body_and_negotiation_have_exact_wire_phases() {
+        for (image, mime, body) in [
+            (false, app_core::NativeDropMime::Png, &b""[..]),
+            (
+                true,
+                app_core::NativeDropMime::Png,
+                &b"private-synthetic-raster"[..],
+            ),
+            (
+                false,
+                app_core::NativeDropMime::UriList,
+                &b"file:///private/not-opened/a%FF.png\r\n"[..],
+            ),
+        ] {
+            let call = call(image);
+            let mut wire = Vec::new();
+            reply(
+                &mut wire,
+                NativeCaptureReply::NativeDrop(app_core::NativeDropReply {
+                    mime,
+                    bytes: body.to_vec(),
+                    root_offset: Some([-10, 20]),
+                }),
+            )
+            .unwrap();
+            let NativeCaptureReply::NativeDrop(actual) =
+                read_reply(&mut wire.as_slice(), &call).unwrap()
+            else {
+                panic!("wrong reply kind")
+            };
+            assert_eq!(actual.bytes, body);
+            assert_eq!(actual.mime, mime);
+            assert_eq!(actual.root_offset, Some([-10, 20]));
+        }
+    }
+    #[test]
+    fn oversized_or_wrong_phase_body_is_refused_before_body_read() {
+        for (mime, bytes, image, offset) in [
+            (
+                app_core::NativeDropMime::Png,
+                32 * 1024 * 1024 + 1,
+                true,
+                Some([0, 0]),
+            ),
+            (app_core::NativeDropMime::Png, 1, false, Some([0, 0])),
+            (app_core::NativeDropMime::UriList, 1, true, Some([0, 0])),
+            (app_core::NativeDropMime::Png, 1, true, None),
+        ] {
+            let mut wire = Vec::new();
+            let value = serde_json::to_vec(&Meta::NativeDrop {
+                mime,
+                bytes,
+                root_offset: offset,
+            })
+            .unwrap();
+            packet(&mut wire, META, &value, 0).unwrap();
+            let metadata_end = wire.len();
+            let mut input = std::io::Cursor::new(wire);
+            assert!(read_reply(&mut input, &call(image)).is_err());
+            assert_eq!(input.position(), metadata_end as u64);
+        }
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod capture_visibility_wire_tests {
+    use super::*;
+    #[test]
+    fn native_visibility_proof_has_no_pixels_and_cannot_impersonate_capture_or_inventory() {
+        let call = NativeCaptureCall::HideCaptureWindow { window: 7 };
+        let mut bytes = Vec::new();
+        reply(&mut bytes, NativeCaptureReply::CaptureWindowHidden).unwrap();
+        assert!(matches!(
+            read_reply(&mut bytes.as_slice(), &call).unwrap(),
+            NativeCaptureReply::CaptureWindowHidden
+        ));
+        assert!(bytes.len() < 128);
+        assert!(read_reply(&mut bytes.as_slice(), &NativeCaptureCall::Windows).is_err());
+        let mut wrong = Vec::new();
+        reply(&mut wrong, NativeCaptureReply::Windows(vec![])).unwrap();
+        assert!(read_reply(&mut wrong.as_slice(), &call).is_err());
     }
 }

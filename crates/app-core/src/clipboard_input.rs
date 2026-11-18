@@ -400,6 +400,37 @@ pub(crate) fn inspect_inline(
     check()?;
     Ok(value)
 }
+pub(crate) fn native_drop_inline(
+    source: &crate::NativeDropSource,
+    image: bool,
+    originating_pid: u32,
+    check: &crate::NativeCaptureCheck<'_>,
+) -> std::result::Result<crate::NativeDropReply, crate::CaptureError> {
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    {
+        source.validate()?;
+        let _resource = budget::Budget::enter().map_err(failure)?;
+        let result = platform::native_drop(
+            source,
+            image,
+            originating_pid,
+            Instant::now() + Duration::from_secs(4),
+            check,
+        )
+        .map_err(failure)?;
+        result.validate(source, image).map_err(failure)?;
+        check()?;
+        Ok(result)
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    {
+        let _ = (source, image, originating_pid, check);
+        Err(crate::CaptureError::Unsupported(
+            "Unix native drop acquisition requires Unix",
+        ))
+    }
+}
+
 fn failure(error: anyhow::Error) -> crate::CaptureError {
     use crate::CaptureError;
     match error.downcast_ref::<CaptureError>() {
@@ -534,4 +565,10 @@ mod tests {
         assert!(registered_format_label(&name, 128).is_err());
         assert_eq!(registered_format_label(&name, 0).unwrap(), None);
     }
+}
+
+#[cfg(all(target_os = "macos", feature = "native-file-clipboard-fixture"))]
+#[doc(hidden)]
+pub fn inspect_owned_macos_file_pasteboard(name: &str) -> Result<ClipboardSnapshot> {
+    platform::inspect_owned_named_files(name)
 }

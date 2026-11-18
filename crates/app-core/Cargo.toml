@@ -8,6 +8,13 @@ rust-version.workspace = true
 publish.workspace = true
 description = "Application core. No GPUI dependency."
 
+[features]
+native-file-clipboard-fixture = []
+
+[[example]]
+name = "owned_file_clipboard_macos"
+required-features = ["native-file-clipboard-fixture"]
+
 [lints]
 workspace = true
 

@@ -47,7 +47,7 @@ Linux exports the existing eight commands through StatusNotifierItem/DBusMenu an
 
 The existing six shortcut inputs and Save/Restore controls are reused on Unix. No new product controls, themes, editor design or menu actions are added. Settings load and persistence stay on existing background workers. Failed settings load cannot register fallback defaults. Save and Import reserve, persist, then commit or roll back. Cleanup failures report their actual active state and prevent further changes.
 
-Quit is provisional while recoverable output saves, editor closure or other acknowledged work are pending. Native services and singleton Show admission stay owned; capture input is paused and Show exposes the existing busy window. Save failure cancels Quit, retires queued input and resumes the same services/listener. Only the final irreversible exit stops Show admission. Native reservation/consent can still be canceled before persistence when no recoverable work remains; acknowledged storage and native finish results are awaited. Native availability loss cancels an in-flight native capture before restoring the control window, preserving output-free cancellation. No-tray Close follows the existing Quit lifecycle; an actual available tray permits minimizing the cleared existing shell. Before forgetting its last render, that window explicitly removes the thumbnail from its sprite atlas; a release error retains the handle and keeps the window accessible.
+Quit is provisional while recoverable output saves, editor closure or other acknowledged work are pending. Native services and singleton Show admission stay owned; capture input is paused and Show exposes the existing busy window. Save failure cancels Quit, retires queued input and resumes the same services/listener. Only the final irreversible exit stops Show admission. Native reservation/consent can still be canceled before persistence when no recoverable work remains; acknowledged storage and native finish results are awaited. Native availability loss cancels an in-flight native capture before restoring the control window, preserving output-free cancellation. No-tray Close follows the existing Quit lifecycle; an actual available tray permits destroying the cleared native control and retaining its controller. Before forgetting its last render, that window explicitly removes the thumbnail from its sprite atlas; a release error retains the handle and keeps the window accessible. Linux releases its existing lazy shared GPU context when the last native window releases its renderer, while retaining the native event and clipboard connection. macOS retains only a weak reference to the shared Metal instance-buffer pool, so actual renderers and in-flight GPU completions determine its lifetime. Reopen creates the existing controls on demand; a single flag coalesces Show through retirement. No existing editor or recoverable source pixel is discarded. See [the source and verification contract](unix-resident-graphics.md).
 
 Primary, region, edit, repeat and countdown paths reuse existing capture admission and output behavior. Unix active-window/display actions use existing native focused-capture calls; unsupported Wayland targets report unavailable and use no replacement source. The original capture context remains attached to the parent backend. The helper never reads screenshot pixels.
 
@@ -64,7 +64,7 @@ Source-level costs and limits, not measurements:
 - One active and one staged main-app portal session. Six main-app descriptions are bounded to 256 bytes each and paths to 512 bytes. The task-only mode admits 16 existing task IDs.
 - A 4 KiB icon representation per serialization plus native/serialization copies; no screenshot source, texture, image undo, PNG round trip or background capture stream.
 
-There are no measured process/private/PSS, idle CPU/wakeup, startup, physical input or GPU results for this candidate. The held diagnostic script reports the whole owned process family without reading pixels; standalone fixture figures would not establish production GUI acceptance. Existing Unix minimized-shell retention and visibility-delay debt remain separate gates.
+There are no measured process/private/PSS, idle CPU/wakeup, startup, physical input or GPU results for this candidate. The held diagnostic script reports the whole owned process family without reading pixels; standalone fixture figures would not establish production GUI acceptance. The resident graphics source change removes minimized-shell retention; its actual joint memory and reopen latency still require optimized measurements. Visibility-delay debt remains separate.
 
 ## Verification handoff
 
@@ -105,8 +105,9 @@ provenance live in `target/verification/unix-native-services-integration/`.
 The private runner activates only its own mock service directory and redirects
 HOME/XDG/authority; package extraction uses official SHA/signature verification
 without global installation. The latest whole-workspace run and two actual fresh applied-source reviews
-are successful. Exact source/artifact/check hashes are retained with the result. Existing minimized-shell retention, actual
-GUI/physical input and PLAN resource budgets remain explicitly open.
+are successful. Exact source/artifact/check hashes are retained with the result. The resident graphics source change removes minimized-shell retention; actual
+GUI/physical input, joint private/GPU memory and PLAN resource budgets remain
+explicitly open until measured against this new source.
 
 ## Final local functional checkpoint
 

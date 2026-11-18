@@ -70,7 +70,7 @@ impl CaptureWorkspace {
                                     cancel.cancel();
                                 }
                                 this.cancel_capture_delay(cx);
-                                this.show_control(cx);
+                                this.unix_reopen(cx);
                             }
                         }
                         cx.notify();
@@ -167,8 +167,12 @@ impl CaptureWorkspace {
         }
         self.hide_history(cx);
         self.hide_upload_history();
-        // Preserve the accessible existing shell. Unix graphics-detach performance is a separate gate.
-        window.minimize_window();
+        if self.resident {
+            self.retire_ui(cx);
+        } else {
+            // Unscoped/file-only windows have no resident controller owner.
+            window.minimize_window();
+        }
     }
     pub(super) fn set_unix_quitting(&mut self, quitting: bool) {
         if self.unix_quit_paused == quitting {
@@ -180,9 +184,13 @@ impl CaptureWorkspace {
         }
     }
     pub(super) fn unix_reopen(&mut self, cx: &mut Context<Self>) {
+        if self.switching_graphics || (!self.quitting && (self.capturing || self.preview_active)) {
+            self.unix_show_pending = true;
+            return;
+        }
         if self.quitting {
             self.capture_status = "Quitting: waiting for active work to finish…".into();
-            self.restore_control(cx);
+            self.open_control(cx);
             cx.notify();
         } else {
             self.show_control(cx);

@@ -23,6 +23,9 @@ repository = "https://github.com/lejylabs/screenshots"
 rust-version = "1.100"
 publish = false
 
+[workspace.lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(screenshots_native_drop_acceptance)"] }
+
 [workspace.lints.clippy]
 enum_glob_use = "deny"
 #dbg_macro = "deny"
@@ -94,6 +97,7 @@ atspi = { path = "vendor/atspi" }
 accesskit_atspi_common = { path = "vendor/accesskit_atspi_common" }
 accesskit_unix = { path = "vendor/accesskit_unix" }
 gpui-pre-linux = { path = "vendor/gpui-pre-linux" }
+gpui-pre-macos = { path = "vendor/gpui-pre-macos" }
 gpui-pre = { path = "vendor/gpui-pre" }
 cosmic-text = { path = "vendor/cosmic-text" }
 gpui-pre-windows = { path = "vendor/gpui-pre-windows" }

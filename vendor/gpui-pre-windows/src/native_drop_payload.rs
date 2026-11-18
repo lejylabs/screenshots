@@ -80,8 +80,17 @@ impl Formats {
     ) -> Result<Format> {
         for &(format, _) in &self.0 {
             check()?;
-            let supported = unsafe { source.QueryGetData(&self.descriptor(format)) }
-                == windows::Win32::Foundation::S_OK;
+            #[cfg(screenshots_native_drop_acceptance)]
+            super::super::native_drop_acceptance::hook(6, 0, std::ptr::null_mut());
+            #[cfg(screenshots_native_drop_acceptance)]
+            let mut phase = super::super::native_drop_acceptance::PayloadCall::begin(
+                1,
+                self.descriptor(format).cfFormat,
+            );
+            let result = unsafe { source.QueryGetData(&self.descriptor(format)) };
+            #[cfg(screenshots_native_drop_acceptance)]
+            phase.finish(result.0);
+            let supported = result == windows::Win32::Foundation::S_OK;
             check()?;
             if supported {
                 return Ok(format);
@@ -99,10 +108,48 @@ impl Formats {
         check: &dyn Fn() -> Result<()>,
     ) -> Result<Payload> {
         check()?;
-        let medium = Medium(
-            unsafe { source.GetData(&self.descriptor(format)) }
-                .map_err(|_| anyhow::anyhow!("Could not read native drop data"))?,
+        #[cfg(screenshots_native_drop_acceptance)]
+        super::super::native_drop_acceptance::hook(7, 0, std::ptr::null_mut());
+        #[cfg(screenshots_native_drop_acceptance)]
+        let mut phase = super::super::native_drop_acceptance::PayloadCall::begin(
+            2,
+            self.descriptor(format).cfFormat,
         );
+        let acquired = unsafe { source.GetData(&self.descriptor(format)) };
+        #[cfg(screenshots_native_drop_acceptance)]
+        phase.finish(acquired.as_ref().err().map_or(0, |error| error.code().0));
+        #[cfg(screenshots_native_drop_acceptance)]
+        super::super::native_drop_acceptance::hook(
+            11,
+            acquired
+                .as_ref()
+                .err()
+                .map_or(0, |error| error.code().0 as u32 as u64),
+            std::ptr::null_mut(),
+        );
+        #[allow(unused_mut)]
+        let mut medium =
+            Medium(acquired.map_err(|_| anyhow::anyhow!("Could not read native drop data"))?);
+        #[cfg(screenshots_native_drop_acceptance)]
+        {
+            if super::super::native_drop_acceptance::source_mutation() == Some("get") {
+                super::super::native_drop_acceptance::hook(70, 3, std::ptr::null_mut());
+                let mut extra_phase = super::super::native_drop_acceptance::PayloadCall::begin(
+                    2,
+                    self.descriptor(format).cfFormat,
+                );
+                let extra = unsafe { source.GetData(&self.descriptor(format)) };
+                extra_phase.finish(extra.as_ref().err().map_or(0, |error| error.code().0));
+                drop(Medium(extra.map_err(|_| {
+                    anyhow::anyhow!("Controlled duplicate acquisition failed")
+                })?));
+            }
+            if let Some(copy) =
+                super::super::native_drop_acceptance::duplicate_release(&mut medium.0)?
+            {
+                drop(Medium(copy));
+            }
+        }
         check()?;
         ensure!(
             medium.0.tymed == TYMED_HGLOBAL.0 as u32,
@@ -158,7 +205,11 @@ impl Formats {
 struct Medium(STGMEDIUM);
 impl Drop for Medium {
     fn drop(&mut self) {
+        #[cfg(screenshots_native_drop_acceptance)]
+        let mut phase = super::super::native_drop_acceptance::PayloadCall::begin(3, 0);
         unsafe { ReleaseStgMedium(&mut self.0) };
+        #[cfg(screenshots_native_drop_acceptance)]
+        phase.finish(0);
     }
 }
 struct Locked(HGLOBAL, *mut std::ffi::c_void);

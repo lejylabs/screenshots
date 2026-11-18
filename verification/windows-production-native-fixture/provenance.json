@@ -1,0 +1,64 @@
+{
+  "origin": "Reviewed HELD revision6 native fixture plus root correction from actual applied-source review11",
+  "source_patch_sha256": "58d915d226a30f570f815b79458046bb3580c7aeecd41dd52334b63e2fc2d45f",
+  "authoring_status": "108 authored cases with owned hosted CI input;95 without; added private-format ownership self-check. Current correction native execution pending; prior fc5 executed105 with50failures.",
+  "root_compatibility_corrections": [
+    "IsWindow(Some(window))",
+    "DESKTOP_ACCESS_FLAGS raw bitmask constructor",
+    "HandleError mapped explicitly to anyhow",
+    "manual cfg declared, never enabled, by workspace lint"
+  ],
+  "baseline_custom_marshaler_sha256": "86846ba9cbd9e593b678f628b721b3dd2d92633849b0bf0847f34f9e319488c5",
+  "files_sha256": {
+    "run.ps1": "c27342cf639a0670395f95765bcf735e66d96775a926e621aae7945c69385f4f",
+    "assertion-matrix.json": "7123bbe6891244c4d5bdddfcc8e49b1c0901e42baade49fcbd7beb945759fd11",
+    "source-oracle-rules.json": "0c3c7bb9ea73f16a5ca58313fb2f61422ae2f83d7a20f9f223208bef9f1dc919",
+    "native/production_source.cpp": "6e6c624ac34ff711a4064f138e2a23f77311d6348b341fc7b9ac21fc1536f46d",
+    "native/production_support.cpp": "8125daafdafc105f4d1e0b841cb8ef342f78c7f8d816bf7fbf7f2f80fba6f9dc",
+    "native/production_bridge.cpp": "c95f6a1aa2adf80769a66fb4ba00b4072fa8fbd2c1e230a92447d0c8512a27ab",
+    "native/production_controller.cpp": "62c19863eabd8a53f29b1b700cc93bc03c5f36cf1a55aae7fbf4a98dfa754b71",
+    "native/custom_marshal.hpp": "cf822d62264e3c43fe5065620b5184a4e84dc4ccfcea606e6fea6bfd7c66a2fb"
+  },
+  "root_readiness_correction": {
+    "finding": "registration wake could satisfy next receiver ALLOW wait",
+    "implementation": "per-registration admission epoch and exact receiver PID/TID ALLOW stamp; registration alone never admits source",
+    "actual_counterexample": "same-hwnd-reclaim intentionally wakes on real registration, requires owner rejection handshake before ALLOW",
+    "test_only_resource": "one additional owned event, 3-second finite registration probe within existing 5-second native guard; no idle work",
+    "execution": "Latest reviewed12 corrections not yet compiled/run. Earlier readiness snapshot57a42a3 MSVC compile/link+PSparsePASS; not runtime.",
+    "review12": "Two Majors corrected: explicit probe arm bypasses normalprovideralias; actual already-enabled receiver publishes admission after new registration, not fabricated unconditionalready."
+  },
+  "root_cached_medium_correction": "Review14 C++cached OLE lifetime balance corrected; review15 independentPowerShell selects from emitted raw ole_route/helper/source acquisition counters, never from missing marker or C++acceptanceboolean, and requires positive balanced outside medium counts.",
+  "root_cached_query_correction": "Actual review16 false rejection corrected: finish_drive topology and final_source_oracle reuse one cached_provider_query evidence function for genuine OLE; direct source identity and custom unmarshal first-boundary guard unchanged.",
+  "previous_files_sha256": {
+    "run.ps1": "3067ad5811ecfb1d31961068f46ed7d47d722366c89b37aa9515cacccaa14ab0",
+    "assertion-matrix.json": "7123bbe6891244c4d5bdddfcc8e49b1c0901e42baade49fcbd7beb945759fd11",
+    "source-oracle-rules.json": "0c3c7bb9ea73f16a5ca58313fb2f61422ae2f83d7a20f9f223208bef9f1dc919",
+    "native/production_source.cpp": "99e20044b35b32388cc0d7a14b8ad440d85b14a951473bbb3a8de3dc2095a7bf",
+    "native/production_support.cpp": "f2547196ecdd8ff13bb4228f232f23065904cf580c82be2ace14c3eb3ea77260",
+    "native/production_bridge.cpp": "c0eb46ac20341aed5368d926b5e3e42927fab110a40f3f9612735b46e78e496d",
+    "native/production_controller.cpp": "9f7f699c43802152b7478f81c814f83d6b5e49ed56ec3a087fe65b500cc0c4ae",
+    "native/custom_marshal.hpp": "cf822d62264e3c43fe5065620b5184a4e84dc4ccfcea606e6fea6bfd7c66a2fb"
+  },
+  "root_shell_helper_correction": {
+    "reviewed_packet": "windows-shell-helper-held/revision3",
+    "patch_sha256": "f79e909195f576a86242a6da6efdf75106a3870ce0b221d751c6090f36eedeb6",
+    "source_reviews": [
+      "review2 no Blocker/Major; exact-byte Nit fixed",
+      "review3 clean"
+    ],
+    "gnu_workspace_all_targets": "PASS including GDI cfg(test) source; not native runtime",
+    "historical_run": 44262524861,
+    "historical_executed": 105,
+    "historical_failures": 50,
+    "current_native_acceptance": "pending"
+  },
+  "root_msvc_compile_correction": {
+    "failed_run": 44276006510,
+    "reason": "Windows RPC SDK defines small as a char macro; fixture local STGMEDIUM small failedMSVC before anyCOMcases",
+    "correction": "rename only self-check local identifier to private_medium",
+    "previous_source_sha256": "30f3967d22ed11e79a5a7ba6e5d07a881e4fbfc1cb94c1b5bf69c229a70da31d",
+    "current_source_sha256": "6e6c624ac34ff711a4064f138e2a23f77311d6348b341fc7b9ac21fc1536f46d",
+    "native_gdi": "both exact owned raster/fault cases actually passed in same Windows job",
+    "native_drop": "0cases executed in55a because C++compile failed; next runtime pending"
+  }
+}

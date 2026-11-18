@@ -20,6 +20,23 @@ use windows::{
     core::*,
 };
 
+// Shell drag images use optional private IDataObject formats; payload admission is separate.
+fn drag_image_result(result: windows::core::Result<()>) -> Result<()> {
+    if let Err(error) = result {
+        let code = error.code();
+        #[cfg(screenshots_native_drop_acceptance)]
+        super::native_drop_acceptance::hook(82, code.0 as u32 as u64, std::ptr::null_mut());
+        if code != DV_E_FORMATETC {
+            #[cfg(screenshots_native_drop_acceptance)]
+            super::native_drop_acceptance::hook(84, code.0 as u32 as u64, std::ptr::null_mut());
+            return Err(anyhow::anyhow!("Native drag helper failed"));
+        }
+        #[cfg(screenshots_native_drop_acceptance)]
+        super::native_drop_acceptance::hook(83, code.0 as u32 as u64, std::ptr::null_mut());
+    }
+    Ok(())
+}
+
 pub(super) const PROPERTY: PCWSTR = w!("Screenshots.NativeDrop.Target.v1");
 const ARM: u32 = 30;
 const DONE: u32 = 31;
@@ -74,9 +91,14 @@ impl Receiver {
                 .ok_or_else(|| anyhow::anyhow!("Native interval exhausted"))?,
         );
         self.control(ARM)?;
-        self.permit()
+        self.permit()?;
+        #[cfg(screenshots_native_drop_acceptance)]
+        super::native_drop_acceptance::hook(1, self.sequence.get(), std::ptr::null_mut());
+        Ok(())
     }
     fn done(&self) -> Result<()> {
+        #[cfg(screenshots_native_drop_acceptance)]
+        super::native_drop_acceptance::error_reference();
         clear_error_info()?;
         // Source argument wrappers and STGMEDIUM have already unwound before this.
         if let Some(packet) = self.pending.borrow_mut().take() {
@@ -84,6 +106,8 @@ impl Receiver {
         }
         self.control(DONE)?;
         self.permit()?;
+        #[cfg(screenshots_native_drop_acceptance)]
+        super::native_drop_acceptance::hook(2, self.sequence.get(), std::ptr::null_mut());
         self.armed.set(false);
         Ok(())
     }
@@ -118,6 +142,14 @@ impl Receiver {
                 .is_none_or(|old| old.header.kind != wire::SUBMIT),
             "Native result slot occupied"
         );
+        #[cfg(screenshots_native_drop_acceptance)]
+        if packet.header.kind == wire::SUBMIT {
+            super::native_drop_acceptance::hook(
+                56,
+                packet.bytes.len() as u64,
+                std::ptr::null_mut(),
+            );
+        }
         *pending = Some(packet);
         Ok(())
     }
@@ -252,8 +284,7 @@ impl Target {
         let open = self.open.replace(false);
         if let Some(helper) = helper {
             if open {
-                unsafe { helper.DragLeave() }
-                    .map_err(|_| anyhow::anyhow!("Native drag helper failed"))?;
+                drag_image_result(unsafe { helper.DragLeave() })?;
             }
             drop(helper);
         }
@@ -264,12 +295,20 @@ impl Target {
         self.metadata.borrow_mut().take();
     }
     fn make_helper(&self) -> Result<IDropTargetHelper> {
+        #[cfg(screenshots_native_drop_acceptance)]
+        if let Some(helper) = super::native_drop_acceptance::helper()? {
+            return Ok(helper);
+        }
         #[cfg(test)]
         if let Some(factory) = self.helper_factory.as_ref() {
             return factory();
         }
         unsafe { CoCreateInstance(&CLSID_DragDropHelper, None, CLSCTX_INPROC_SERVER) }
-            .map_err(|_| anyhow::anyhow!("Native helper unavailable"))
+            .map_err(|_error| {
+                #[cfg(screenshots_native_drop_acceptance)]
+                super::native_drop_acceptance::hook(82, _error.code().0 as u32 as u64, std::ptr::null_mut());
+                anyhow::anyhow!("Native helper unavailable")
+            })
     }
     fn failed(&self, operation: Operation) -> Result<()> {
         if self.operation.get() != Some(operation) {
@@ -284,6 +323,8 @@ impl Target {
         Ok(())
     }
     fn finish_operation(&self, operation: Operation, result: Result<bool>) -> Result<bool> {
+        #[cfg(screenshots_native_drop_acceptance)]
+        super::native_drop_acceptance::hook(81, u64::from(result.is_err()), std::ptr::null_mut());
         match result {
             Ok(accepted) => {
                 if self.operation.get() == Some(operation) {
@@ -319,12 +360,16 @@ impl Target {
             .begin_operation()?
             .ok_or_else(|| anyhow::anyhow!("Native gesture unavailable"))?;
         let result = (|| {
+            #[cfg(screenshots_native_drop_acceptance)]
+            super::native_drop_acceptance::hook(80, 1, std::ptr::null_mut());
             let format = self
                 .receiver
                 .formats
                 .negotiate(source, &|| self.check_operation(operation))?;
             self.check_operation(operation)?;
             self.format.set(Some(format));
+            #[cfg(screenshots_native_drop_acceptance)]
+            super::native_drop_acceptance::hook(80, 2, std::ptr::null_mut());
             let (code, body) =
                 if matches!(format, Format::Files | Format::UrlWide | Format::UrlAscii) {
                     payload_bytes(
@@ -337,17 +382,23 @@ impl Target {
                 };
             self.check_operation(operation)?;
             *self.metadata.borrow_mut() = Some((code, body.clone()));
+            #[cfg(screenshots_native_drop_acceptance)]
+            super::native_drop_acceptance::hook(80, 3, std::ptr::null_mut());
             let helper = Rc::new(self.make_helper()?);
             self.check_operation(operation)?;
             *self.helper.borrow_mut() = Some(helper.clone());
             self.open.set(true);
+            #[cfg(screenshots_native_drop_acceptance)]
+            super::native_drop_acceptance::hook(80, 4, std::ptr::null_mut());
             let result =
-                unsafe { helper.DragEnter(self.hwnd, source, &POINT { x: pt.x, y: pt.y }, effect) }
-                    .map_err(|_| anyhow::anyhow!("Native drag helper failed"));
+                unsafe { helper.DragEnter(self.hwnd, source, &POINT { x: pt.x, y: pt.y }, effect) };
             self.check_operation(operation)?;
             drop(helper);
             self.check_operation(operation)?;
-            result?;
+            drag_image_result(result)?;
+            self.check_operation(operation)?;
+            #[cfg(screenshots_native_drop_acceptance)]
+            super::native_drop_acceptance::hook(80, 5, std::ptr::null_mut());
             self.stage(operation.generation, wire::ENTER, code, pt, body)?;
             Ok(true)
         })();
@@ -364,12 +415,12 @@ impl Target {
                 .borrow()
                 .clone()
                 .ok_or_else(|| anyhow::anyhow!("Native drag helper unavailable"))?;
-            let result = unsafe { helper.DragOver(&POINT { x: pt.x, y: pt.y }, effect) }
-                .map_err(|_| anyhow::anyhow!("Native drag helper failed"));
+            let result = unsafe { helper.DragOver(&POINT { x: pt.x, y: pt.y }, effect) };
             self.check_operation(operation)?;
             drop(helper);
             self.check_operation(operation)?;
-            result?;
+            drag_image_result(result)?;
+            self.check_operation(operation)?;
             self.stage(operation.generation, wire::MOTION, 0, pt, Vec::new())?;
             Ok(true)
         })();
@@ -422,14 +473,13 @@ impl Target {
             if let Some(helper) = helper {
                 let result = if open {
                     unsafe { helper.Drop(source, &POINT { x: pt.x, y: pt.y }, effect) }
-                        .map_err(|_| anyhow::anyhow!("Native drag helper failed"))
                 } else {
                     Ok(())
                 };
                 self.check_operation(operation)?;
                 drop(helper);
                 self.check_operation(operation)?;
-                result?;
+                drag_image_result(result)?;
             }
             self.check_operation(operation)?;
             self.retire_gesture();
@@ -473,6 +523,12 @@ impl IDropTarget_Impl for DropTarget_Impl {
     ) -> windows::core::Result<()> {
         fatal_if(self.0.receiver.check());
         self.0.observe_callback();
+        #[cfg(screenshots_native_drop_acceptance)]
+        super::native_drop_acceptance::hook(
+            5,
+            self.0.receiver.sequence.get(),
+            std::ptr::null_mut(),
+        );
         let copy = unsafe { *effect & DROPEFFECT_COPY };
         unsafe {
             *effect = DROPEFFECT_NONE;
@@ -485,6 +541,31 @@ impl IDropTarget_Impl for DropTarget_Impl {
             unsafe {
                 *effect = copy;
             }
+        }
+        #[cfg(screenshots_native_drop_acceptance)]
+        {
+            if super::native_drop_acceptance::source_mutation() == Some("busy-get")
+                && unsafe { *effect } == DROPEFFECT_NONE
+                && self.0.receiver.busy.get().is_some()
+            {
+                if let Ok(source) = source.ok() {
+                    super::native_drop_acceptance::hook(70, 6, std::ptr::null_mut());
+                    let format = fatal_if(
+                        self.0
+                            .receiver
+                            .formats
+                            .negotiate(source, &|| self.0.receiver.check()),
+                    );
+                    let extra = fatal_if(
+                        self.0
+                            .receiver
+                            .formats
+                            .acquire(source, format, &|| self.0.receiver.check()),
+                    );
+                    drop(extra);
+                }
+            }
+            super::native_drop_acceptance::mutate_busy_effect(effect);
         }
         Ok(())
     }
@@ -535,6 +616,10 @@ impl IDropTarget_Impl for DropTarget_Impl {
                 *effect = copy;
             }
         }
+        #[cfg(screenshots_native_drop_acceptance)]
+        if accepted && super::native_drop_acceptance::mutate_drop_effect(effect) {
+            return Err(windows::core::Error::from_hresult(E_FAIL));
+        }
         Ok(())
     }
 }
@@ -555,6 +640,8 @@ fn remove(registration: Registration) -> Result<()> {
     target.retired.set(true);
     target.retire_gesture();
     target.leave_helper()?;
+    #[cfg(screenshots_native_drop_acceptance)]
+    super::native_drop_acceptance::hook(21, target.receiver.sequence.get(), std::ptr::null_mut());
     unsafe { RevokeDragDrop(target.hwnd) }
         .map_err(|_| anyhow::anyhow!("Native target removal failed"))?;
     if target
@@ -606,10 +693,14 @@ pub fn serve(
         event::wait(&[event::raw(&parent), event::raw(&permit)], 5000)? == 1,
         "Native controller unavailable"
     );
+    #[cfg(screenshots_native_drop_acceptance)]
+    super::native_drop_acceptance::hook(1, sequence, std::ptr::null_mut());
     fatal_if(
         unsafe { OleInitialize(None) }
             .map_err(|_| anyhow::anyhow!("Native receiver initialization failed")),
     );
+    #[cfg(screenshots_native_drop_acceptance)]
+    super::native_drop_acceptance::hook(3, sequence, std::ptr::null_mut());
     let formats = fatal_if(Formats::register());
     let receiver = ManuallyDrop::new(Rc::new(Receiver {
         formats,
@@ -699,14 +790,36 @@ pub fn serve(
                     });
                     ensure_or_exit(target.live());
                     let interface: IDropTarget = DropTarget(target.clone()).into();
+                    #[cfg(screenshots_native_drop_acceptance)]
+                    super::native_drop_acceptance::hook(
+                        20,
+                        receiver.sequence.get(),
+                        std::ptr::null_mut(),
+                    );
                     fatal_if(
                         unsafe { RegisterDragDrop(hwnd, &interface) }
                             .map_err(|_| anyhow::anyhow!("Native registration failed")),
+                    );
+                    #[cfg(screenshots_native_drop_acceptance)]
+                    super::native_drop_acceptance::hook(
+                        4,
+                        receiver.sequence.get(),
+                        interface.as_raw(),
                     );
                     targets.push(Registration {
                         target,
                         _interface: interface,
                     });
+                    #[cfg(screenshots_native_drop_acceptance)]
+                    if receiver.enabled.get() {
+                        // A newly registered B may share an already-enabled receiver;
+                        // registration alone must never manufacture admission.
+                        super::native_drop_acceptance::hook(
+                            9,
+                            receiver.sequence.get(),
+                            std::ptr::null_mut(),
+                        );
+                    }
                     fatal_if(receiver.send(
                         wire::Header {
                             kind: wire::REGISTERED,
@@ -737,6 +850,12 @@ pub fn serve(
                     {
                         receiver.busy.set(None);
                         receiver.enabled.set(true);
+                        #[cfg(screenshots_native_drop_acceptance)]
+                        super::native_drop_acceptance::hook(
+                            9,
+                            receiver.sequence.get(),
+                            std::ptr::null_mut(),
+                        );
                     }
                 }
                 wire::ALLOW => {
@@ -744,13 +863,40 @@ pub fn serve(
                         receiver.busy.get().is_none() && h.version == receiver.version.get(),
                     );
                     receiver.enabled.set(true);
+                    #[cfg(screenshots_native_drop_acceptance)]
+                    super::native_drop_acceptance::hook(
+                        9,
+                        receiver.sequence.get(),
+                        std::ptr::null_mut(),
+                    );
+                }
+                #[cfg(screenshots_native_drop_acceptance)]
+                40 => {
+                    ensure_or_exit(
+                        h.version == receiver.version.get() && h.window == 0 && h.generation == 0,
+                    );
+                    if !super::native_drop_acceptance::omit_completion_reply() {
+                        fatal_if(receiver.send(wire::Header { kind: 41, ..h }, &[]));
+                    }
                 }
                 wire::STOP => {
                     while let Some(registration) = targets.pop() {
                         fatal_if(remove(registration));
                     }
+                    #[cfg(screenshots_native_drop_acceptance)]
+                    super::native_drop_acceptance::hook(
+                        8,
+                        receiver.sequence.get(),
+                        std::ptr::null_mut(),
+                    );
                     unsafe {
                         ManuallyDrop::drop(&mut targets);
+                        #[cfg(screenshots_native_drop_acceptance)]
+                        super::native_drop_acceptance::hook(
+                            22,
+                            receiver.sequence.get(),
+                            std::ptr::null_mut(),
+                        );
                         OleUninitialize();
                     }
                     // Receiver/output objects contain no source COM interfaces now.

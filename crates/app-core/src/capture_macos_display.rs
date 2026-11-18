@@ -86,9 +86,12 @@ impl PreparedDisplay {
         )?;
         let native = match &self.source {
             Some(source) => source.capture(&self.options, self.until, selected_bytes)?,
-            None => crate::capture_macos_sck::Image(unsafe {
-                CGDisplayCreateImage(self.coordinates.display_id)
-            }),
+            None => {
+                crate::capture_macos_sck::verify_legacy_app_hidden()?;
+                crate::capture_macos_sck::Image(unsafe {
+                    CGDisplayCreateImage(self.coordinates.display_id)
+                })
+            }
         };
         ensure!(!native.0.is_null(), "Native display image is unavailable");
         let native_region =

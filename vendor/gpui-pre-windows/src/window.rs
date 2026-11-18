@@ -1200,6 +1200,14 @@ fn register_native_drop(
         .executor
         .spawn(async move {
             while let Some(mut delivery) = registration.next().await {
+                #[cfg(screenshots_native_drop_acceptance)]
+                if delivery.packet.header.kind == crate::native_drop_wire::SUBMIT {
+                    crate::native_drop_acceptance::hold_body(
+                        delivery.packet.header.window,
+                        delivery.packet.header.generation,
+                    )
+                    .await;
+                }
                 let Some(window) = weak.upgrade() else {
                     break;
                 };
@@ -1207,6 +1215,18 @@ fn register_native_drop(
                     || window.native_destruction_started.get()
                     || !target.current(&delivery)
                 {
+                    #[cfg(screenshots_native_drop_acceptance)]
+                    if !window.dialog_owner.is_closed()
+                        && !window.native_destruction_started.get()
+                        && !target.current(&delivery)
+                        && delivery.packet.header.kind == crate::native_drop_wire::SUBMIT
+                        && !delivery.packet.bytes.is_empty()
+                    {
+                        crate::native_drop_acceptance::canceled_body(
+                            delivery.packet.header.window,
+                            delivery.packet.header.generation,
+                        );
+                    }
                     continue;
                 }
                 let header = delivery.packet.header;
@@ -1284,6 +1304,13 @@ fn register_native_drop(
                     && target.current(&delivery)
                     && !window.dialog_owner.is_closed()
                 {
+                    #[cfg(screenshots_native_drop_acceptance)]
+                    crate::native_drop_acceptance::submit_scope(
+                        header.window,
+                        header.generation,
+                        || window.deliver_native_drop(FileDropEvent::Submit { position }),
+                    );
+                    #[cfg(not(screenshots_native_drop_acceptance))]
                     window.deliver_native_drop(FileDropEvent::Submit { position });
                     if target.current(&delivery) {
                         window.deliver_native_drop(FileDropEvent::Exited);
@@ -1835,3 +1862,32 @@ mod tests {
 #[cfg(test)]
 #[path = "file_drop_medium_tests.rs"]
 mod file_drop_medium_tests;
+
+#[cfg(screenshots_native_drop_acceptance)]
+pub fn native_drop_acceptance_window_state(
+    hwnd: usize,
+) -> anyhow::Result<(bool, bool, Option<u64>)> {
+    let hwnd = HWND(hwnd as _);
+    let mut pid = 0;
+    let tid = unsafe { GetWindowThreadProcessId(hwnd, Some(&mut pid)) };
+    anyhow::ensure!(
+        pid == unsafe { windows::Win32::System::Threading::GetCurrentProcessId() }
+            && tid == unsafe { windows::Win32::System::Threading::GetCurrentThreadId() },
+        "Acceptance HWND must belong to this foreground thread"
+    );
+    let pointer = unsafe { get_window_long(hwnd, GWLP_USERDATA) } as *mut Weak<WindowsWindowInner>;
+    anyhow::ensure!(!pointer.is_null(), "Acceptance window is not a GPUI window");
+    let window = unsafe { &*pointer }
+        .upgrade()
+        .ok_or_else(|| anyhow::anyhow!("Acceptance window was removed"))?;
+    let token = window
+        .native_drop
+        .borrow()
+        .as_ref()
+        .map(|target| target.token());
+    Ok((
+        window.native_drop_eligible.get(),
+        window.native_drop_retiring.get(),
+        token,
+    ))
+}

@@ -3541,8 +3541,6 @@ dependencies = [
 [[package]]
 name = "gpui-pre-macos"
 version = "0.3.12"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2de7d3f4ad51ac387e822495db363fcc1188d349793365731d054444c4cb06ee"
 dependencies = [
  "accesskit",
  "accesskit_macos",
@@ -7707,7 +7705,12 @@ dependencies = [
  "tracing-subscriber",
  "tray-icon",
  "uuid",
+ "wayland-client",
+ "wayland-protocols",
+ "wayland-protocols-wlr",
+ "wayland-server",
  "windows-sys 0.61.2",
+ "x11rb",
  "zbus 6.2.1",
  "zeroize",
 ]
@@ -9430,6 +9433,7 @@ dependencies = [
  "wayland-backend",
  "wayland-client",
  "wayland-scanner",
+ "wayland-server",
 ]
 
 [[package]]
@@ -9456,6 +9460,7 @@ dependencies = [
  "wayland-client",
  "wayland-protocols",
  "wayland-scanner",
+ "wayland-server",
 ]
 
 [[package]]

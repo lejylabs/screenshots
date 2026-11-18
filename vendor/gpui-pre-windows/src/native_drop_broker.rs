@@ -175,18 +175,19 @@ impl NativeDropBroker {
         drop(state);
         if start {
             let worker = shared.clone();
-            if thread::Builder::new()
+            let controller = thread::Builder::new()
                 .name("native-drop-controller".into())
                 .stack_size(256 * 1024)
-                .spawn(move || supervise(worker))
-                .is_err()
-            {
+                .spawn(move || supervise(worker));
+            if controller.is_err() {
                 let mut state = lock(&shared.state);
                 state.targets.remove(&token);
                 state.finished = true;
                 slot.take();
                 anyhow::bail!("Native drop controller unavailable");
             }
+            #[cfg(screenshots_native_drop_acceptance)]
+            super::native_drop_acceptance::own_controller(controller.unwrap());
         }
         event::signal(&shared.wake)?;
         Ok(Registration {
@@ -196,6 +197,18 @@ impl NativeDropBroker {
             closed: Arc::new(Mutex::new(Some(closed))),
             wake,
         })
+    }
+    #[cfg(screenshots_native_drop_acceptance)]
+    pub(crate) fn acceptance_begin_completion(
+        &self,
+    ) -> Result<oneshot::Receiver<super::native_drop_acceptance::CompletionProof>> {
+        let shared = lock(&self.slot)
+            .as_ref()
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("Missing actual broker"))?;
+        let receiver = super::native_drop_acceptance::request_completion();
+        event::signal(&shared.wake)?;
+        Ok(receiver)
     }
     pub(crate) fn cancel(&self) {
         if let Some(shared) = lock(&self.slot).as_ref() {
@@ -220,6 +233,13 @@ impl NativeDropBroker {
     }
 }
 impl Registration {
+    #[cfg(screenshots_native_drop_acceptance)]
+    pub(crate) fn acceptance_pending_kind(&self) -> Option<u32> {
+        lock(&self.shared.state)
+            .targets
+            .get(&self.token)
+            .and_then(|target| target.packet.as_ref().map(|packet| packet.header.kind))
+    }
     pub(crate) fn handle(&self) -> TargetHandle {
         TargetHandle {
             shared: self.shared.clone(),
@@ -259,7 +279,16 @@ impl Registration {
             return Some(Delivery {
                 packet: wire::Packet {
                     header: wire::Header {
-                        kind: wire::FAILED,
+                        kind: {
+                            #[cfg(screenshots_native_drop_acceptance)]
+                            {
+                                super::native_drop_acceptance::failure_terminal_kind()
+                            }
+                            #[cfg(not(screenshots_native_drop_acceptance))]
+                            {
+                                wire::FAILED
+                            }
+                        },
                         window: self.token,
                         version,
                         ..Default::default()
@@ -323,6 +352,8 @@ impl Drop for Registration {
 }
 fn notify(target: &mut Target) {
     let _ = target.sender.try_send(());
+    #[cfg(screenshots_native_drop_acceptance)]
+    super::native_drop_acceptance::publication_changed();
 }
 fn publish(
     shared: &Arc<Shared>,
@@ -394,6 +425,8 @@ fn publish(
         );
         target.packet = Some(packet);
     }
+    #[cfg(screenshots_native_drop_acceptance)]
+    super::native_drop_acceptance::record_publish(h);
     notify(target);
     Ok(())
 }
@@ -423,6 +456,10 @@ fn supervise(shared: Arc<Shared>) {
             state.fatal = false;
         }
         let result = run_one(&shared);
+        #[cfg(screenshots_native_drop_acceptance)]
+        if result.is_err() {
+            super::native_drop_acceptance::before_failure_transition();
+        }
         let mut state = lock(&shared.state);
         // run_one returns only after the exact process is signaled and pipe reader joined.
         retire_reaped_targets(&mut state);
@@ -436,6 +473,8 @@ fn supervise(shared: Arc<Shared>) {
             notify(target);
         }
         if state.finished {
+            #[cfg(screenshots_native_drop_acceptance)]
+            super::native_drop_acceptance::failure_published(state.version);
             return;
         }
         let retry = state.restart_credit && !state.targets.is_empty();
@@ -447,6 +486,8 @@ fn supervise(shared: Arc<Shared>) {
                 return;
             }
         };
+        #[cfg(screenshots_native_drop_acceptance)]
+        super::native_drop_acceptance::failure_published(state.version);
         drop(state);
         if !retry {
             // Failure remains unavailable until a concrete window/cancel event, never poll/retry.
@@ -503,10 +544,14 @@ fn run_one(shared: &Arc<Shared>) -> Result<()> {
             command.env(name, value);
         }
     }
+    #[cfg(screenshots_native_drop_acceptance)]
+    super::native_drop_acceptance::decorate(&mut command);
     let mut child = ChildOwner(process::spawn(
         &mut command,
         &[command_event.as_handle(), permit.as_handle()],
     )?);
+    #[cfg(screenshots_native_drop_acceptance)]
+    super::native_drop_acceptance::child_started();
     let input = child.0.read.try_clone()?;
     let packets_ready = Arc::new(event::event(false)?);
     let reader_ready = packets_ready.clone();
@@ -519,7 +564,17 @@ fn run_one(shared: &Arc<Shared>) -> Result<()> {
             loop {
                 let packet = wire::read(&mut input);
                 let failed = packet.is_err();
-                if tx.send(packet).is_err() {
+                #[cfg(screenshots_native_drop_acceptance)]
+                if let Ok(packet) = &packet {
+                    super::native_drop_acceptance::record_read(packet.header);
+                }
+                if let Err(error) = tx.send(packet) {
+                    drop(error);
+                    // Parent reaps the helper before dropping rx. Drain its remaining FIFO to EOF.
+                    #[cfg(screenshots_native_drop_acceptance)]
+                    while let Ok(packet) = wire::read(&mut input) {
+                        super::native_drop_acceptance::record_read(packet.header);
+                    }
                     break;
                 }
                 if event::signal(&*reader_ready).is_err() || failed {
@@ -543,6 +598,8 @@ fn run_one(shared: &Arc<Shared>) -> Result<()> {
         let mut ready = false;
         let mut idle = false;
         let mut command_sequence = 0u64;
+        #[cfg(screenshots_native_drop_acceptance)]
+        let mut completion_command: Option<(u64, bool)> = None;
         let mut stopped = false;
         let mut allowed = false;
         let initial_cancel = lock(&shared.state).cancel;
@@ -567,6 +624,10 @@ fn run_one(shared: &Arc<Shared>) -> Result<()> {
                 ],
                 timeout,
             )?;
+            #[cfg(screenshots_native_drop_acceptance)]
+            if signaled == 258 || !deadline.unexpired(Instant::now()) {
+                super::native_drop_acceptance::deadline_expired();
+            }
             ensure!(
                 signaled != 258 && deadline.unexpired(Instant::now()),
                 "Native receiver deadline expired"
@@ -616,6 +677,27 @@ fn run_one(shared: &Arc<Shared>) -> Result<()> {
                             "Native completion permit deadline expired"
                         );
                         event::signal(&permit)?;
+                        #[cfg(screenshots_native_drop_acceptance)]
+                        if completion_command.is_some_and(|(sequence, _)| sequence == h.generation)
+                        {
+                            let (_, ack) = completion_command.take().unwrap();
+                            super::native_drop_acceptance::completion_done(ack, false);
+                        }
+                    }
+                    #[cfg(screenshots_native_drop_acceptance)]
+                    41 => {
+                        ensure!(
+                            deadline.armed()
+                                && h.window == 0
+                                && h.generation == 0
+                                && h.version == lock(&shared.state).version,
+                            "Completion reply outside exact guarded version"
+                        );
+                        let pending = completion_command
+                            .as_mut()
+                            .ok_or_else(|| anyhow::anyhow!("Unexpected completion reply"))?;
+                        ensure!(h.reader == pending.0, "Wrong completion command");
+                        pending.1 = true;
                     }
                     READY => {
                         ensure!(deadline.armed() && !ready, "Invalid native startup reply");
@@ -734,6 +816,17 @@ fn run_one(shared: &Arc<Shared>) -> Result<()> {
                         break;
                     }
                 }
+                #[cfg(screenshots_native_drop_acceptance)]
+                if next.is_none() && super::native_drop_acceptance::take_completion() {
+                    next = Some((
+                        wire::Header {
+                            kind: 40,
+                            version,
+                            ..Default::default()
+                        },
+                        Vec::new(),
+                    ));
+                }
                 let abandoned = state
                     .targets
                     .iter()
@@ -764,6 +857,10 @@ fn run_one(shared: &Arc<Shared>) -> Result<()> {
                         .checked_add(1)
                         .ok_or_else(|| anyhow::anyhow!("Native command exhausted"))?;
                     header.reader = command_sequence;
+                    #[cfg(screenshots_native_drop_acceptance)]
+                    if header.kind == 40 {
+                        completion_command = Some((command_sequence, false));
+                    }
                     ensure!(
                         deadline.issue(command_sequence, Instant::now()),
                         "Native command already pending"
@@ -779,6 +876,8 @@ fn run_one(shared: &Arc<Shared>) -> Result<()> {
     drop(rx);
     let joined = reader.join();
     ensure!(joined.is_ok(), "Native pipe reader failed");
+    #[cfg(screenshots_native_drop_acceptance)]
+    super::native_drop_acceptance::reader_reaped();
     result
 }
 #[cfg(test)]

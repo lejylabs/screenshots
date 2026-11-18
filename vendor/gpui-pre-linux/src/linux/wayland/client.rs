@@ -16,6 +16,8 @@ use std::{
 mod drop_metadata;
 #[path = "incoming_drop.rs"]
 mod incoming_drop;
+#[path = "outgoing_drag.rs"]
+mod outgoing_drag;
 use anyhow::Context as _;
 use ashpd::WindowIdentifier;
 use calloop::{
@@ -27,7 +29,6 @@ use calloop_wayland_source::WaylandSource;
 use collections::HashMap;
 use filedescriptor::Pipe;
 use gpui_util::ResultExt as _;
-use http_client::Url;
 #[cfg(test)]
 use smallvec::SmallVec;
 use wayland_backend::client::ObjectId;
@@ -110,12 +111,11 @@ use crate::linux::{
 };
 use gpui::{
     AnyWindowHandle, Bounds, Capslock, CursorStyle, DevicePixels, ExternalDragPayload,
-    FileDragPaths, FileDropEvent, ForegroundExecutor, GraphicalEnvironment, KeyDownEvent,
-    KeyUpEvent, Keystroke, Modifiers, ModifiersChangedEvent, MouseButton, MouseDownEvent,
-    MouseExitEvent, MouseMoveEvent, MouseUpEvent, NavigationDirection, Pixels, PlatformDisplay,
-    PlatformFrameSignal, PlatformInput, PlatformKeyboardLayout, PlatformWindow, Point, ScrollDelta,
-    ScrollEvent, ScrollSource, SharedString, Size, TouchPhase, WindowButtonLayout, WindowKind,
-    WindowParams, point, px, size,
+    FileDropEvent, ForegroundExecutor, GraphicalEnvironment, KeyDownEvent, KeyUpEvent, Keystroke,
+    Modifiers, ModifiersChangedEvent, MouseButton, MouseDownEvent, MouseExitEvent, MouseMoveEvent,
+    MouseUpEvent, NavigationDirection, Pixels, PlatformDisplay, PlatformFrameSignal, PlatformInput,
+    PlatformKeyboardLayout, PlatformWindow, Point, ScrollDelta, ScrollEvent, ScrollSource,
+    SharedString, Size, TouchPhase, WindowButtonLayout, WindowKind, WindowParams, point, px, size,
 };
 use gpui_wgpu::{CompositorGpuHint, GpuContext};
 use wayland_protocols::wp::linux_dmabuf::zv1::client::{
@@ -609,21 +609,21 @@ pub(crate) enum DataSourceKind {
 
 pub(crate) struct ExternalDrag {
     source: wl_data_source::WlDataSource,
-    bytes: Vec<u8>,
+    bytes: Arc<[u8]>,
+    writer: Option<outgoing_drag::Writer>,
     window: WaylandWindowStatePtr,
 }
 
-fn file_uri_list(paths: &FileDragPaths) -> String {
-    paths
-        .entries()
-        .iter()
-        .filter_map(|(path, _)| Url::from_file_path(path).ok())
-        .fold(String::new(), |mut list, url| {
-            list.push_str(url.as_str());
-            list.push_str("\r\n");
-            list
-        })
+impl Drop for ExternalDrag {
+    fn drop(&mut self) {
+        self.writer.take();
+        if self.source.is_alive() {
+            self.source.destroy();
+        }
+    }
 }
+
+use outgoing_drag::file_uri_list;
 
 pub struct ClickState {
     last_mouse_button: Option<MouseButton>,
@@ -778,22 +778,35 @@ impl WaylandClientStatePtr {
             return false;
         };
 
-        let ExternalDragPayload::Files(paths) = payload;
-        let uri_list = file_uri_list(paths);
-        if uri_list.is_empty() {
+        if state.external_drag.is_some()
+            || state.button_pressed != Some(MouseButton::Left)
+            || !surface.is_alive()
+            || !state
+                .mouse_focused_window
+                .as_ref()
+                .is_some_and(|focused| focused.ptr_eq(&window))
+        {
             return false;
         }
+        let Some(serial) = state.serial_tracker.drag_serial(surface) else {
+            return false;
+        };
+        let ExternalDragPayload::Files(paths) = payload;
+        let Some(bytes) = file_uri_list(paths) else {
+            return false;
+        };
 
-        let serial = state.serial_tracker.get(SerialKind::MousePress);
         let source =
             data_device_manager.create_data_source(&state.globals.qh, DataSourceKind::Drag);
         source.offer(FILE_LIST_MIME_TYPE.to_string());
-        source.set_actions(DndAction::Copy | DndAction::Move);
+        // Saved originals are never implicitly moved/deleted by a native target.
+        source.set_actions(DndAction::Copy);
         data_device.start_drag(Some(&source), surface, None, serial.as_raw());
 
         state.external_drag = Some(ExternalDrag {
             source,
-            bytes: uri_list.into_bytes(),
+            bytes,
+            writer: None,
             window,
         });
         true
@@ -904,6 +917,13 @@ impl WaylandClientStatePtr {
             state.drag.drop_pending = false;
             state.drag.handle_leave();
         }
+        if state
+            .external_drag
+            .as_ref()
+            .is_some_and(|drag| drag.window.ptr_eq(&closed_window))
+        {
+            state.external_drag.take();
+        }
         if let Some(window) = state.mouse_focused_window.take()
             && !window.ptr_eq(&closed_window)
         {
@@ -922,6 +942,13 @@ impl WaylandClientStatePtr {
         {
             state.cursor_hidden_window = Some(window);
         }
+        // Native window Drop has already released its renderer; keep clipboard/session ownership.
+        let graphics = state
+            .windows
+            .is_empty()
+            .then(|| state.gpu_context.borrow_mut().take());
+        drop(state);
+        drop(graphics);
     }
 }
 
@@ -999,6 +1026,7 @@ impl Drop for WaylandConnection {
 
         let mut state = self.0.borrow_mut();
         state.clipboard.set_offer(None);
+        state.external_drag.take();
         state.drag.drop_pending = false;
         state.drag.handle_leave();
         for offer in state.pending_data_offers.drain(..) {
@@ -1344,6 +1372,21 @@ impl WaylandConnection {
         Ok(())
     }
 
+    #[cfg(test)]
+    pub(crate) fn resident_graphics_context(&self) -> GpuContext {
+        self.0.borrow().gpu_context.clone()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn resident_compositor_gpu_hint(&self) -> Option<CompositorGpuHint> {
+        self.0.borrow().compositor_gpu
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_resident_compositor_gpu_hint(&self, hint: CompositorGpuHint) {
+        self.0.borrow_mut().compositor_gpu = Some(hint);
+    }
+
     pub(crate) fn has_windows(&self) -> bool {
         !self.0.borrow().windows.is_empty()
     }
@@ -1443,7 +1486,7 @@ impl WaylandConnection {
         });
 
         let appearance = state.common.borrow().appearance;
-        let compositor_gpu = state.compositor_gpu.take();
+        let compositor_gpu = state.compositor_gpu;
 
         let (window, surface_id) = WaylandWindow::new(
             handle,
@@ -3198,25 +3241,39 @@ impl Dispatch<wl_data_source::WlDataSource, DataSourceKind> for WaylandClientSta
             (DataSourceKind::Clipboard, wl_data_source::Event::Cancelled) => {
                 data_source.destroy();
             }
-            (DataSourceKind::Drag, wl_data_source::Event::Send { fd, .. }) => {
-                let Some(external_drag) = state.external_drag.as_ref() else {
+            (DataSourceKind::Drag, wl_data_source::Event::Send { mime_type, fd }) => {
+                let handle = state.loop_handle.clone();
+                let Some(drag) = state.external_drag.as_mut() else {
                     return;
                 };
-                let bytes = external_drag.bytes.clone();
-                state.clipboard.send_bytes(fd, bytes);
+                if drag.source != *data_source
+                    || mime_type != FILE_LIST_MIME_TYPE
+                    || drag
+                        .writer
+                        .as_ref()
+                        .is_some_and(outgoing_drag::Writer::is_active)
+                {
+                    return;
+                }
+                // Repeated/concurrent requests never enqueue another body or FD.
+                drag.writer = outgoing_drag::Writer::start(&handle, fd, drag.bytes.clone()).ok();
             }
             (
                 DataSourceKind::Drag,
                 wl_data_source::Event::DndFinished | wl_data_source::Event::Cancelled,
             ) => {
-                let Some(external_drag) = state.external_drag.take() else {
+                if !state
+                    .external_drag
+                    .as_ref()
+                    .is_some_and(|drag| drag.source == *data_source)
+                {
                     return;
-                };
-                external_drag.source.destroy();
-
-                let input = PlatformInput::FileDrop(FileDropEvent::Ended);
+                }
+                let external_drag = state.external_drag.take().unwrap();
+                let window = external_drag.window.clone();
+                drop(external_drag);
                 drop(state);
-                external_drag.window.handle_input(input);
+                window.handle_input(PlatformInput::FileDrop(FileDropEvent::Ended));
             }
             _ => {}
         }
@@ -3675,37 +3732,6 @@ mod tests {
         fn commit_ime_state(&self) {
             self.commit_count.set(self.commit_count.get() + 1);
         }
-    }
-
-    #[test]
-    fn builds_terminated_uri_list_for_each_dragged_path() {
-        let paths = FileDragPaths::new([
-            (PathBuf::from("/tmp/first"), false),
-            (PathBuf::from("/tmp/nested directory"), true),
-        ]);
-
-        assert_eq!(
-            file_uri_list(&paths),
-            "file:///tmp/first\r\nfile:///tmp/nested%20directory\r\n"
-        );
-    }
-
-    #[test]
-    fn skips_paths_that_have_no_file_url() {
-        let paths = FileDragPaths::new([
-            (PathBuf::from("relative/path"), false),
-            (PathBuf::from("/tmp/absolute"), false),
-        ]);
-
-        assert_eq!(file_uri_list(&paths), "file:///tmp/absolute\r\n");
-    }
-
-    #[test]
-    fn builds_empty_uri_list_without_convertible_paths() {
-        assert!(file_uri_list(&FileDragPaths::default()).is_empty());
-        assert!(
-            file_uri_list(&FileDragPaths::new([(PathBuf::from("relative"), false)])).is_empty()
-        );
     }
 
     fn ime_cursor_bounds(x: f32) -> Bounds<Pixels> {
