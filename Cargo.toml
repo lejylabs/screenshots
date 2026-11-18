@@ -106,7 +106,7 @@ rav1e = { path = "vendor/rav1e" }
 [profile.release]
 debug = "limited"
 strip = "debuginfo"
-lto = "thin"
+lto = "fat"
 codegen-units = 1
 
 #[profile.release.package]
