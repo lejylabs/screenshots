@@ -51,6 +51,14 @@ static void initialize_events(bool create) {
     pump_enter_event = event(L"-pump-enter", false); pump_armed_event = event(L"-pump-armed", false); pump_done_event = event(L"-pump-done", false);
     registration_probe_event = event(L"-registration-probe", false);
 }
+static void default_owned_point(HWND owner) {
+    DWORD pid{}; RECT client{};
+    GetWindowThreadProcessId(owner,&pid);
+    require(pid==GetCurrentProcessId() && GetClientRect(owner,&client) && client.right>1 && client.bottom>1,"owned nonempty target client");
+    POINT point{client.right>49?48:client.right-2,client.bottom>41?40:client.bottom-2};
+    require(ClientToScreen(owner,&point),"owned client point to screen");
+    state->cursor=point;
+}
 extern "C" __declspec(dllexport) void __cdecl acceptance_begin(const wchar_t* context, const wchar_t* source_exe, const wchar_t* selected_case, HWND owner) {
     bridge_context = context; bridge_source = source_exe; bridge_case = selected_case;
     scenario = parse_scenario(bridge_case.c_str()); require(!baseline && (!ole_route || ci_input), "production OLE requires owned hosted input opt-in");
@@ -63,7 +71,7 @@ extern "C" __declspec(dllexport) void __cdecl acceptance_begin(const wchar_t* co
     if (!wcsncmp(bridge_case.c_str(),L"noop-",5)) {const auto* spec=expected_injection();require(spec!=nullptr,"no-op control needs a mandatory injection");state->omit_injection=spec->id;}
     state->owner_pid = GetCurrentProcessId();
     wchar_t desktop_owner[32]{}; require(GetEnvironmentVariableW(L"SCREENSHOTS_DROP_ACCEPTANCE_DESKTOP_OWNER",desktop_owner,32)>0,"owned controller identity"); state->controller_pid = wcstoul(desktop_owner,nullptr,10); state->owner_tid = GetCurrentThreadId(); state->owner_hwnd = reinterpret_cast<UINT_PTR>(owner);
-    state->cursor = POINT{48, 40};
+    if (owner) default_owned_point(owner);
     state->enter_result = state->query_result = state->get_result = state->registration = E_PENDING;
 }
 extern "C" __declspec(dllexport) void __cdecl acceptance_attach(const wchar_t* context, const wchar_t* selected_case) {
@@ -72,10 +80,17 @@ extern "C" __declspec(dllexport) void __cdecl acceptance_attach(const wchar_t* c
     context_mapping = OpenFileMappingW(FILE_MAP_ALL_ACCESS, FALSE, context); require(context_mapping != nullptr, "open exact owned acceptance mapping");
     state = static_cast<Shared*>(MapViewOfFile(context_mapping, FILE_MAP_ALL_ACCESS, 0, 0, sizeof(Shared))); require(state != nullptr && state->owner_pid != GetCurrentProcessId(), "receiver mapping identity");
     initialize_events(false); bridge_attached = true;
-    state->receiver_pid=GetCurrentProcessId();state->receiver_tid=GetCurrentThreadId();InterlockedExchange(&state->payload_phase,0);state->payload_format=0;
+    state->receiver_pid=GetCurrentProcessId();state->receiver_tid=GetCurrentThreadId();
+    if (!state->phase_helper_pid) {InterlockedExchange(&state->payload_phase,0);state->payload_format=0;}
 }
 extern "C" __declspec(dllexport) void __cdecl acceptance_hook(unsigned code, unsigned long long sequence, void* pointer) {
     if (!bridge_attached) return;
+    // A replacement receiver may register, but cannot overwrite the active source's evidence.
+    bool phase_helper=!state->phase_helper_pid || state->phase_helper_pid==GetCurrentProcessId();
+    if (!phase_helper && code!=3 && code!=4 && code!=8 && code!=9) return;
+    if (code==80) {InterlockedExchange(&state->operation_stage,static_cast<LONG>(sequence));return;}
+    if (code==81) {if(sequence) InterlockedExchange(&state->failed_operation_stage,state->operation_stage);return;}
+    if (code==82) {state->operation_hresult=static_cast<LONG>(sequence);return;}
     if (code>=50 && code<=55) {unsigned phase=(code-50)/2+1;if ((code&1)==0) payload_begin(phase,static_cast<unsigned>(sequence));else payload_end(phase,static_cast<HRESULT>(sequence));return;}
     if (code==56) {if (sequence>0) InterlockedIncrement(&state->payload.submits);else InterlockedIncrement(&state->payload.phase_bad);return;}
     if (code==70) {mutation_applied(static_cast<unsigned>(sequence));return;}
@@ -135,6 +150,7 @@ static bool bridge_wait(HANDLE watched, DWORD timeout) {
         ULONGLONG now = GetTickCount64(); if (now >= end) return false;
         DWORD ready = MsgWaitForMultipleObjects(1, &watched, FALSE, static_cast<DWORD>(end - now), QS_ALLINPUT);
         if (ready == WAIT_OBJECT_0) return true;
+        if (ready == WAIT_TIMEOUT) return false;
         require(ready == WAIT_OBJECT_0 + 1, "owned production event wait");
         MSG message{}; while (PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE)) { TranslateMessage(&message); DispatchMessageW(&message); }
     }
@@ -201,6 +217,7 @@ static int finish_drive(HANDLE source_job,DWORD helper,DWORD helper_tid,LONG pri
     if (!deferred) report_injection(helper,helper_tid,positive);
     bool alive_after_delivery=WaitForSingleObject(exact_receiver,0)==WAIT_TIMEOUT;
     if (deferred) {std::printf("{\"teardown_validation_deferred\":true,\"helper_alive_after_delivery\":%s,\"helper_pid\":%lu}\n",alive_after_delivery?"true":"false",helper);std::fflush(stdout);}
+    std::printf("{\"native_operation_diagnostics\":true,\"helper_pid\":%lu,\"phase_helper_pid\":%ld,\"current_receiver_pid\":%lu,\"operation_stage\":%ld,\"failed_operation_stage\":%ld,\"operation_hresult\":%ld}\n",helper,state->phase_helper_pid,state->receiver_pid,state->operation_stage,state->failed_operation_stage,state->operation_hresult);std::fflush(stdout);
     bool source_valid=final_source_oracle(helper,helper_tid,helper_reaped,finished,source_exit,source_natural);
     bool ok=source_valid && owned_input && no_description && positive && helper!=state->owner_pid && first && provider && allocation && (!stall || helper_reaped) && (stall || finished) && (!deferred || alive_after_delivery);
     if (expected_busy && ok) {CloseHandle(offered_process.hProcess);CloseHandle(source_job);return 0;}
@@ -238,8 +255,12 @@ extern "C" __declspec(dllexport) int __cdecl acceptance_drive() {
     ResetEvent(ready_event);
     LONG prior_queries=state->query_calls,prior_data=state->data_calls;
     source_baseline=state->payload;mutation_baseline=state->source_mutation.applied;
+    state->operation_stage=0;state->failed_operation_stage=0;state->operation_hresult=0;
     state->returned_enter=0;state->returned_enter_effect=0;state->returned_drop=0;state->returned_drop_effect=0;state->returned_drop_hresult=E_PENDING;state->source_cleanup_done=0;state->raw_ole_returned=0;state->source_adapter_applied=0;
-    DWORD helper = state->receiver_pid, helper_tid = state->receiver_tid;
+    const auto* phase_spec=expected_injection();
+    DWORD helper=startup_fault && phase_spec && state->injections[phase_spec->id].ready ? state->injections[phase_spec->id].helper_pid : state->receiver_pid;
+    DWORD helper_tid=startup_fault && phase_spec && state->injections[phase_spec->id].ready ? state->injections[phase_spec->id].helper_tid : state->receiver_tid;
+    state->phase_helper_tid=helper_tid;MemoryBarrier();InterlockedExchange(&state->phase_helper_pid,static_cast<LONG>(helper));
     if (exact_receiver) CloseHandle(exact_receiver);
     exact_receiver = OpenProcess(SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION, FALSE, helper); require(exact_receiver != nullptr, "exact production receiver process");
     if (!wcscmp(scenario,L"startup-stall") || !wcscmp(scenario,L"register-stall")) {
@@ -281,6 +302,8 @@ extern "C" __declspec(dllexport) void __cdecl acceptance_input(HWND owner, const
     state->owner_hwnd = reinterpret_cast<UINT_PTR>(owner);
     if (path) wcscpy_s(state->fixture_file, path);
     if (url) strcpy_s(state->fixture_url, url);
+    DWORD pid{};RECT client{};POINT point{x,y};GetWindowThreadProcessId(owner,&pid);
+    require(pid==GetCurrentProcessId() && GetClientRect(owner,&client) && ScreenToClient(owner,&point) && PtInRect(&client,point),"configured point inside exact owned client");
     state->cursor = POINT{x, y};
 }
 struct ProductionError final : IErrorInfo {
@@ -354,7 +377,9 @@ extern "C" __declspec(dllexport) void __cdecl acceptance_rearm(HWND owner) {
     ResetEvent(ready_event); ResetEvent(done_event); ResetEvent(stop_event);
     require(InterlockedIncrement(&state->admission_epoch)>0,"bounded positive admission epoch");
     state->ordered_enter_waiting=0;state->source_cleanup_done=0;state->returned_enter=0;state->returned_drop=0;
+    InterlockedExchange(&state->phase_helper_pid,0);state->phase_helper_tid=0;
     state->owner_hwnd = reinterpret_cast<UINT_PTR>(owner); state->enter_pid = 0; state->native_stage = 0;
+    default_owned_point(owner);
 }
 extern "C" __declspec(dllexport) void __cdecl acceptance_probe_reclaim() {
     InterlockedExchange(&state->probe_reclaim,1);

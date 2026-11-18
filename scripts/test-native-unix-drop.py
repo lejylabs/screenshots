@@ -274,27 +274,62 @@ class Probe:
         self.reader.start()
         self.target = int(self.wait('target')[1])
 
+    def children(self):
+        tasks = Path(f'/proc/{self.child.pid}/task')
+        entries = list(tasks.iterdir())
+        require(len(entries) <= 512, 'Owned fixture thread inventory exceeded bound')
+        children = set()
+        for entry in entries:
+            try:
+                with (entry / 'children').open('rb') as stream:
+                    raw = stream.read(65537)
+            except FileNotFoundError:
+                continue  # A finished owned worker thread no longer has children.
+            require(len(raw) <= 65536, 'Owned child inventory exceeded byte bound')
+            children.update(raw.decode('ascii').split())
+            require(len(children) <= 1024, 'Owned child inventory exceeded count bound')
+        return children
+
     def observe(self):
         try:
-            children = Path(f'/proc/{self.child.pid}/task/{self.child.pid}/children').read_text().split()
+            children = self.children()
         except FileNotFoundError:
             raise RuntimeError('Owned GPUI fixture exited')
         for value in children:
             pid = int(value)
             if pid in self.helpers:
                 continue
+            descriptor = None
             try:
                 command = Path(f'/proc/{pid}/cmdline').read_bytes().split(b'\0')
                 if len(command) < 2 or command[1] != b'__native-capture-worker':
                     continue
-                require(Path(f'/proc/{pid}/exe').resolve() == self.binary, 'Unexpected native helper executable')
+                require(Path(f'/proc/{pid}/exe').resolve(strict=True) == self.binary, 'Unexpected native helper executable')
                 descriptor = os.pidfd_open(pid)
                 # Recheck executable/lineage after acquiring the identity-stable handle.
-                require(Path(f'/proc/{pid}/exe').resolve() == self.binary
-                        and value in Path(f'/proc/{self.child.pid}/task/{self.child.pid}/children').read_text().split(),
-                        'Native helper lineage changed during observation')
+                if select.select([descriptor], [], [], 0)[0]:
+                    os.close(descriptor)
+                    descriptor = None
+                    continue  # Already exited; never claim or signal an unverified identity.
+                with Path(f'/proc/{pid}/status').open('rb') as stream:
+                    status = stream.read(65537)
+                require(len(status) <= 65536, 'Native helper identity exceeded byte bound')
+                parent = next((int(line.split(b':', 1)[1]) for line in status.splitlines()
+                               if line.startswith(b'PPid:')), None)
+                if select.select([descriptor], [], [], 0)[0]:
+                    os.close(descriptor)
+                    descriptor = None
+                    continue
+                # Linux may transfer children between threads of the same parent.
+                # PPid names the stable parent process, unlike a non-atomic task scan.
+                identity = Path(f'/proc/{pid}/exe').resolve(strict=True) == self.binary and parent == self.child.pid
+                if not identity:
+                    os.close(descriptor)
+                    descriptor = None
+                    raise RuntimeError(f'Native helper identity changed: pid={pid}, parent={parent}, expected={self.child.pid}')
                 self.helpers[pid] = descriptor
             except (FileNotFoundError, ProcessLookupError):
+                if descriptor is not None: os.close(descriptor)
                 continue
 
     def wait(self, kind, timeout=8):
@@ -671,6 +706,10 @@ def main():
                    SCREENSHOTS_NATIVE_DROP_PRIVATE='1', SCREENSHOTS_NATIVE_DROP_ROOT=str(root),
                    SCREENSHOTS_NATIVE_DROP_BINARY=str(binary), SCREENSHOTS_NATIVE_DROP_DECOY_DISPLAY=decoy,
                    LIBGL_ALWAYS_SOFTWARE='1')
+        for key, directory in [('HOME', 'home'), ('XDG_RUNTIME_DIR', 'runtime'), ('TMPDIR', 'tmp')]:
+            owned = root / directory
+            owned.mkdir(mode=0o700)
+            env[key] = str(owned)
         for name in ['WAYLAND_DISPLAY', 'WAYLAND_SOCKET', 'DBUS_SESSION_BUS_ADDRESS']:
             env.pop(name, None)
         for name in ['XDG_CONFIG_HOME', 'XDG_DATA_HOME', 'XDG_CACHE_HOME']:
@@ -758,17 +797,27 @@ def main():
                     except BlockingIOError: pass
                     else: accepted.close(); raise RuntimeError('Hover contacted a private image endpoint')
                     source.drop(probe.target)
-                    deadline = time.monotonic() + 6
-                    while time.monotonic() < deadline:
-                        state = probe.state()
-                        if probe.url_routes > previous and state[0] == '1': break
-                        time.sleep(.01)
-                    else: raise RuntimeError('Native URL did not reach the existing application URL handler')
-                    probe.assert_no_editor()
-                    try: accepted, _ = private_endpoint.accept()
-                    except BlockingIOError: pass
-                    else: accepted.close(); raise RuntimeError('Existing private-network image policy was bypassed')
-                    report['checks'].append('URL-native-worker-existing-handler-no-hover-fetch-private-network-refusal')
+                    deadline = time.monotonic() + 5
+                    while True:
+                        try:
+                            accepted, _ = private_endpoint.accept()
+                            break
+                        except BlockingIOError:
+                            require(time.monotonic() < deadline, 'Explicit URL Drop did not reach its owned HTTP source')
+                            probe.observe(); time.sleep(.005)
+                    with accepted:
+                        accepted.settimeout(3)
+                        request = b''
+                        while not request.endswith(b'\r\n\r\n'):
+                            require(len(request) < 8192, 'Owned HTTP request exceeded bound')
+                            part = accepted.recv(8192 - len(request))
+                            require(part, 'Owned HTTP request ended before headers')
+                            request += part
+                        require(request.startswith(b'GET /image?private-query-token HTTP/1.1\r\n'), 'Unexpected owned image request')
+                        accepted.sendall(f'HTTP/1.1 200 OK\r\nContent-Type: image/png\r\nContent-Length: {len(png_a)}\r\nConnection: close\r\n\r\n'.encode() + png_a)
+                    probe.wait_state(2, 1, pixel_hash(pixels_a))
+                    require(probe.url_routes == previous + 1, 'URL Drop did not use exactly one application URL admission')
+                    report['checks'].append('URL-native-worker-existing-handler-no-hover-fetch-owned-HTTP-exact-editor-pixels')
                 probe.fresh()
                 previous = probe.url_routes
                 source.offer(probe.target, 'text/uri-list', b'https://user:private-query-token@example.invalid/image')
@@ -876,6 +925,18 @@ def main():
             report['scope'] = 'Owned Xvfb native protocol/worker/GPUI/editor software fixture; no physical input, presentation, user-session or PLAN performance acceptance.'
             args.report.parent.mkdir(parents=True, exist_ok=True)
             args.report.write_text(json.dumps(report, indent=2) + '\n')
+        except BaseException as error:
+            report['status'] = 'failed'
+            report['error'] = f'{type(error).__name__}: {error}'
+            if probe is not None:
+                report['probe_stdout_tail'] = probe.all_stdout[-256:]
+                report['url_routes_observed'] = probe.url_routes
+            if 'stderr_path' in locals() and stderr_path.exists():
+                with stderr_path.open('rb') as stream:
+                    report['probe_stderr_tail'] = stream.read(256 * 1024).decode('utf-8', errors='replace')
+            args.report.parent.mkdir(parents=True, exist_ok=True)
+            args.report.write_text(json.dumps(report, indent=2) + '\n')
+            raise
         finally:
             if child is not None and child.poll() is None:
                 child.terminate()

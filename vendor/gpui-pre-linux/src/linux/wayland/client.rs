@@ -942,6 +942,13 @@ impl WaylandClientStatePtr {
         {
             state.cursor_hidden_window = Some(window);
         }
+        // Native window Drop has already released its renderer; keep clipboard/session ownership.
+        let graphics = state
+            .windows
+            .is_empty()
+            .then(|| state.gpu_context.borrow_mut().take());
+        drop(state);
+        drop(graphics);
     }
 }
 
@@ -1365,6 +1372,21 @@ impl WaylandConnection {
         Ok(())
     }
 
+    #[cfg(test)]
+    pub(crate) fn resident_graphics_context(&self) -> GpuContext {
+        self.0.borrow().gpu_context.clone()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn resident_compositor_gpu_hint(&self) -> Option<CompositorGpuHint> {
+        self.0.borrow().compositor_gpu
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_resident_compositor_gpu_hint(&self, hint: CompositorGpuHint) {
+        self.0.borrow_mut().compositor_gpu = Some(hint);
+    }
+
     pub(crate) fn has_windows(&self) -> bool {
         !self.0.borrow().windows.is_empty()
     }
@@ -1464,7 +1486,7 @@ impl WaylandConnection {
         });
 
         let appearance = state.common.borrow().appearance;
-        let compositor_gpu = state.compositor_gpu.take();
+        let compositor_gpu = state.compositor_gpu;
 
         let (window, surface_id) = WaylandWindow::new(
             handle,

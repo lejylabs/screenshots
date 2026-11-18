@@ -1,6 +1,6 @@
 use super::*;
 use image::{ExtendedColorType, ImageEncoder, Rgba, RgbaImage};
-use std::io::{BufReader, Cursor, Read, Seek, SeekFrom, Write};
+use std::io::{BufRead, BufReader, Cursor, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
 struct Fixture(PathBuf);
@@ -562,4 +562,256 @@ fn saved_png_admission_cost() {
             3840 * 2160 * 4 * bits / 8
         );
     }
+}
+
+#[test]
+fn saved_png_retained_metadata_is_admitted_before_payload_reads() {
+    for kind in [b"tEXt", b"zTXt", b"iTXt", b"eXIf", b"iCCP"] {
+        let mut bytes = header(1, 1, 8, 6, 0);
+        bytes.extend_from_slice(&(64u32 * 1024 * 1024).to_be_bytes());
+        bytes.extend_from_slice(kind);
+        // There is deliberately no payload: metadata admission must win over EOF.
+        let mut input = Cursor::new(bytes);
+        let error = decode_saved_png(&mut input, 4).unwrap_err().to_string();
+        assert!(error.contains("metadata exceeds"), "{kind:?}: {error}");
+        assert_eq!(input.position(), 41);
+    }
+}
+
+#[test]
+fn saved_png_metadata_payload_and_record_bounds_are_cumulative() {
+    let mut bytes = header(1, 1, 8, 6, 0);
+    for _ in 0..MAX_SAVED_PNG_METADATA_CHUNKS {
+        chunk(&mut bytes, b"tEXt", b"k\0");
+    }
+    chunk(&mut bytes, b"IDAT", &zlib(&[0, 7, 8, 9, 0]));
+    chunk(&mut bytes, b"IEND", &[]);
+    assert_eq!(
+        decode_saved_png(Cursor::new(&bytes), 4).unwrap().as_raw(),
+        &[7, 8, 9, 0]
+    );
+    bytes.splice(33..33, {
+        let mut extra = Vec::new();
+        chunk(&mut extra, b"tEXt", b"k\0");
+        extra
+    });
+    assert!(
+        decode_saved_png(Cursor::new(bytes), 4)
+            .unwrap_err()
+            .to_string()
+            .contains("4096-chunk")
+    );
+
+    let mut payload = vec![0xff; MAX_SAVED_PNG_METADATA_BYTES as usize / 2];
+    payload[..2].copy_from_slice(b"k\0");
+    let admitted = png(
+        1,
+        1,
+        8,
+        6,
+        &[0, 11, 22, 33, 128],
+        &[(b"tEXt", &payload), (b"tEXt", &payload)],
+    );
+    assert_eq!(
+        decode_saved_png(Cursor::new(&admitted), 4)
+            .unwrap()
+            .as_raw(),
+        &[11, 22, 33, 128]
+    );
+    let rejected = png(
+        1,
+        1,
+        8,
+        6,
+        &[0, 11, 22, 33, 128],
+        &[(b"tEXt", &payload), (b"tEXt", &payload), (b"tEXt", b"k\0")],
+    );
+    assert!(
+        decode_saved_png(Cursor::new(rejected), 4)
+            .unwrap_err()
+            .to_string()
+            .contains("metadata exceeds")
+    );
+}
+
+fn saved_png_compressed_metadata() -> Vec<u8> {
+    let mut compressor = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::fast());
+    for _ in 0..768 {
+        compressor.write_all(&[0; 32 * 1024]).unwrap();
+    }
+    compressor.finish().unwrap()
+}
+
+#[test]
+fn saved_png_compressed_icc_and_text_do_not_expand_outside_small_image_scratch() {
+    let compressed = saved_png_compressed_metadata();
+    let mut payload = b"profile\0\0".to_vec();
+    payload.extend_from_slice(&compressed);
+    assert!(payload.len() < MAX_SAVED_PNG_METADATA_BYTES as usize);
+    for kind in [b"iCCP", b"zTXt"] {
+        let bytes = png(1, 1, 8, 6, &[0, 11, 22, 33, 0], &[(kind, &payload)]);
+        // png ignores invalid/over-budget ICC payloads; it does not eagerly
+        // decompress zTXt. Preserve that historical raster behavior.
+        let original = image::load_from_memory_with_format(&bytes, image::ImageFormat::Png)
+            .unwrap()
+            .into_rgba8();
+        assert_eq!(decode_saved_png(Cursor::new(&bytes), 4).unwrap(), original);
+    }
+}
+
+#[test]
+fn saved_png_guard_preserves_codec_crc_critical_order_and_truncation_policy() {
+    let fixture = Fixture::new();
+    let valid = png(1, 1, 8, 6, &[0, 11, 22, 33, 128], &[(b"tEXt", b"k\0value")]);
+    let mut bad_text_crc = valid.clone();
+    bad_text_crc[33 + 8 + b"k\0value".len()] ^= 1;
+    let mut bad_ihdr_crc = valid.clone();
+    bad_ihdr_crc[29] ^= 1;
+    let mut duplicate_ihdr = header(1, 1, 8, 6, 0);
+    duplicate_ihdr.extend_from_slice(&valid[8..]);
+    let unknown_critical = png(1, 1, 8, 6, &[0, 11, 22, 33, 128], &[(b"ABCD", b"secret")]);
+    let bad_text = png(1, 1, 8, 6, &[0, 11, 22, 33, 128], &[(b"tEXt", b"no-null")]);
+    for (index, bytes) in [
+        valid.clone(),
+        bad_text_crc,
+        bad_ihdr_crc,
+        duplicate_ihdr,
+        unknown_critical,
+        bad_text,
+        valid[..40].to_vec(),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let path = fixture.path(&format!("codec-{index}.png"));
+        std::fs::write(&path, &bytes).unwrap();
+        let former = image::load_from_memory_with_format(&bytes, image::ImageFormat::Png)
+            .map(image::DynamicImage::into_rgba8);
+        let current = load_saved_png(&path);
+        assert_eq!(current.is_ok(), former.is_ok(), "case {index}");
+        if let (Ok(current), Ok(former)) = (current, former) {
+            assert_eq!(current, former, "case {index}");
+        }
+        assert_eq!(std::fs::read(path).unwrap(), bytes);
+    }
+}
+
+#[test]
+fn saved_png_subbyte_trns_and_gray_alpha16_keep_pinned_conversion() {
+    let cases = [
+        png(3, 1, 1, 0, &[0, 0b0100_0000], &[]),
+        png(3, 1, 2, 0, &[0, 0b0001_1000], &[(b"tRNS", &[0, 1])]),
+        png(3, 1, 4, 0, &[0, 0x08, 0xf0], &[]),
+        png(
+            3,
+            1,
+            1,
+            3,
+            &[0, 0b0100_0000],
+            &[(b"PLTE", &[11, 22, 33, 44, 55, 66]), (b"tRNS", &[0, 128])],
+        ),
+        png(
+            2,
+            1,
+            8,
+            2,
+            &[0, 11, 22, 33, 44, 55, 66],
+            &[(b"tRNS", &[0, 11, 0, 22, 0, 33])],
+        ),
+        png(1, 1, 16, 0, &[0, 0x12, 0x34], &[(b"tRNS", &[0x12, 0x34])]),
+        png(1, 1, 16, 4, &[0, 0x12, 0x34, 0x80, 0x01], &[]),
+        png(
+            1,
+            1,
+            16,
+            2,
+            &[0, 0x12, 0x34, 0x80, 0x01, 0xff, 0xff],
+            &[(b"tRNS", &[0x12, 0x34, 0x80, 0x01, 0xff, 0xff])],
+        ),
+    ];
+    for bytes in cases {
+        let former = image::load_from_memory_with_format(&bytes, image::ImageFormat::Png)
+            .unwrap()
+            .into_rgba8();
+        assert_eq!(
+            decode_saved_png(Cursor::new(&bytes), crate::MAX_CAPTURE_BYTES).unwrap(),
+            former
+        );
+    }
+}
+
+#[test]
+fn saved_png_parser_scratch_scales_with_rows_without_lowering_raster_admission() {
+    let bytes = png(1, 1, 8, 6, &[0, 11, 22, 33, 0], &[(b"tEXt", b"k\0value")]);
+    let (mut guarded, _) = SavedPngMetadataReader::new(Cursor::new(&bytes), 4).unwrap();
+    let mut forwarded = Vec::new();
+    guarded.read_to_end(&mut forwarded).unwrap();
+    assert_eq!(forwarded, bytes);
+    assert!(guarded.fill_buf().unwrap().is_empty());
+    assert_eq!(guarded.read(&mut []).unwrap(), 0);
+    for (width, height) in [
+        (1, 1),
+        (3840, 2160),
+        (crate::MAX_CAPTURE_BYTES as u32 / 4, 1),
+        (1, crate::MAX_CAPTURE_BYTES as u32 / 4),
+    ] {
+        let bytes = header(width, height, 8, 6, 0);
+        let (_, scratch) =
+            SavedPngMetadataReader::new(Cursor::new(bytes), crate::MAX_CAPTURE_BYTES).unwrap();
+        assert_eq!(
+            scratch,
+            (u64::from(width) * 4 + 1 + SAVED_PNG_FIXED_SCRATCH_BYTES)
+                .min(crate::MAX_CAPTURE_BYTES)
+        );
+    }
+    let mut bytes = header(1, 1, 8, 6, 0);
+    bytes.extend_from_slice(&((MAX_SAVED_PNG_METADATA_BYTES + 1) as u32).to_be_bytes());
+    bytes.extend_from_slice(b"tEXt");
+    let (mut guarded, _) = SavedPngMetadataReader::new(Cursor::new(bytes), 4).unwrap();
+    let mut initial = [0; 33];
+    guarded.read_exact(&mut initial).unwrap();
+    assert!(guarded.fill_buf().is_err());
+    assert!(guarded.fill_buf().is_err());
+    assert!(guarded.seek(SeekFrom::Start(0)).is_err());
+    assert_eq!(guarded.seek(SeekFrom::Current(0)).unwrap(), 33);
+}
+
+#[test]
+#[ignore = "optimized synthetic wide/tall row scratch compatibility; no native activity"]
+fn saved_png_wide_and_tall_rasters_larger_than_fixed_scratch_remain_accepted() {
+    let fixture = Fixture::new();
+    for (width, height) in [(3_000_000, 1), (1, 3_000_000)] {
+        let source = RgbaImage::from_fn(width, height, |x, y| Rgba([(x + y) as u8, 2, 3, 128]));
+        let path = fixture.path(&format!("{width}-{height}.png"));
+        source.save(&path).unwrap();
+        assert_eq!(load_saved_png(&path).unwrap(), source);
+    }
+}
+
+#[test]
+fn saved_png_successful_icc_inflation_can_refuse_an_otherwise_admitted_wide_row() {
+    let mut compressor = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::fast());
+    for _ in 0..512 {
+        compressor.write_all(&[0; 32 * 1024]).unwrap();
+    }
+    let mut profile = b"profile\0\0".to_vec();
+    profile.extend_from_slice(&compressor.finish().unwrap());
+    assert!(profile.len() < MAX_SAVED_PNG_METADATA_BYTES as usize);
+    let width = 3_000_000;
+    let raw = vec![0; width as usize * 4 + 1];
+    let bytes = png(width, 1, 8, 6, &raw, &[(b"iCCP", &profile)]);
+    let mut limits = image::Limits::default();
+    limits.max_alloc = Some(crate::MAX_CAPTURE_BYTES);
+    let former = image::codecs::png::PngDecoder::with_limits(Cursor::new(&bytes), limits).unwrap();
+    let former = image::DynamicImage::from_decoder(former)
+        .unwrap()
+        .into_rgba8();
+    assert_eq!(former.dimensions(), (width, 1));
+    assert_eq!(former.get_pixel(width - 1, 0).0, [0; 4]);
+    drop(former);
+    let error = decode_saved_png(Cursor::new(&bytes), crate::MAX_CAPTURE_BYTES).unwrap_err();
+    assert!(
+        error.to_string().to_lowercase().contains("limit"),
+        "{error:#}"
+    );
 }

@@ -51,7 +51,7 @@ use std::{
     rc::Rc,
     slice, str,
     sync::{
-        Arc, OnceLock,
+        Arc, OnceLock, Weak,
         atomic::{AtomicBool, Ordering},
     },
 };
@@ -163,11 +163,22 @@ unsafe fn build_classes() {
 
 pub struct MacPlatform(Mutex<MacPlatformState>, MainThreadMarker);
 
+// Renderers and in-flight GPU completions own the pool; the resident platform must not.
+fn resident_renderer_context(
+    cache: &mut Weak<Mutex<renderer::InstanceBufferPool>>,
+) -> renderer::Context {
+    cache.upgrade().unwrap_or_else(|| {
+        let context = renderer::Context::default();
+        *cache = Arc::downgrade(&context);
+        context
+    })
+}
+
 pub(crate) struct MacPlatformState {
     background_executor: BackgroundExecutor,
     foreground_executor: ForegroundExecutor,
     text_system: Arc<dyn PlatformTextSystem>,
-    renderer_context: renderer::Context,
+    renderer_context: Weak<Mutex<renderer::InstanceBufferPool>>,
     headless: bool,
     activation_policy: ActivationPolicy,
     application_created: bool,
@@ -240,7 +251,7 @@ impl MacPlatform {
             text_system,
             background_executor: BackgroundExecutor::new(dispatcher.clone()),
             foreground_executor: ForegroundExecutor::new(dispatcher),
-            renderer_context: renderer::Context::default(),
+            renderer_context: Weak::new(),
             general_pasteboard: Pasteboard::general(),
             find_pasteboard: Pasteboard::find(),
             reopen: None,
@@ -760,12 +771,12 @@ impl Platform for MacPlatform {
         }
 
         let (cursor_visible, foreground_executor, background_executor, renderer_context) = {
-            let guard = self.0.lock();
+            let mut guard = self.0.lock();
             (
                 guard.cursor_visible.clone(),
                 guard.foreground_executor.clone(),
                 guard.background_executor.clone(),
-                guard.renderer_context.clone(),
+                resident_renderer_context(&mut guard.renderer_context),
             )
         };
 
@@ -1633,4 +1644,38 @@ unsafe extern "C" {
     pub(super) static kTISPropertyInputSourceIsASCIICapable: CFStringRef;
     pub(super) static kTISPropertyInputSourceType: CFStringRef;
     pub(super) static kTISTypeKeyboardInputMode: CFStringRef;
+}
+
+#[cfg(test)]
+mod resident_graphics_tests {
+    use super::*;
+
+    #[test]
+    fn renderers_share_pool_until_last_real_consumer_releases_it() {
+        let mut cache = Weak::new();
+        let first = resident_renderer_context(&mut cache);
+        let second = resident_renderer_context(&mut cache);
+        assert!(Arc::ptr_eq(&first, &second));
+        let pending_gpu_completion = first.clone();
+        drop(first);
+        drop(second);
+        assert!(
+            cache.upgrade().is_some(),
+            "in-flight completion still owns its pool"
+        );
+        drop(pending_gpu_completion);
+        assert!(
+            cache.upgrade().is_none(),
+            "resident platform must not retain GPU buffers"
+        );
+        let retired = cache.clone();
+        let reopened = resident_renderer_context(&mut cache);
+        assert!(!Weak::ptr_eq(&retired, &cache));
+        assert!(Arc::ptr_eq(
+            &reopened,
+            &resident_renderer_context(&mut cache)
+        ));
+        drop(reopened);
+        assert!(cache.upgrade().is_none());
+    }
 }

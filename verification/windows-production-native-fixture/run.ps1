@@ -82,12 +82,13 @@ foreach ($Case in $Cases) {
     $Identity = Join-Path $OutputDirectory "$Case.identity.json"
     $ControllerError = Join-Path $OutputDirectory "$Case.controller.stderr.log"
     foreach ($Path in @($Output,$ErrorLog,$ControllerLog,$ControllerError,$Identity)) { if (Test-Path $Path) { throw "Refusing to overwrite evidence: $Path" } }
-    $ControllerProof = $null; $Process = $null; $Restore = [IntPtr]::Zero; $Cursor = $null; $Restored = $null
+    $ControllerProof = $null; $Process = $null; $Restore = [IntPtr]::Zero; $Cursor = $null; $Restored = $null; $PrimaryError = $null; $CleanupError = $null; $CursorCaptured = $false
     try {
         if ($Case.StartsWith('ci-') -or $Case.StartsWith('gpui-ole-')) {
             $Restore = [ProductionDesktopRestore]::OpenInputDesktop(0, $false, 0x0181)
             $Cursor = [ProductionDesktopRestore+Point]::new()
             if ($Restore -eq [IntPtr]::Zero -or -not [ProductionDesktopRestore]::ThreadIsOnDesktop($Restore) -or -not [ProductionDesktopRestore]::GetCursorPos([ref]$Cursor)) {throw 'Cannot establish independent owned CI restoration guard'}
+            $CursorCaptured = $true
             if (([ProductionDesktopRestore]::GetAsyncKeyState(1) -band 0x8000) -ne 0) {throw 'Original owned VM left button must be up'}
         }
         # Exact argv are fixed case names and resolved generated paths. Each quoted path
@@ -171,32 +172,43 @@ foreach ($Case in $Cases) {
         if ($Case -eq 'same-hwnd-reclaim') {$ConsumerPassed=$ConsumerPassed -and @($Proof|Where-Object {$_.registration_wake_rejected_before_allow -eq $true -and $_.epoch -gt 1 -and $_.receiver_pid -gt 0}).Count -eq 1 -and @($Proof|Where-Object {$_.current_receiver_admitted -eq $true -and $_.epoch -gt 1 -and $_.receiver_pid -eq $_.allow_pid -and $_.allow_tid -gt 0}).Count -eq 1}
         if (-not $OracleControl -and -not $Negative -and @($Proof|Where-Object {$_.completion_barrier -eq $true}).Count) {$CompletionPassed=@($Proof|Where-Object {$_.completion_barrier -eq $true -and $_.barrier_acknowledged -eq $true -and $_.submits -eq 0 -and $_.reader_submits -eq 0 -and $_.rejection_verified -eq $true}).Count -eq 1 -and @($Proof|Where-Object {$_.terminal_rejection_consumed -eq $true -and $_.terminal_kind -in @(12,14)}).Count -eq 1}
         if ($Case -in @('source-death','custom-unmarshal-memory')) {$CompletionPassed=$CompletionPassed -and @($Proof|Where-Object {$_.terminal_rejection_consumed -eq $true -and $_.terminal_kind -eq 14}).Count -eq 1 -and @($Proof|Where-Object {$_.ordered_delivery -eq $true -and $_.expected_kind -eq 14 -and $_.actual_kind -eq 14 -and $_.current -eq $true}).Count -eq 1}
-        $Results += [pscustomobject]@{case=$Case; exit_code=$Process.ExitCode; controller=$ControllerProof; proof=$Proof; negative_control=$Negative; omitted_injection_rejected=$NegativePassed; positive_injection_proved=$PositivePassed; teardown_proved=$TeardownPassed; oracle_control_rejected=$OraclePassed; source_oracle_proved=$SourcePassed; ordering_proved=$OrderingPassed; consumer_proved=$ConsumerPassed; completion_proved=$CompletionPassed; external_desktop_restored=$null}
-    } finally {
-        if ($Process -and -not $Process.HasExited) {$Process.Kill(); $Process.WaitForExit()}
+        $Results += [pscustomobject]@{case=$Case; exit_code=$Process.ExitCode; controller=$ControllerProof; proof=$Proof; negative_control=$Negative; omitted_injection_rejected=$NegativePassed; positive_injection_proved=$PositivePassed; teardown_proved=$TeardownPassed; oracle_control_rejected=$OraclePassed; source_oracle_proved=$SourcePassed; ordering_proved=$OrderingPassed; consumer_proved=$ConsumerPassed; completion_proved=$CompletionPassed; external_desktop_restored=$null; external_input_release_verified=$null}
+    } catch {$PrimaryError = $_} finally {
+        try {if ($Process -and -not $Process.HasExited) {$Process.Kill(); $Process.WaitForExit()}} catch {$CleanupError = $_}
         if ($Restore -ne [IntPtr]::Zero) {
             $ReleaseError = $null
             try {
-                # The actual app PID is recorded by its unique private desktop name.
-                # Find only the exact current owned generated name, never guess a host PID.
-                # Native release helper accepts app PID; runner obtains it from the
-                # controller proof emitted after reaping, before attempting restoration.
+                # Release only on the exact controller-owned generated desktop.
+                # Missing launch identity never authorizes a guessed PID or host input.
                 $OwnedIdentity = if (Test-Path $Identity) {Get-Content -Raw $Identity | ConvertFrom-Json} else {$null}
                 if ($OwnedIdentity -and $OwnedIdentity.desktop_owner_pid) {
                     $Release = Start-Process -FilePath $Source -ArgumentList @('--release-owned-ci-input',[string]$OwnedIdentity.desktop_owner_pid) -PassThru -NoNewWindow -RedirectStandardOutput (Join-Path $OutputDirectory "$Case.release.json") -RedirectStandardError (Join-Path $OutputDirectory "$Case.release.stderr.log")
                     if (-not $Release.WaitForExit(2000)) {$Release.Kill(); $Release.WaitForExit(); throw 'Owned CI release helper timed out'}
                     if ($Release.ExitCode -ne 0) {throw 'Owned CI release helper failed'}
-                } else {throw 'Missing exact owned app PID for external button release'}
+                } else {throw 'Missing exact owned controller identity for external button release'}
             } catch {$ReleaseError = $_} finally {
                 $Restored = [ProductionDesktopRestore]::SwitchDesktop($Restore)
-                $Restored = $Restored -and [ProductionDesktopRestore]::ThreadIsOnDesktop($Restore) -and [ProductionDesktopRestore]::SetCursorPos($Cursor.X,$Cursor.Y)
+                $Restored = $Restored -and [ProductionDesktopRestore]::ThreadIsOnDesktop($Restore) -and $CursorCaptured -and [ProductionDesktopRestore]::SetCursorPos($Cursor.X,$Cursor.Y)
                 [ProductionDesktopRestore]::CloseDesktop($Restore) | Out-Null
             }
-            if (-not $Restored) {throw 'Owned CI desktop/cursor restoration failed'}
-            if ($ReleaseError) {throw $ReleaseError}
-            if ($Results.Count -gt 0 -and $Results[-1].case -eq $Case) {$Results[-1].external_desktop_restored=$true}
+            $ReleaseVerified = $null -eq $ReleaseError
+            try {
+                [pscustomobject]@{case=$Case; controller_exit=$(if ($Process) {$Process.ExitCode} else {$null}); controller_passed=$(if ($ControllerProof) {$ControllerProof.passed} else {$null}); desktop_cursor_restored=$Restored; exact_owned_release_verified=$ReleaseVerified; release_error=$(if ($ReleaseError) {$ReleaseError.Exception.Message} else {$null}); primary_error=$(if ($PrimaryError) {$PrimaryError.Exception.Message} else {$null})} | ConvertTo-Json | Set-Content -Encoding utf8 (Join-Path $OutputDirectory "$Case.restoration.json")
+            } catch {
+                $EvidenceError = $_
+                if (-not $CleanupError) {$CleanupError = "Could not retain owned restoration evidence: $($EvidenceError.Exception.Message)"}
+                Write-Warning -WarningAction Continue "Supplemental restoration evidence write failed for ${Case}: $($EvidenceError.Exception.Message)"
+            }
+            if ($Results.Count -gt 0 -and $Results[-1].case -eq $Case) {$Results[-1].external_desktop_restored=$Restored; $Results[-1].external_input_release_verified=$ReleaseVerified}
+            if (-not $Restored -and -not $CleanupError) {$CleanupError = 'Owned CI desktop/cursor restoration failed'}
+            if ($ReleaseError) {Write-Warning -WarningAction Continue "Owned input release failed for ${Case}: $($ReleaseError.Exception.Message); see $Case.restoration.json"}
         }
     }
+    if ($PrimaryError) {
+        if ($CleanupError) {Write-Warning -WarningAction Continue "Additional owned cleanup failure: $CleanupError"}
+        throw $PrimaryError
+    }
+    if ($CleanupError) {throw $CleanupError}
 }
 $Files = Get-ChildItem -File -Recurse $Native
 $Sources = @($Files | ForEach-Object {
@@ -205,5 +217,5 @@ $Sources = @($Files | ForEach-Object {
 })
 $Report = [ordered]@{status='executed-owned-ci'; fixture_revision=6; source_oracle_rules_sha256=(Get-FileHash -Algorithm SHA256 (Join-Path $PSScriptRoot 'source-oracle-rules.json')).Hash.ToLowerInvariant(); authored_case_inventory=$Cases.Count; executed_case_results=$Results.Count; assertion_matrix_sha256=(Get-FileHash -Algorithm SHA256 (Join-Path $PSScriptRoot 'assertion-matrix.json')).Hash.ToLowerInvariant(); github_run_id=$env:GITHUB_RUN_ID; github_run_attempt=$env:GITHUB_RUN_ATTEMPT; github_sha=$env:GITHUB_SHA; rustflags=$env:RUSTFLAGS; application_sha256=(Get-FileHash -Algorithm SHA256 $Application).Hash.ToLowerInvariant(); bridge_sha256=(Get-FileHash -Algorithm SHA256 $Bridge).Hash.ToLowerInvariant(); source_executable_sha256=(Get-FileHash -Algorithm SHA256 $Source).Hash.ToLowerInvariant(); controller_sha256=(Get-FileHash -Algorithm SHA256 $Controller).Hash.ToLowerInvariant(); native_sources=$Sources; windows=[Environment]::OSVersion.VersionString; owned_hosted_ci_input_opt_in=[bool]$OwnedHostedCiInputDesktop; cases=$Results; physical_hardware_acceptance=$false}
 $Report | ConvertTo-Json -Depth 12 | Set-Content -Encoding utf8 (Join-Path $OutputDirectory 'report.json')
-$Failures = @($Results | Where-Object {$_.exit_code -ne 0 -or -not $_.controller.passed -or -not $_.controller.outer_job_empty -or -not $_.omitted_injection_rejected -or -not $_.positive_injection_proved -or -not $_.teardown_proved -or -not $_.oracle_control_rejected -or -not $_.consumer_proved -or -not $_.completion_proved -or -not $_.ordering_proved -or -not $_.source_oracle_proved})
+$Failures = @($Results | Where-Object {$_.exit_code -ne 0 -or -not $_.controller.passed -or -not $_.controller.outer_job_empty -or -not $_.omitted_injection_rejected -or -not $_.positive_injection_proved -or -not $_.teardown_proved -or -not $_.oracle_control_rejected -or -not $_.consumer_proved -or -not $_.completion_proved -or -not $_.ordering_proved -or -not $_.source_oracle_proved -or $_.external_desktop_restored -eq $false -or $_.external_input_release_verified -eq $false})
 if ($Failures.Count) {throw 'Actual production acceptance failed; preserve all evidence and inspect report.json'}

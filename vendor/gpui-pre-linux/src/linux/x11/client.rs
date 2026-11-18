@@ -235,7 +235,7 @@ pub struct X11ClientState {
     pub(crate) xdnd_state: Xdnd,
     external_drag: Option<outgoing_drag::Drag>,
     external_drag_generation: u64,
-    external_drag_press: Option<(u32, u32, u32, [i16; 2])>,
+    external_drag_press: Option<(u32, u32, u32, [i16; 2], u16)>,
 }
 
 #[derive(Clone)]
@@ -283,6 +283,13 @@ impl X11ClientStatePtr {
         {
             state.external_drag_press = None;
         }
+        // Native window Drop has already released its renderer; keep clipboard/session ownership.
+        let graphics = state
+            .windows
+            .is_empty()
+            .then(|| state.gpu_context.borrow_mut().take());
+        drop(state);
+        drop(graphics);
     }
 
     pub fn update_ime_position(&self, bounds: Bounds<Pixels>) {
@@ -655,6 +662,21 @@ impl X11Client {
             }
         }));
         Ok(())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn resident_graphics_context(&self) -> GpuContext {
+        self.0.borrow().gpu_context.clone()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn resident_compositor_gpu_hint(&self) -> Option<CompositorGpuHint> {
+        self.0.borrow().compositor_gpu
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_resident_compositor_gpu_hint(&self, hint: CompositorGpuHint) {
+        self.0.borrow_mut().compositor_gpu = Some(hint);
     }
 
     pub(crate) fn has_windows(&self) -> bool {
@@ -1198,6 +1220,7 @@ impl X11Client {
                                 event.time,
                                 event.time,
                                 [(event.root_x >> 16) as i16, (event.root_y >> 16) as i16],
+                                event.deviceid,
                             ));
                         }
 
@@ -1256,7 +1279,11 @@ impl X11Client {
             Event::XinputButtonRelease(event) => {
                 let window = self.get_window(event.event)?;
                 let mut state = self.0.borrow_mut();
-                if event.detail == 1 {
+                if event.detail == 1
+                    && state.external_drag_press.is_some_and(|press| {
+                        press.0 == event.event && press.4 == event.deviceid
+                    })
+                {
                     state.external_drag_press = None;
                 }
                 let modifiers = modifiers_from_xinput_info(event.mods);
@@ -1285,7 +1312,7 @@ impl X11Client {
                 let window = self.get_window(event.event)?;
                 let mut state = self.0.borrow_mut();
                 if let Some(press) = state.external_drag_press.as_mut() {
-                    if press.0 == event.event {
+                    if press.0 == event.event && press.4 == event.deviceid {
                         press.2 = event.time;
                         press.3 = [(event.root_x >> 16) as i16, (event.root_y >> 16) as i16];
                     }
@@ -1660,7 +1687,7 @@ impl X11Client {
         let atoms = state.atoms;
         let scale_factor = state.scale_factor;
         let appearance = state.common.borrow().appearance;
-        let compositor_gpu = state.compositor_gpu.take();
+        let compositor_gpu = state.compositor_gpu;
         let supports_xinput_gestures = state.supports_xinput_gestures;
         let is_bgr = state
             .resource_database

@@ -10,9 +10,11 @@ handshake. `provenance.json` records their
 identities. There are 105 authored cases with explicit owned input-desktop opt-in,
 93 without. An authored case count is not an executed test result.
 
-The runner refuses local and self-hosted machines. Ordinary cases use a generated
-private station/desktop; genuine OLE cases additionally require an explicitly
-owned disposable hosted input desktop and independent restoration. No user
+The runner refuses local and self-hosted machines. Direct native cases use a
+generated private station/desktop. GPUI cases use a generated private non-input
+desktop on WinSta0, retaining GPUI's interactive-station guard; they never switch
+the input desktop. Genuine OLE cases additionally require an explicitly owned
+disposable hosted input desktop and independent restoration. No user
 screen, file, account or general clipboard is acquired. The test executable is
 instrumented and is never a shipping artifact or a performance baseline.
 
@@ -35,9 +37,15 @@ budgets are unchanged. It retains raw case reports and binary/source identities,
 including failures. A timeout or unrelated process failure cannot pass a negative
 control. Capacity refusal checks every one of 256 real source attempts.
 
-The current root instrumentation passes actual GNU workspace/all-target type
-checking. The earlier revision-6 native C++ sources compile/link with MSVC and its runner
-parses on Windows. The later readiness correction still needs native compilation
-and runtime. Full COM/OLE/editor/fault execution remains pending.
+The earlier root instrumentation passed GNU workspace/all-target type checking,
+and the native C++ sources compiled/linked with MSVC. The actual e541 hosted run
+44174375175 failed: normal providers returned NONE, GPUI windows were headless,
+and stall waits aborted before their final evidence. The runtime correction
+separates ordinary operation timeouts from wait failures, retains the original
+source-phase helper identity across receiver replacement, and records numeric
+native operation stages/HRESULTs to resolve the remaining provider failure.
+PowerShell records independent restoration/release evidence without replacing
+the primary failure. This correction still requires native compilation and
+execution. Full COM/OLE/editor/fault acceptance remains open.
 Physical input, mixed DPI, hardware presentation and joint main/helper resource
 acceptance remain separate from this owned synthetic suite.

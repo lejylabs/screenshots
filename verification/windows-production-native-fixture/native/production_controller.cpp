@@ -1,4 +1,4 @@
-// Outer owned-process/Job watchdog. No desktop switching or synthetic input here.
+// Outer owned-process/Job watchdog. It creates exact private desktops; no input injection.
 #define wmain r10_prerequisite_main
 #include "production_support.cpp"
 #undef wmain
@@ -36,18 +36,24 @@ int wmain(int argc, wchar_t** argv) {
     HANDLE completion = CreateIoCompletionPort(INVALID_HANDLE_VALUE, nullptr, 0, 1); require(completion != nullptr, "outer Job completion port");
     JOBOBJECT_ASSOCIATE_COMPLETION_PORT association{job, completion}; require(SetInformationJobObject(job, JobObjectAssociateCompletionPortInformation, &association, sizeof(association)), "outer Job completion binding");
     bool input_mode = selected.rfind(L"ci-",0) == 0 || selected.rfind(L"gpui-ole-",0) == 0;
+    bool graphical_mode = selected.rfind(L"gpui-",0) == 0;
+    bool interactive_station = input_mode || graphical_mode;
     if (input_mode) require_owned_ci();
     HWINSTA original_station = GetProcessWindowStation();
+    if (interactive_station) {
+        wchar_t name[256]{};DWORD actual{};
+        require(GetUserObjectInformationW(original_station,UOI_NAME,name,sizeof(name),&actual) && !wcscmp(name,L"WinSta0"),"exact owned interactive startup station");
+    }
     std::wstring owner_id = std::to_wstring(GetCurrentProcessId());
     std::wstring station_name = L"ScreenshotsProductionAcceptance-" + owner_id;
-    HWINSTA private_station = input_mode ? original_station : CreateWindowStationW(station_name.c_str(),0,WINSTA_ALL_ACCESS,nullptr);
+    HWINSTA private_station = interactive_station ? original_station : CreateWindowStationW(station_name.c_str(),0,WINSTA_ALL_ACCESS,nullptr);
     require(private_station != nullptr,"owned startup station");
     require(SetProcessWindowStation(private_station),"owned startup station selection");
-    std::wstring desktop_name = input_mode ? L"ScreenshotsDropProbe-" + owner_id : L"owned";
+    std::wstring desktop_name = interactive_station ? L"ScreenshotsDropProbe-" + owner_id : L"owned";
     DWORD access = DESKTOP_CREATEWINDOW | DESKTOP_READOBJECTS | DESKTOP_WRITEOBJECTS | DESKTOP_ENUMERATE | (input_mode ? DESKTOP_SWITCHDESKTOP | DESKTOP_JOURNALPLAYBACK : 0);
     HDESK owned_desktop = CreateDesktopW(desktop_name.c_str(),nullptr,nullptr,0,access,nullptr); require(owned_desktop != nullptr,"owned startup desktop");
     require(SetProcessWindowStation(original_station),"restore controller station before app startup");
-    std::wstring desktop_path = (input_mode ? L"WinSta0" : station_name) + L"\\" + desktop_name;
+    std::wstring desktop_path = (interactive_station ? L"WinSta0" : station_name) + L"\\" + desktop_name;
     require(SetEnvironmentVariableW(L"SCREENSHOTS_DROP_ACCEPTANCE_DESKTOP",desktop_path.c_str()),"explicit owned startup desktop");
     require(SetEnvironmentVariableW(L"SCREENSHOTS_DROP_ACCEPTANCE_DESKTOP_OWNER",owner_id.c_str()),"explicit owned startup desktop owner");
     SIZE_T size{}; InitializeProcThreadAttributeList(nullptr, 2, 0, &size); std::vector<BYTE> storage(size); auto* attrs = reinterpret_cast<LPPROC_THREAD_ATTRIBUTE_LIST>(storage.data()); require(InitializeProcThreadAttributeList(attrs,2,0,&size), "outer launch attributes");
@@ -78,6 +84,6 @@ int wmain(int argc, wchar_t** argv) {
     require(WaitForSingleObject(reader,2000) == WAIT_OBJECT_0,"exact reader thread reaping"); DWORD reader_exit{}; require(GetExitCodeThread(reader,&reader_exit),"reader exit result");
     bool ok = !timed_out && empty && parent_observed && !drain.overflow && reader_exit == 0 && (parent_death ? exit == 98 : negative_control ? exit==1 : exit==0);
     std::printf("{\"outer_job_empty\":%s,\"outer_timeout\":%s,\"parent_death_observed\":%s,\"application_pid\":%lu,\"application_exit\":%lu,\"negative_control_rejected\":%s,\"passed\":%s}\n",empty?"true":"false",timed_out?"true":"false",parent_observed?"true":"false",app.dwProcessId,exit,(negative_control && exit==1)?"true":"false",ok?"true":"false");
-    CloseDesktop(owned_desktop); if (!input_mode) CloseWindowStation(private_station);
+    CloseDesktop(owned_desktop); if (!interactive_station) CloseWindowStation(private_station);
     for (HANDLE handle : {app.hProcess,reader,read,output,error,null_input,ready,completion,job}) CloseHandle(handle); return ok?0:1;
 }
