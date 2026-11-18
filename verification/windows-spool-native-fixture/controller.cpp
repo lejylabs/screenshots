@@ -154,53 +154,6 @@ static DWORD port_command(HANDLE monitor,const wchar_t* command,const std::wstri
     need(XcvDataW(monitor,command,reinterpret_cast<PBYTE>(const_cast<wchar_t*>(name.c_str())),static_cast<DWORD>((name.size()+1)*sizeof(wchar_t)),nullptr,0,&needed,&status)!=0,"Localmon command transport");
     return status;
 }
-// AddPrinter requires the caller's already-assigned SeLoadDriverPrivilege.
-class ScopedLoadDriverPrivilege {
-    Handle token;
-    LUID luid{};
-    DWORD previous{};
-    bool active=false;
-    bool attributes(DWORD& result) const {
-        DWORD needed{};GetTokenInformation(token.value,TokenPrivileges,nullptr,0,&needed);
-        if(needed<FIELD_OFFSET(TOKEN_PRIVILEGES,Privileges)||needed>65536) return false;
-        std::vector<BYTE> bytes(needed);
-        if(!GetTokenInformation(token.value,TokenPrivileges,bytes.data(),needed,&needed)||needed>bytes.size()) return false;
-        const auto* values=reinterpret_cast<const TOKEN_PRIVILEGES*>(bytes.data());
-        if(values->PrivilegeCount>4096||FIELD_OFFSET(TOKEN_PRIVILEGES,Privileges)+static_cast<SIZE_T>(values->PrivilegeCount)*sizeof(LUID_AND_ATTRIBUTES)>needed) return false;
-        bool found=false;
-        for(DWORD index=0;index<values->PrivilegeCount;++index) {
-            const auto& value=values->Privileges[index];
-            if(value.Luid.LowPart==luid.LowPart&&value.Luid.HighPart==luid.HighPart) {if(found)return false;found=true;result=value.Attributes;}
-        }
-        return found;
-    }
-    bool change(DWORD value) const {
-        TOKEN_PRIVILEGES request{};request.PrivilegeCount=1;request.Privileges[0].Luid=luid;request.Privileges[0].Attributes=value;
-        SetLastError(ERROR_SUCCESS);
-        const BOOL changed=AdjustTokenPrivileges(token.value,FALSE,&request,0,nullptr,nullptr);
-        const DWORD error=GetLastError();return changed&&error==ERROR_SUCCESS;
-    }
-public:
-    bool enable() {
-        if(token.value) return false;
-        HANDLE raw{};if(!OpenProcessToken(GetCurrentProcess(),TOKEN_QUERY|TOKEN_ADJUST_PRIVILEGES,&raw))return false;token.value=raw;
-        if(!LookupPrivilegeValueW(nullptr,L"SeLoadDriverPrivilege",&luid)||!attributes(previous)||(previous&SE_PRIVILEGE_REMOVED))return false;
-        active=true; // A failed/partial adjustment must still restore the observed prior state.
-        if(!change(previous|SE_PRIVILEGE_ENABLED))return false;
-        DWORD current{};return attributes(current)&&current==(previous|SE_PRIVILEGE_ENABLED);
-    }
-    bool restore() noexcept {
-        if(!active)return true;
-        try {DWORD current{};if(!change(previous)||!attributes(current)||current!=previous)return false;active=false;return true;}
-        catch(...) {return false;}
-    }
-    ~ScopedLoadDriverPrivilege() {
-        if(active&&!restore())retain("own process privilege restoration not verified; acquired authority retained");
-    }
-    ScopedLoadDriverPrivilege()=default;
-    ScopedLoadDriverPrivilege(const ScopedLoadDriverPrivilege&)=delete;
-    ScopedLoadDriverPrivilege& operator=(const ScopedLoadDriverPrivilege&)=delete;
-};
 static bool acquire(Ownership& owner) {
     // Metadata collisions confer no authority, even if identity happens to match.
     if(queue_exists(owner.queue) || port_identity(owner.port)!=Port::Missing) return false;
@@ -212,14 +165,10 @@ static bool acquire(Ownership& owner) {
     need(status==ERROR_SUCCESS,"exclusive native port creation"); owner.port_created=true; owner.uncertain=false;
     const std::wstring sddl=L"O:"+owner.sid+L"G:SYD:P(A;;0x000F000C;;;"+owner.sid+L")(A;;0x000F000C;;;SY)(A;;0x000F000C;;;BA)";
     PSECURITY_DESCRIPTOR security{}; need(ConvertStringSecurityDescriptorToSecurityDescriptorW(sddl.c_str(),SDDL_REVISION_1,&security,nullptr)!=0,"private queue descriptor");
-    std::unique_ptr<void,decltype(&LocalFree)> security_owner(security,&LocalFree);
     PRINTER_INFO_2W info{}; info.pPrinterName=owner.queue.data(); info.pPortName=owner.port.data();
     info.pDriverName=const_cast<wchar_t*>(L"Microsoft XPS Document Writer v4"); info.pPrintProcessor=const_cast<wchar_t*>(L"winprint"); info.pDatatype=const_cast<wchar_t*>(L"RAW");
     info.Attributes=PRINTER_ATTRIBUTE_LOCAL|PRINTER_ATTRIBUTE_QUEUED; info.Priority=1; info.DefaultPriority=1; info.pSecurityDescriptor=security;
-    ScopedLoadDriverPrivilege privilege;
-    need(privilege.enable(),"assigned own-process SeLoadDriverPrivilege enabled and verified");
-    owner.uncertain=true; owner.printer=AddPrinterW(nullptr,2,reinterpret_cast<BYTE*>(&info)); const DWORD error=GetLastError(); security_owner.reset();
-    if(!privilege.restore())retain("own process privilege restoration not verified; acquired authority retained");
+    owner.uncertain=true; owner.printer=AddPrinterW(nullptr,2,reinterpret_cast<BYTE*>(&info)); const DWORD error=GetLastError(); LocalFree(security);
     if(!owner.printer && error==ERROR_PRINTER_ALREADY_EXISTS) {owner.uncertain=false;return false;}
     need(owner.printer!=nullptr,"exclusive native queue creation"); owner.queue_created=true; owner.uncertain=false;
     return true;
