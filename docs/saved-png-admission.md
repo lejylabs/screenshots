@@ -2,9 +2,9 @@
 
 Author: NewtTheWolf
 Date: 2026-11-15
-Status: the original saved-PNG admission is implemented. The metadata-memory
-continuation described below is staged for review and has not been compiled,
-executed or measured. Earlier passing evidence applies to the original path.
+Status: metadata-memory admission is integrated and its optimized regular,
+allocation, wide/tall and synthetic 4K checks pass, as recorded below. These
+allocation observations do not establish whole-process or hardware budgets.
 
 ## Problem and scope
 

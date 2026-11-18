@@ -262,3 +262,21 @@ not covered by this snapshot.
 ## Owned native Windows GDI evidence — 2026-11-18
 
 Both exact optimized ignored GDI cases executed and passed in Windows job134704173055, run44276006510 (snapshot55a202af57187a63f9ebcbbc405ef4d39186a50d). The independent step requires exactly two discovered cases and retained the native output log even though the earlier unrelated drop-fixture C++ compile failed. This establishes actual owned memory-DC raster geometry/color/alpha-composition/cleanup and native StartDoc refusal, plus the separately labeled controlled document-fault branches. It does not establish real Winspool/driver submission, physical printing or resource budgets. The exact source changes are committed in `b411f73`.
+
+
+## Owned real-spool fixture proposal
+
+`verification/windows-spool-native-fixture/README.md` describes an explicitly
+instrumented disposable-host fixture for the real CLI/helper, Winspool,
+Microsoft-signed builtin XPS driver and owned Local Port output. Normal builds
+still reject that file port; the fixture requires a same-queue normal-binary
+refusal control. Only its compiled exact GUID queue/private sink pair can pass
+its separate never-default-enabled source guard. It adds no product CLI flag,
+queue installation, file-port support or runtime environment bypass.
+
+The fixture is authored source, not native acceptance evidence. It must build
+and run with retained source/binary identities, exact spool/output and fault
+oracles and verified whole-family/queue/port/pixel cleanup before the downstream
+real-driver gate can pass. Even a passing instrumented run would not establish
+unmodified shipping file-port acceptance, other drivers, native hangs,
+calibrated physical output or the reference-hardware resource budgets.

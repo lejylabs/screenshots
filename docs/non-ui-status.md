@@ -28,8 +28,10 @@ real-compositor or reference-hardware acceptance. [Exact scope](wayland-finite-c
 Native macOS/Windows HDR acquisition and a declared SDR rendition are now
 integrated in development source. Optimized Linux and Windows GNU metadata,
 89 affected capture controls (four opt-ins ignored) and Clippy pass. Native SDK/
-frame/runtime/hardware/resource gates and the larger Windows tiled extension
-remain separate. [HDR contract](hdr-capture.md).
+frame/runtime/hardware/resource gates remain separate. The larger Windows tiled
+extension is implemented; its exact owned WARP case passed 4K/5K/8K texture and
+failure-cleanup checks. This does not establish physical HDR/WGC acceptance.
+[HDR contract](hdr-capture.md).
 
 Windows incoming native file/image/URL data now uses the isolated non-agile
 receiver source for all eligible windows. Linux and GNU workspace/vendor-test
@@ -95,8 +97,10 @@ The preceding Windows file-drop/window-ownership correction is committed as
 passed **1,065 regular tests**, zero failures, with 71 opt-ins excluded across 60
 outer suites. Linux/Windows GNU all-target metadata, Windows dependency-unit
 metadata, optimized Clippy and focused pure/GPUI/font/style regressions pass.
-Native COM acquisition containment remains an implementation gap; Windows native
-COM/resource acceptance remains open. [Drop contract](clipboard-import-output.md#windows-existing-file-drop-metadata-bounds).
+At that historical checkpoint native COM acquisition containment was still an
+implementation gap. The current isolated receiver implements it; complete owned
+COM/OLE/editor and aggregate resource acceptance remain open.
+[Drop contract](clipboard-import-output.md#windows-existing-file-drop-metadata-bounds).
 The earlier format/Wayland source is committed as
 `fd98138633de4a15b028b62b54c0a2a9af301ec9`; its 1,044-test/private CLI/Wayland
 results remain a separate checkpoint. These totals are different source snapshots,
@@ -269,10 +273,11 @@ completion is listed separately.
   final design remain excluded. Native presentation and performance acceptance
   remain in the separate matrix. [Contract](editor-document.md).
 - [ ] **Import/output:** explicit URL CLI/Task input, bounded native clipboard
-  and existing cross-platform Paste are committed. Remaining native raw image/URL
-  drops and drag-out need integration. Explicit isolated image printing is now
-  integrated and passes optimized pure/process and real private IPP checks; native
-  Windows GDI output/fault injection, macOS runtime and resource acceptance remain
+  and existing cross-platform Paste are committed. Native raw image/URL/drop and
+  drag-out adapters are integrated; owned X11 transfer checks pass. Complete
+  Windows COM/editor, Mac named-board/gesture and real-compositor acceptance remain
+  open. Printing passes private IPP and owned Windows memory-DC raster/fault checks;
+  full Winspool/driver, current-source Mac and resource acceptance remain
   open. [Printing contract](image-printing.md). Descriptor-only Wayland GUI startup
   and capture/Library format policy are integrated with local functional checks
   passed and source/document review completed in the committed delivery.
@@ -296,9 +301,11 @@ completion is listed separately.
   missing-reference removal, portable move/transfer, journaled trash/restore/
   purge and explicit retention are implemented. Thumbnail prefetch/cache/filter
   controls are UI consumer work, with no speculative idle cache added.
-- [ ] **Major native capabilities/utilities:** finish macOS/Wayland scrolling and
-  recording adapters beyond implemented X11/Windows live scrolling and optional
-  finite video/GIF/native audio/combined A/V. Native screen-color sampling,
+- [ ] **Major native capabilities/utilities:** finite macOS and portal-owned
+  Wayland scrolling/recording adapters are implemented alongside X11/Windows live
+  scrolling and optional finite video/GIF/native audio/combined A/V. Exact native
+  permission, lifecycle, hardware and resource acceptance remains open; automatic
+  target-bound Wayland scrolling is unsupported. Native screen-color sampling,
   ruler/measurement and bounded clipboard inspection are committed tested subsets.
   Existing file pixel/hash and
   combine/compare/split tools remain completed subsets. Pin windows and new

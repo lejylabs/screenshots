@@ -31,6 +31,9 @@ mod transport;
 #[path = "capture_worker_unix.rs"]
 mod unix;
 
+#[cfg(target_os = "windows")]
+#[path = "file_clipboard_image_windows.rs"]
+mod image_windows;
 #[path = "file_clipboard_output.rs"]
 mod output;
 #[cfg(target_os = "windows")]
@@ -43,8 +46,7 @@ const CHILD: &str = "__native-file-clipboard-worker";
 const MAGIC: &[u8; 8] = b"SCFILE01";
 const DEADLINE: Duration = Duration::from_secs(5);
 static BUSY: AtomicBool = AtomicBool::new(false);
-static CLOSING: AtomicBool = AtomicBool::new(false);
-// Called only after capture admission was reserved; success is followed immediately by _exit.
+// Root integration: capture admission is reserved first; success is followed immediately by _exit.
 #[cfg(unix)]
 pub(crate) fn reserve_signal_shutdown() -> bool {
     BUSY.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
@@ -54,6 +56,8 @@ pub(crate) fn reserve_signal_shutdown() -> bool {
 pub(crate) fn release_signal_shutdown_for_test() {
     drop(Admission);
 }
+
+static CLOSING: AtomicBool = AtomicBool::new(false);
 static COMPLETION_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 static COMPLETED: std::sync::Condvar = std::sync::Condvar::new();
 static ACTIVE_STOP: std::sync::Mutex<Option<(Arc<AtomicBool>, mpsc::SyncSender<()>)>> =
@@ -336,6 +340,11 @@ fn spawn_input(
     let cancelled = Arc::new(AtomicBool::new(false));
     let stop = cancelled.clone();
     let (ready, response) = mpsc::sync_channel(1);
+    let image_gate = Arc::new(AtomicBool::new(false));
+    #[cfg(target_os = "windows")]
+    let worker_image_gate = image_gate.clone();
+    #[cfg(not(target_os = "windows"))]
+    let worker_image_gate = image_gate;
     let (release, retired) = mpsc::sync_channel::<()>(1);
     let (completed, completion) = mpsc::sync_channel(1);
     *ACTIVE_STOP
@@ -422,7 +431,9 @@ fn spawn_input(
                         io.read_exact(&mut ack)?;
                         ensure!(ack == [1], "Native file clipboard publication failed");
                     }
-                    OwnedInput::Output(request) => request.exchange(wayland, &nonce, &mut io)?,
+                    OwnedInput::Output(request) => {
+                        request.exchange(wayland, &nonce, &mut io, &worker_image_gate)?
+                    }
                 }
                 check()?;
                 ensure!(
@@ -448,14 +459,16 @@ fn spawn_input(
                         let _ = ready.send(Ok(()));
                     }
                 }
-                Err(_) => {
-                    let _ = ready.send(Err(()));
+                Err(error) => {
+                    let preparation = error.downcast_ref::<output::PreparationFailed>().is_some();
+                    let _ = ready.send(Err(preparation));
                 }
             }
             #[cfg(not(target_os = "linux"))]
             drop(retired);
         })
         .context("Could not start file clipboard supervisor")?;
+    let mut preparation_failed = false;
     let published = loop {
         if check().is_err() || Instant::now() >= deadline {
             break false;
@@ -466,7 +479,11 @@ fn spawn_input(
                 .min(Duration::from_millis(20)),
         ) {
             Ok(Ok(())) => break check().is_ok() && Instant::now() < deadline,
-            Ok(Err(())) | Err(mpsc::RecvTimeoutError::Disconnected) => break false,
+            Ok(Err(preparation)) => {
+                preparation_failed = preparation;
+                break false;
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => break false,
             Err(mpsc::RecvTimeoutError::Timeout) => {}
         }
     };
@@ -484,6 +501,17 @@ fn spawn_input(
         let _ = release.try_send(());
         drop(release);
         let _ = completion.recv_timeout(Duration::from_millis(250));
+        #[cfg(target_os = "windows")]
+        if image_gate.load(Ordering::Acquire) {
+            anyhow::bail!(
+                "Clipboard image output did not complete; PNG may already be available and DIBV5 may be missing; no retry was attempted"
+            );
+        }
+        if preparation_failed {
+            anyhow::bail!(
+                "Clipboard image preparation failed or exceeded its native resource budget; clipboard publication was not attempted"
+            );
+        }
         #[cfg(target_os = "linux")]
         if wayland {
             anyhow::bail!(

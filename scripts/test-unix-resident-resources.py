@@ -266,6 +266,39 @@ class Supervisor:
         self.watched.clear()
 
 
+def mapping_diagnostics(*pids):
+    result = {}
+    keys = {'Size', 'Rss', 'Pss', 'Private_Clean', 'Private_Dirty', 'Shared_Clean', 'Shared_Dirty', 'Anonymous', 'Swap'}
+    for pid in pids:
+        with (PROC / str(pid) / 'smaps').open('rb') as source:
+            raw = source.read(16 * 1024 * 1024 + 1)
+        if len(raw) > 16 * 1024 * 1024:
+            raise RuntimeError('Owned mapping diagnostics exceed their bound')
+        entries = []
+        current = None
+        for line in raw.decode().splitlines():
+            header = re.match(r'^([0-9a-f]+)-([0-9a-f]+)\s+([rwxps-]{4})\s+(\S+)\s+(\S+)\s+(\d+)(?:\s+(.*))?$', line)
+            if header:
+                path = header.group(7) or ''
+                name = Path(path).name if path and not path.startswith('[') else path or 'anonymous'
+                lowered = name.lower()
+                category = ('software-driver' if any(x in lowered for x in ('llvm', 'vulkan', 'gallium')) else
+                            'font-file' if '/fonts/' in path or lowered.endswith(('.ttf', '.otf', '.ttc')) else
+                            'anonymous' if not path or path.startswith('[') else 'file-backed')
+                current = {'id': hashlib.sha256(line.encode()).hexdigest()[:20], 'name': name,
+                           'category': category, 'permissions': header.group(3), 'bytes': {}}
+                entries.append(current)
+            elif current is not None and ':' in line:
+                key, value = line.split(':', 1)
+                if key in keys:
+                    fields = value.split()
+                    if len(fields) != 2 or fields[1] != 'kB':
+                        raise RuntimeError('Invalid owned smaps diagnostic units')
+                    current['bytes'][key] = int(fields[0]) * 1024
+        result[str(pid)] = entries
+    return result
+
+
 def exercise(args, owner, family, interrupts, report):
     supervisor = Supervisor(family, interrupts)
     runtime = family.create_runtime()
@@ -302,8 +335,11 @@ def exercise(args, owner, family, interrupts, report):
             raise RuntimeError('Private host did not become ready')
         report['phase'] = 'actual_main_startup'
         main_log = runtime / 'owned-main-startup.log'
+        main_environment = environment | {'RUST_BACKTRACE': '1'}
+        if args.heaptrack_preload:
+            main_environment.update(LD_PRELOAD=str(args.heaptrack_preload), DUMP_HEAPTRACK_OUTPUT=str(args.heaptrack_raw))
         with main_log.open('wb') as startup_log:
-            main = family.spawn([str(args.binary)], env=environment | {'RUST_BACKTRACE': '1'}, stdin=subprocess.DEVNULL,
+            main = family.spawn([str(args.binary)], env=main_environment, stdin=subprocess.DEVNULL,
                                 stdout=subprocess.DEVNULL, stderr=startup_log)
         main_descriptor = supervisor.watch(main)
         until = time.monotonic() + 20
@@ -328,6 +364,7 @@ def exercise(args, owner, family, interrupts, report):
         supervisor.window(host, main.pid, helper, True)
         initial = snapshot(main.pid, helper)
         report['visible_initial'] = {'processes': initial, 'joint': aggregate(initial)}
+        if args.mapping_diagnostics: report['mapping_diagnostics'] = {'visible': mapping_diagnostics(main.pid, helper)}
         report['phase'] = 'close_show_cycles'
         cycles = []
         for index in range(args.cycles):
@@ -336,6 +373,8 @@ def exercise(args, owner, family, interrupts, report):
                 raise RuntimeError('Actual native close was not sent')
             supervisor.window(host, main.pid, helper, False)
             hidden = snapshot(main.pid, helper)
+            if args.mapping_diagnostics and index in (0, args.cycles - 1):
+                report['mapping_diagnostics'][f'closed_cycle_{index + 1}'] = mapping_diagnostics(main.pid, helper)
             # A normal second invocation must forward Show to this retained owner.
             secondary = family.spawn([str(args.binary)], env=environment, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             descriptor = os.pidfd_open(secondary.pid)
@@ -364,8 +403,9 @@ def exercise(args, owner, family, interrupts, report):
         supervisor.window(host, main.pid, helper, False)
         report['phase'] = 'five_minute_idle'
         before = snapshot(main.pid, helper)
+        if args.mapping_diagnostics: report['mapping_diagnostics']['before_idle'] = mapping_diagnostics(main.pid, helper)
         start = time.monotonic()
-        until = start + 300
+        until = start + (5 if args.heaptrack_preload else 300)
         # No X11/D-Bus requests or Show during the measurement interval.
         topology_checks = 0
         while time.monotonic() < until:
@@ -375,12 +415,14 @@ def exercise(args, owner, family, interrupts, report):
             topology_checks += 1
         after = snapshot(main.pid, helper)
         elapsed = time.monotonic() - start
+        if args.mapping_diagnostics: report['mapping_diagnostics']['after_idle'] = mapping_diagnostics(main.pid, helper)
         supervisor.window(host, main.pid, helper, False)
         measured = compare(before, after, elapsed, os.sysconf('SC_CLK_TCK'))
         joint_before, joint_after = aggregate(before), aggregate(after)
         measured.update({'warmup_seconds': 30, 'topology_checks': topology_checks, 'before': before, 'after': after, 'joint_before': joint_before, 'joint_after': joint_after})
-        measured['private_budget_observed'] = max(joint_before['private_bytes'], joint_after['private_bytes']) <= 50 * 1024 * 1024 and joint_after['memory_bytes']['Swap'] == 0 and joint_before['memory_bytes']['Swap'] == 0
-        measured['cpu_budget_observed'] = measured['one_core_cpu_percent'] <= 0.1
+        measured['instrumented_diagnostic_only'] = bool(args.heaptrack_preload)
+        measured['private_budget_observed'] = not args.heaptrack_preload and max(joint_before['private_bytes'], joint_after['private_bytes']) <= 50 * 1024 * 1024 and joint_after['memory_bytes']['Swap'] == 0 and joint_before['memory_bytes']['Swap'] == 0
+        measured['cpu_budget_observed'] = not args.heaptrack_preload and measured['one_core_cpu_percent'] <= 0.1
         report['idle'] = measured
         report['phase'] = 'post_idle_show'
         secondary = family.spawn([str(args.binary)], env=environment, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -443,6 +485,9 @@ def main():
     parser.add_argument('--software-vulkan-icd', type=Path)
     parser.add_argument('--output', type=Path)
     parser.add_argument('--label', default='current')
+    parser.add_argument('--heaptrack-preload', type=Path, help='Explicit owned allocation diagnostic only; never acceptance')
+    parser.add_argument('--heaptrack-raw', type=Path)
+    parser.add_argument('--mapping-diagnostics', action='store_true', help='Owned mapping categories/basenames only; no addresses/full paths/pixels')
     parser.add_argument('--cycles', type=int, default=8)
     parser.add_argument('--xvfb', default='Xvfb')
     parser.add_argument('--xauth', default='xauth')
@@ -455,6 +500,11 @@ def main():
         parser.error('Linux and explicit --allow-private-fixtures are required')
     if not all((args.binary, args.fixture, args.software_vulkan_icd, args.output)) or not 1 <= args.cycles <= 8 or not re.fullmatch(r'[A-Za-z0-9_-]{1,48}', args.label):
         parser.error('Supply explicit binary, fixture, software ICD, output and a safe label; cycles must be 1–8')
+    if bool(args.heaptrack_preload) != bool(args.heaptrack_raw): parser.error('Supply both private heaptrack paths')
+    if args.heaptrack_preload:
+        args.heaptrack_preload = args.heaptrack_preload.resolve(strict=True)
+        args.heaptrack_raw = args.heaptrack_raw.resolve()
+        if args.heaptrack_raw.exists(): parser.error('Heaptrack diagnostic output must be fresh')
     for name in ('binary', 'fixture', 'software_vulkan_icd'):
         setattr(args, name, getattr(args, name).resolve(strict=True))
     if args.binary == args.fixture or args.binary.name != 'screenshots':

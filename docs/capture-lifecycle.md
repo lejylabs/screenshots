@@ -1,7 +1,8 @@
 # Capture selection and native visibility lifecycle
 
-Implementation evidence only; all tests and native/performance gates below are
-unrun for this held slice. This does not establish release acceptance.
+Integrated optimized topology/controller tests, the cached-display regression
+and the owned X11 server-visibility check pass; exact evidence is recorded below.
+Physical presentation, real-session and performance gates remain open.
 
 ## Selection ownership
 

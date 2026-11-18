@@ -29,6 +29,100 @@ static void check_private_value(Source* source,FORMATETC* format,BYTE expected) 
     require(copy.tymed==TYMED_HGLOBAL && GlobalSize(copy.hGlobal)>=4,"self-check copied private medium");
     auto* bytes=static_cast<BYTE*>(GlobalLock(copy.hGlobal));require(bytes!=nullptr,"self-check private medium lock");for(unsigned index=0;index<4;++index)require(bytes[index]==expected,"self-check exact private bytes");GlobalUnlock(copy.hGlobal);ReleaseStgMedium(&copy);
 }
+struct StreamStoreReentry {
+    Source* source{};FORMATETC format{};bool on_stat=false,on_release=false,active=false,fired=false,guard_seen=false;LONG attempts=0,nested_methods=0;HRESULT nested_result=E_PENDING;
+    bool nested_method() {if(!active)return false;++nested_methods;return true;}
+    void invoke(IStream* stream,LONG& refs,LONG* released) {
+        fired=true;++attempts;guard_seen=source->private_busy;
+        LONG caller_refs=refs,caller_releases=released?*released:0,sets=state->private_set_calls,gets=state->private_get_calls;
+        LONG live_slots=state->private_live_slots,live_bytes=state->private_live_bytes,peak_slots=state->private_peak_slots,peak_bytes=state->private_peak_bytes;
+        LONG refused=state->private_refusals,queries=state->query_calls,data=state->data_calls,media=state->medium_releases;PayloadCounters payload=state->payload;
+        IDataObject* cache=source->private_data;SIZE_T bytes=source->private_bytes;Source::PrivateSlot slots[8];memcpy(slots,source->private_slots,sizeof(slots));
+        STGMEDIUM nested{};nested.tymed=TYMED_ISTREAM;nested.pstm=stream;
+        active=true;nested_result=source->SetData(&format,&nested,TRUE);active=false;
+        require(nested_result==E_UNEXPECTED && nested_methods==0 && guard_seen,"reentrant SetData rejects before any nested stream method");
+        require(refs==caller_refs && (!released || *released==caller_releases),"reentrant SetData never takes caller stream ownership");
+        require(source->private_data==cache && source->private_bytes==bytes,"reentrant SetData leaves native storage identity and bytes unchanged");
+        for(unsigned index=0;index<8;++index)require(source->private_slots[index].format==slots[index].format && source->private_slots[index].bytes==slots[index].bytes && source->private_slots[index].tymed==slots[index].tymed,"reentrant SetData leaves all retained slot metadata unchanged");
+        require(state->private_live_slots==live_slots && state->private_live_bytes==live_bytes && state->private_peak_slots==peak_slots && state->private_peak_bytes==peak_bytes && state->private_set_calls==sets+1 && state->private_get_calls==gets && state->private_refusals==refused && state->query_calls==queries && state->data_calls==data && state->medium_releases==media && !memcmp(&state->payload,&payload,sizeof(payload)),"nested rejection preserves bounds and acquisition counters");
+    }
+};
+
+struct CheckedStream final : IStream {
+    LONG refs=1;IStream* inner;unsigned fault;LONG* released;StreamStoreReentry* reentry;
+    CheckedStream(IStream* stream,unsigned mode,LONG* count=nullptr,StreamStoreReentry* control=nullptr):inner(stream),fault(mode),released(count),reentry(control){}
+    HRESULT STDMETHODCALLTYPE QueryInterface(REFIID iid,void** out) override {if(reentry && reentry->nested_method())return E_UNEXPECTED;if(!out)return E_POINTER;*out=nullptr;if(iid!=IID_IUnknown && iid!=IID_IStream && iid!=IID_ISequentialStream)return E_NOINTERFACE;*out=this;AddRef();return S_OK;}
+    ULONG STDMETHODCALLTYPE AddRef() override {if(reentry && reentry->nested_method())return refs;return InterlockedIncrement(&refs);}
+    ULONG STDMETHODCALLTYPE Release() override {if(reentry && reentry->nested_method())return refs;LONG count=InterlockedDecrement(&refs);if(!count){if(reentry && reentry->on_release && !reentry->fired)reentry->invoke(this,refs,released);inner->Release();if(released)InterlockedIncrement(released);delete this;}return count;}
+    HRESULT STDMETHODCALLTYPE Read(void* data,ULONG bytes,ULONG* read) override {if(reentry && reentry->nested_method())return E_UNEXPECTED;HRESULT result=inner->Read(data,fault==1 && bytes?bytes-1:bytes,read);if(fault==4 && stop_event)SetEvent(stop_event);return result;}
+    HRESULT STDMETHODCALLTYPE Write(const void* data,ULONG bytes,ULONG* written) override {if(reentry && reentry->nested_method())return E_UNEXPECTED;return inner->Write(data,bytes,written);}
+    HRESULT STDMETHODCALLTYPE Seek(LARGE_INTEGER offset,DWORD from,ULARGE_INTEGER* position) override {if(reentry && reentry->nested_method())return E_UNEXPECTED;return fault==2?STG_E_SEEKERROR:inner->Seek(offset,from,position);}
+    HRESULT STDMETHODCALLTYPE SetSize(ULARGE_INTEGER size) override {if(reentry && reentry->nested_method())return E_UNEXPECTED;return inner->SetSize(size);}
+    HRESULT STDMETHODCALLTYPE CopyTo(IStream* out,ULARGE_INTEGER count,ULARGE_INTEGER* read,ULARGE_INTEGER* written) override {if(reentry && reentry->nested_method())return E_UNEXPECTED;return inner->CopyTo(out,count,read,written);}
+    HRESULT STDMETHODCALLTYPE Commit(DWORD flags) override {if(reentry && reentry->nested_method())return E_UNEXPECTED;return inner->Commit(flags);}
+    HRESULT STDMETHODCALLTYPE Revert() override {if(reentry && reentry->nested_method())return E_UNEXPECTED;return inner->Revert();}
+    HRESULT STDMETHODCALLTYPE LockRegion(ULARGE_INTEGER offset,ULARGE_INTEGER count,DWORD flags) override {if(reentry && reentry->nested_method())return E_UNEXPECTED;return inner->LockRegion(offset,count,flags);}
+    HRESULT STDMETHODCALLTYPE UnlockRegion(ULARGE_INTEGER offset,ULARGE_INTEGER count,DWORD flags) override {if(reentry && reentry->nested_method())return E_UNEXPECTED;return inner->UnlockRegion(offset,count,flags);}
+    HRESULT STDMETHODCALLTYPE Stat(STATSTG* info,DWORD flags) override {if(reentry && reentry->nested_method())return E_UNEXPECTED;if(reentry && reentry->on_stat && !reentry->fired)reentry->invoke(this,refs,released);if(fault==6)return E_UNEXPECTED;HRESULT result=inner->Stat(info,flags);if(SUCCEEDED(result) && fault==3)info->cbSize.QuadPart=64*1024+1;if(SUCCEEDED(result) && fault==5 && info->cbSize.QuadPart)--info->cbSize.QuadPart;return result;}
+    HRESULT STDMETHODCALLTYPE Clone(IStream** out) override {if(reentry && reentry->nested_method())return E_UNEXPECTED;if(!out)return E_POINTER;*out=nullptr;IStream* copy{};HRESULT result=inner->Clone(&copy);if(SUCCEEDED(result))*out=new CheckedStream(copy,fault,nullptr,reentry);return result;}
+};
+static STGMEDIUM check_stream(unsigned fault,LONG* released=nullptr,StreamStoreReentry* reentry=nullptr) {
+    IStream* stream{};require_hr(CreateStreamOnHGlobal(nullptr,TRUE,&stream),"self-check owned stream");
+    const BYTE bytes[]{11,11,11,11};ULONG written{};require_hr(stream->Write(bytes,sizeof(bytes),&written),"self-check stream bytes");require(written==sizeof(bytes),"self-check stream complete write");
+    LARGE_INTEGER position{};position.QuadPart=1;require_hr(stream->Seek(position,STREAM_SEEK_SET,nullptr),"self-check initial stream position");
+    STGMEDIUM medium{};medium.tymed=TYMED_ISTREAM;medium.pstm=new CheckedStream(stream,fault,released,reentry);return medium;
+}
+static void check_stream_value(Source* source,FORMATETC* format) {
+    STGMEDIUM medium{};require_hr(source->GetData(format,&medium),"self-check copied private stream");require(medium.tymed==TYMED_ISTREAM && medium.pstm,"self-check private stream type");
+    LARGE_INTEGER zero{};ULARGE_INTEGER position{};require_hr(medium.pstm->Seek(zero,STREAM_SEEK_CUR,&position),"self-check returned stream cursor");require(position.QuadPart==1,"private stream cursor preserved");
+    require_hr(medium.pstm->Seek(zero,STREAM_SEEK_SET,nullptr),"self-check returned stream rewind");BYTE bytes[5]{};ULONG read{};HRESULT result=medium.pstm->Read(bytes,sizeof(bytes),&read);require(SUCCEEDED(result) && read==4,"private stream exact length");for(unsigned index=0;index<read;++index)require(bytes[index]==11,"private stream exact original bytes");ReleaseStgMedium(&medium);
+}
+static void private_stream_self_check(FORMATETC format) {
+    format.tymed=TYMED_ISTREAM;LONG borrowed_release=0;STGMEDIUM borrowed=check_stream(0,&borrowed_release);auto* source=new Source;
+    require_hr(source->SetData(&format,&borrowed,FALSE),"self-check borrowed stream snapshot");require(borrowed_release==0,"borrowed stream stays caller-owned");
+    FORMATETC changed_format=format;changed_format.tymed=TYMED_HGLOBAL;STGMEDIUM changed_medium=check_medium(4,99);require(source->SetData(&changed_format,&changed_medium,FALSE)==DV_E_TYMED,"one private format cannot accumulate alternate retained media");ReleaseStgMedium(&changed_medium);
+    LARGE_INTEGER zero{};ULARGE_INTEGER position{};require_hr(borrowed.pstm->Seek(zero,STREAM_SEEK_CUR,&position),"self-check original stream cursor");require(position.QuadPart==1,"snapshot never changes caller seek position");
+    require_hr(borrowed.pstm->Seek(zero,STREAM_SEEK_SET,nullptr),"self-check caller stream rewrite");const BYTE changed[]{99,99,99,99};ULONG written{};require_hr(borrowed.pstm->Write(changed,sizeof(changed),&written),"self-check caller stream mutation");ReleaseStgMedium(&borrowed);require(borrowed_release==1,"borrowed stream owner releases exactly once");check_stream_value(source,&format);check_stream_value(source,&format);source->Release();
+    LONG transferred_release=0;STGMEDIUM transferred=check_stream(0,&transferred_release);source=new Source;require_hr(source->SetData(&format,&transferred,TRUE),"self-check transferred stream snapshot");require(transferred_release==1,"accepted transferred stream released exactly once");check_stream_value(source,&format);source->Release();
+    stop_event=CreateEventW(nullptr,TRUE,FALSE,nullptr);require(stop_event!=nullptr,"self-check stream cancellation event");
+    const HRESULT expected[]{S_OK,STG_E_READFAULT,STG_E_SEEKERROR,STG_E_MEDIUMFULL,E_ABORT,STG_E_MEDIUMFULL};
+    for(unsigned fault=1;fault<=5;++fault) {
+        LONG released=0;STGMEDIUM medium=check_stream(fault,&released);source=new Source;
+        require(source->SetData(&format,&medium,TRUE)==expected[fault] && released==0,"failed short-read/seek/size/canceled/grown stream retains caller ownership");
+        STGMEDIUM missing{};require(!source->private_busy && source->private_bytes==0 && state->private_live_slots==0 && state->private_live_bytes==0 && source->GetData(&format,&missing)==DV_E_FORMATETC,"failed stream store clears guard and admits no retained entry");
+        ResetEvent(stop_event);STGMEDIUM healthy=check_stream(0);require_hr(source->SetData(&format,&healthy,FALSE),"healthy store succeeds after each rejected stream");ReleaseStgMedium(&healthy);check_stream_value(source,&format);
+        source->Release();ReleaseStgMedium(&medium);require(released==1,"rejected stream caller releases once");
+    }
+    SetEvent(stop_event);LONG canceled_release=0;STGMEDIUM canceled=check_stream(6,&canceled_release);source=new Source;require(source->SetData(&format,&canceled,TRUE)==E_ABORT && canceled_release==0,"pre-canceled stream is rejected before its failing Stat");source->Release();ReleaseStgMedium(&canceled);require(canceled_release==1,"pre-canceled stream remains caller-owned");
+    CloseHandle(stop_event);stop_event=nullptr;
+}
+
+struct CacheReentryRelease final : IUnknown {
+    LONG refs=1;HGLOBAL global;IStream* stream;StreamStoreReentry* control;LONG* released;
+    CacheReentryRelease(HGLOBAL data,IStream* input,StreamStoreReentry* callback,LONG* count):global(data),stream(input),control(callback),released(count){}
+    HRESULT STDMETHODCALLTYPE QueryInterface(REFIID iid,void** out) override {if(!out)return E_POINTER;*out=nullptr;if(iid!=IID_IUnknown)return E_NOINTERFACE;*out=this;AddRef();return S_OK;}
+    ULONG STDMETHODCALLTYPE AddRef() override {return InterlockedIncrement(&refs);}
+    ULONG STDMETHODCALLTYPE Release() override {LONG count=InterlockedDecrement(&refs);if(!count){auto* input=static_cast<CheckedStream*>(stream);control->invoke(stream,input->refs,input->released);GlobalFree(global);stream->Release();InterlockedIncrement(released);delete this;}return count;}
+};
+static void private_stream_reentry_self_check(FORMATETC seed_format,FORMATETC stream_format) {
+    stream_format.tymed=TYMED_ISTREAM;
+    for(unsigned mode=0;mode<2;++mode) {
+        auto* source=new Source;STGMEDIUM seed=check_medium(4,11);require_hr(source->SetData(&seed_format,&seed,FALSE),"self-check reentry retained seed");ReleaseStgMedium(&seed);
+        StreamStoreReentry control;control.source=source;control.format=stream_format;control.on_stat=mode==0;control.on_release=mode==1;
+        LONG released=0;STGMEDIUM medium=check_stream(0,&released,&control);
+        require_hr(source->SetData(&stream_format,&medium,FALSE),"guarded Stat/Release reentry allows only the outer stream store");
+        require(control.attempts==1 && control.nested_methods==0 && control.nested_result==E_UNEXPECTED && control.guard_seen && released==0 && !source->private_busy,"Stat/Release nested store rejects immediately and outer guard resets");
+        LARGE_INTEGER zero{};ULARGE_INTEGER position{};require_hr(medium.pstm->Seek(zero,STREAM_SEEK_CUR,&position),"reentry caller stream cursor");require(position.QuadPart==1,"reentrant store leaves caller cursor unchanged");
+        require(state->private_live_slots==2 && source->private_bytes==static_cast<SIZE_T>(state->private_live_bytes) && source->private_bytes<=256*1024 && state->private_peak_slots<=8 && state->private_peak_bytes<=256*1024,"only outer store is admitted within unchanged cache bounds");
+        check_private_value(source,&seed_format,11);check_stream_value(source,&stream_format);
+        ReleaseStgMedium(&medium);require(released==1,"reentry caller releases its original stream once");source->Release();require(state->private_live_slots==0 && state->private_live_bytes==0,"reentry storage releases fully");
+    }
+    auto* source=new Source;StreamStoreReentry control;control.source=source;control.format=stream_format;
+    LONG stream_released=0,owner_released=0;STGMEDIUM nested=check_stream(0,&stream_released,&control);STGMEDIUM retained=check_medium(4,11);retained.pUnkForRelease=new CacheReentryRelease(retained.hGlobal,nested.pstm,&control,&owner_released);
+    require_hr(source->SetData(&seed_format,&retained,TRUE),"self-check native release-owner storage");
+    source->Release();require(control.attempts==1 && control.nested_methods==0 && control.guard_seen && control.nested_result==E_UNEXPECTED && owner_released==1 && stream_released==1 && state->private_live_slots==0 && state->private_live_bytes==0,"native storage owner release rejects destructor/store reentry without leaks");
+}
+
 static int private_formats_self_check() {
     Shared local{};state=&local;scenario=L"normal";require_hr(OleInitialize(nullptr),"self-check source STA");HANDLE budget=contain_native();
     FORMATETC formats[9]{};
@@ -64,7 +158,10 @@ static int private_formats_self_check() {
     for(unsigned index=0;index<4;++index)require_hr(total->SetData(&formats[index],&large,FALSE),"self-check aggregate admission");
     require(total->SetData(&formats[4],&large,FALSE)==STG_E_MEDIUMFULL,"private aggregate bytes refused");ReleaseStgMedium(&large);total->Release();
     require(state->private_peak_slots==8 && state->private_peak_bytes==256*1024 && state->private_live_slots==0 && state->private_live_bytes==0,"private retained bytes and slots bounded and released");
-    OleUninitialize();CloseHandle(budget);std::printf("{\"private_formats_self_check\":true,\"passed\":true,\"basic_refusal_owns_nothing\":true,\"borrowed_copy_independent\":true,\"transferred_release_exact\":true,\"descriptor_validated\":true,\"slots_limit\":8,\"per_format_bytes\":65536,\"aggregate_bytes\":262144}\n");return 0;
+    private_stream_self_check(formats[0]);
+    private_stream_reentry_self_check(formats[0],formats[1]);
+    require(state->private_live_slots==0 && state->private_live_bytes==0,"private stream storage released");
+    OleUninitialize();CloseHandle(budget);std::printf("{\"private_formats_self_check\":true,\"passed\":true,\"basic_refusal_owns_nothing\":true,\"borrowed_copy_independent\":true,\"transferred_release_exact\":true,\"descriptor_validated\":true,\"stream_ownership_seek_short_read_cancel\":true,\"stream_stat_release_reentry_guard\":true,\"slots_limit\":8,\"per_format_bytes\":65536,\"aggregate_bytes\":262144}\n");return 0;
 }
 
 int wmain(int argc, wchar_t** argv) {

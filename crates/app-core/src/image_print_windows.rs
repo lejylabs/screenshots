@@ -270,8 +270,13 @@ pub fn print_windows_pixels(
         "Printer port could not be verified"
     );
     let port = unsafe { &*info.as_ptr().cast::<PRINTER_INFO_5W>() }.pPortName;
+    let port = port_in_buffer(&info, port)?;
+    let permitted = allowed_port(&port);
+    // Only an explicitly instrumented build can admit its one baked-in owned sink.
+    #[cfg(screenshots_native_print_acceptance)]
+    let permitted = permitted || owned_fixture_port(&name, &port);
     ensure!(
-        allowed_port(&port_in_buffer(&info, port)?),
+        permitted,
         "Printer requires an unsupported or interactive port"
     );
     let mode = validated_mode(&printer, &name, paper)?;
@@ -429,3 +434,14 @@ mod tests {
 mod native_fixture;
 #[cfg(test)]
 use native_fixture::{AbortDoc, DeleteDC, EndDoc, EndPage, GetDeviceCaps, StartDocW, StartPage};
+
+// No runtime switch: both exact values are required at compile time in the CI build.
+#[cfg(screenshots_native_print_acceptance)]
+fn owned_fixture_port(name: &[u16], port: &str) -> bool {
+    let expected_name = env!("SCREENSHOTS_NATIVE_PRINT_QUEUE");
+    let expected_port = env!("SCREENSHOTS_NATIVE_PRINT_PORT");
+    name.iter()
+        .copied()
+        .eq(expected_name.encode_utf16().chain(Some(0)))
+        && port == expected_port
+}

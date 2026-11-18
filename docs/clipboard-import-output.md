@@ -79,11 +79,12 @@ release. AppKit/pasteboard calls run on the worker's native main thread.
 
 ## Windows existing file-drop metadata bounds
 
-The integrated correction addresses existing CF_HDROP file references only.
+This historical correction addressed existing CF_HDROP file references only.
 Source review rounds 6/7 were clean before application. Actual local optimized
 Linux and Windows GNU all-target metadata checks, Windows dependency-unit metadata
-and all-target workspace Clippy pass. Windows raw-image/URL drops, print and file
-drag-out remain separate implementation work.
+and all-target workspace Clippy passed for that source. Later sections describe
+the integrated raw-image/URL receiver, printing and native drag-out adapters with
+their exact owned-test and remaining native/resource gates.
 
 Both existing GPUI consumers now share one all-or-nothing native-path reader:
 OLE `IDropTarget::DragEnter` and the legacy GPUI `read_files` clipboard path.

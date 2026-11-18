@@ -303,12 +303,17 @@ impl Target {
         if let Some(factory) = self.helper_factory.as_ref() {
             return factory();
         }
-        unsafe { CoCreateInstance(&CLSID_DragDropHelper, None, CLSCTX_INPROC_SERVER) }
-            .map_err(|_error| {
+        unsafe { CoCreateInstance(&CLSID_DragDropHelper, None, CLSCTX_INPROC_SERVER) }.map_err(
+            |_error| {
                 #[cfg(screenshots_native_drop_acceptance)]
-                super::native_drop_acceptance::hook(82, _error.code().0 as u32 as u64, std::ptr::null_mut());
+                super::native_drop_acceptance::hook(
+                    82,
+                    _error.code().0 as u32 as u64,
+                    std::ptr::null_mut(),
+                );
                 anyhow::anyhow!("Native helper unavailable")
-            })
+            },
+        )
     }
     fn failed(&self, operation: Operation) -> Result<()> {
         if self.operation.get() != Some(operation) {
@@ -782,7 +787,20 @@ pub fn serve(
                     ensure_or_exit(target.live());
                     // A reaped receiver may have left an OLE registration on this
                     // still-live parent HWND. Reclaim it only inside the new guard.
-                    fatal_if(match unsafe { RevokeDragDrop(hwnd) } {
+                    #[cfg(screenshots_native_drop_acceptance)]
+                    super::native_drop_acceptance::hook(
+                        90,
+                        receiver.sequence.get(),
+                        std::ptr::null_mut(),
+                    );
+                    let reclaimed = unsafe { RevokeDragDrop(hwnd) };
+                    #[cfg(screenshots_native_drop_acceptance)]
+                    super::native_drop_acceptance::hook(
+                        91,
+                        reclaimed.as_ref().err().map_or(0, |error| error.code().0) as u32 as u64,
+                        std::ptr::null_mut(),
+                    );
+                    fatal_if(match reclaimed {
                         Err(error) if error.code() == DRAGDROP_E_NOTREGISTERED => Ok(()),
                         result => {
                             result.map_err(|_| anyhow::anyhow!("Native target reclaim failed"))
@@ -796,10 +814,14 @@ pub fn serve(
                         receiver.sequence.get(),
                         std::ptr::null_mut(),
                     );
-                    fatal_if(
-                        unsafe { RegisterDragDrop(hwnd, &interface) }
-                            .map_err(|_| anyhow::anyhow!("Native registration failed")),
+                    let registered = unsafe { RegisterDragDrop(hwnd, &interface) };
+                    #[cfg(screenshots_native_drop_acceptance)]
+                    super::native_drop_acceptance::hook(
+                        92,
+                        registered.as_ref().err().map_or(0, |error| error.code().0) as u32 as u64,
+                        std::ptr::null_mut(),
                     );
+                    fatal_if(registered.map_err(|_| anyhow::anyhow!("Native registration failed")));
                     #[cfg(screenshots_native_drop_acceptance)]
                     super::native_drop_acceptance::hook(
                         4,

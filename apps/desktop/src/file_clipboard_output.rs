@@ -1,6 +1,17 @@
-//! Operand-sized native output. Unix streams one PNG; Windows receives RGBA for existing formats.
+//! One streaming PNG representation; Windows requests raw DIB rows only after PNG transfer.
 use super::*;
+#[cfg(target_os = "linux")]
 const MAGIC: &[u8; 8] = b"SCOUTP01";
+#[cfg(any(target_os = "windows", target_os = "macos"))]
+const MAGIC: &[u8; 8] = b"SCOUTP02";
+#[derive(Debug)]
+pub(super) struct PreparationFailed;
+impl std::fmt::Display for PreparationFailed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Native image preparation failed before publication")
+    }
+}
+impl std::error::Error for PreparationFailed {}
 pub(super) const CHILD: &str = "__native-image-text-clipboard-worker";
 pub(super) struct Request {
     kind: u8,
@@ -14,7 +25,6 @@ impl Request {
         match value {
             app_core::NativeClipboardOutput::Image(image) => {
                 validate(1, image.width(), image.height(), image.as_raw().len())?;
-                #[cfg(unix)]
                 validate_png_rows(image.width())?;
                 Ok(Self {
                     kind: 1,
@@ -58,48 +68,75 @@ impl Request {
         wayland: bool,
         nonce: &[u8; 16],
         io: &mut transport::ActiveIo<'_>,
+        publication_gate: &AtomicBool,
     ) -> Result<()> {
-        let mut hello = [0; 24];
-        io.read_exact(&mut hello)?;
-        ensure!(
-            &hello[..8] == MAGIC && hello[8..] == *nonce,
-            "Clipboard output challenge mismatch"
-        );
-        io.write_all(MAGIC)?;
-        io.write_all(nonce)?;
-        io.write_all(&[self.kind])?;
-        io.write_all(&self.width.to_be_bytes())?;
-        io.write_all(&self.height.to_be_bytes())?;
-        let length = self
-            .pixels
-            .as_ref()
-            .map_or(self.bytes.len(), |image| image.as_raw().len());
-        io.write_all(&(length as u64).to_be_bytes())?;
-        io.write_all(&[u8::from(wayland)])?;
-        if let Some(pixels) = &self.pixels {
-            #[cfg(unix)]
-            {
+        let image = self.pixels.is_some();
+        let exchanged = (|| -> Result<()> {
+            let mut hello = [0; 24];
+            io.read_exact(&mut hello)?;
+            ensure!(
+                &hello[..8] == MAGIC && hello[8..] == *nonce,
+                "Clipboard output challenge mismatch"
+            );
+            io.write_all(MAGIC)?;
+            io.write_all(nonce)?;
+            io.write_all(&[self.kind])?;
+            io.write_all(&self.width.to_be_bytes())?;
+            io.write_all(&self.height.to_be_bytes())?;
+            let length = self
+                .pixels
+                .as_ref()
+                .map_or(self.bytes.len(), |image| image.as_raw().len());
+            io.write_all(&(length as u64).to_be_bytes())?;
+            io.write_all(&[u8::from(wayland)])?;
+            if let Some(pixels) = &self.pixels {
                 let check = io.check;
-                let mut framed = Framed {
-                    io,
-                    total: 0,
-                    limit: length + PNG_ALLOWANCE,
-                };
-                encode_png_stream(pixels, &mut framed, check)?;
-                framed.io.write_all(&0u32.to_be_bytes())?;
+                {
+                    let mut framed = Framed {
+                        io,
+                        total: 0,
+                        limit: length + PNG_ALLOWANCE,
+                    };
+                    encode_png_stream(pixels, &mut framed, check)?;
+                    framed.io.write_all(&0u32.to_be_bytes())?;
+                }
+                #[cfg(any(target_os = "windows", target_os = "macos"))]
+                {
+                    let mut prepared = [0];
+                    io.read_exact(&mut prepared)?;
+                    ensure!(prepared == [3], "Native PNG preparation failed");
+                }
+                #[cfg(target_os = "windows")]
+                {
+                    // Once this byte might reach the helper, native output can already change.
+                    publication_gate.store(true, Ordering::Release);
+                    io.write_all(&[1])?;
+                    let mut published = [0];
+                    io.read_exact(&mut published)?;
+                    ensure!(
+                        published == [4],
+                        "Native PNG publication or DIB preparation failed"
+                    );
+                    io.write_all(pixels.as_raw())?;
+                }
+            } else {
+                io.write_all(&self.bytes)?;
             }
-            #[cfg(target_os = "windows")]
-            io.write_all(pixels.as_raw())?;
+            drop(self);
+            if image {
+                publication_gate.store(true, Ordering::Release);
+            }
+            io.write_all(&[1])?;
+            let mut ack = [0];
+            io.read_exact(&mut ack)?;
+            ensure!(ack == [1], "Native clipboard output failed");
+            Ok(())
+        })();
+        if exchanged.is_err() && image && !publication_gate.load(Ordering::Acquire) {
+            Err(PreparationFailed.into())
         } else {
-            io.write_all(&self.bytes)?;
+            exchanged
         }
-        // No retained Arc/input bytes survive the publication gate in the supervisor.
-        drop(self);
-        io.write_all(&[1])?;
-        let mut ack = [0];
-        io.read_exact(&mut ack)?;
-        ensure!(ack == [1], "Native clipboard output failed");
-        Ok(())
     }
 }
 fn validate(kind: u8, width: u32, height: u32, length: usize) -> Result<()> {
@@ -128,9 +165,7 @@ fn validate(kind: u8, width: u32, height: u32, length: usize) -> Result<()> {
     }
     Ok(())
 }
-#[cfg(unix)]
 const PNG_ALLOWANCE: usize = 16 * 1024 * 1024;
-#[cfg(unix)]
 fn validate_png_rows(width: u32) -> Result<()> {
     // png 0.18.1's StreamWriter allocates prev/current/filtered RGBA scanlines.
     ensure!(
@@ -139,13 +174,11 @@ fn validate_png_rows(width: u32) -> Result<()> {
     );
     Ok(())
 }
-#[cfg(unix)]
 struct Framed<'a, 'b> {
     io: &'a mut transport::ActiveIo<'b>,
     total: usize,
     limit: usize,
 }
-#[cfg(unix)]
 impl Write for Framed<'_, '_> {
     fn write(&mut self, value: &[u8]) -> std::io::Result<usize> {
         let total = self
@@ -166,12 +199,10 @@ impl Write for Framed<'_, '_> {
         self.io.flush()
     }
 }
-#[cfg(unix)]
 struct StickyWriter<'a, W: Write> {
     inner: &'a mut W,
     failed: bool,
 }
-#[cfg(unix)]
 impl<W: Write> Write for StickyWriter<'_, W> {
     fn write(&mut self, value: &[u8]) -> std::io::Result<usize> {
         let result = self.inner.write(value);
@@ -188,8 +219,7 @@ impl<W: Write> Write for StickyWriter<'_, W> {
         result
     }
 }
-#[cfg(unix)]
-fn encode_png_stream(
+pub(super) fn encode_png_stream(
     image: &image::RgbaImage,
     writer: &mut impl Write,
     check: &app_core::NativeCaptureCheck<'_>,
@@ -210,7 +240,6 @@ fn encode_png_stream(
     encoded
 }
 
-#[cfg(unix)]
 fn encode_png_data(
     image: &image::RgbaImage,
     writer: &mut impl Write,
@@ -219,6 +248,7 @@ fn encode_png_data(
     let mut encoder = png::Encoder::new(writer, image.width(), image.height());
     encoder.set_color(png::ColorType::Rgba);
     encoder.set_depth(png::BitDepth::Eight);
+    encoder.set_source_srgb(png::SrgbRenderingIntent::Perceptual);
     // Balanced avoids fdeflate's writer-error panic; the latch also covers PNG Drop flushes.
     encoder.set_compression(png::Compression::Balanced);
     encoder.set_filter(png::Filter::Adaptive);
@@ -263,74 +293,58 @@ pub(super) fn serve() -> Result<()> {
     let height = u32::from_be_bytes(header[29..33].try_into()?);
     let length = usize::try_from(u64::from_be_bytes(header[33..41].try_into()?))?;
     validate(kind, width, height, length)?;
-    #[cfg(unix)]
     if kind == 1 {
         validate_png_rows(width)?;
+        #[cfg(unix)]
         budget.clipboard_output(length as u64)?;
-    }
-    let mut bytes = Vec::new();
-    #[cfg(target_os = "linux")]
-    let mut segmented = linux::Bytes::new();
-    #[cfg(unix)]
-    if kind == 1 {
-        let limit = length + PNG_ALLOWANCE;
+        #[cfg(target_os = "windows")]
+        {
+            ensure!(header[41] == 0, "Wayland clipboard output requires Linux");
+            let prepared = image_windows::prepare(&mut io, width, height, length)?;
+            io.write_all(&[3])?;
+            publication_gate(&mut io)?;
+            let mut publishing = prepared.begin()?;
+            io.write_all(&[4])?;
+            publishing.read_rows(&mut io)?;
+            publication_gate(&mut io)?;
+            publishing.finish()?;
+            io.write_all(&[1])?;
+            return Ok(());
+        }
         #[cfg(target_os = "macos")]
-        bytes.try_reserve_exact(limit)?;
-        let mut received = 0usize;
-        let mut chunk = [0; 64 * 1024];
-        loop {
-            let mut size = [0; 4];
-            io.read_exact(&mut size)?;
-            let size = u32::from_be_bytes(size) as usize;
-            if size == 0 {
-                break;
-            }
+        {
+            ensure!(header[41] == 0, "Wayland clipboard output requires Linux");
+            let mut data = macos::ImageData::new(length + PNG_ALLOWANCE)?;
             ensure!(
-                size <= chunk.len() && received.checked_add(size).is_some_and(|n| n <= limit),
-                "Invalid clipboard PNG stream extent"
+                data.allocation_bytes() <= length + PNG_ALLOWANCE + 64 * 1024,
+                "Native PNG allocation exceeds its admitted extent"
             );
-            io.read_exact(&mut chunk[..size])?;
-            received += size;
-            #[cfg(target_os = "linux")]
-            segmented.append(&chunk[..size])?;
-            #[cfg(target_os = "macos")]
-            bytes.extend_from_slice(&chunk[..size]);
+            read_png_chunks(&mut io, length + PNG_ALLOWANCE, |chunk| data.append(chunk))?;
+            validate_png_header(&data.header()?, width, height)?;
+            let prepared = data.finish()?;
+            io.write_all(&[3])?;
+            publication_gate(&mut io)?;
+            prepared.publish("com.apple.pasteboard.clipboard")?;
+            io.write_all(&[1])?;
+            return Ok(());
         }
         #[cfg(target_os = "linux")]
-        let header = segmented.range(0, 33);
-        #[cfg(target_os = "macos")]
-        let header = bytes.get(..33).unwrap_or(&[]);
-        ensure!(
-            received >= 33
-                && header.len() == 33
-                && &header[..8] == b"\x89PNG\r\n\x1a\n"
-                && &header[12..16] == b"IHDR"
-                && header[16..20] == width.to_be_bytes()
-                && header[20..24] == height.to_be_bytes()
-                && header[24..26] == [8, 6],
-            "Invalid clipboard PNG stream header"
-        );
-        #[cfg(target_os = "macos")]
-        if bytes.len() <= 8 * 1024 * 1024 {
-            bytes.shrink_to_fit();
+        {
+            let mut segmented = linux::Bytes::new();
+            read_png_chunks(&mut io, length + PNG_ALLOWANCE, |chunk| {
+                segmented.append(chunk)
+            })?;
+            validate_png_header(segmented.range(0, 33), width, height)?;
+            publication_gate(&mut io)?;
+            linux::serve_output(segmented, "image/png", header[41] == 1, &mut io)?;
+            return Ok(());
         }
-    } else {
-        bytes.try_reserve_exact(length)?;
-        bytes.resize(length, 0);
-        io.read_exact(&mut bytes)?;
     }
-    #[cfg(target_os = "windows")]
-    {
-        bytes.try_reserve_exact(length)?;
-        bytes.resize(length, 0);
-        io.read_exact(&mut bytes)?;
-    }
-    let mut publish = [0];
-    io.read_exact(&mut publish)?;
-    ensure!(
-        publish == [1],
-        "Clipboard output was not committed for publication"
-    );
+    let mut bytes = Vec::new();
+    bytes.try_reserve_exact(length)?;
+    bytes.resize(length, 0);
+    io.read_exact(&mut bytes)?;
+    publication_gate(&mut io)?;
     if kind == 2 {
         std::str::from_utf8(&bytes)?;
     }
@@ -355,11 +369,6 @@ pub(super) fn serve() -> Result<()> {
         };
         let mut clipboard = arboard::Clipboard::new()?;
         match kind {
-            1 => clipboard.set_image(arboard::ImageData {
-                width: width as usize,
-                height: height as usize,
-                bytes: std::borrow::Cow::Borrowed(&bytes),
-            })?,
             2 => clipboard.set_text(String::from_utf8(bytes)?)?,
             3 => clipboard
                 .set()
@@ -370,19 +379,11 @@ pub(super) fn serve() -> Result<()> {
     }
     #[cfg(target_os = "linux")]
     {
-        let representation = if kind == 1 {
-            segmented
-        } else {
-            linux::Bytes::from_slice(&bytes)?
-        };
+        let representation = linux::Bytes::from_slice(&bytes)?;
         drop(bytes);
         linux::serve_output(
             representation,
-            if kind == 1 {
-                "image/png"
-            } else {
-                "text/plain;charset=utf-8"
-            },
+            "text/plain;charset=utf-8",
             header[41] == 1,
             &mut io,
         )?;
@@ -392,17 +393,65 @@ pub(super) fn serve() -> Result<()> {
         ensure!(header[41] == 0, "Wayland clipboard output requires Linux");
         macos::publish_bytes(
             &bytes,
-            if kind == 1 {
-                "public.png"
-            } else {
-                "public.utf8-plain-text"
-            },
+            "public.utf8-plain-text",
             "com.apple.pasteboard.clipboard",
         )?;
         io.write_all(&[1])?;
     }
     Ok(())
 }
+fn publication_gate(io: &mut transport::ActiveIo<'_>) -> Result<()> {
+    let mut gate = [0];
+    io.read_exact(&mut gate)?;
+    ensure!(
+        gate == [1],
+        "Clipboard output was not committed for publication"
+    );
+    (io.check)()?;
+    ensure!(
+        Instant::now() < io.deadline,
+        "Clipboard publication deadline expired"
+    );
+    Ok(())
+}
+#[cfg(unix)]
+fn read_png_chunks(
+    reader: &mut impl Read,
+    limit: usize,
+    mut append: impl FnMut(&[u8]) -> Result<()>,
+) -> Result<()> {
+    let mut received = 0usize;
+    let mut chunk = [0; 64 * 1024];
+    loop {
+        let mut size = [0; 4];
+        reader.read_exact(&mut size)?;
+        let size = u32::from_be_bytes(size) as usize;
+        if size == 0 {
+            return Ok(());
+        }
+        ensure!(
+            size <= chunk.len() && received.checked_add(size).is_some_and(|n| n <= limit),
+            "Invalid clipboard PNG stream extent"
+        );
+        reader.read_exact(&mut chunk[..size])?;
+        received += size;
+        append(&chunk[..size])?;
+    }
+}
+#[cfg(unix)]
+fn validate_png_header(header: &[u8], width: u32, height: u32) -> Result<()> {
+    ensure!(
+        header.len() == 33
+            && &header[..8] == b"\x89PNG\r\n\x1a\n"
+            && &header[12..16] == b"IHDR"
+            && header[16..20] == width.to_be_bytes()
+            && header[20..24] == height.to_be_bytes()
+            && header[24..26] == [8, 6],
+        "Invalid clipboard PNG stream header"
+    );
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -417,7 +466,6 @@ mod tests {
         validate(1, 2, 2, 16).unwrap();
         validate(2, 0, 0, 0).unwrap();
     }
-    #[cfg(unix)]
     #[test]
     fn final_idat_drop_error_is_sticky_even_when_iend_succeeds() {
         #[derive(Default)]
@@ -468,6 +516,11 @@ mod tests {
         let mut png = Vec::new();
         encode_png_stream(&image, &mut png, &|| Ok(()))?;
         assert_eq!(image::load_from_memory(&png)?.into_rgba8(), image);
+        let metadata = png::Decoder::new(std::io::Cursor::new(&png)).read_info()?;
+        assert_eq!(
+            metadata.info().srgb,
+            Some(png::SrgbRenderingIntent::Perceptual)
+        );
         struct Deny;
         impl Write for Deny {
             fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
