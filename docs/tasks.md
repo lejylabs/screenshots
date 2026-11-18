@@ -33,7 +33,9 @@ Example:
 Sources are `file` (bounded existing image loader), `display`/`window` with `id`,
 or `region` with `display,x,y,width,height`. The optional existing image recipe
 runs in memory before any action, so every output/upload uses finalized pixels.
-`primary_display`, `active_window` and `active_display` choose their native
+`desktop` captures the complete admitted [stitched desktop](desktop-composite.md)
+through its existing isolated operation; unsupported/incomplete native layouts
+fail before any action. `primary_display`, `active_window` and `active_display` choose their native
 target at invocation, with focus/process guards. `raw_file` streams an arbitrary
 file unchanged for HTTP/provider/S3 transfers; it cannot use image recipes,
 image save or image copy. `none` runs command/utility tasks without creating a
@@ -41,6 +43,14 @@ dummy screenshot. `{input}` expands to the resolved file-source path.
 Capture permissions, geometry/native limits and hard-call timeout caveats remain
 those of the existing backend. Validation cannot prove a device is available
 or an image decodes; runtime failure produces no synthetic success.
+
+Explicit `clipboard_image`, `clipboard_text` and single-reference `clipboard_file`
+sources require `allow_private_source: true`. Each execution samples the current
+private clipboard once after preparation; validation/sealing/waiting never does.
+Image and file modes reuse the corresponding image/raw-file routes. Bounded text
+uses only explicit Text SXCU upload in memory, without a plaintext temporary file.
+Read the [clipboard source/privacy contract](task-clipboard-input.md) before using
+these sources in hotkey or scheduled profiles.
 
 Actions execute in supplied order:
 
@@ -80,6 +90,13 @@ rollback deletion or silent restart follows. Successful remote upload followed
 by a link/parser/stdout error may still leave that remote object. Final-output
 publication retains the existing atomic no-replace behavior, including races.
 
+SXCU file uploads retain the exact opened-file version through helper preparation
+and HTTP acknowledgment. The shared upload source guard checks complete tracked payload
+consumption and the retained identity/length before any successful result reaches
+Link, QR or clipboard actions. Same-size in-place changes and growth fail with
+remote-object uncertainty; scheduled raw-file uploads keep their existing prepared
+source identity check as well. No retry or automatic remote cleanup follows.
+
 Memory is one current image, optional one clipboard representation, the existing
 encoder/upload buffers and a bounded profile/action list. Recipe operations
 release the previous raster. No resident runtime, background task graph, timer,
@@ -108,3 +125,12 @@ repeating UTC sequences with these source/action profiles. It seals the actual
 prepared configuration, pauses changed profiles/references and never retries
 an uncertain Task or upload. Scheduled receipts omit action payloads and URLs;
 standalone `task run` receipts retain their documented behavior.
+
+
+Source-verification update (2026-11-17): the actual private HTTPS fixture now
+mutates sealed raw-file sources after request headers, exercises real schedule
+add/serve/list, and verifies an uncertain run with no automatic retry and no
+later Link/QR output. Unchanged actual file/memory/recipe chains still pass.
+The 137-request run uses an isolated synthetic Secret Service and loopback TLS;
+no user clipboard or real provider account is involved. See
+[the current SXCU evidence](sharex-runtime.md#corrected-parser-source-and-result-integration-2026-11-17).

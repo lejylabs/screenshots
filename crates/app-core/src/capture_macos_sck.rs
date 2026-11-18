@@ -37,6 +37,74 @@ use std::{
 unsafe extern "C" {
     static kCGColorSpaceSRGB: CFStringRef;
 }
+thread_local! {
+    static CAPTURE_OWNER: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+pub(crate) struct AppExclusion(u32);
+impl AppExclusion {
+    pub(crate) fn new(pid: u32) -> Self {
+        Self(CAPTURE_OWNER.replace(pid))
+    }
+}
+impl Drop for AppExclusion {
+    fn drop(&mut self) {
+        CAPTURE_OWNER.set(self.0);
+    }
+}
+
+/// Hides one live AppKit window without a miniaturization animation.
+/// # Safety
+/// `view` must identify the live NSView owned by the caller's GPUI window,
+/// and the caller must keep that window alive until this main-thread call returns.
+pub unsafe fn hide_macos_capture_view(view: std::ptr::NonNull<c_void>) -> Result<()> {
+    native::main_thread()?;
+    let view = unsafe { &*view.as_ptr().cast::<AnyObject>() };
+    let window: Option<Retained<AnyObject>> = unsafe { msg_send![view, window] };
+    let window = window.context("Capture control view has no native window")?;
+    unsafe {
+        let _: () = msg_send![&window, orderOut: ptr::null::<AnyObject>()];
+    }
+    let visible: Bool = unsafe { msg_send![&window, isVisible] };
+    ensure!(!visible.as_bool(), "Native capture control did not hide");
+    Ok(())
+}
+
+fn excluded_applications(content: &AnyObject) -> Result<Retained<NSArray<AnyObject>>> {
+    let applications: Retained<NSArray<AnyObject>> = unsafe { msg_send![content, applications] };
+    ensure!(
+        applications.count() <= 4096,
+        "Native shareable application inventory exceeds its bound"
+    );
+    let owner = CAPTURE_OWNER.get();
+    let mut excluded = Vec::with_capacity(2);
+    for index in 0..applications.count() {
+        let application = applications.objectAtIndex(index);
+        let pid: i32 = unsafe { msg_send![&application, processID] };
+        if crate::capture_macos_model::capture_application_excluded(pid, owner, std::process::id())
+        {
+            ensure!(
+                excluded.len() < 2,
+                "Native capture application identity is ambiguous"
+            );
+            excluded.push(application);
+        }
+    }
+    Ok(NSArray::from_retained_slice(&excluded))
+}
+
+pub(super) fn verify_legacy_app_hidden() -> Result<()> {
+    let owner = CAPTURE_OWNER.get();
+    if owner != 0 {
+        ensure!(
+            !native::windows()?
+                .iter()
+                .any(|window| window.pid == owner && window.onscreen),
+            "Originating application is still onscreen; legacy capture refused"
+        );
+    }
+    Ok(())
+}
+
 pub(super) struct Image(pub *const c_void);
 impl Drop for Image {
     fn drop(&mut self) {
@@ -221,6 +289,10 @@ fn load() -> Result<bool> {
 pub(super) fn available() -> Result<bool> {
     load()
 }
+pub(super) fn hdr_available() -> bool {
+    AnyClass::get(c"SCScreenshotConfiguration").is_some()
+}
+
 fn shareable(until: Instant) -> Result<Retained<AnyObject>> {
     let pending = Completion::new(ValueKind::Object)?;
     let state = pending.0.clone();
@@ -278,10 +350,12 @@ impl Display {
         // SCDisplay dimensions are points, not the requested output's pixels.
         let frame: CGRect = unsafe { msg_send![&selected, frame] };
         let empty = NSArray::<AnyObject>::new();
+        let excluded = excluded_applications(&content)?;
         let allocated: Allocated<AnyObject> =
             unsafe { msg_send![class(c"SCContentFilter")?, alloc] };
-        let filter: Retained<AnyObject> =
-            unsafe { msg_send![allocated,initWithDisplay:&*selected,excludingWindows:&*empty] };
+        let filter: Retained<AnyObject> = unsafe {
+            msg_send![allocated,initWithDisplay:&*selected,excludingApplications:&*excluded,exceptingWindows:&*empty]
+        };
         let scale: f32 = unsafe { msg_send![&filter, pointPixelScale] };
         let rect: CGRect = unsafe { msg_send![&filter, contentRect] };
         let coordinates = crate::MacDisplayCoordinates::from_filter(
@@ -440,6 +514,10 @@ impl Window {
             selected_bytes,
         )?;
         let image = if AnyClass::get(c"SCScreenshotConfiguration").is_some() {
+            ensure!(
+                u64::from(self.width) * u64::from(self.height) * 16 <= crate::MAX_CAPTURE_BYTES,
+                "Native HDR window exceeds decoded memory admission"
+            );
             capture_modern(&self.filter, options, None, until)?
         } else {
             capture_legacy_sck(
@@ -498,16 +576,40 @@ fn capture_modern(
     dimensions: Option<(u32, u32)>,
     until: Instant,
 ) -> Result<Image> {
-    // macOS26 defaults to captured-content dimensions, including requested native effects.
+    if let Some((width, height)) = dimensions {
+        // Admit the documented RGBA float context before requesting native pixels;
+        // actual CGImage depth/stride is rechecked before any conversion allocation.
+        let bytes = u64::from(width) * u64::from(height) * 16;
+        ensure!(
+            bytes <= crate::MAX_CAPTURE_BYTES,
+            "Native HDR screenshot exceeds decoded memory admission"
+        );
+    }
+    // macOS26 returns extended-sRGB HDR pixels; convert explicitly to SDR once.
+    // Never request both images: that retains an unnecessary full native bitmap.
+    // DynamicRange HDR = 1; SDK acceptance remains a native integration gate.
     let config: Retained<AnyObject> =
         unsafe { msg_send![class(c"SCScreenshotConfiguration")?, new] };
+    for selector in [
+        sel!(setDynamicRange:),
+        sel!(setFileURL:),
+        sel!(setShowsCursor:),
+        sel!(setIgnoreShadows:),
+        sel!(setIncludeChildWindows:),
+    ] {
+        let supported: Bool = unsafe { msg_send![&config, respondsToSelector:selector] };
+        ensure!(
+            supported.as_bool(),
+            "Required native HDR screenshot configuration unavailable"
+        );
+    }
     unsafe {
         if let Some((width, height)) = dimensions {
             let _: () = msg_send![&config,setWidth:width as usize];
             let _: () = msg_send![&config,setHeight:height as usize];
         }
         let _: () = msg_send![&config,setFileURL:ptr::null::<AnyObject>()];
-        let _: () = msg_send![&config,setDynamicRange:0isize];
+        let _: () = msg_send![&config,setDynamicRange:1isize];
         let _: () =
             msg_send![&config,setShowsCursor:Bool::new(options.cursor==CaptureCursor::Include)];
         let _: () = msg_send![&config,setIgnoreShadows:Bool::new(options.window_shadow!=CaptureWindowShadow::Include)];
@@ -524,8 +626,13 @@ fn capture_modern(
     let raw = pending.0.wait(until)?;
     let output = unsafe { Retained::<AnyObject>::from_raw(raw as *mut AnyObject) }
         .context("Native screenshot output disappeared")?;
-    let image: *mut CGImage = unsafe { msg_send![&output, sdrImage] };
-    ensure!(!image.is_null(), "Native screenshot supplied no SDR image");
+    let supported: Bool = unsafe { msg_send![&output, respondsToSelector:sel!(hdrImage)] };
+    ensure!(
+        supported.as_bool(),
+        "Native HDR screenshot output unavailable"
+    );
+    let image: *mut CGImage = unsafe { msg_send![&output, hdrImage] };
+    ensure!(!image.is_null(), "Native screenshot supplied no HDR image");
     unsafe { CFRetain(image.cast()) };
     Ok(Image(image.cast()))
 }

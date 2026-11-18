@@ -50,6 +50,23 @@ fn active() -> Arc<AtomicBool> {
 }
 
 #[test]
+fn last_calendar_day_keeps_exact_fraction_and_cursor() -> Result<()> {
+    let fraction = "1".repeat(43);
+    let stamp = format!("9999-12-31T23:59:59.{fraction}Z");
+    assert_eq!(stamp.len(), 64);
+    assert_eq!(
+        timestamp_key(&stamp)?,
+        format!("9999-12-31T23:59:59.{fraction}")
+    );
+    assert!(timestamp_key("9999-12-31")? < timestamp_key(&stamp)?);
+    assert!(timestamp_key(&stamp)? < timestamp_key("9999-12-31T23:59:60Z")?);
+    let cursor: HistoryDateCursor = format!("{stamp}/9223372036854775807").parse()?;
+    assert_eq!(cursor.created_at, stamp);
+    assert_eq!(cursor.id, i64::MAX);
+    Ok(())
+}
+
+#[test]
 fn exact_date_keys_normalize_utc_without_rounding_fractional_digits() -> Result<()> {
     let midnight = timestamp_key("2024-03-01")?;
     for value in [

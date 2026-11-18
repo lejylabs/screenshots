@@ -34,18 +34,23 @@ fn utc(value: &str) -> Result<i64> {
             "Schedule time supports at most three fractional digits"
         );
     }
-    let time = chrono::DateTime::parse_from_rfc3339(value)
+    let time = shared::timestamp::parse_rfc3339(value)
         .context("Schedule time must be RFC3339 with an explicit timezone")?;
     ensure!(
-        time.timestamp_subsec_nanos() < 1000000000 && time.timestamp_subsec_nanos() % 1000000 == 0,
+        !time.leap_second && time.nanosecond() % 1000000 == 0,
         "Schedule time supports at most millisecond precision and no leap seconds"
     );
-    let ms = time.timestamp_millis();
+    let ms = time.unix_milliseconds()?;
     ensure!(
         (0..=model::MAX_UTC_MS).contains(&ms),
         "Schedule UTC must be within 1970–9999"
     );
     Ok(ms)
+}
+fn clock_milliseconds(time: jiff::Timestamp) -> i64 {
+    // Legacy clock milliseconds floor negative fractions; Jiff's accessor truncates.
+    i64::try_from(time.as_nanosecond().div_euclid(1_000_000))
+        .expect("Jiff's complete timestamp range fits i64 milliseconds")
 }
 fn add(args: &[OsString]) -> Result<(String, std::path::PathBuf, Spec)> {
     ensure!(args.len() >= 5, USAGE);
@@ -239,13 +244,13 @@ fn serve(path: &Path) -> Result<()> {
             &mut native,
             &mut store,
             &schedules,
-            chrono::Utc::now().timestamp_millis(),
+            clock_milliseconds(jiff::Timestamp::now()),
         )?;
         emit(
             serde_json::json!({"type":"schedule_ready","schedules":schedules.len(),"pid":std::process::id()}),
         )?;
         while !stop.load(Ordering::Relaxed) {
-            let now = chrono::Utc::now().timestamp_millis();
+            let now = clock_milliseconds(jiff::Timestamp::now());
             let mut ready = Vec::with_capacity(model::MAX_SCHEDULES);
             for (index, s) in schedules.iter_mut().enumerate() {
                 if s.paused {
@@ -301,7 +306,7 @@ fn serve(path: &Path) -> Result<()> {
                 &mut native,
                 &mut store,
                 &schedules,
-                chrono::Utc::now().timestamp_millis(),
+                clock_milliseconds(jiff::Timestamp::now()),
             )?;
             if prepared.execute(stop.clone()).is_err() {
                 bail!(
@@ -363,7 +368,7 @@ pub(crate) fn run(args: &[OsString]) -> Result<()> {
                     if !s.paused {
                         s.next = s
                             .spec
-                            .resume_after(s.next, chrono::Utc::now().timestamp_millis());
+                            .resume_after(s.next, clock_milliseconds(jiff::Timestamp::now()));
                     }
                     s.reason = if s.paused {
                         Some("operator".into())
@@ -400,6 +405,46 @@ pub(crate) fn run(args: &[OsString]) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn clock_milliseconds_floor_negative_fractions_before_schedule_decisions() -> Result<()> {
+        for (nanos, expected) in [
+            (-1_000_001, -2),
+            (-1_000_000, -1),
+            (-999_999, -1),
+            (-500_000, -1),
+            (-1, -1),
+            (0, 0),
+            (999_999, 0),
+            (1_000_000, 1),
+        ] {
+            assert_eq!(
+                clock_milliseconds(jiff::Timestamp::from_nanosecond(nanos)?),
+                expected
+            );
+        }
+        let schedule = Spec {
+            start_ms: 0,
+            interval_ms: None,
+            count: Some(1),
+            until_ms: None,
+            missed: Missed::Pause,
+            grace_ms: 0,
+            wake: false,
+        };
+        let before = jiff::Timestamp::from_nanosecond(-500_000)?;
+        assert!(matches!(
+            schedule.decide(0, clock_milliseconds(before)),
+            Decision::Wait(0)
+        ));
+        assert!(matches!(
+            schedule.decide(0, clock_milliseconds(jiff::Timestamp::UNIX_EPOCH)),
+            Decision::Run { due_ms: 0, .. }
+        ));
+        assert_eq!(clock_milliseconds(jiff::Timestamp::MIN), -377705023201000);
+        assert_eq!(clock_milliseconds(jiff::Timestamp::MAX), 253402207200999);
+        Ok(())
+    }
+
     fn wake_fixture() -> Result<(std::path::PathBuf, store::Wake)> {
         let root = std::env::temp_dir().join(format!("screenshots-wake-{}", uuid::Uuid::new_v4()));
         #[cfg(target_os = "windows")]
@@ -520,6 +565,10 @@ mod tests {
     #[test]
     fn precise_utc_and_explicit_repeat_admission() {
         assert_eq!(utc("1970-01-01T01:00:00.123+01:00").unwrap(), 123);
+        assert_eq!(utc("9999-12-31T23:59:59.999Z").unwrap(), model::MAX_UTC_MS);
+        assert!(utc("9999-12-31T23:59:59.999+23:59").is_ok());
+        assert!(utc("9999-12-31T23:59:59.999-23:59").is_err());
+        assert!(utc("9999-12-31T23:59:60Z").is_err());
         for value in [
             "2030-01-01",
             "2030-01-01T00:00:00-00:00",

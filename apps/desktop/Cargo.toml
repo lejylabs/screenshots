@@ -11,13 +11,16 @@ description = "Desktop capture and sharing application"
 [lints]
 workspace = true
 
+[features]
+native-drop-probe = ["app-ui/native-drop-probe"]
+
 [dependencies]
 crossbeam-queue = "=0.3.14"
 curl-sys = { version = "=0.4.91", default-features = false, features = ["ssl", "protocol-ftp"] }
 anyhow.workspace = true
 app-core.workspace = true
 app-ui.workspace = true
-arboard.workspace = true
+png = "=0.18.1"
 global-hotkey.workspace = true
 rfd.workspace = true
 shared.workspace = true
@@ -33,10 +36,14 @@ qrcode = { version = "=0.14.1", default-features = false }
 quircs = "=0.10.3"
 sha2 = "0.11.0"
 crc32fast = "1.5.0"
-chrono.workspace = true
+jiff.workspace = true
 rusqlite.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
+x11rb = { version = "=0.13.2", default-features = false }
+wayland-client = "=0.31.15"
+wayland-protocols = { version = "=0.32.13", features = ["client", "staging"] }
+wayland-protocols-wlr = { version = "=0.3.12", features = ["client"] }
 dbus = "=0.9.12"
 ashpd = { version = "=0.14.0", default-features = false, features = ["async-io", "screencast"] }
 pipewire = "=0.10.1"
@@ -48,9 +55,13 @@ signal-hook = "=0.3.18"
 libc = "0.2.191"
 
 [target.'cfg(target_os = "windows")'.dependencies]
+arboard.workspace = true
 windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_System_JobObjects", "Win32_System_Console", "Win32_System_Pipes", "Win32_System_Threading", "Win32_System_Diagnostics_ToolHelp", "Win32_System_Registry", "Win32_System_SystemServices", "Win32_Security", "Win32_Security_Authorization", "Win32_Storage_FileSystem", "Win32_UI_HiDpi"] }
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]
+wayland-server = "=0.31.14"
+wayland-protocols = { version = "=0.32.13", features = ["server"] }
+wayland-protocols-wlr = { version = "=0.3.12", features = ["server"] }
 glib = "=0.18.5"
 accesskit = "=0.24.1"
 accesskit_unix = { path = "../../vendor/accesskit_unix" }

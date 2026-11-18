@@ -1,14 +1,22 @@
 """Owned process-boundary fixture. No printer API or network operation."""
 import os
+import sys
+
+def trace(stage):
+    if os.environ.get("SCREENSHOTS_PRINT_TEST_TRACE"):
+        print("OWNED print child: " + stage, file=sys.stderr, flush=True)
+
+trace("script-start")
 import signal
 import socket
-import sys
 import uuid
+trace("imports-ready")
 
 version, descriptor, parent, nonce = os.environ["SCREENSHOTS_NATIVE_CAPTURE_PIPE"].split(":")
 assert version == "v1" and int(parent) == os.getppid()
 assert os.getpid() == os.getpgrp()
 channel = socket.socket(fileno=int(descriptor))
+trace("channel-ready")
 channel.settimeout(5)
 received = b""
 while len(received) < 24:
@@ -16,6 +24,7 @@ while len(received) < 24:
     assert part
     received += part
 assert received == b"PRINTv1\n" + uuid.UUID(nonce).bytes
+trace("handshake-received")
 mode = sys.argv[1]
 if mode == "accept":
     channel.sendall(b"ACCEPT1\n")

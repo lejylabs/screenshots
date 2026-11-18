@@ -60,6 +60,20 @@ pub(crate) fn upload_prepared_with_cancellation(
         !cancel.is_canceled(),
         "S3 upload canceled before credential lookup"
     );
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    let payload = app_core::execute_native_credential(
+        app_core::NativeCredentialCall::Read {
+            target: profile.credential_target()?,
+        },
+        &|| {
+            if cancel.is_canceled() {
+                Err(app_core::CaptureError::NativeCanceled)
+            } else {
+                Ok(())
+            }
+        },
+    )?;
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     let payload = app_core::read_s3_credentials(&profile.credential_target()?)?;
     let json = payload
         .strip_prefix(PREFIX)

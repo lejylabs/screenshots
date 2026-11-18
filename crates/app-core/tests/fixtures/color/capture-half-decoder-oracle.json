@@ -1,0 +1,5 @@
+{
+  "non_nan_encodings": 63490,
+  "f32_le_sha256": "680bbc22915f61aa1bbfc7265bc3882a6aa42d299bfd2c571807196e5544de2e",
+  "decoder": "CPython struct IEEE binary16"
+}

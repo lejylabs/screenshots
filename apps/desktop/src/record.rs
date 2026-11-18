@@ -3,9 +3,9 @@
 use anyhow::{Context, Result, bail, ensure};
 use serde::Deserialize;
 use std::{ffi::OsString, path::Path};
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 #[path = "record_macos.rs"]
-mod macos;
+mod native;
 
 #[derive(Clone, Copy, PartialEq)]
 pub(crate) enum OutputFormat {
@@ -78,8 +78,9 @@ fn options(args: &[OsString]) -> Result<Options<'_>> {
         mode == "test"
             || (cfg!(unix) && mode == "x11")
             || (cfg!(target_os = "windows") && mode == "gdigrab")
-            || (cfg!(target_os = "macos") && mode == "avfoundation"),
-        "Choose test, x11 on Unix, gdigrab on Windows, or fixed-display avfoundation on macOS"
+            || (cfg!(target_os = "macos") && mode == "avfoundation")
+            || (cfg!(target_os = "linux") && matches!(mode, "portal-display" | "portal-window")),
+        "Choose test, x11 on Unix, gdigrab on Windows, fixed-display avfoundation on macOS, or portal-display/portal-window on Linux"
     );
     let destination = Path::new(&args[1]);
     let format = match destination
@@ -192,6 +193,15 @@ fn options(args: &[OsString]) -> Result<Options<'_>> {
         );
     }
     app_core::validate_image_size(width, height)?;
+    if mode.starts_with("portal-") {
+        app_core::PortalStreamSource {
+            source: app_core::PortalCaptureSource::Display,
+            cursor: app_core::PortalCaptureCursor::Exclude,
+            width,
+            height,
+        }
+        .validate()?;
+    }
     ensure!(x.is_some() == y.is_some(), "Use --x and --y together");
     ensure!(
         matches!(mode, "x11" | "gdigrab" | "avfoundation") || x.is_none(),
@@ -265,9 +275,12 @@ fn local_display(value: &str) -> Result<&str> {
 
 pub fn run(args: &[OsString]) -> Result<()> {
     let options = options(args)?;
-    #[cfg(target_os = "macos")]
-    if options.mode == "avfoundation" {
-        return macos::record(options, args.to_vec());
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    if matches!(
+        options.mode,
+        "avfoundation" | "portal-display" | "portal-window"
+    ) {
+        return native::record(options, args.to_vec());
     }
     #[cfg(not(any(unix, target_os = "windows")))]
     {
@@ -324,11 +337,17 @@ pub(crate) mod unix {
             };
             for signal in [signal_hook::consts::SIGINT, signal_hook::consts::SIGTERM] {
                 // Keep termination available after cleanup, including blocked result output.
-                let shutdown = signal_hook::flag::register_conditional_shutdown(
-                    signal,
-                    1,
-                    result.finished.clone(),
-                )?;
+                let finished = result.finished.clone();
+                let shutdown = unsafe {
+                    signal_hook::low_level::register(signal, move || {
+                        // Admission stays reserved through actual child-family reap, including drain.
+                        if finished.load(Ordering::SeqCst)
+                            && crate::capture_worker::reserve_signal_shutdown()
+                        {
+                            libc::_exit(1);
+                        }
+                    })
+                }?;
                 // Standalone commands retain termination after cleanup if result output blocks.
                 // Reused scheduled tasks are scoped: retired handlers must not kill a later run.
                 if scoped {

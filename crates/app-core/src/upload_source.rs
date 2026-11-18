@@ -13,7 +13,7 @@ use tokio::io::{AsyncRead, AsyncReadExt, ReadBuf};
 #[cfg(test)]
 thread_local! { static PAUSE_NEXT_BODY: std::cell::Cell<bool> = const { std::cell::Cell::new(false) }; }
 #[cfg(test)]
-pub(super) struct BodyPauseTestGuard;
+pub(crate) struct BodyPauseTestGuard;
 #[cfg(test)]
 impl Drop for BodyPauseTestGuard {
     fn drop(&mut self) {
@@ -21,12 +21,12 @@ impl Drop for BodyPauseTestGuard {
     }
 }
 #[cfg(test)]
-pub(super) fn pause_next_body_for_test() -> BodyPauseTestGuard {
+pub(crate) fn pause_next_body_for_test() -> BodyPauseTestGuard {
     PAUSE_NEXT_BODY.with(|pause| pause.set(true));
     BodyPauseTestGuard
 }
 
-pub(super) struct UploadSourceGuard {
+pub(crate) struct UploadSourceGuard {
     // A duplicate pins the same native object. Never read or seek this handle;
     // duplicated handles can share the stream cursor.
     file: File,
@@ -34,7 +34,7 @@ pub(super) struct UploadSourceGuard {
     length: u64,
 }
 impl UploadSourceGuard {
-    pub(super) fn new(file: &File, identity: crate::FileIdentity, length: u64) -> Result<Self> {
+    pub(crate) fn new(file: &File, identity: crate::FileIdentity, length: u64) -> Result<Self> {
         identity.verify_file(file)?;
         ensure!(
             file.metadata()?.len() == length,
@@ -58,7 +58,7 @@ impl UploadSourceGuard {
     }
 }
 
-pub(super) struct TrackedUploadReader<R> {
+pub(crate) struct TrackedUploadReader<R> {
     reader: tokio::io::Take<R>,
     consumed: Arc<AtomicU64>,
     expected: u64,
@@ -67,7 +67,7 @@ pub(super) struct TrackedUploadReader<R> {
     paused: bool,
 }
 impl<R: AsyncRead + Unpin> TrackedUploadReader<R> {
-    pub(super) fn new(
+    pub(crate) fn new(
         reader: R,
         expected: u64,
         consumed: Arc<AtomicU64>,
@@ -134,7 +134,7 @@ impl<R: AsyncRead + Unpin> AsyncRead for TrackedUploadReader<R> {
 }
 
 /// Call before every successful outcome, including a resource-URL early return.
-pub(super) async fn verify_transfer(
+pub(crate) async fn verify_transfer(
     guard: Option<UploadSourceGuard>,
     consumed: Arc<AtomicU64>,
     expected: u64,

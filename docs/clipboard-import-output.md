@@ -79,11 +79,12 @@ release. AppKit/pasteboard calls run on the worker's native main thread.
 
 ## Windows existing file-drop metadata bounds
 
-The integrated correction addresses existing CF_HDROP file references only.
+This historical correction addressed existing CF_HDROP file references only.
 Source review rounds 6/7 were clean before application. Actual local optimized
 Linux and Windows GNU all-target metadata checks, Windows dependency-unit metadata
-and all-target workspace Clippy pass. Windows raw-image/URL drops, print and file
-drag-out remain separate implementation work.
+and all-target workspace Clippy passed for that source. Later sections describe
+the integrated raw-image/URL receiver, printing and native drag-out adapters with
+their exact owned-test and remaining native/resource gates.
 
 Both existing GPUI consumers now share one all-or-nothing native-path reader:
 OLE `IDropTarget::DragEnter` and the legacy GPUI `read_files` clipboard path.
@@ -189,6 +190,14 @@ RefCell borrow spans source/helper calls; no new timer/thread/runtime is added.
 Native COM creation, API failure/ordering, allocation and visual cleanup still
 require actual Windows acceptance.
 
+The native `IDropTarget` implementation explicitly sets `Agile = false`.
+The pinned windows-implement 0.60.2 macro otherwise adds IAgileObject and the
+free-threaded marshaler by default, which is incompatible with the handler's
+Rc/Cell-owned foreground window state. Windows GNU library/test metadata verifies
+the actual binding parameter. A production native two-STA/QI assertion belongs
+to the full isolated receiver fixture; this correction alone does not bound
+foreground GetData or establish acquisition isolation.
+
 Incoming GPUI payloads now also carry one private inline origin: the incoming
 target WindowId or internal source WindowId. All four AnyDrag constructors are
 updated. A new incoming path/image/URL offer may replace older incoming metadata;
@@ -218,7 +227,9 @@ explicitly through the window's shared drop state and deferred cleanup above,
 without requiring a later OS Leave callback. The closed-target fixtures do not
 prove native Shell callback ordering on window close.
 
-The 64 KiB check is **post-acquisition**. Source `QueryGetData`/`GetData`, release
+Historical acquisition limit of the earlier f2f03a4 correction (superseded by
+the integrated receiver source below; native runtime acceptance remains open):
+the 64 KiB check was **post-acquisition**. Source `QueryGetData`/`GetData`, release
 callbacks and drag-image helper calls remain synchronous COM/native operations.
 `GetData` can allocate an arbitrarily large native medium or block before this
 reader sees its extent; rejecting that returned medium does not undo that peak.
@@ -589,3 +600,218 @@ those original clipboard reviews alone did not establish that result.
 The private native evidence and the explicit opaque-X11 queue boundary above
 retain their stated scope. These reviews ran read-only without user clipboard,
 printer, device, account or native application calls.
+
+
+## Integrated Windows receiver source (2026-11-17)
+
+The receiver source is now integrated through a genuine three-way merge that
+preserves current Unix services, Jiff and the earlier non-agile binding fix.
+Original patch `0b7f93cbca2126938b40c85a688370e547dfdf2541815011676c74b569c0aae3`
+received actual fresh clean source reviews 5/6. Root corrected one constructor
+call to the inner window object during real GNU type checking. Optimized Linux
+all-target checking, Windows GNU workspace/all-target and vendor-test metadata,
+122 optimized existing application consumer tests (9 ignored), three optimized
+actual deadline tests, Clippy and formatting pass. The foreground source-calling
+target is removed. Actual Rust/native receiving, first-boundary/fault/lifecycle/
+editor and resource acceptance remain unrun; source/metadata alone never closes
+that gate. Exact preparation/resolution and named results are retained under
+`target/verification/windows-production-integration/`.
+
+The implementation installs only a process-spawner pointer at ordinary startup. A
+single receiver process and two parent threads (controller/watchdog and bounded
+private-pipe reader, each requesting a 256 KiB stack) exist while visible,
+non-minimized GPUI native windows are eligible. Every GPUI Windows window uses
+the same seam; hidden/minimized targets retire asynchronously, and a restore
+waits for its previous registration to finish. A standalone GPUI probe without
+an installed spawner has no incoming OLE registration. The receiver loads no
+renderer, decoder, capture stream, clipboard reader or network runtime.
+
+The parent arms an absolute five-second deadline before acknowledging each
+receiver native interval, including initialization, registration, PeekMessage,
+dispatch, source/helper/medium/error-reference cleanup and shutdown. Native
+progress or nested callbacks cannot renew that deadline. The existing +96 MiB
+probed private-commit growth guard is installed before native acquisition. The
+parent retains the exact process and Job through reaping and joins its one
+blocking reader before replacement. A failed OS termination/reap retains that
+cleanup owner and prevents overlap. The foreground never waits synchronously.
+
+A single native admission covers active and completed transfers through final
+foreground delivery/discard, including cancellation and receiver replacement.
+The fixed protocol carries at most one <=32 MiB encoded body or <=64 KiB native
+metadata body (file framing adds at most 132 bytes), <=32 target records, and
+coalesced per-target movement. Shell helper creation/release is per gesture and
+remains inside the native interval. Native paths preserve UTF-16/WTF-8 semantics;
+PNG/JFIF/WebP/DIBV5/DIB and credential-free HTTP(S) URLs reach the existing typed
+GPUI drop and image-worker routes. Raster acquisition and URL fetch begin only
+at final Drop; hover never fetches or decodes. Source diagnostic descriptions
+are not read or logged, and native IErrorInfo TLS references are drained under
+the same watchdog with a finite churn bound.
+
+Revision 10 of the separate owned Windows topology fixture passed all 18
+mandatory direct/actual-OLE cases, with three explicit non-input negative
+controls recorded separately. It establishes the C++ receiving boundary and
+first custom-unmarshal guard, not the Rust production integration. The integrated
+Rust target explicitly disables windows-implement's default agility. Its QI and
+two-STA callback fixture, payload/protocol/lease/deadline tests, production native
+fault/editor/close tests and optimized joint resource observations remain unrun.
+The 50/100 MiB idle/visible-shell and all PLAN performance budgets are unchanged.
+Neither this source checkpoint nor the topology result establishes native user-session,
+physical input/presentation, mixed-DPI or performance acceptance.
+
+The first independent source review of patch c3bd41ac was not clean: a missing
+Windows flag import, reentrant Leave revival and an overdue-event deadline bypass.
+The held fix separates gesture retirement from captured operation/admission IDs
+and checks the absolute clock before permits, completion and locked publication.
+Actual Rust COM reentry and overdue-publication regressions are authored but
+unrun. Extra resource cost is bounded scalar operation state per target and
+one small Rust Rc allocation per active helper; no queue/thread/timer is added.
+Later actual source reviews 5/6 are clean. Root metadata/consumer/deadline checks
+above pass; actual native and aggregate resource checks remain required.
+
+The separate cfg-only production-native fixture has authored real-spawner/helper
+COM/OLE, terminal/effect/count, foreground rejection/cancel, failure/reap and
+owned-desktop controls. Its evolving counts are authored inventory, never pass
+counts. Original R10 remains a C++ prerequisite. The new fixture must clear its
+own source review, cfg/MSVC/C++/PowerShell checks and actual positive/negative
+execution before it supplies receiving-boundary evidence.
+
+## Unix persistent file-reference output (held implementation)
+
+`ImageClipboard::copy_file` accepts exactly one explicit absolute existing regular
+file. Native path metadata is <=4096 bytes and its canonical target is rechecked
+inside the isolated writer before publication. Linux offers `text/uri-list` and
+`x-special/gnome-copied-files` with the literal `copy` operation; no move/delete
+operation, image encode/decode, file-content read, temporary file, disk round-trip,
+upload, History mutation or production clipboard verification is introduced.
+A file reference is a pathname: later source mutation/deletion can change what a
+recipient opens, and no immutable-content promise is made.
+
+A lazy installed function pointer starts at most one file writer at a time. One
+256 KiB Rust supervisor owns the authenticated inherited transport and process
+family through final termination/reap; dropping the public handle only disconnects
+a one-slot channel. The supervisor parks after publication, then performs active
+cleanup when replaced/dropped. Busy admission remains held throughout cleanup.
+Native startup/canonicalization/publication is contained by a five-second outer
+deadline; failed or lost acknowledgement reports that clipboard content may have
+changed. Success means publication was acknowledged, not a clipboard read-back or
+recipient paste. An unpublished/cancelled owner can never later acknowledge a
+new operation. Subsequent image/text output checks the installed file-owner
+quiescence fence before publishing, so a canceled child cannot overtake later
+output while cleanup is pending. Their native setters are otherwise unchanged.
+Native dependency allocations retain the existing runtime-probed 96 MiB
+VM-growth guard inside the private child. No process/thread starts at ordinary
+startup and no permanent timer/polling loop is installed.
+
+X11 uses a local numeric DISPLAY only, one connection/window, CLIPBOARD only, a
+bounded one-request URI property and a native-fd/control-fd poll with no idle timer.
+It offers no PRIMARY and performs no clipboard-manager handover on release.
+Wayland uses ext-data-control-v1 or wlr-data-control-v1 on exactly one seat. These
+privileged protocols are unavailable on some compositors, including usual GNOME
+sessions: that capability failure is explicit, with no XWayland/text fallback.
+No focused gesture control is added. The owner destroys unsolicited offers
+without reading their content, retains one URI payload and at most four
+nonblocking outbound file descriptors with five-second transfer deadlines.
+A native event batch is bounded by 4096 handled events and the opaque dependency
+queue stays inside the private worker memory ceiling. X11 materializes at most
+one additional <=12 KiB Copy wrapper during a corresponding request; Wayland
+streams the fixed Copy prefix plus its sole retained URI without duplicating it.
+macOS writes immediate public.file-url data with the same Pasteboard Manager API
+as the existing reader on the private child's native main thread, not GPUI's
+foreground/background executor. The macOS supervisor cleans up immediately after
+acknowledgement; native pasteboard storage preserves the copied file reference.
+A named private pasteboard is used by acceptance
+fixtures; the general pasteboard is never used by development tests.
+
+`clipboard copy-file ABSOLUTE_FILE --hold-ms 1000..300000` is an explicit CLI
+route that retains Linux delayed ownership for the requested duration. Ctrl+C
+ends that lifetime and begins cleanup. No new UI controls are added. At this historical file-only checkpoint, image/text and
+Windows-file setters still had their earlier native-call deadline limitations.
+The integrated native-setter checkpoint below supersedes those limitations.
+Standalone CLI completion awaits file-owner reap and reports that its requested
+Linux ownership lifetime has ended.
+
+Resource acceptance remains unmeasured: helper private/resident VM, Wayland/X11
+connection buffers, native pasteboard objects, supervisor stack/RSS (plus the
+existing 128 KiB macOS parent-lifeline thread during its short helper lifetime), first/warm
+publish latency, release/reap latency and idle wakeups require optimized private
+server runs. Targets are not measurements. Root must run pure tests and private
+Xvfb/data-control/named-pasteboard fixtures before claiming native completion.
+
+Revision 2 adds an operation-scoped signal self-pipe for the finite CLI hold. Both
+SIGINT and SIGTERM write the bounded native wake endpoint regardless of which
+thread handles the signal; a byte remains readable if delivery occurs between
+checking cancellation and entering poll. The read endpoint is polled with the
+absolute hold deadline and no periodic timer. Handler registration and the socket
+pair exist only for this explicit CLI operation and are released on exit; wake
+errors still await native owner retirement/reap. The socket's requested send buffer
+is 4096 bytes (the OS may round its actual bounded allocation). Wayland seat
+Capabilities/Name events now use explicit bounded Dispatch, count against the
+4096-event batch policy, and reject names over 128 bytes. Pure seat admission and
+private subprocess signal-before-poll/other-thread hold fixtures are authored;
+these checks have not been executed by the delivery agent.
+
+Revision 3 keeps standalone completion authority through every ordinary CLI exit.
+Resident publication/cancellation still returns at its existing deadline plus
+250 ms cleanup grace, explicit resident retirement still returns after five
+seconds, and Lease Drop remains nonblocking. Those bounded returns do not prove
+reap. The standalone command additionally owns a zero-sized completion drain:
+its condition variable waits without a polling timer until the actual supervisor
+releases admission after Native's process-family cleanup and child.wait finish.
+The clipboard/lease drops before this drain; cancellation's conditional shutdown
+is enabled only after the drain completes. Thus publication errors and retirement
+timeouts retain a live CLI until actual cleanup completes, rather than relying
+on parent-death signaling after process::exit. A cleanup that remains kernel-blocked
+keeps that standalone CLI alive; no finite completed-reap claim is fabricated.
+The static mutex/condition variable add no thread, process, runtime, channel,
+permanent timer or metadata cache. Private subprocess regression sources use the
+actual supervisor with a controlled seven-second delay before actual reap,
+observe the unchanged bounded API error, require the CLI to remain alive beyond
+both existing thresholds, and permit ordinary error exit only after the same
+owned child.wait marker. Their isolated Linux controller is a subreaper and
+actually reaps adopted providers even when an early-exit regression fails.
+These new source regressions remain unrun by the delivery agent.
+
+## Integrated owned transfer checks — 2026-11-18
+
+The optimized private X11 drag/drop suite passed 25 native cases, including real incoming provider cancellation/staleness, URL handoff into exact editor pixels and outgoing Copy/Status/Finish/Escape/close paths. All 23 observed authenticated helper identities exited. The real XI2 implicit press requires grabbing the matching XI device; unrelated devices cannot advance or release its transfer. These are owned virtual-server software results, not physical input or compositor-presentation acceptance.
+
+Unix file output also passed six ordinary regressions and all five explicitly enabled private cases: stalled publication, seven-second delayed actual reap across standalone errors, authenticated X11 roundtrip through the existing isolated reader, both ext/wlr data-control paths and explicit refusal without data-control. Exact writer test SHA256 was `560ab575dbc3772245cc9e2d0f6713642d04f6277bcbf8282567ed8140616869`; the independent CLI reader SHA256 was `24a0d4907b5038575c43df3ae80ee45a936beb6c293d2f9c9e15284cd9f6fafc`. The test requires every ignored case to run; zero selection is failure. No user clipboard or desktop was touched.
+
+Linux workspace/all-target and Windows GNU metadata checks pass. These file-only results are historical; the broader native-setter checkpoint below covers the later image/text implementation. Complete Windows COM/editor acceptance, macOS named-board runtime, real compositor/native gesture coverage, whole main/helper private memory and PLAN hardware budgets remain open.
+
+## Integrated operation-owned native setters — 2026-11-18
+
+Image/text output on the supported native platforms and Windows file output now
+use the installed operation-owned helper. Publication has a five-second external
+native deadline and the existing 250 ms cleanup grace. An API timeout does not
+release admission or claim completed reap: the same supervisor retains its child
+and ownership until actual family cleanup. Ordinary main/CLI exit drains pending
+capture and clipboard owners. A kernel-pending cleanup retains that authority.
+Shared image buffers remain in memory through preparation and publication.
+
+The fresh optimized Linux run passed 12 regular clipboard cases and all eight
+explicit private native cases, including stalled setters, delayed actual reap,
+X11 INCR PNG/text/file transfer and owned ext/wlr data-control offers. Evidence:
+`target/verification/platform-current-validation/clipboard-native.log`; the
+separate earlier eight-case log is retained at
+`target/verification/native-clipboard-deadline-integration/revision4/file-clipboard-native-short-root.log`.
+No general user clipboard, keyring or desktop was used. These ignored native
+cases are separate from the 1,262 regular workspace-test total.
+
+The actual Mac ARM and Intel native runs now pass image/alpha/text transfer after
+publisher reap and the private file-reference round trip. The earlier named-board
+failure was a fixture lifetime defect; the Intel file crash exposed an LP64 native
+item-count/index ABI defect. Both corrections retain the original assertions and
+bounded ownership. Proof:
+`target/verification/mac-file-board-crash-integration/revision1/verified-native-summary.json`.
+
+The owned Windows COM/OLE/editor gate separately passes108/108 full predicates,
+the expanded stream ownership/reentry self-check and four direct deadline/broker
+regressions. Both exact owned Windows clipboard cases also pass: real native
+image/text/file formats after helper reap, cancellation/blocked-write/fault
+containment and incompressible4K PNG+DIBV5 preservation. Artifact14446873123
+(run44346137147) was downloaded and verified against SHA256
+`209162adb4fcc681258c6beb2ea00ba356574f92502e6834b97134985d85a9a7`.
+Physical recipient paste/input, general user clipboard, whole-process/GPU memory
+and PLAN reference-hardware budgets remain independent gates; these successful
+owned subsets do not certify them.

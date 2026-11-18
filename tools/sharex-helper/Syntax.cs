@@ -61,7 +61,8 @@ internal sealed class Interpreter(Profile profile, Context context)
 {
     readonly Budget budget = new();
     readonly Dictionary<string, List<Node>> trees = new(StringComparer.Ordinal);
-    readonly List<string> secrets = [];
+    readonly HashSet<string> secrets = new(StringComparer.Ordinal);
+    long secretBytes;
     const int Intermediate = 2 * 1024 * 1024;
     internal void Compile()
     {
@@ -129,20 +130,26 @@ internal sealed class Interpreter(Profile profile, Context context)
         }
         foreach (var pair in trees) Walk(pair.Value, pair.Key is "RequestURL" or "URL" or "ThumbnailURL" or "DeletionURL" or "ErrorMessage");
     }
+    void AddSecret(string value)
+    {
+        if(value.Length==0||!secrets.Add(value))return;
+        secretBytes+=Encoding.UTF8.GetByteCount(value);
+        Limits.Require(secrets.Count<=128&&secretBytes<=256*1024,"authentication_limit");
+    }
     void AddKnownAuthentication(string name, string value)
     {
-        if(value.Length==0)return;secrets.Add(value);
-        int space=value.IndexOf(' ');if(space>0&&(value[..space].Equals("Bearer",StringComparison.OrdinalIgnoreCase)||value[..space].Equals("Basic",StringComparison.OrdinalIgnoreCase))&&space+1<value.Length)secrets.Add(value[(space+1)..]);
+        if(value.Length==0)return;AddSecret(value);
+        int space=value.IndexOf(' ');if(space>0&&(value[..space].Equals("Bearer",StringComparison.OrdinalIgnoreCase)||value[..space].Equals("Basic",StringComparison.OrdinalIgnoreCase))&&space+1<value.Length)AddSecret(value[(space+1)..]);
         if(name.Equals("Cookie",StringComparison.OrdinalIgnoreCase)||name.Equals("Set-Cookie",StringComparison.OrdinalIgnoreCase))
         {
-            int count=0;foreach(string pair in value.Split(';')){if(name.Equals("Set-Cookie",StringComparison.OrdinalIgnoreCase)&&count>0)break;Limits.Require(count++<128,"cookie_pair_limit");int equals=pair.IndexOf('=');if(equals>0){string token=pair[(equals+1)..].Trim();if(token.Length>0){secrets.Add(token);if(token.Length>=2&&token[0]=='"'&&token[^1]=='"')secrets.Add(token[1..^1]);}}}
+            int count=0;foreach(string pair in value.Split(';')){if(name.Equals("Set-Cookie",StringComparison.OrdinalIgnoreCase)&&count>0)break;Limits.Require(count++<128,"cookie_pair_limit");int equals=pair.IndexOf('=');if(equals>0){string token=pair[(equals+1)..].Trim();if(token.Length>0){AddSecret(token);if(token.Length>=2&&token[0]=='"'&&token[^1]=='"')AddSecret(token[1..^1]);}}}
         }
     }
     void CollectInspectionAuthentication()
     {
         foreach(var pair in trees)if(pair.Key.StartsWith("Headers.",StringComparison.Ordinal)||pair.Key.StartsWith("Parameters.",StringComparison.Ordinal)||pair.Key.StartsWith("Arguments.",StringComparison.Ordinal))
         {
-            if(SensitiveField(pair.Key)){string? value=StaticValue(pair.Value,false);if(value!=null)AddKnownAuthentication(pair.Key[(pair.Key.IndexOf('.')+1)..],value);}
+            if(SensitiveField(pair.Key)){string? value=StaticValue(pair.Value,false);if(value!=null)AddKnownAuthentication(pair.Key.StartsWith("Parameters.",StringComparison.Ordinal)?DeliveredQueryName(pair.Key[(pair.Key.IndexOf('.')+1)..]):pair.Key[(pair.Key.IndexOf('.')+1)..],value);}
         }
         if(profile.Body is "JSON" or "XML")BodyAuthentication.Scan(Data(true),context.UnknownExpansionMarker,AddKnownAuthentication);
         Limits.Require(secrets.Sum(value=>(long)Encoding.UTF8.GetByteCount(value))<=256*1024,"inspection_auth_limit");
@@ -212,7 +219,7 @@ internal sealed class Interpreter(Profile profile, Context context)
             case "base64": return Convert.ToBase64String(Encoding.UTF8.GetBytes(first));
             case "random": return args[RandomNumberGenerator.GetInt32(args.Length)];
             case "select": var choices = args.Where(value => value.Length > 0).ToArray(); return choices.Length == 0 ? "" : context.Answer(call.Id, "Select", choices);
-            case "prompt": case "inputbox": string title = args.Length == 0 ? "Input" : first; string answer = context.Answer(call.Id, title); if (answer.Length > 0 && (Sensitive(title) || SensitiveField(call.Id[..call.Id.LastIndexOf('#')]))) secrets.Add(answer); return answer;
+            case "prompt": case "inputbox": string title = args.Length == 0 ? "Input" : first; string answer = context.Answer(call.Id, title); if (answer.Length > 0 && (Sensitive(title) || SensitiveField(call.Id[..call.Id.LastIndexOf('#')]))) AddSecret(answer); return answer;
             case "outputbox": string message = args.Length > 1 ? args[1] : first; if (message.Length > 0) { Limits.Require(context.Events.Count < 16, "output_event_limit"); context.Events.Add(new { title = Limits.Bounded(args.Length > 1 && first.Length > 0 ? first : "Output", 256), text = Limits.Bounded(message, 4096) }); } return "";
             case "json":
             {
@@ -259,8 +266,8 @@ internal sealed class Interpreter(Profile profile, Context context)
         string suffix = string.Join("&", query);
         if (suffix.Length > 0) url += (url.Contains('?') ? "&" : "?") + suffix;
         Limits.Bounded(url, 8192);
-        foreach (var map in new[] { headers, arguments }) foreach (var pair in map) if (Sensitive(pair.Key) && pair.Value.Length > 0) secrets.Add(pair.Value);
-        foreach (var pair in parameters) if (Sensitive(DeliveredQueryName(pair.Key)) && pair.Value.Length > 0) secrets.Add(pair.Value);
+        foreach (var map in new[] { headers, arguments }) foreach (var pair in map) if (Sensitive(pair.Key) && pair.Value.Length > 0) AddKnownAuthentication(pair.Key,pair.Value);
+        foreach (var pair in parameters) if (Sensitive(DeliveredQueryName(pair.Key)) && pair.Value.Length > 0) AddKnownAuthentication(DeliveredQueryName(pair.Key),pair.Value);
         bool attach = profile.Body == "MultipartFormData" && (context.Kind is "image" or "file" || context.Kind == "text" && profile.Field.Length > 0);
         byte[] data = profile.Body is "JSON" or "XML" ? Encoding.UTF8.GetBytes(Data()) : [];
         if (profile.Body == "FormURLEncoded") { using var form = new FormUrlEncodedContent(arguments); data = form.ReadAsByteArrayAsync().GetAwaiter().GetResult(); }

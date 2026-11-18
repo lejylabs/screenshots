@@ -69,7 +69,9 @@ pub(super) struct Key {
     profile: usize,
     #[cfg(target_os = "macos")]
     normalized: String,
+    #[cfg(target_os = "windows")]
     modifiers: u32,
+    #[cfg(target_os = "windows")]
     name: String,
 }
 struct ReadyConfig {
@@ -178,8 +180,11 @@ impl ReadyConfig {
                     shortcuts.insert(binding.hotkey.clone()),
                     "Task-host hotkeys must be unique"
                 );
+                #[cfg(target_os = "windows")]
                 let pieces = binding.hotkey.split('+').collect::<Vec<_>>();
+                #[cfg(target_os = "windows")]
                 let name = pieces.last().unwrap().to_string();
+                #[cfg(target_os = "windows")]
                 let modifiers = pieces[..pieces.len() - 1].iter().fold(0, |mods, name| {
                     mods | match *name {
                         "Ctrl" => 1,
@@ -193,7 +198,9 @@ impl ReadyConfig {
                     profile,
                     #[cfg(target_os = "macos")]
                     normalized: binding.hotkey.clone(),
+                    #[cfg(target_os = "windows")]
                     modifiers,
+                    #[cfg(target_os = "windows")]
                     name,
                 });
             }

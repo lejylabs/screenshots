@@ -3,14 +3,95 @@
 use anyhow::Context as _;
 use gpui_kit as gpui;
 use gpui_kit::platform as gpui_platform;
+#[cfg(all(target_os = "windows", screenshots_native_drop_acceptance))]
+pub use gpui_windows::run_native_drop_acceptance as run_windows_native_drop_acceptance;
+#[cfg(target_os = "windows")]
+pub use gpui_windows::{
+    NATIVE_DROP_CHILD_ARGUMENT as WINDOWS_NATIVE_DROP_ARGUMENT,
+    NativeDropProcess as WindowsNativeDropProcess, NativeDropSpawner as WindowsNativeDropSpawner,
+    install_native_drop_spawner as install_windows_native_drop_spawner,
+    native_drop_receiver as run_windows_native_drop_receiver,
+};
+#[cfg(all(target_os = "windows", screenshots_native_drop_acceptance))]
+mod windows_drop_acceptance;
+#[cfg(all(target_os = "windows", screenshots_native_drop_acceptance))]
+pub use windows_drop_acceptance::run as run_windows_native_drop_editor_acceptance;
+/// Installs the existing isolated native worker for explicit Unix drop acquisition.
+/// Startup stores one function pointer and reads no selection or pasteboard.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub fn install_unix_native_drop_reader() -> anyhow::Result<()> {
+    gpui::install_native_drop_reader(|source, image, cancel| {
+        use app_core::{NativeDropMime as Mime, NativeDropSource as Source};
+        use std::sync::atomic::Ordering;
+        let source = match source {
+            gpui::NativeDropSource::X11 {
+                display,
+                source,
+                target,
+                types,
+                extended,
+                timestamp,
+            } => Source::X11 {
+                display: display.to_string(),
+                source,
+                target,
+                types,
+                extended,
+                timestamp,
+            },
+            gpui::NativeDropSource::MacPasteboard { name, change_count } => Source::MacPasteboard {
+                name: name.to_string(),
+                change_count,
+            },
+        };
+        let result = app_core::acquire_native_drop(source, image, &|| {
+            if cancel.load(Ordering::Acquire) {
+                Err(app_core::CaptureError::NativeCanceled)
+            } else {
+                Ok(())
+            }
+        })
+        .ok()?;
+        let data = if result.mime == Mime::UriList {
+            gpui::NativeDropData::UriList(Arc::new(result.bytes))
+        } else {
+            let format = match result.mime {
+                Mime::Png => gpui::ImageFormat::Png,
+                Mime::Jpeg => gpui::ImageFormat::Jpeg,
+                Mime::Webp => gpui::ImageFormat::Webp,
+                Mime::Bmp => gpui::ImageFormat::Bmp,
+                Mime::Tiff => gpui::ImageFormat::Tiff,
+                Mime::UriList => unreachable!(),
+            };
+            gpui::NativeDropData::Image {
+                format,
+                bytes: (!result.bytes.is_empty()).then(|| Arc::new(result.bytes)),
+            }
+        };
+        Some(gpui::NativeDropRead {
+            data,
+            root_offset: result.root_offset,
+        })
+    })
+}
+
 mod assets;
 mod caption;
+mod capture_lifecycle;
 mod format_catalog;
+#[cfg(all(feature = "native-drop-probe", target_os = "linux"))]
+mod native_drop_probe;
 #[cfg(all(test, target_os = "linux"))]
 mod native_probe;
+#[cfg(all(feature = "native-drop-probe", target_os = "linux"))]
+pub use native_drop_probe::run_native_x11_drop_probe;
 #[cfg(test)]
 mod ui_tests;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+mod unix_native_services;
 mod workspace;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+use unix_native_services::rollback_unix_shortcuts;
 use workspace::{capture_button, ui_button};
 mod redaction_editor;
 mod theme;
@@ -72,9 +153,9 @@ enum EditorImage {
 #[derive(Clone, Copy)]
 enum DelayedCapture {
     Region,
-    #[cfg(target_os = "windows")]
+    #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
     ActiveWindow,
-    #[cfg(target_os = "windows")]
+    #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
     ActiveDisplay,
 }
 
@@ -145,8 +226,11 @@ pub struct CaptureWorkspace {
     page: ControlPage,
     control: Option<AnyWindowHandle>,
     resident: bool,
+    // Native UI backend ready; Unix GPU resources themselves are created per live window.
     graphics: bool,
     switching_graphics: bool,
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    unix_show_pending: bool,
     preview_active: bool,
     edit_selection: bool,
     focus_handle: FocusHandle,
@@ -158,6 +242,8 @@ pub struct CaptureWorkspace {
     test_capture_capabilities: Option<app_core::CaptureCapabilities>,
     #[cfg(test)]
     test_library_load_cancel: Option<(Arc<std::sync::atomic::AtomicUsize>, usize)>,
+    #[cfg(test)]
+    test_selection_topology_after_prepare: bool,
     native_capture_cancel: Option<app_core::NativeCaptureCancellation>,
     native_sources_cancel: Option<app_core::NativeCaptureCancellation>,
     xcap_displays: Vec<DisplayInfo>,
@@ -188,7 +274,7 @@ pub struct CaptureWorkspace {
     upload_task_defaults: [String; 6],
     output_task_profiles: [Option<CaptureOutputProfile>; 6],
     strip_metadata_on_upload: bool,
-    #[cfg(target_os = "windows")]
+    #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
     hotkey_inputs: Option<[gpui::Entity<gpui::component::input::InputState>; 6]>,
     history_database: Option<PathBuf>,
     history_visible: bool,
@@ -251,6 +337,9 @@ pub struct CaptureWorkspace {
     last_render: Option<Arc<gpui::RenderImage>>,
     capturing: bool,
     capture_generation: u64,
+    topology_generation: u64,
+    capture_display_generation: Option<u64>,
+    _display_subscription: gpui::Subscription,
     capture_delay: Option<gpui::Task<()>>,
     capture_delay_seconds: u8,
     capture_delay_input: Option<gpui::Entity<gpui::component::input::InputState>>,
@@ -266,6 +355,22 @@ pub struct CaptureWorkspace {
     #[cfg(target_os = "windows")]
     tray: Option<app_core::SpikeTray>,
     tray_status: String,
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    unix_services: Option<app_core::UnixDesktopServices>,
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    unix_native_allowed: bool,
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    unix_shortcuts_initialized: bool,
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    unix_shortcuts_busy: bool,
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    unix_services_stopping: bool,
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    unix_shortcut_preparing: bool,
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    unix_quit_paused: bool,
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    unix_tray_observed: bool,
 }
 
 fn native_capture_context(cx: &App) -> app_core::NativeCaptureContext {
@@ -292,6 +397,18 @@ fn focused_clipboard_backend(native_read: bool, client: &str) -> app_core::Nativ
     }
 }
 
+struct CaptureCompletion {
+    result: Result<
+        (Vec<CapturedImage>, HashMap<PathBuf, Arc<gpui::RenderImage>>),
+        app_core::CaptureError,
+    >,
+    preview: bool,
+    edit_selection: bool,
+    profile: CaptureOutputProfile,
+    exact_region: Option<app_core::RememberedRegion>,
+    repeating_region: bool,
+}
+
 struct CaptureSaveAttempt {
     capture: CapturedImage,
     result: Result<(), String>,
@@ -300,7 +417,9 @@ struct CaptureSaveAttempt {
 
 impl CaptureWorkspace {
     fn attach_ui(&mut self, request: UiRequest, cx: &mut Context<Self>) {
-        if self.switching_graphics || self.quitting {
+        let show_quit_status = cfg!(any(target_os = "linux", target_os = "macos"))
+            && matches!(request, UiRequest::Control);
+        if self.switching_graphics || (self.quitting && !show_quit_status) {
             return;
         }
         self.switching_graphics = true;
@@ -325,12 +444,12 @@ impl CaptureWorkspace {
                         if let Some(probe) = cx.try_global::<RegionLatencyProbe>() {
                             probe.mark("graphics_ready");
                         }
-                        if this.quitting {
+                        if this.quitting && !show_quit_status {
                             this.finish_quit_if_idle(cx);
                             return;
                         }
                         match request {
-                            UiRequest::Control => this.show_control(cx),
+                            UiRequest::Control => this.open_control(cx),
                             UiRequest::Overlay(mode) => this.open_overlays(mode, cx),
                             UiRequest::Capture(jobs, profile) => {
                                 this.start_capture_with_profile(jobs, false, profile, cx)
@@ -359,6 +478,14 @@ impl CaptureWorkspace {
         if self.quitting || self.capturing || self.preview_active || self.switching_graphics {
             return;
         }
+        self.open_control(cx);
+    }
+
+    // Reopen must also expose provisional Quit status without admitting new capture work.
+    fn open_control(&mut self, cx: &mut Context<Self>) {
+        if self.switching_graphics {
+            return;
+        }
         if !self.graphics {
             self.attach_ui(UiRequest::Control, cx);
             return;
@@ -383,9 +510,20 @@ impl CaptureWorkspace {
         let completion = owner.clone();
         cx.defer(move |cx| {
             let result = cx.open_kit_window(options, move |window, cx| {
-                window.on_window_should_close(cx, move |_, cx| {
+                window.on_window_should_close(cx, move |_window, cx| {
                     let owner = owner.clone();
+                    #[cfg(any(target_os = "linux", target_os = "macos"))]
+                    let handle = _window.window_handle();
                     cx.defer(move |cx| {
+                        #[cfg(any(target_os = "linux", target_os = "macos"))]
+                        handle
+                            .update(cx, |_, window, cx| {
+                                owner
+                                    .update(cx, |this, cx| this.close_unix_control(window, cx))
+                                    .ok();
+                            })
+                            .ok();
+                        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
                         owner.update(cx, |this, cx| this.retire_ui(cx)).ok();
                     });
                     false
@@ -445,6 +583,9 @@ impl CaptureWorkspace {
         if !self.resident
             || self.switching_graphics
             || (self.capturing && self.history_preview_cancel.is_none())
+            || (cfg!(any(target_os = "linux", target_os = "macos"))
+                && self.control.is_none()
+                && self.overlays.is_empty())
         {
             return;
         }
@@ -458,7 +599,7 @@ impl CaptureWorkspace {
         self.capture_delay_input = None;
         self.close_upload_forms();
         self.exact_region_status.clear();
-        #[cfg(target_os = "windows")]
+        #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
         {
             self.hotkey_inputs = None;
         }
@@ -560,14 +701,22 @@ impl CaptureWorkspace {
                         .ok();
                     return;
                 }
+                // Unix keeps native event/clipboard and Dock ownership; window Drop retires renderers.
+                // Linux also retires its last-window shared GPU context.
+                #[cfg(not(any(target_os = "linux", target_os = "macos")))]
                 let result = cx
                     .update(|cx| cx.request_windowing(gpui::WindowingRequest::Headless))
                     .await;
+                #[cfg(any(target_os = "linux", target_os = "macos"))]
+                let result = Ok::<(), anyhow::Error>(());
                 owner
                     .update(cx, |this, cx| {
                         this.switching_graphics = false;
                         if result.is_ok() {
-                            this.graphics = false;
+                            #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+                            {
+                                this.graphics = false;
+                            }
                         } else {
                             tracing::warn!(?result, "could not detach graphics");
                         }
@@ -588,7 +737,7 @@ impl CaptureWorkspace {
         Self::with_native_services(control, true, cx)
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, screenshots_native_drop_acceptance))]
     fn isolated_ui(window: &mut Window, cx: &mut Context<Self>) -> Self {
         Self::with_native_services(Some(window.window_handle()), false, cx)
     }
@@ -647,10 +796,20 @@ impl CaptureWorkspace {
             "xcap capabilities"
         );
 
+        let owner = cx.entity().downgrade();
+        let display_subscription = cx.observe_displays(move |event, cx| {
+            if capture_lifecycle::invalidates_selection(event) {
+                owner
+                    .update(cx, |this, cx| this.invalidate_capture_topology(cx))
+                    .ok();
+            }
+        });
         let mut shell = Self {
             resident: control.is_none(),
             graphics: control.is_some(),
             switching_graphics: false,
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
+            unix_show_pending: false,
             control,
             preview_active: false,
             edit_selection: false,
@@ -663,6 +822,8 @@ impl CaptureWorkspace {
             test_capture_capabilities: None,
             #[cfg(test)]
             test_library_load_cancel: None,
+            #[cfg(test)]
+            test_selection_topology_after_prepare: false,
             native_capture_cancel: None,
             native_sources_cancel: None,
             xcap_displays: Vec::new(),
@@ -698,7 +859,7 @@ impl CaptureWorkspace {
             upload_task_defaults: std::array::from_fn(|_| String::new()),
             output_task_profiles: [None; 6],
             strip_metadata_on_upload: false,
-            #[cfg(target_os = "windows")]
+            #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
             hotkey_inputs: None,
             history_database: if cfg!(test) {
                 None
@@ -765,6 +926,9 @@ impl CaptureWorkspace {
             last_render: None,
             capturing: false,
             capture_generation: 0,
+            topology_generation: 0,
+            capture_display_generation: None,
+            _display_subscription: display_subscription,
             capture_delay: None,
             capture_delay_seconds: 3,
             capture_delay_input: None,
@@ -776,18 +940,34 @@ impl CaptureWorkspace {
             clipboard_status: "No capture yet".into(),
             #[cfg(target_os = "windows")]
             hotkey: None,
-            hotkey_status: "Global hotkey: not tested on this platform".into(),
+            hotkey_status: "No global shortcuts active".into(),
             #[cfg(target_os = "windows")]
             tray: None,
-            tray_status: "Tray: not tested on this platform".into(),
+            tray_status: "Tray unavailable; Close quits".into(),
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
+            unix_services: None,
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
+            unix_native_allowed: native_services,
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
+            unix_shortcuts_initialized: false,
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
+            unix_shortcuts_busy: false,
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
+            unix_services_stopping: false,
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
+            unix_shortcut_preparing: false,
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
+            unix_quit_paused: false,
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
+            unix_tray_observed: false,
         };
         if native_services {
             shell.refresh_xcap_lists(cx);
         }
-        if shell.control.is_some() {
+        if shell.control.is_some() && !cfg!(screenshots_native_drop_acceptance) {
             shell.restore_upload_destination(cx);
         }
-        #[cfg(not(test))]
+        #[cfg(not(any(test, screenshots_native_drop_acceptance)))]
         cx.spawn(async move |this, cx| {
             let settings = cx
                 .background_spawn(async { app_core::CaptureSettings::load() })
@@ -821,6 +1001,8 @@ impl CaptureWorkspace {
                             .with_native_context(native_capture_context(cx));
                         this.output_directory = Some(settings.output_directory);
                         this.try_open_pending_image(cx);
+                        #[cfg(any(target_os = "linux", target_os = "macos"))]
+                        this.initialize_unix_shortcuts(cx);
                     }
                     Err(error) => {
                         this.settings_status = format!(
@@ -1154,6 +1336,16 @@ impl CaptureWorkspace {
             || self.quitting
             || self.settings_loading
             || self.settings_saving
+            || {
+                #[cfg(any(target_os = "linux", target_os = "macos"))]
+                {
+                    self.unix_shortcuts_busy
+                }
+                #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+                {
+                    false
+                }
+            }
             || self.editor.is_some()
             || self.editor_closing
             || self.capture_delay.is_some()
@@ -1253,6 +1445,29 @@ impl CaptureWorkspace {
             };
             #[cfg(not(target_os = "windows"))]
             let _ = prepared;
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
+            let unix_prepared = {
+                let operation = this.update(cx, |this, _| {
+                    if settings.hotkeys != this.hotkey_bindings {
+                        let operation = this.unix_services.as_mut().map(|s| s.prepare(&settings.hotkeys));
+                        this.unix_shortcut_preparing = operation.is_some();
+                        operation
+                    } else { None }
+                }).ok().flatten();
+                if let Some(operation) = operation {
+                    let report = operation.await;
+                    let prepared = report.outcome.is_ok();
+                    let admitted = this.update(cx, |this, cx| this.admit_unix_shortcut_preparation(report, cx)).unwrap_or(false);
+                    if !admitted {
+                        if prepared {
+                            let rollback = this.update(cx, |this, _| this.unix_services.as_mut().map(|s| s.finish(false))).ok().flatten();
+                            rollback_unix_shortcuts(this.clone(), cx, rollback).await;
+                        }
+                        return;
+                    }
+                    true
+                } else { false }
+            };
             let persisted = settings.clone();
             let result = cx
                 .background_spawn(async move {
@@ -1263,7 +1478,14 @@ impl CaptureWorkspace {
                     Ok::<_, anyhow::Error>(format_warning)
                 })
                 .await;
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
+            let unix_cleanup = if unix_prepared {
+                let operation = this.update(cx, |this, _| this.unix_services.as_mut().map(|s| s.finish(result.is_ok()))).ok().flatten();
+                match operation { Some(operation) => Some(operation.await), None => None }
+            } else { None };
             this.update(cx, |this, cx| {
+                #[cfg(any(target_os = "linux", target_os = "macos"))]
+                if let Some(report) = &unix_cleanup { this.hotkey_status = report.status.clone(); }
                 #[cfg(target_os = "windows")]
                 let cleanup = if prepared {
                     this.hotkey.as_mut().map(|hotkey| hotkey.finish(result.is_ok()))
@@ -1290,9 +1512,10 @@ impl CaptureWorkspace {
                             this.jpeg_quality_input = None;
                             this.filename_template_input = None;
                             this.capture_delay_input = None;
-                            #[cfg(target_os = "windows")]
+                            #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
                             {
                                 this.hotkey_inputs = None;
+                                #[cfg(target_os = "windows")]
                                 if let Some(hotkey) = this.hotkey.as_ref() {
                                     this.hotkey_status = hotkey.status().to_string();
                                 }
@@ -1328,6 +1551,10 @@ impl CaptureWorkspace {
                             format!("Settings unchanged: {error:#}")
                         }
                     };
+                }
+                #[cfg(any(target_os = "linux", target_os = "macos"))]
+                if let Some(report) = unix_cleanup {
+                    if let Err(error) = report.outcome { this.settings_status.push_str(&format!(" · Shortcut cleanup failed: {error}; active status is listed below, restart to retry cleanup")); }
                 }
                 this.finish_quit_if_idle(cx);
                 cx.notify();
@@ -1704,7 +1931,7 @@ impl CaptureWorkspace {
         self.exact_region_inputs = None;
         self.region_preset_name = None;
         self.exact_region_status.clear();
-        #[cfg(target_os = "windows")]
+        #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
         {
             self.hotkey_inputs = None;
         }
@@ -2110,6 +2337,13 @@ impl CaptureWorkspace {
         cx.notify();
     }
 
+    fn cancel_overlays(&mut self, cx: &mut Context<Self>) {
+        self.close_overlays(cx);
+        // Setup also closes old overlays; only explicit cancellation ends the preview workflow.
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        self.finish_quit_if_idle(cx);
+    }
+
     fn open_overlays(&mut self, mode: OverlayMode, cx: &mut Context<Self>) {
         if self.editor.is_some() || self.editor_closing {
             return;
@@ -2283,14 +2517,14 @@ impl CaptureWorkspace {
         cx.cancel_pending_native_drop();
         let label = match target {
             DelayedCapture::Region => "Region",
-            #[cfg(target_os = "windows")]
+            #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
             DelayedCapture::ActiveWindow => "Active window",
-            #[cfg(target_os = "windows")]
+            #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
             DelayedCapture::ActiveDisplay => "Active display",
         };
         let instruction = match target {
             DelayedCapture::Region => "Press Escape to cancel.",
-            #[cfg(target_os = "windows")]
+            #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
             DelayedCapture::ActiveWindow | DelayedCapture::ActiveDisplay => {
                 "Focus the target window. Escape in this app cancels."
             }
@@ -2314,9 +2548,17 @@ impl CaptureWorkspace {
                                 DelayedCapture::Region => {
                                     this.open_overlays(OverlayMode::Fullscreen, cx)
                                 }
-                                #[cfg(target_os = "windows")]
+                                #[cfg(any(
+                                    target_os = "windows",
+                                    target_os = "linux",
+                                    target_os = "macos"
+                                ))]
                                 DelayedCapture::ActiveWindow => this.capture_active_window(cx),
-                                #[cfg(target_os = "windows")]
+                                #[cfg(any(
+                                    target_os = "windows",
+                                    target_os = "linux",
+                                    target_os = "macos"
+                                ))]
                                 DelayedCapture::ActiveDisplay => this.capture_active_display(cx),
                             }
                         } else {
@@ -2382,6 +2624,24 @@ impl CaptureWorkspace {
             .map(|display| (display.id(), display.bounds()))
             .collect();
 
+        // Cached Windows shells cannot be moved/resized by changing their snapshot metadata.
+        #[cfg(target_os = "windows")]
+        {
+            for handle in self.overlays.clone() {
+                let stale = handle.read(cx).is_ok_and(|overlay| {
+                    !screens
+                        .iter()
+                        .any(|(id, bounds)| *id == overlay.display_id && *bounds == overlay.bounds)
+                });
+                if stale {
+                    handle
+                        .update(cx, |_, window, _| window.remove_window())
+                        .ok();
+                }
+            }
+            self.overlays.retain(|handle| handle.read(cx).is_ok());
+        }
+        let selection_generation = (self.capture_generation, self.topology_generation);
         for (display_id, display_bounds) in screens {
             let snapshot = shots
                 .iter()
@@ -2416,6 +2676,8 @@ impl CaptureWorkspace {
                         .cloned();
                     overlay.snapshot = snapshot.clone();
                     overlay.bounds = display_bounds;
+                    overlay.selection_generation = selection_generation;
+                    overlay.geometry = capture_lifecycle::SelectionGeometry::current(window);
                     overlay.drag_start = None;
                     overlay.active = true;
                     if let Some(native) = &overlay.native {
@@ -2473,6 +2735,7 @@ impl CaptureWorkspace {
                             display_id,
                             display_bounds,
                             mode,
+                            selection_generation,
                             snapshot.clone(),
                             snapshot
                                 .as_ref()
@@ -2568,6 +2831,10 @@ impl CaptureWorkspace {
 
     fn set_last_region(&mut self, region: Option<app_core::RememberedRegion>) {
         self.last_region = region;
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        if let Some(services) = &self.unix_services {
+            services.set_repeat_region_available(self.last_region.is_some());
+        }
         #[cfg(target_os = "windows")]
         if let Some(tray) = &self.tray {
             tray.set_repeat_region_available(self.last_region.is_some());
@@ -2836,7 +3103,33 @@ impl CaptureWorkspace {
         }
     }
 
+    fn abort_quit(&mut self, _cx: &mut Context<Self>) {
+        self.quitting = false;
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        self.set_unix_quitting(false);
+    }
+
     fn finish_quit_if_idle(&mut self, cx: &mut Context<Self>) {
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        if self.unix_show_pending
+            && !self.switching_graphics
+            && (self.quitting || (!self.capturing && !self.preview_active))
+        {
+            self.unix_show_pending = false;
+            self.unix_reopen(cx);
+        }
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        if !self.quitting {
+            self.set_unix_quitting(false);
+        }
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        if self.quitting {
+            self.set_unix_quitting(true);
+            self.stop_unix_native_services(cx);
+            if self.unix_services_stopping || self.unix_services.is_some() {
+                return;
+            }
+        }
         if !self.quitting && self.pending_open_image.is_some() {
             self.try_open_pending_image(cx);
         }
@@ -2979,6 +3272,7 @@ impl CaptureWorkspace {
                         this.capture_status = "Could not select an image.".into()
                     }
                 }
+                this.finish_quit_if_idle(cx);
                 cx.notify();
             })
             .ok();
@@ -3002,6 +3296,10 @@ impl CaptureWorkspace {
 
     fn open_dropped_encoded(&mut self, data: &gpui::ExternalImageDrop, cx: &mut Context<Self>) {
         if self.image_input_busy() {
+            #[cfg(all(target_os = "windows", screenshots_native_drop_acceptance))]
+            if data.bytes.as_ref().is_some_and(|bytes| !bytes.is_empty()) {
+                gpui_windows::native_drop_acceptance_busy_admission();
+            }
             return;
         }
         let Some(bytes) = data
@@ -3017,6 +3315,11 @@ impl CaptureWorkspace {
         self.open_redaction_source(EditorImage::Encoded(bytes.clone()), cx);
     }
     fn open_dropped_url(&mut self, data: &gpui::ExternalUrlDrop, cx: &mut Context<Self>) {
+        #[cfg(all(feature = "native-drop-probe", target_os = "linux"))]
+        if std::env::var("SCREENSHOTS_NATIVE_DROP_PRIVATE").as_deref() == Ok("1") {
+            println!("DROP_PROBE url-route");
+        }
+
         if self.image_input_busy() {
             return;
         }
@@ -3175,6 +3478,7 @@ impl CaptureWorkspace {
         if canceled {
             self.capture_status = "Image opening canceled.".into();
             self.history_action_status = self.capture_status.clone();
+            self.finish_quit_if_idle(cx);
             cx.notify();
             return;
         }
@@ -3185,6 +3489,7 @@ impl CaptureWorkspace {
                 self.history_action_status = self.capture_status.clone();
             }
         }
+        self.finish_quit_if_idle(cx);
         cx.notify();
     }
 
@@ -3298,7 +3603,7 @@ impl CaptureWorkspace {
                         owner
                             .update(cx, |this, cx| {
                                 this.editor_closing = false;
-                                this.quitting = false;
+                                this.abort_quit(cx);
                                 this.editor = Some(handle);
                                 this.capture_status = format!("Could not close editor: {error}");
                                 this.restore_control(cx);
@@ -3419,6 +3724,7 @@ impl CaptureWorkspace {
                     }
                     Err(error) => this.capture_status = format!("Image editing failed: {error:#}"),
                 }
+                this.finish_quit_if_idle(cx);
                 cx.notify();
             })
             .ok();
@@ -3452,6 +3758,34 @@ impl CaptureWorkspace {
         }
     }
 
+    fn invalidate_capture_topology(&mut self, cx: &mut Context<Self>) {
+        self.topology_generation = self.topology_generation.wrapping_add(1);
+        self.set_last_region(None);
+        if self.capture_display_generation.is_some() {
+            if let Some(cancel) = &self.native_capture_cancel {
+                cancel.cancel();
+            }
+        }
+        if self.preview_active {
+            self.capture_status = "Selection canceled: display geometry changed. Try again.".into();
+            let generation = (self.capture_generation, self.topology_generation);
+            let owner = cx.entity().downgrade();
+            // Display callbacks may still own a window borrow; retire after native dispatch.
+            cx.defer(move |cx| {
+                owner
+                    .update(cx, |this, cx| {
+                        if (this.capture_generation, this.topology_generation) == generation
+                            && this.preview_active
+                        {
+                            this.cancel_overlays(cx);
+                        }
+                    })
+                    .ok();
+            });
+        }
+        cx.notify();
+    }
+
     fn begin_capturing(&mut self, cx: &mut Context<Self>) {
         self.begin_capture_work(cx);
         self.discard_failed_capture_saves();
@@ -3460,6 +3794,7 @@ impl CaptureWorkspace {
     fn begin_capture_work(&mut self, cx: &mut Context<Self>) {
         cx.cancel_pending_native_drop();
         self.capture_generation = self.capture_generation.wrapping_add(1);
+        self.capture_display_generation = None;
         self.cancel_history_thumb_job();
         if let Some(cancellation) = &self.native_capture_cancel {
             cancellation.cancel();
@@ -3479,6 +3814,7 @@ impl CaptureWorkspace {
     }
 
     fn finish_capturing(&mut self, cx: &mut Context<Self>) {
+        self.capture_display_generation = None;
         self.native_capture_cancel = None;
         self.capturing = false;
         self.request_history_thumbs(cx);
@@ -5982,7 +6318,7 @@ impl CaptureWorkspace {
                         } else if this.history_visible && format == app_core::ImageExportFormat::Png && size == app_core::ExportSize::Original { this.refresh_history(None, cx); }
                     }
                     Err(error) => {
-                        this.quitting = false;
+                        this.abort_quit(cx);
                         this.save_status = format!("Image not saved: {error}");
                         this.restore_control(cx);
                         if this.resident && this.control.is_none() { this.show_control(cx); }
@@ -6116,7 +6452,7 @@ impl CaptureWorkspace {
                     .background_spawn(async move {
                         let mut clipboard = clipboard.lock().map_err(|error| error.to_string())?;
                         match pixels {
-                            Some(pixels) => clipboard.copy_image(&pixels),
+                            Some(pixels) => clipboard.copy_shared_image(pixels),
                             None => clipboard.copy_saved_image(&path),
                         }
                         .map_err(|error| format!("{error:#}"))
@@ -6255,7 +6591,7 @@ impl CaptureWorkspace {
             if let Some(render) = failed_render {
                 self.replace_last_render(render, cx);
             }
-            self.quitting = false;
+            self.abort_quit(cx);
             self.restore_control(cx);
             if self.resident && self.control.is_none() {
                 self.show_control(cx);
@@ -6298,11 +6634,33 @@ impl CaptureWorkspace {
         }
         self.close_overlays(cx);
         self.begin_capturing(cx);
+        self.capture_display_generation = Some(self.topology_generation);
+        let cancel = self.native_capture_cancel.as_ref().unwrap().clone();
+        let generation = self.capture_generation;
+        #[cfg(test)]
+        let topology_after_prepare =
+            std::mem::take(&mut self.test_selection_topology_after_prepare);
         self.capture_status = "Preparing selection…".into();
         cx.notify();
         cx.spawn(async move |this, cx| {
-            let result = cx.background_spawn(async move { app_core::crop_snapshot(&source, region).map(|shot| { let render = if edit_selection { render_frame(&shot) } else { render_thumbnail(&shot) }; (shot, render) }) }).await;
+            let result = cx.background_spawn(async move {
+                cancel.check()?;
+                let shot = app_core::crop_snapshot(&source, region)?;
+                cancel.check()?;
+                let render = if edit_selection { render_frame(&shot) } else { render_thumbnail(&shot) };
+                anyhow::Ok((shot, render))
+            }).await;
             this.update(cx, |this, cx| {
+                if this.capture_generation != generation { return; }
+                #[cfg(test)]
+                if topology_after_prepare {
+                    assert!(result.is_ok(), "topology fixture must reach completed crop/render");
+                    this.invalidate_capture_topology(cx);
+                }
+                let result = result.and_then(|value| {
+                    this.native_capture_cancel.as_ref().unwrap().check()?;
+                    Ok(value)
+                });
                 this.finish_capturing(cx);
                 if this.quitting { this.finish_quit_if_idle(cx); return; }
                 match result {
@@ -6322,9 +6680,11 @@ impl CaptureWorkspace {
                     Err(error) => {
                         tracing::error!(%error, "selection failed");
                         this.capture_status = format!("Selection failed: {error:#}");
+                        this.restore_control(cx);
                         if this.control.is_none() { this.show_control(cx); }
                     }
                 }
+                this.finish_quit_if_idle(cx);
                 cx.notify();
             }).ok();
         }).detach();
@@ -6355,6 +6715,105 @@ impl CaptureWorkspace {
         profile: CaptureOutputProfile,
         cx: &mut Context<Self>,
     ) {
+        self.start_capture_work(jobs, preview, profile, None, cx);
+    }
+
+    fn finish_capture_work(&mut self, completion: CaptureCompletion, cx: &mut Context<Self>) {
+        let CaptureCompletion {
+            result,
+            preview,
+            edit_selection,
+            profile,
+            exact_region,
+            repeating_region,
+        } = completion;
+        let result = result.and_then(|value| {
+            if let Some(cancellation) = &self.native_capture_cancel {
+                cancellation.check()?;
+            }
+            Ok(value)
+        });
+        self.finish_capturing(cx);
+        if self.quitting {
+            self.finish_quit_if_idle(cx);
+            return;
+        }
+        if !preview || result.is_err() {
+            self.restore_control(cx);
+        }
+        match result {
+            Ok((shots, renders)) => {
+                if let Some(shot) = shots.last().cloned() {
+                    if let Some(region) = exact_region {
+                        self.set_last_region(Some(region));
+                    }
+                    self.capture_status = format!(
+                        "{}×{}  {} ms  {}",
+                        shot.width,
+                        shot.height,
+                        shot.elapsed_ms,
+                        shot.png_path.display()
+                    );
+                    if preview && edit_selection {
+                        if let Some(render) = renders.get(&shot.png_path).cloned() {
+                            self.show_prepared_editor(shot, render, true, cx);
+                        }
+                        if self.editor.is_none() {
+                            self.show_control(cx);
+                        }
+                    } else if preview {
+                        self.show_overlays(OverlayMode::Fullscreen, &shots, &renders, cx);
+                        self.edit_selection = edit_selection && self.preview_active;
+                        for handle in &self.overlays {
+                            handle
+                                .update(cx, |overlay, _, cx| {
+                                    overlay.edit_selection = edit_selection;
+                                    overlay.output_profile = profile;
+                                    cx.notify();
+                                })
+                                .ok();
+                        }
+                    } else if let Some(render) = renders.get(&shot.png_path).cloned() {
+                        self.finish_quick_capture(shots, render, profile, cx);
+                    }
+                } else {
+                    self.capture_status = "no capture produced".into();
+                    self.restore_control(cx);
+                }
+            }
+            Err(error) => {
+                if repeating_region {
+                    self.show_page(ControlPage::Captures, cx);
+                }
+                if repeating_region
+                    && matches!(
+                        &error,
+                        app_core::CaptureError::StaleRegion
+                            | app_core::CaptureError::DisplayNotFound(_)
+                    )
+                {
+                    self.set_last_region(None);
+                }
+                tracing::error!(%error, "capture failed");
+                self.capture_status = format!("capture failed: {error}");
+                if self.resident && self.control.is_none() {
+                    self.show_control(cx);
+                }
+            }
+        }
+        // Preview/editor/output state is now final; restoring an existing control also fulfills Show.
+        self.finish_quit_if_idle(cx);
+        cx.notify();
+    }
+
+    fn start_capture_work(
+        &mut self,
+        jobs: Vec<CaptureJob>,
+        preview: bool,
+        profile: CaptureOutputProfile,
+        focused_display: Option<bool>,
+        cx: &mut Context<Self>,
+    ) {
         if self.editor.is_some() || self.editor_closing {
             return;
         }
@@ -6368,7 +6827,7 @@ impl CaptureWorkspace {
         {
             return;
         }
-        if jobs.is_empty() {
+        if jobs.is_empty() && focused_display.is_none() {
             return;
         }
         let repeating_region = jobs
@@ -6378,7 +6837,11 @@ impl CaptureWorkspace {
             CaptureJob::ExactRegion(region) => Some(region.clone()),
             _ => None,
         });
-        if !preview && profile.requires_single_image() && jobs.len() != 1 {
+        if !preview
+            && profile.requires_single_image()
+            && focused_display.is_none()
+            && jobs.len() != 1
+        {
             self.capture_status =
                 "Choose one display or window for Copy only or Annotate first.".into();
             cx.notify();
@@ -6399,6 +6862,7 @@ impl CaptureWorkspace {
             return;
         }
         self.begin_capturing(cx);
+        self.capture_display_generation = Some(self.topology_generation);
         self.capture_status = format!("capturing {} job(s)…", jobs.len());
         cx.notify();
 
@@ -6409,6 +6873,8 @@ impl CaptureWorkspace {
             .clone();
         let backend = self.backend.clone().with_cancellation(cancellation.clone());
         let control = self.control;
+        #[cfg(target_os = "linux")]
+        let native_context = native_capture_context(cx);
         #[cfg(all(test, target_os = "windows"))]
         let probe = cx.try_global::<RegionLatencyProbe>().cloned();
         #[cfg(target_os = "windows")]
@@ -6430,7 +6896,46 @@ impl CaptureWorkspace {
                                 .map_err(|error| error.to_string())?;
                             Ok(native)
                         }
-                        #[cfg(not(target_os = "windows"))]
+                        #[cfg(target_os = "linux")]
+                        {
+                            use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+                            if native_context.wayland_session {
+                                window.minimize_window();
+                                Ok::<_, String>(None)
+                            } else {
+                                match HasWindowHandle::window_handle(window)
+                                    .map(|handle| handle.as_raw())
+                                {
+                                    Ok(RawWindowHandle::Xlib(handle)) => {
+                                        u32::try_from(handle.window)
+                                            .map(Some)
+                                            .map_err(|_| "Invalid X11 control window".into())
+                                    }
+                                    Ok(RawWindowHandle::Xcb(handle)) => {
+                                        Ok(Some(handle.window.get()))
+                                    }
+                                    _ => Err("Native X11 control identity is unavailable".into()),
+                                }
+                            }
+                        }
+                        #[cfg(target_os = "macos")]
+                        {
+                            use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+                            match HasWindowHandle::window_handle(window)
+                                .map(|handle| handle.as_raw())
+                            {
+                                Ok(RawWindowHandle::AppKit(handle)) => {
+                                    unsafe { app_core::hide_macos_capture_view(handle.ns_view) }
+                                        .map_err(|error| error.to_string())
+                                }
+                                _ => Err("Native AppKit control identity is unavailable".into()),
+                            }
+                        }
+                        #[cfg(not(any(
+                            target_os = "windows",
+                            target_os = "linux",
+                            target_os = "macos"
+                        )))]
                         {
                             window.minimize_window();
                             Ok::<(), String>(())
@@ -6453,6 +6958,7 @@ impl CaptureWorkspace {
                         }
                         this.capture_status = format!("could not hide control window: {error}");
                         this.restore_control(cx);
+                        this.finish_quit_if_idle(cx);
                         cx.notify();
                     })
                     .ok();
@@ -6461,8 +6967,8 @@ impl CaptureWorkspace {
             };
             #[cfg(target_os = "windows")]
             hidden_windows.extend(_hidden_control);
-            // shortcut: other platforms still need a native visibility/compositor spike.
-            #[cfg(not(target_os = "windows"))]
+            // shortcut: additional targets need a native visibility implementation before acceptance.
+            #[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
             cx.background_executor()
                 .timer(std::time::Duration::from_millis(300))
                 .await;
@@ -6482,13 +6988,21 @@ impl CaptureWorkspace {
                         app_core::wait_for_desktop_compositor()
                             .map_err(|error| app_core::CaptureError::Backend(error.to_string()))?;
                     }
+                    #[cfg(target_os = "linux")]
+                    if let Some(Some(window)) = _hidden_control {
+                        app_core::hide_capture_window(window, &|| cancellation.check())?;
+                    }
                     let mut shots = Vec::new();
                     let mut renders = HashMap::new();
                     #[cfg(all(test, target_os = "windows"))]
                     if let Some(probe) = &probe {
                         probe.mark("hidden_and_compositor_ready");
                     }
-                    let captured = backend.capture_batch(jobs)?;
+                    let captured = match focused_display {
+                        Some(true) => vec![backend.capture_focused_display()?],
+                        Some(false) => vec![backend.capture_focused_window()?],
+                        None => backend.capture_batch(jobs)?,
+                    };
                     #[cfg(all(test, target_os = "windows"))]
                     if let Some(probe) = &probe {
                         probe.mark("capture_complete");
@@ -6525,89 +7039,17 @@ impl CaptureWorkspace {
                 .await;
 
             this.update(cx, |this, cx| {
-                let result = result.and_then(|value| {
-                    if let Some(cancellation) = &this.native_capture_cancel {
-                        cancellation.check()?;
-                    }
-                    Ok(value)
-                });
-                this.finish_capturing(cx);
-                if this.quitting {
-                    this.finish_quit_if_idle(cx);
-                    return;
-                }
-                if !preview || result.is_err() {
-                    this.restore_control(cx);
-                }
-                match result {
-                    Ok((shots, renders)) => {
-                        let Some(shot) = shots.last().cloned() else {
-                            this.capture_status = "no capture produced".into();
-                            this.restore_control(cx);
-                            cx.notify();
-                            return;
-                        };
-                        if let Some(region) = exact_region {
-                            this.set_last_region(Some(region));
-                        }
-                        this.capture_status = format!(
-                            "{}×{}  {} ms  {}",
-                            shot.width,
-                            shot.height,
-                            shot.elapsed_ms,
-                            shot.png_path.display()
-                        );
-                        if preview {
-                            if edit_selection {
-                                if let Some(render) = renders.get(&shot.png_path).cloned() {
-                                    this.show_prepared_editor(shot, render, true, cx);
-                                }
-                                if this.editor.is_none() {
-                                    this.show_control(cx);
-                                }
-                                this.finish_quit_if_idle(cx);
-                                cx.notify();
-                                return;
-                            }
-                            this.show_overlays(OverlayMode::Fullscreen, &shots, &renders, cx);
-                            this.edit_selection = edit_selection && this.preview_active;
-                            for handle in &this.overlays {
-                                handle
-                                    .update(cx, |overlay, _, cx| {
-                                        overlay.edit_selection = edit_selection;
-                                        overlay.output_profile = profile;
-                                        cx.notify();
-                                    })
-                                    .ok();
-                            }
-                        } else {
-                            if let Some(render) = renders.get(&shot.png_path).cloned() {
-                                this.finish_quick_capture(shots, render, profile, cx);
-                            }
-                        }
-                    }
-                    Err(error) => {
-                        if repeating_region {
-                            this.show_page(ControlPage::Captures, cx);
-                        }
-                        if repeating_region
-                            && matches!(
-                                &error,
-                                app_core::CaptureError::StaleRegion
-                                    | app_core::CaptureError::DisplayNotFound(_)
-                            )
-                        {
-                            this.set_last_region(None);
-                        }
-                        tracing::error!(%error, "capture failed");
-                        this.capture_status = format!("capture failed: {error}");
-                        if this.resident && this.control.is_none() {
-                            this.show_control(cx);
-                        }
-                    }
-                }
-
-                cx.notify();
+                this.finish_capture_work(
+                    CaptureCompletion {
+                        result,
+                        preview,
+                        edit_selection,
+                        profile,
+                        exact_region,
+                        repeating_region,
+                    },
+                    cx,
+                );
             })
             .ok();
         })
@@ -6641,6 +7083,9 @@ fn render_thumbnail(shot: &CapturedImage) -> Arc<gpui::RenderImage> {
 }
 
 struct Overlay {
+    selection_generation: (u64, u64),
+    geometry: capture_lifecycle::SelectionGeometry,
+    _geometry_subscriptions: [gpui::Subscription; 2],
     edit_selection: bool,
     output_profile: CaptureOutputProfile,
     active: bool,
@@ -6662,13 +7107,24 @@ impl Overlay {
         display_id: DisplayId,
         bounds: Bounds<Pixels>,
         mode: OverlayMode,
+        selection_generation: (u64, u64),
         snapshot: Option<CapturedImage>,
         render_image: Option<Arc<gpui::RenderImage>>,
         owner: gpui::WeakEntity<CaptureWorkspace>,
-        _window: &Window,
+        _window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
+        let geometry = capture_lifecycle::SelectionGeometry::current(_window);
+        let bounds_subscription = cx.observe_window_bounds(_window, |this, window, cx| {
+            this.check_geometry(window, cx);
+        });
+        let display = cx.observe_window_display(_window, |this, window, cx| {
+            this.check_geometry(window, cx);
+        });
         Self {
+            selection_generation,
+            geometry,
+            _geometry_subscriptions: [bounds_subscription, display],
             active: true,
             edit_selection: false,
             output_profile: CaptureOutputProfile::default(),
@@ -6688,7 +7144,41 @@ impl Overlay {
         }
     }
 
-    fn finish_drag(&mut self, end: gpui::Point<Pixels>, window: &Window, cx: &mut Context<Self>) {
+    fn check_geometry(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        if self.geometry == capture_lifecycle::SelectionGeometry::current(window) {
+            return self.active;
+        }
+        self.active = false;
+        self.drag_start = None;
+        self.snapshot = None;
+        if let Some(image) = self.render_image.take() {
+            window.drop_image(image).ok();
+        }
+        let owner = self.owner.clone();
+        let generation = self.selection_generation;
+        cx.defer(move |cx| {
+            owner
+                .update(cx, |this, cx| {
+                    if (this.capture_generation, this.topology_generation) == generation {
+                        this.capture_status =
+                            "Selection canceled: display geometry changed. Try again.".into();
+                        this.cancel_overlays(cx);
+                    }
+                })
+                .ok();
+        });
+        false
+    }
+
+    fn finish_drag(
+        &mut self,
+        end: gpui::Point<Pixels>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.check_geometry(window, cx) {
+            return;
+        }
         let Some(start) = self.drag_start.take() else {
             return;
         };
@@ -6707,10 +7197,15 @@ impl Overlay {
         };
         let owner = self.owner.clone();
         let profile = self.output_profile;
+        let generation = self.selection_generation;
         cx.defer(move |cx| {
             owner
                 .update(cx, |this, cx| {
-                    this.save_selection(snapshot, region, profile, cx)
+                    if this.preview_active
+                        && (this.capture_generation, this.topology_generation) == generation
+                    {
+                        this.save_selection(snapshot, region, profile, cx);
+                    }
                 })
                 .ok();
         });
@@ -6795,7 +7290,7 @@ impl Render for Overlay {
                 );
                 let owner = this.owner.clone();
                 cx.defer(move |cx| {
-                    owner.update(cx, |this, cx| this.close_overlays(cx)).ok();
+                    owner.update(cx, |this, cx| this.cancel_overlays(cx)).ok();
                 });
             }))
             .children(
@@ -6943,11 +7438,15 @@ fn overlay_options(
     }
 }
 
-fn close_application(cx: &mut App) {
+fn commit_application_quit(cx: &mut App) {
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     if let Some(control) = cx.try_global::<UnixLaunchControl>() {
         control.0.lock().unwrap().stop_accepting();
     }
+    cx.quit();
+}
+
+fn close_application(cx: &mut App) {
     cx.cancel_image_clipboard_read();
     cx.cancel_pending_native_drop();
     if cx.has_global::<ResidentController>() {
@@ -6967,6 +7466,11 @@ fn close_application(cx: &mut App) {
             this.cancel_upload(cx);
             this.close_editor(cx);
             this.quitting = true;
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
+            {
+                this.set_unix_quitting(true);
+                this.stop_unix_native_services(cx);
+            }
             let busy = this.refreshing
                 || this.capturing
                 || this.copying
@@ -6977,7 +7481,17 @@ fn close_application(cx: &mut App) {
                 || this.history_thumb_loading.is_some()
                 || this.upload_config_loading
                 || this.upload_cancel.is_some()
-                || this.editor_closing;
+                || this.editor_closing
+                || {
+                    #[cfg(any(target_os = "linux", target_os = "macos"))]
+                    {
+                        this.unix_services_stopping || this.unix_services.is_some()
+                    }
+                    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+                    {
+                        false
+                    }
+                };
             if busy {
                 this.capture_status = "Quitting: waiting for active work…".into();
                 cx.notify();
@@ -6985,7 +7499,7 @@ fn close_application(cx: &mut App) {
             busy
         });
         if !busy {
-            cx.quit();
+            commit_application_quit(cx);
         }
         return;
     }
@@ -7006,6 +7520,11 @@ fn close_application(cx: &mut App) {
                     this.cancel_history_export(cx);
                     this.cancel_upload(cx);
                     this.quitting = true;
+                    #[cfg(any(target_os = "linux", target_os = "macos"))]
+                    {
+                        this.set_unix_quitting(true);
+                        this.stop_unix_native_services(cx);
+                    }
                     let busy = this.refreshing
                         || this.capturing
                         || this.copying
@@ -7015,7 +7534,17 @@ fn close_application(cx: &mut App) {
                         || this.history_thumb_loading.is_some()
                         || this.upload_config_loading
                         || this.upload_cancel.is_some()
-                        || this.editor_closing;
+                        || this.editor_closing
+                        || {
+                            #[cfg(any(target_os = "linux", target_os = "macos"))]
+                            {
+                                this.unix_services_stopping || this.unix_services.is_some()
+                            }
+                            #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+                            {
+                                false
+                            }
+                        };
                     if busy {
                         this.capture_status = "Quitting: waiting for active work to finish…".into();
                         this.restore_control(cx);
@@ -7029,7 +7558,7 @@ fn close_application(cx: &mut App) {
             }
         }
     }
-    cx.quit();
+    commit_application_quit(cx);
 }
 
 /// A file-opening process has no tray/hotkey owner and never forwards only Show.
@@ -7137,9 +7666,16 @@ fn admit_unix_main(
 fn reopen_unix_windows(cx: &mut App) {
     // Defer native reopening: Cocoa can deliver this while dispatching a native event.
     cx.defer(|cx| {
-        for handle in cx.windows() {
-            if let Some(handle) = WindowHandle::<CaptureWorkspace>::from_handle(handle, cx) {
-                handle.update(cx, |this, _, cx| this.show_control(cx)).ok();
+        if let Some(owner) = cx
+            .try_global::<ResidentController>()
+            .map(|owner| owner.0.clone())
+        {
+            owner.update(cx, |this, cx| this.unix_reopen(cx));
+        } else {
+            for handle in cx.windows() {
+                if let Some(handle) = WindowHandle::<CaptureWorkspace>::from_handle(handle, cx) {
+                    handle.update(cx, |this, _, cx| this.unix_reopen(cx)).ok();
+                }
             }
         }
         cx.activate(true);
@@ -7155,19 +7691,30 @@ fn listen_unix_reopen(
     let Some(instance) = instance else {
         return;
     };
+    // The service owner must survive removal of the last native UI window.
+    cx.set_quit_mode(gpui::QuitMode::Explicit);
+    cx.set_global(ResidentController(owner.clone()));
+    owner.update(cx, |this, _| this.resident = true);
     cx.set_global(UnixLaunchControl(instance.clone()));
     let result = instance.lock().unwrap().listen();
     match result {
         Ok(mut events) => {
+            let services_owner = owner.downgrade();
+            let services_instance = instance;
+            cx.defer(move |cx| {
+                services_owner
+                    .update(cx, |this, cx| {
+                        this.start_unix_native_services(services_instance, cx)
+                    })
+                    .ok();
+            });
             let owner = owner.downgrade();
             cx.spawn(async move |cx| {
                 while events.recv().await.is_some() {
                     if owner
                         .update(cx, |this, cx| {
-                            if !this.quitting {
-                                this.show_control(cx);
-                                cx.activate(true);
-                            }
+                            this.unix_reopen(cx);
+                            cx.activate(true);
                         })
                         .is_err()
                     {
@@ -7182,6 +7729,17 @@ fn listen_unix_reopen(
             tracing::error!(%error, "Could not start launch listener; closing the app");
             cx.defer(close_application);
         }
+    }
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn listen_unix_reopen_from_window(
+    handle: WindowHandle<CaptureWorkspace>,
+    instance: Option<UnixLaunchOwner>,
+    cx: &mut App,
+) {
+    if let Ok(owner) = handle.update(cx, |_, _, cx| cx.entity()) {
+        listen_unix_reopen(owner, instance, cx);
     }
 }
 
@@ -7266,7 +7824,26 @@ fn run_image_window(
                             cx,
                         )
                     });
-                    window.on_window_should_close(cx, |_, cx| {
+                    #[cfg(any(target_os = "linux", target_os = "macos"))]
+                    let close_owner = owner.downgrade();
+                    window.on_window_should_close(cx, move |window, cx| {
+                        #[cfg(any(target_os = "linux", target_os = "macos"))]
+                        {
+                            let close_owner = close_owner.clone();
+                            let handle = window.window_handle();
+                            cx.defer(move |cx| {
+                                handle
+                                    .update(cx, |_, window, cx| {
+                                        close_owner
+                                            .update(cx, |this, cx| {
+                                                this.close_unix_control(window, cx)
+                                            })
+                                            .ok();
+                                    })
+                                    .ok();
+                            });
+                        }
+                        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
                         cx.defer(close_application);
                         false
                     });
@@ -7283,9 +7860,7 @@ fn run_image_window(
             })
             .ok();
         #[cfg(any(target_os = "linux", target_os = "macos"))]
-        handle
-            .update(cx, |_, _, cx| listen_unix_reopen(cx.entity(), listener, cx))
-            .ok();
+        listen_unix_reopen_from_window(handle, listener, cx);
         #[cfg(target_os = "macos")]
         handle
             .update(cx, |_, window, cx| {
@@ -7428,7 +8003,26 @@ fn run_prepared(
                                 )
                             }
                         });
-                        window.on_window_should_close(cx, |_, cx| {
+                        #[cfg(any(target_os = "linux", target_os = "macos"))]
+                        let close_owner = shell.downgrade();
+                        window.on_window_should_close(cx, move |window, cx| {
+                            #[cfg(any(target_os = "linux", target_os = "macos"))]
+                            {
+                                let close_owner = close_owner.clone();
+                                let handle = window.window_handle();
+                                cx.defer(move |cx| {
+                                    handle
+                                        .update(cx, |_, window, cx| {
+                                            close_owner
+                                                .update(cx, |this, cx| {
+                                                    this.close_unix_control(window, cx)
+                                                })
+                                                .ok();
+                                        })
+                                        .ok();
+                                });
+                            }
+                            #[cfg(not(any(target_os = "linux", target_os = "macos")))]
                             cx.defer(close_application);
                             false
                         });
@@ -7439,9 +8033,7 @@ fn run_prepared(
                 )
                 .expect("failed to open spike window");
             #[cfg(target_os = "linux")]
-            handle
-                .update(cx, |_, _, cx| listen_unix_reopen(cx.entity(), listener, cx))
-                .ok();
+            listen_unix_reopen_from_window(handle, listener, cx);
             #[cfg(not(target_os = "linux"))]
             let _ = handle;
             cx.activate(true);

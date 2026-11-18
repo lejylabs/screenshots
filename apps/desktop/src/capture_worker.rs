@@ -19,6 +19,14 @@ mod portal;
 mod protocol;
 #[path = "capture_worker_transport.rs"]
 mod transport;
+#[cfg(target_os = "windows")]
+pub(crate) fn drop_transport(command: &mut Command) -> Result<transport::Prepared> {
+    transport::Prepared::new(command)
+}
+#[cfg(target_os = "windows")]
+pub(crate) fn inherited_drop_transport() -> Result<(transport::Transport, [u8; 16], u32)> {
+    transport::Transport::inherited()
+}
 #[cfg(unix)]
 #[path = "capture_worker_unix.rs"]
 mod unix;
@@ -29,15 +37,77 @@ pub(crate) mod video;
 #[path = "capture_worker_windows.rs"]
 mod windows;
 
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[path = "credential_worker.rs"]
+mod credentials;
+
+/// Called after CLI/desktop completion, before process exit can discard retained ownership.
+pub(crate) fn drain_owned_workers() {
+    let pending = lock(&PENDING).take();
+    if let Some(pending) = pending {
+        if let Some(job) = lock(&pending.job).as_mut() {
+            job.stop();
+        }
+        let _ = pending.thread.join();
+        let mut slot = lock(&pending.job);
+        if let Some(job) = slot.as_mut() {
+            job.stop();
+            // An uninterruptible kernel wait must keep this process and ownership alive.
+            job.wait();
+            if !job.family_done() {
+                // Failed native cleanup proof must not release the last owner at process exit.
+                loop {
+                    std::thread::park();
+                }
+            }
+        }
+        slot.take();
+        drop(slot);
+        drop(pending._admission);
+    }
+}
+
 const CHILD_ARGUMENT: &str = "__native-capture-worker";
 const CLEANUP_GRACE: Duration = Duration::from_millis(250);
 static BUSY: AtomicBool = AtomicBool::new(false);
+/// Signal-handler safe; a successful caller must immediately exit without releasing this slot.
+#[cfg(unix)]
+pub(crate) fn reserve_signal_shutdown() -> bool {
+    if BUSY
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .is_err()
+    {
+        return false;
+    }
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    if !super::file_clipboard::reserve_signal_shutdown() {
+        BUSY.store(false, Ordering::SeqCst);
+        return false;
+    }
+    true
+}
+
 static PENDING: Mutex<Option<Pending>> = Mutex::new(None);
 static ACTIVE: Mutex<Option<Active>> = Mutex::new(None);
 static RELEASED: Condvar = Condvar::new();
 static HANDOFF: AtomicBool = AtomicBool::new(false);
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
+enum AdmissionPriority {
+    OptionalCredentials,
+    CaptureEnumeration,
+    Capture,
+}
+impl AdmissionPriority {
+    fn capture(call: &NativeCaptureCall) -> Self {
+        if call.is_enumeration() {
+            Self::CaptureEnumeration
+        } else {
+            Self::Capture
+        }
+    }
+}
 struct Active {
-    enumeration: bool,
+    priority: AdmissionPriority,
     cancel: Arc<AtomicBool>,
 }
 struct Admission;
@@ -55,8 +125,17 @@ impl Drop for Handoff {
         HANDOFF.store(false, Ordering::Release);
     }
 }
+#[cfg(test)]
 fn admit(
     call: &NativeCaptureCall,
+    cancel: Arc<AtomicBool>,
+    check: &NativeCaptureCheck<'_>,
+    deadline: Instant,
+) -> Result<Admission, CaptureError> {
+    admit_priority(AdmissionPriority::capture(call), cancel, check, deadline)
+}
+fn admit_priority(
+    priority: AdmissionPriority,
     cancel: Arc<AtomicBool>,
     check: &NativeCaptureCheck<'_>,
     deadline: Instant,
@@ -67,15 +146,18 @@ fn admit(
         if HANDOFF.load(Ordering::Acquire) {
             return Err(CaptureError::NativeBusy);
         }
-        *active = Some(Active {
-            enumeration: call.is_enumeration(),
-            cancel,
-        });
-        BUSY.store(true, Ordering::Release);
+        if BUSY
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .is_err()
+        {
+            return Err(CaptureError::NativeBusy);
+        }
+        *active = Some(Active { priority, cancel });
         return Ok(Admission);
     }
-    if call.is_enumeration()
-        || active.as_ref().is_none_or(|active| !active.enumeration)
+    if active
+        .as_ref()
+        .is_none_or(|active| priority <= active.priority)
         || HANDOFF
             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
             .is_err()
@@ -98,11 +180,13 @@ fn admit(
         }
         let mut active = lock(&ACTIVE);
         if !BUSY.load(Ordering::Acquire) {
-            *active = Some(Active {
-                enumeration: false,
-                cancel,
-            });
-            BUSY.store(true, Ordering::Release);
+            if BUSY
+                .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+                .is_err()
+            {
+                return Err(CaptureError::NativeBusy);
+            }
+            *active = Some(Active { priority, cancel });
             return Ok(Admission);
         }
         let (guard, _) = RELEASED
@@ -326,13 +410,16 @@ fn restrict_command_context(command: &mut Command, context: app_core::NativeCapt
     let _ = (command, context);
 }
 fn command() -> Result<Command> {
+    command_for(CHILD_ARGUMENT)
+}
+fn command_for(argument: &str) -> Result<Command> {
     #[cfg(target_os = "linux")]
     let executable = std::path::PathBuf::from("/proc/self/exe");
     #[cfg(not(target_os = "linux"))]
     let executable = std::env::current_exe()?;
     let mut command = Command::new(executable);
     command
-        .arg(CHILD_ARGUMENT)
+        .arg(argument)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
@@ -670,7 +757,13 @@ fn coordinate(
     if let Err(canceled) = check() {
         result = Err(canceled);
     }
-    let (complete, clean_success) = cleanup(&owned, result.is_err());
+    finish_owned(result, &owned)
+}
+fn finish_owned<T>(
+    mut result: Result<T, CaptureError>,
+    owned: &SharedJob,
+) -> Result<T, CaptureError> {
+    let (complete, clean_success) = cleanup(owned, result.is_err());
     if !complete {
         // Drop any completed/partial result before a kernel-pending reap can block.
         result = Err(CaptureError::NativeCleanupPending);
@@ -692,6 +785,8 @@ fn coordinate(
 
 pub(crate) fn install() -> Result<()> {
     app_core::install_native_capture_executor(execute)?;
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    credentials::install()?;
     Ok(())
 }
 fn execute(
@@ -699,7 +794,10 @@ fn execute(
     check: &NativeCaptureCheck<'_>,
     context: app_core::NativeCaptureContext,
 ) -> Result<NativeCaptureReply, CaptureError> {
-    if matches!(call, NativeCaptureCall::MacVideo { .. }) {
+    if matches!(
+        call,
+        NativeCaptureCall::MacVideo { .. } | NativeCaptureCall::PortalVideo { .. }
+    ) {
         return Err(CaptureError::Unsupported(
             "Native video requires its owned streaming plan",
         ));
@@ -719,12 +817,25 @@ fn execute(
     )
 }
 fn operation_timeout(call: &NativeCaptureCall) -> Duration {
+    if matches!(call, NativeCaptureCall::HideCaptureWindow { .. }) {
+        return Duration::from_secs(3);
+    }
+    if let NativeCaptureCall::PortalVideo { request } = call {
+        return Duration::from_secs(150 + u64::from(request.seconds));
+    }
+    if let NativeCaptureCall::PortalScroll { request } = call {
+        return Duration::from_millis(
+            150_000 + u64::from(request.frames.saturating_sub(1)) * u64::from(request.interval_ms),
+        );
+    }
     if let NativeCaptureCall::MacVideo { request } = call {
         return Duration::from_secs(u64::from(request.seconds) + 10);
     }
     if matches!(
         call,
-        NativeCaptureCall::ClipboardImage { .. } | NativeCaptureCall::ClipboardInspect { .. }
+        NativeCaptureCall::ClipboardImage { .. }
+            | NativeCaptureCall::ClipboardInspect { .. }
+            | NativeCaptureCall::NativeDrop { .. }
     ) {
         Duration::from_secs(5)
     } else if matches!(
@@ -764,9 +875,23 @@ fn execute_operation(
 ) -> Result<NativeCaptureReply, CaptureError> {
     check()?;
     call.validate()?;
+    let priority = AdmissionPriority::capture(&call);
+    execute_owned(priority, check, timeout, move |deadline, cancel, job| {
+        factory().and_then(|command| coordinate(command, call, deadline, cancel, job, operation))
+    })
+}
+fn execute_owned<T: Send + 'static>(
+    priority: AdmissionPriority,
+    check: &NativeCaptureCheck<'_>,
+    timeout: Duration,
+    coordinate: impl FnOnce(Instant, Arc<AtomicBool>, SharedJob) -> Result<T, CaptureError>
+    + Send
+    + 'static,
+) -> Result<T, CaptureError> {
+    check()?;
     let deadline = Instant::now() + timeout;
     let cancel = Arc::new(AtomicBool::new(false));
-    let admission = admit(&call, cancel.clone(), check, deadline)?;
+    let admission = admit_priority(priority, cancel.clone(), check, deadline)?;
     let worker_cancel = cancel.clone();
     let job: SharedJob = Arc::new(Mutex::new(None));
     let worker_job = job.clone();
@@ -775,16 +900,7 @@ fn execute_operation(
         .name("native-capture-job".into())
         .stack_size(256 * 1024)
         .spawn(move || {
-            let result = factory().and_then(|command| {
-                coordinate(
-                    command,
-                    call,
-                    deadline,
-                    worker_cancel,
-                    worker_job,
-                    operation,
-                )
-            });
+            let result = coordinate(deadline, worker_cancel, worker_job);
             let _ = sender.send(result);
         })
         .map_err(|_| CaptureError::Backend("Cannot start native capture coordinator".into()))?;
@@ -863,6 +979,10 @@ fn execute_operation(
 }
 
 pub(crate) fn try_child(arguments: &[OsString]) -> Result<bool> {
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    if credentials::try_child(arguments)? {
+        return Ok(true);
+    }
     if arguments
         .first()
         .is_none_or(|value| value != CHILD_ARGUMENT)
@@ -894,7 +1014,13 @@ fn serve() -> Result<()> {
     if let NativeCaptureCall::MacVideo { request } = call {
         return video::serve(request, &mut io, &nonce, parent);
     }
+    #[cfg(target_os = "linux")]
+    if let NativeCaptureCall::PortalVideo { request } = call {
+        return video::serve_portal(request, &mut io, &nonce, parent);
+    }
     let result = match call {
+        #[cfg(target_os = "linux")]
+        NativeCaptureCall::PortalScroll { request } => portal::scroll(request, io.deadline),
         #[cfg(target_os = "linux")]
         NativeCaptureCall::Portal { source, cursor } => {
             portal::capture(source, cursor, io.deadline)
@@ -1014,9 +1140,7 @@ mod tests {
         let folder = Folder::new();
         let output = folder.0.join("raw");
         let plan = video_plan(output.clone());
-        let call = NativeCaptureCall::MacVideo {
-            request: plan.request,
-        };
+        let call = plan.call.clone();
         let reply = execute_operation(
             || Ok(fake_command("video", None)),
             call,
@@ -1045,9 +1169,7 @@ mod tests {
             let plan = video_plan(output.clone());
             let reply = execute_operation(
                 || Ok(fake_command("video", None)),
-                NativeCaptureCall::MacVideo {
-                    request: plan.request,
-                },
+                plan.call.clone(),
                 &|| Ok(()),
                 Duration::from_secs(5),
                 Operation::Video(plan),
@@ -1070,9 +1192,7 @@ mod tests {
         for mode in ["video_truncated", "video_hang"] {
             let output = folder.0.join(mode);
             let plan = video_plan(output.clone());
-            let call = NativeCaptureCall::MacVideo {
-                request: plan.request,
-            };
+            let call = plan.call.clone();
             let result = execute_operation(
                 move || Ok(fake_command(mode, None)),
                 call,
@@ -2067,7 +2187,10 @@ mod tests {
         assert!(!BUSY.load(Ordering::Acquire));
         resume.send(()).unwrap();
         owner_claimed.recv_timeout(Duration::from_secs(5)).unwrap();
-        assert!(BUSY.load(Ordering::Acquire) && !lock(&ACTIVE).as_ref().unwrap().enumeration);
+        assert!(
+            BUSY.load(Ordering::Acquire)
+                && lock(&ACTIVE).as_ref().unwrap().priority == AdmissionPriority::Capture
+        );
         finish.send(()).unwrap();
         owner.join().unwrap();
         settle();
@@ -2154,9 +2277,7 @@ mod tests {
                 std::fs::write(output.with_extension("hold-probe"), b"private probe pause")?;
             }
             let plan = video_plan(output);
-            let call = NativeCaptureCall::MacVideo {
-                request: plan.request,
-            };
+            let call = plan.call.clone();
             let marker = PathBuf::from(marker);
             let _ = execute_operation(
                 move || {
@@ -2516,6 +2637,197 @@ mod tests {
             "children_context_switches":children.ru_nvcsw+children.ru_nivcsw-baseline_children.ru_nvcsw-baseline_children.ru_nivcsw,
             "descriptors_before":descriptors_before,"descriptors_after":descriptors_after,"pending_owner":false,"exact_generated_pixels":true})
         );
+        Ok(())
+    }
+}
+
+#[cfg(all(test, feature = "native-drop-probe", target_os = "linux"))]
+mod native_drop_probe_tests {
+    use super::*;
+    fn executor(
+        call: NativeCaptureCall,
+        check: &NativeCaptureCheck<'_>,
+        _: app_core::NativeCaptureContext,
+    ) -> std::result::Result<NativeCaptureReply, CaptureError> {
+        let binary = std::env::var_os("SCREENSHOTS_NATIVE_DROP_BINARY")
+            .ok_or_else(|| CaptureError::Backend("Missing owned native drop binary".into()))?;
+        let mut command = Command::new(binary);
+        command
+            .arg(CHILD_ARGUMENT)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        // Positive transfers must use the descriptor's captured display, not this decoy.
+        command.env(
+            "DISPLAY",
+            std::env::var_os("SCREENSHOTS_NATIVE_DROP_DECOY_DISPLAY")
+                .ok_or_else(|| CaptureError::Backend("Missing private decoy display".into()))?,
+        );
+        let timeout = operation_timeout(&call);
+        execute_command(command, call, check, timeout)
+    }
+    #[test]
+    #[ignore = "real GPUI X11→owned Xdnd source→production isolated worker; scripts/test-native-unix-drop.py only"]
+    fn native_x11_drop_end_to_end() {
+        assert_eq!(
+            std::env::var("SCREENSHOTS_NATIVE_DROP_PRIVATE").as_deref(),
+            Ok("1")
+        );
+        app_core::install_native_capture_executor(executor).unwrap();
+        app_ui::install_unix_native_drop_reader().unwrap();
+        app_ui::run_native_x11_drop_probe();
+    }
+}
+
+#[cfg(all(test, feature = "native-drop-probe", target_os = "macos"))]
+mod native_mac_drop_probe_tests {
+    use super::*;
+    use std::{io::Read, os::fd::AsRawFd};
+    struct Provider(std::process::Child);
+    impl Drop for Provider {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+    #[test]
+    #[ignore = "private named pasteboard and actual isolated native worker; explicit owned macOS fixture only"]
+    fn native_mac_drop_worker_from_owned_pasteboard() -> Result<()> {
+        ensure!(
+            std::env::var("SCREENSHOTS_NATIVE_DROP_PRIVATE").as_deref() == Ok("1"),
+            "Private opt-in required"
+        );
+        let provider = std::env::var_os("SCREENSHOTS_NATIVE_DROP_PROVIDER")
+            .context("Missing owned provider executable")?;
+        let binary = std::env::var_os("SCREENSHOTS_NATIVE_DROP_BINARY")
+            .context("Missing production native worker executable")?;
+        for mode in ["direct", "file", "uri", "stall", "over-limit", "change"] {
+            let mut child = Provider(
+                Command::new(&provider)
+                    .arg(mode)
+                    .stdin(Stdio::null())
+                    .stdout(Stdio::piped())
+                    .stderr(Stdio::null())
+                    .spawn()?,
+            );
+            let output = child
+                .0
+                .stdout
+                .take()
+                .context("Owned provider descriptor stream missing")?;
+            let mut output = output;
+            let fd = output.as_raw_fd();
+            let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+            ensure!(
+                flags >= 0
+                    && unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } >= 0,
+                "Cannot bound owned provider descriptor read"
+            );
+            let mut descriptor = Vec::new();
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while descriptor.last() != Some(&b'\n') {
+                ensure!(
+                    descriptor.len() < 1024 && Instant::now() < deadline,
+                    "Owned provider descriptor exceeds byte/time bound"
+                );
+                let mut poll = libc::pollfd {
+                    fd,
+                    events: libc::POLLIN,
+                    revents: 0,
+                };
+                let timeout = deadline
+                    .saturating_duration_since(Instant::now())
+                    .as_millis()
+                    .min(i32::MAX as u128) as i32;
+                ensure!(
+                    unsafe { libc::poll(&mut poll, 1, timeout) } > 0,
+                    "Owned provider descriptor timed out"
+                );
+                let mut byte = [0];
+                match output.read(&mut byte) {
+                    Ok(1) => descriptor.push(byte[0]),
+                    Err(error)
+                        if matches!(
+                            error.kind(),
+                            std::io::ErrorKind::WouldBlock | std::io::ErrorKind::Interrupted
+                        ) => {}
+                    _ => anyhow::bail!("Owned provider descriptor closed"),
+                }
+            }
+            let value: serde_json::Value = serde_json::from_slice(&descriptor)?;
+            let source = app_core::NativeDropSource::MacPasteboard {
+                name: value["name"]
+                    .as_str()
+                    .context("Missing private pasteboard name")?
+                    .to_owned(),
+                change_count: value["change_count"]
+                    .as_i64()
+                    .context("Missing private ownership count")?,
+            };
+            source.validate()?;
+            let run = |image| {
+                let mut command = Command::new(&binary);
+                command
+                    .arg(CHILD_ARGUMENT)
+                    .stdin(Stdio::null())
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null());
+                execute_command(
+                    command,
+                    NativeCaptureCall::NativeDrop {
+                        source: source.clone(),
+                        image,
+                    },
+                    &|| Ok(()),
+                    Duration::from_secs(5),
+                )
+            };
+            let NativeCaptureReply::NativeDrop(probe) = run(false)? else {
+                anyhow::bail!("Wrong native probe kind");
+            };
+            if mode == "file" {
+                ensure!(
+                    probe.mime == app_core::NativeDropMime::UriList
+                        && probe.bytes == b"file:///private/fixture-%FF.png\r\n",
+                    "Native file reference bytes changed"
+                );
+                continue;
+            }
+            if mode == "uri" {
+                ensure!(
+                    probe.mime == app_core::NativeDropMime::UriList
+                        && probe.bytes == b"https://example.invalid/image.png?private-query-token",
+                    "Native URL bytes changed"
+                );
+                continue;
+            }
+            ensure!(
+                probe.mime == app_core::NativeDropMime::Png && probe.bytes.is_empty(),
+                "Hover acquired a raster body"
+            );
+            let started = Instant::now();
+            match (mode, run(true)) {
+                ("direct", Ok(NativeCaptureReply::NativeDrop(reply))) => {
+                    ensure!(
+                        reply.mime == app_core::NativeDropMime::Png && !reply.bytes.is_empty(),
+                        "Native encoded image absent"
+                    );
+                    let pixels = image::load_from_memory(&reply.bytes)?.to_rgba8();
+                    ensure!(
+                        pixels.dimensions() == (2, 1)
+                            && pixels.as_raw() == &[11, 23, 37, 255, 43, 59, 71, 128],
+                        "Private native raster pixels differ"
+                    );
+                }
+                ("stall" | "over-limit" | "change", Err(_)) => {}
+                _ => anyhow::bail!("Native promised-data refusal/positive oracle failed"),
+            }
+            ensure!(
+                started.elapsed() < Duration::from_secs(7),
+                "Native provider exceeded its owned deadline"
+            );
+            drop(child);
+        }
         Ok(())
     }
 }

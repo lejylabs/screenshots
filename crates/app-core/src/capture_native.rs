@@ -57,17 +57,52 @@ pub(crate) fn validate_template_session() -> Result<()> {
 
 #[cfg(target_os = "macos")]
 pub(crate) use crate::capture_macos_image::PreparedWindow as MacPreparedWindow;
+#[cfg(target_os = "linux")]
+pub(crate) use platform::WindowAdmission as LinuxWindowAdmission;
+#[cfg(target_os = "linux")]
+pub(crate) fn linux_window_admission(
+    window: &xcap::Window,
+    options: &CaptureOptions,
+) -> Result<LinuxWindowAdmission> {
+    platform::window_admission(window, options)
+}
+#[cfg(target_os = "linux")]
+pub(crate) fn check_linux_window_admission(
+    window: &xcap::Window,
+    options: &CaptureOptions,
+    admitted: &LinuxWindowAdmission,
+) -> Result<()> {
+    platform::check_window_admission(window, options, admitted)
+}
 #[cfg(not(target_os = "macos"))]
-pub(crate) fn capture_window(window: &xcap::Window, options: &CaptureOptions) -> Result<RgbaImage> {
+pub(crate) fn capture_window(
+    window: &xcap::Window,
+    options: &CaptureOptions,
+    #[cfg(target_os = "windows")] admission: &WindowsCaptureAdmission,
+    #[cfg(target_os = "linux")] admission: &LinuxWindowAdmission,
+    #[cfg(any(target_os = "windows", target_os = "linux"))] cancel: &crate::NativeCaptureCheck<'_>,
+) -> Result<RgbaImage> {
     validate_options(options, true)?;
     let native = CaptureOptions {
         delay_ms: 0,
         ..*options
     };
+    #[cfg(not(target_os = "windows"))]
     if native == CaptureOptions::default() {
         return Ok(window.capture_image()?);
     }
-    platform::capture_window(window, &native)
+    #[cfg(target_os = "windows")]
+    {
+        platform::capture_window(window, &native, admission, cancel)
+    }
+    #[cfg(target_os = "linux")]
+    {
+        platform::capture_window(window, &native, admission, cancel)
+    }
+}
+#[cfg(target_os = "macos")]
+pub(crate) fn mac_source_admission_bytes(monitor: &xcap::Monitor) -> Result<u64> {
+    platform::source_admission_bytes(monitor)
 }
 #[cfg(target_os = "macos")]
 pub(crate) fn mac_display_dimensions(monitor: &xcap::Monitor) -> Result<(u32, u32)> {
@@ -76,12 +111,18 @@ pub(crate) fn mac_display_dimensions(monitor: &xcap::Monitor) -> Result<(u32, u3
 pub(crate) fn capture_display(
     monitor: &xcap::Monitor,
     options: &CaptureOptions,
+    #[cfg(target_os = "windows")] admission: &WindowsCaptureAdmission,
+    #[cfg(target_os = "windows")] cancel: &crate::NativeCaptureCheck<'_>,
 ) -> Result<RgbaImage> {
+    #[cfg(target_os = "windows")]
+    {
+        platform::capture_display(monitor, options, admission, cancel)
+    }
     #[cfg(target_os = "macos")]
     {
         platform::capture_display(monitor, options)
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     {
         let _ = options;
         Ok(monitor.capture_image()?)
@@ -91,12 +132,18 @@ pub(crate) fn capture_region(
     monitor: &xcap::Monitor,
     region: crate::PixelRegion,
     options: &CaptureOptions,
+    #[cfg(target_os = "windows")] admission: &WindowsCaptureAdmission,
+    #[cfg(target_os = "windows")] cancel: &crate::NativeCaptureCheck<'_>,
 ) -> Result<RgbaImage> {
+    #[cfg(target_os = "windows")]
+    {
+        platform::capture_region(monitor, region, options, admission, cancel)
+    }
     #[cfg(target_os = "macos")]
     {
         platform::capture_region(monitor, region, options)
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     {
         let _ = options;
         Ok(monitor.capture_region(region.x, region.y, region.width, region.height)?)
@@ -139,4 +186,37 @@ pub(crate) fn validate_native_window_policy(
         "Native window transparency preservation is unsupported on this platform"
     );
     Ok(())
+}
+
+#[cfg(target_os = "windows")]
+pub(crate) use crate::capture_windows_admission::Admission as WindowsCaptureAdmission;
+#[cfg(target_os = "windows")]
+pub(crate) fn windows_display_admission(
+    monitor: &xcap::Monitor,
+    area: Option<crate::PixelRegion>,
+) -> Result<WindowsCaptureAdmission> {
+    platform::prepare_display_admission(monitor, area)
+}
+#[cfg(target_os = "windows")]
+pub(crate) fn windows_window_admission(window: &xcap::Window) -> Result<WindowsCaptureAdmission> {
+    platform::prepare_window_admission(window)
+}
+#[cfg(target_os = "windows")]
+pub(crate) fn check_windows_display_admission(
+    monitor: &xcap::Monitor,
+    area: Option<crate::PixelRegion>,
+    admission: &WindowsCaptureAdmission,
+) -> Result<()> {
+    admission
+        .verify(&platform::display_proof(monitor, area)?)
+        .map_err(anyhow::Error::from)
+}
+#[cfg(target_os = "windows")]
+pub(crate) fn check_windows_window_admission(
+    window: &xcap::Window,
+    admission: &WindowsCaptureAdmission,
+) -> Result<()> {
+    admission
+        .verify(&platform::window_proof(window)?)
+        .map_err(anyhow::Error::from)
 }

@@ -1,6 +1,13 @@
 #![cfg(target_os = "linux")]
 //! Generated pixels on private D-Bus/PipeWire only; no ambient session/permissions.
-use anyhow::{Result, ensure};
+use anyhow::{Context, Result, ensure};
+#[path = "../src/capture_portal_linux.rs"]
+mod finite_adapter;
+#[path = "../src/capture_portal_formats.rs"]
+mod negotiated_formats;
+#[path = "fixtures/region_analysis_portal.rs"]
+mod region_analysis_fixture;
+
 use dbus::{
     Message, Path as BusPath,
     arg::{OwnedFd as BusFd, PropMap, Variant},
@@ -50,7 +57,22 @@ fn connection(address: &str) -> Connection {
 fn wait_file(path: &Path, until: Instant) -> Result<String> {
     loop {
         if let Ok(text) = std::fs::read_to_string(path) {
-            if !text.is_empty() {
+            let queued = matches!(
+                path.file_name().and_then(|name| name.to_str()),
+                Some("initial-queued.json" | "old-queued.json" | "post-queued.json")
+            );
+            let generation_matches = !queued
+                || path
+                    .parent()
+                    .and_then(|root| std::fs::read_to_string(root.join("freshness-mode")).ok())
+                    .is_none_or(|expected| {
+                        serde_json::from_str::<serde_json::Value>(&text)
+                            .ok()
+                            .is_some_and(|value| {
+                                value["generation"].as_str() == Some(expected.as_str())
+                            })
+                    });
+            if !text.is_empty() && generation_matches {
                 return Ok(text);
             }
         }
@@ -89,6 +111,7 @@ struct Observed {
     closes: usize,
     selected: Vec<(u32, u32)>,
     owners: Vec<String>,
+    authorized_remotes: usize,
 }
 struct Portal {
     stop: Arc<AtomicBool>,
@@ -288,6 +311,9 @@ fn portal(address: &str, root: &Path, node: u32, serial: u64) -> Portal {
                     };
                     c.send(message.method_return().append1(unsafe { BusFd::new(fd) }))
                         .unwrap();
+                    if mode != "invalid-fd" {
+                        seen.lock().unwrap().authorized_remotes += 1;
+                    }
                 }
                 "Close" => {
                     let path = message.path().unwrap().to_string();
@@ -440,6 +466,231 @@ fn expected(x: u32, y: u32) -> [u8; 4] {
     ]
 }
 
+fn negotiation_mode() -> Result<Option<String>> {
+    let Ok(mode) = std::env::var("SCREENSHOTS_PORTAL_NEGOTIATION") else {
+        return Ok(None);
+    };
+    ensure!(
+        matches!(
+            mode.as_str(),
+            "untagged-dual" | "untagged-float" | "tagged-dual"
+        ),
+        "Unknown private format negotiation case"
+    );
+    Ok(Some(mode))
+}
+fn fixture_bpp(video: pipewire::spa::param::video::VideoFormat) -> u32 {
+    match video {
+        pipewire::spa::param::video::VideoFormat::RGBA_F16 => 8,
+        pipewire::spa::param::video::VideoFormat::RGBA_F32 => 16,
+        _ => 4,
+    }
+}
+fn negotiation_case(
+    root: &Path,
+    address: &str,
+    portal: &Portal,
+    mode: &str,
+    color: Option<&serde_json::Value>,
+) -> Result<()> {
+    use pipewire::spa;
+    if mode == "tagged-dual" {
+        color_case(
+            root,
+            address,
+            portal,
+            color.context("Missing private HDR control")?,
+        )?;
+    } else {
+        *portal.mode.lock().unwrap() = "v6".into();
+        let output = root.join("negotiated.png");
+        let mut command = Command::new(env!("CARGO_BIN_EXE_screenshots"));
+        private(&mut command, root, address);
+        command
+            .args(["capture-portal", "display"])
+            .arg(&output)
+            .args(["--cursor", "exclude"]);
+        let result = run(&mut command, Duration::from_secs(25))?;
+        if mode == "untagged-float" {
+            ensure!(
+                !result.status.success() && !output.exists(),
+                "Unproved float-only source published pixels"
+            );
+        } else {
+            ensure!(
+                result.status.success(),
+                "Dual-format SDR fallback failed: {}",
+                String::from_utf8_lossy(&result.stderr)
+            );
+            let pixels = image::open(&output)?.into_rgba8();
+            ensure!(
+                pixels.dimensions() == (4, 3),
+                "Dual-format fallback changed the exact raster"
+            );
+            for (x, y, pixel) in pixels.enumerate_pixels() {
+                ensure!(
+                    pixel.0 == expected(x, y),
+                    "Dual-format fallback changed legacy bytes/alpha"
+                );
+            }
+        }
+    }
+    if mode != "untagged-float" {
+        let observed: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(root.join("negotiated-format.json"))?)?;
+        if mode == "untagged-dual" {
+            ensure!(
+                observed["format"] == spa::param::video::VideoFormat::RGBA.as_raw(),
+                "Legacy alternative was not negotiated"
+            );
+            ensure!(
+                observed["color"] == serde_json::json!([0, 0, 0, 0]),
+                "Legacy fallback invented color proof"
+            );
+        } else {
+            ensure!(
+                observed["format"] == spa::param::video::VideoFormat::RGBA_F16.as_raw(),
+                "Fully tagged HDR was replaced by unconditional RGB8 preference"
+            );
+            ensure!(
+                observed["color"]
+                    == serde_json::json!([
+                        spa::sys::SPA_VIDEO_COLOR_RANGE_0_255,
+                        spa::sys::SPA_VIDEO_COLOR_MATRIX_RGB,
+                        spa::sys::SPA_VIDEO_COLOR_PRIMARIES_BT709,
+                        spa::sys::SPA_VIDEO_TRANSFER_GAMMA10
+                    ]),
+                "Native managed negotiation changed source color tags"
+            );
+        }
+    }
+    ensure!(
+        portal.observed.lock().unwrap().sessions.is_empty(),
+        "Negotiation case retained permission session"
+    );
+    Ok(())
+}
+fn color_fixture() -> Result<Option<serde_json::Value>> {
+    let name = match std::env::var("SCREENSHOTS_PORTAL_COLOR") {
+        Ok(name) => name,
+        Err(_) if negotiation_mode()?.as_deref() == Some("tagged-dual") => "portal-linear16".into(),
+        Err(_) => return Ok(None),
+    };
+    let cases: Vec<serde_json::Value> = serde_json::from_str(include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../crates/app-core/tests/fixtures/color/native-rgb-oracle.json"
+    )))?;
+    ensure!(
+        name.starts_with("portal-"),
+        "Native portal color fixtures require an opaque transport case"
+    );
+    Ok(Some(
+        cases
+            .into_iter()
+            .find(|case| case["name"] == name)
+            .context("Unknown private native color fixture")?,
+    ))
+}
+fn color_case(root: &Path, address: &str, portal: &Portal, case: &serde_json::Value) -> Result<()> {
+    *portal.mode.lock().unwrap() = "v6".into();
+    let expected: Vec<u8> = serde_json::from_value(case["rgba"].clone())?;
+    let output = root.join("native-color.png");
+    let mut command = Command::new(env!("CARGO_BIN_EXE_screenshots"));
+    private(&mut command, root, address);
+    command
+        .args(["capture-portal", "display"])
+        .arg(&output)
+        .args(["--cursor", "exclude"]);
+    let result = run(&mut command, Duration::from_secs(25))?;
+    if std::env::var("SCREENSHOTS_PORTAL_COLOR_OMIT").is_ok() {
+        ensure!(
+            !result.status.success() && !output.exists(),
+            "Missing native color proof published pixels"
+        );
+        ensure!(
+            portal.observed.lock().unwrap().sessions.is_empty(),
+            "Rejected native color source retained permission session"
+        );
+        return Ok(());
+    }
+    ensure!(
+        result.status.success(),
+        "Private negotiated native color capture failed: {}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    let image = image::open(&output)?.into_rgba8();
+    ensure!(
+        image.dimensions() == (4, 3)
+            && image
+                .as_raw()
+                .iter()
+                .zip(&expected)
+                .all(|(a, b)| a.abs_diff(*b) <= 1),
+        "Native format/transfer/primaries pixels disagree with independent oracle"
+    );
+    ensure!(
+        portal.observed.lock().unwrap().sessions.is_empty(),
+        "Native color still retained permission session"
+    );
+    let video = root.join("native-color.mkv");
+    let mut command = Command::new(env!("CARGO_BIN_EXE_screenshots"));
+    private(&mut command, root, address);
+    command
+        .args(["record", "portal-display"])
+        .arg(&video)
+        .args([
+            "--seconds",
+            "1",
+            "--fps",
+            "3",
+            "--width",
+            "4",
+            "--height",
+            "3",
+            "--cursor",
+            "hide",
+        ]);
+    let result = run(&mut command, Duration::from_secs(20))?;
+    ensure!(
+        result.status.success(),
+        "Native color finite recording failed: {}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    let mut decode = Command::new("ffmpeg");
+    private(&mut decode, root, address);
+    decode.args(["-v", "error", "-i"]).arg(&video).args([
+        "-map",
+        "0:v:0",
+        "-frames:v",
+        "1",
+        "-f",
+        "rawvideo",
+        "-pix_fmt",
+        "rgb24",
+        "pipe:1",
+    ]);
+    let result = run(&mut decode, Duration::from_secs(5))?;
+    let expected: Vec<u8> = expected
+        .chunks_exact(4)
+        .flat_map(|p| (0..3).map(move |c| ((u16::from(p[c]) * u16::from(p[3]) + 127) / 255) as u8))
+        .collect();
+    ensure!(
+        result.status.success()
+            && result.stdout.len() == expected.len()
+            && result
+                .stdout
+                .iter()
+                .zip(expected)
+                .all(|(a, b)| a.abs_diff(b) <= 1),
+        "Finite native HDR conversion/encoding disagrees with independent oracle"
+    );
+    ensure!(
+        portal.observed.lock().unwrap().sessions.is_empty(),
+        "Native color recorder retained permission session"
+    );
+    Ok(())
+}
+
 #[test]
 fn portal_cli_preflight_refuses_invalid_inputs_before_permission_access() -> Result<()> {
     let root = Folder::new();
@@ -496,6 +747,40 @@ fn portal_cli_preflight_refuses_invalid_inputs_before_permission_access() -> Res
 #[ignore = "explicit private D-Bus/PipeWire generated-pixel E2E; no user session"]
 fn portal_memory_capture_uses_the_authorized_fd_and_exact_serial() -> Result<()> {
     let performance = std::env::var("SCREENSHOTS_PORTAL_PERFORMANCE").as_deref() == Ok("1");
+    let finite = std::env::var("SCREENSHOTS_PORTAL_FINITE").as_deref() == Ok("1");
+    let analysis = std::env::var("SCREENSHOTS_PORTAL_ANALYSIS").as_deref() == Ok("1");
+    ensure!(
+        !analysis || (!performance && !finite),
+        "Run analysis separately from timing/freshness modes"
+    );
+    let color = color_fixture()?;
+    let negotiation = negotiation_mode()?;
+    match negotiation.as_deref() {
+        Some("untagged-dual" | "untagged-float") => ensure!(
+            color.is_none(),
+            "Untagged producer fixture cannot have a tagged color source"
+        ),
+        Some("tagged-dual") => ensure!(
+            color
+                .as_ref()
+                .is_some_and(|case| case["name"] == "portal-linear16"),
+            "Tagged dual-format control requires portal-linear16"
+        ),
+        _ => {}
+    }
+
+    ensure!(
+        negotiation.is_none() || (!performance && !finite),
+        "Run negotiation scenarios separately from freshness/performance cases"
+    );
+    ensure!(
+        color.is_none() || (!performance && !finite),
+        "Run native color fixtures separately from finite/performance fixture modes"
+    );
+    ensure!(
+        !analysis || (color.is_none() && negotiation.is_none()),
+        "Analysis requires its own generated raster"
+    );
     let root = Folder::new();
     let config = configuration(&root.0)?;
     let bus_config = root.0.join("bus.conf");
@@ -540,11 +825,27 @@ fn portal_memory_capture_uses_the_authorized_fd_and_exact_serial() -> Result<()>
         .env("SCREENSHOTS_PORTAL_PUBLISHER", &root.0)
         .env(
             "SCREENSHOTS_PORTAL_WIDTH",
-            if performance { "3840" } else { "4" },
+            if analysis {
+                "512"
+            } else if performance {
+                "3840"
+            } else if finite {
+                "16"
+            } else {
+                "4"
+            },
         )
         .env(
             "SCREENSHOTS_PORTAL_HEIGHT",
-            if performance { "2160" } else { "3" },
+            if analysis {
+                "384"
+            } else if performance {
+                "2160"
+            } else if finite {
+                "12"
+            } else {
+                "3"
+            },
         )
         .env("PIPEWIRE_REMOTE", "screenshots-private")
         .stdout(Stdio::null())
@@ -561,6 +862,18 @@ fn portal_memory_capture_uses_the_authorized_fd_and_exact_serial() -> Result<()>
         node["serial"].as_u64().unwrap(),
     );
     eprintln!("Private generated-pixel publisher ready");
+    if analysis {
+        return region_analysis_fixture::run_case(&root.0, address, &portal);
+    }
+    if let Some(mode) = negotiation {
+        return negotiation_case(&root.0, address, &portal, &mode, color.as_ref());
+    }
+    if let Some(color) = color {
+        return color_case(&root.0, address, &portal, &color);
+    }
+    if finite {
+        return finite_case(&root.0, address, &portal);
+    }
     if performance {
         return performance_case(&root.0, address, &portal);
     }
@@ -907,8 +1220,96 @@ fn publisher(root: &Path) -> Result<()> {
     let width = std::env::var("SCREENSHOTS_PORTAL_WIDTH")?.parse::<u32>()?;
     let height = std::env::var("SCREENSHOTS_PORTAL_HEIGHT")?.parse::<u32>()?;
     app_core::validate_image_size(width, height)?;
-    let extent = width * height * 4;
-    let stride = width * 4;
+    let color = color_fixture()?;
+    let negotiation = negotiation_mode()?;
+    ensure!(
+        negotiation.is_none() || (width, height) == (4, 3),
+        "Private negotiation raster must be 4x3"
+    );
+    let bpp = color.as_ref().map_or(
+        if matches!(
+            negotiation.as_deref(),
+            Some("untagged-dual" | "untagged-float")
+        ) {
+            8
+        } else {
+            4
+        },
+        |case| match case["source"]["packing"].as_str().unwrap() {
+            "rgba_f16_le" => 8,
+            "rgba_f32_le" => 16,
+            _ => 4,
+        },
+    );
+    let stride = width * bpp;
+    let payload = color
+        .as_ref()
+        .map(|case| -> Result<Vec<u8>> {
+            let bytes: Vec<u8> = serde_json::from_value(case["bytes"].clone())?;
+            let input_stride = case["source"]["stride"].as_u64().unwrap() as usize;
+            Ok(bytes
+                .chunks(input_stride)
+                .take(height as usize)
+                .flat_map(|row| row[..stride as usize].iter().copied())
+                .collect())
+        })
+        .transpose()?;
+    let payload = if std::env::var("SCREENSHOTS_PORTAL_ANALYSIS").as_deref() == Ok("1") {
+        ensure!(
+            (width, height) == (512, 384) && payload.is_none(),
+            "Invalid private analysis publisher dimensions"
+        );
+        Some(region_analysis_fixture::pixels()?.into_raw())
+    } else {
+        payload
+    };
+
+    let (wire, primaries, transfer) = if let Some(case) = &color {
+        let source = &case["source"];
+        let wire = match source["packing"].as_str().unwrap() {
+            "rgba8" => spa::param::video::VideoFormat::RGBA,
+            "bgra8" => spa::param::video::VideoFormat::BGRA,
+            "rgbx8" => spa::param::video::VideoFormat::RGBx,
+            "bgrx8" => spa::param::video::VideoFormat::BGRx,
+            "rgba_f16_le" => spa::param::video::VideoFormat::RGBA_F16,
+            "rgba_f32_le" => spa::param::video::VideoFormat::RGBA_F32,
+            "xrgb210_le" => spa::param::video::VideoFormat::xRGB_210LE,
+            "xbgr210_le" => spa::param::video::VideoFormat::xBGR_210LE,
+            "rgbx102_le" => spa::param::video::VideoFormat::RGBx_102LE,
+            "bgrx102_le" => spa::param::video::VideoFormat::BGRx_102LE,
+            "argb210_le" => spa::param::video::VideoFormat::ARGB_210LE,
+            "abgr210_le" => spa::param::video::VideoFormat::ABGR_210LE,
+            "rgba102_le" => spa::param::video::VideoFormat::RGBA_102LE,
+            "bgra102_le" => spa::param::video::VideoFormat::BGRA_102LE,
+            _ => unreachable!(),
+        };
+        let primaries = match source["color"]["primaries"].as_str().unwrap() {
+            "bt709" => spa::sys::SPA_VIDEO_COLOR_PRIMARIES_BT709,
+            "display_p3" => spa::sys::SPA_VIDEO_COLOR_PRIMARIES_SMPTEEG432,
+            "bt2020" => spa::sys::SPA_VIDEO_COLOR_PRIMARIES_BT2020,
+            "adobe_rgb" => spa::sys::SPA_VIDEO_COLOR_PRIMARIES_ADOBERGB,
+            _ => unreachable!(),
+        };
+        let transfer = match source["color"]["transfer"].as_str().unwrap() {
+            "linear" => spa::sys::SPA_VIDEO_TRANSFER_GAMMA10,
+            "srgb" => spa::sys::SPA_VIDEO_TRANSFER_SRGB,
+            "bt709" => spa::sys::SPA_VIDEO_TRANSFER_BT709,
+            "bt2020_twelve" => spa::sys::SPA_VIDEO_TRANSFER_BT2020_12,
+            "gamma22" => spa::sys::SPA_VIDEO_TRANSFER_GAMMA22,
+            "adobe_rgb" => spa::sys::SPA_VIDEO_TRANSFER_ADOBERGB,
+            "pq" => spa::sys::SPA_VIDEO_TRANSFER_SMPTE2084,
+            "hlg" => spa::sys::SPA_VIDEO_TRANSFER_ARIB_STD_B67,
+            _ => unreachable!(),
+        };
+        (wire, primaries, transfer)
+    } else if matches!(
+        negotiation.as_deref(),
+        Some("untagged-dual" | "untagged-float")
+    ) {
+        (spa::param::video::VideoFormat::RGBA_F16, 0, 0)
+    } else {
+        (spa::param::video::VideoFormat::RGBA, 0, 0)
+    };
     pw::init();
     let main = pw::main_loop::MainLoopRc::new(None)?;
     let context = pw::context::ContextRc::new(&main, None)?;
@@ -919,10 +1320,20 @@ fn publisher(root: &Path) -> Result<()> {
         properties! {"media.type"=>"Video","media.category"=>"Capture","media.class"=>"Video/Source","node.name"=>"screenshots-fixture-source","node.driver"=>"true","node.always-process"=>"true"},
     )?;
     let format = Rc::new(RefCell::new(None));
-    let fmt = format;
+    let fmt = format.clone();
     let root_path = root.to_owned();
+    let negotiated_log = root.join("negotiated-format.json");
+    let finite = std::env::var("SCREENSHOTS_PORTAL_FINITE").as_deref() == Ok("1");
+    let mut freshness_mode = String::new();
+    let mut freshness_frames = 0u32;
+    let mut last_pts = 0i64;
+    let streaming = Rc::new(std::cell::Cell::new(false));
+    let stream_state = streaming.clone();
     let _listener = stream
         .add_local_listener_with_user_data(())
+        .state_changed(move |_, _, _, new| {
+            stream_state.set(matches!(new, pw::stream::StreamState::Streaming));
+        })
         .param_changed(move |stream, _, id, param| {
             if id != spa::param::ParamType::Format.as_raw() {
                 return;
@@ -933,6 +1344,9 @@ fn publisher(root: &Path) -> Result<()> {
             let mut info = spa::param::video::VideoInfoRaw::new();
             info.parse(param).unwrap();
             *fmt.borrow_mut() = Some(info);
+            let stride=width*fixture_bpp(info.format());
+            let extent=stride*height;
+            std::fs::write(&negotiated_log,serde_json::json!({"format":info.format().as_raw(),"color":[info.color_range(),info.color_matrix(),info.color_primaries(),info.transfer_function()]}).to_string()).unwrap();
             let object = spa::pod::Object {
                 type_: spa::utils::SpaTypes::ObjectParamBuffers.as_raw(),
                 id: spa::param::ParamType::Buffers.as_raw(),
@@ -962,42 +1376,165 @@ fn publisher(root: &Path) -> Result<()> {
             .unwrap()
             .0
             .into_inner();
+            let header = spa::pod::serialize::PodSerializer::serialize(
+                std::io::Cursor::new(Vec::new()),
+                &spa::pod::Value::Object(spa::pod::Object {
+                    type_: spa::utils::SpaTypes::ObjectParamMeta.as_raw(),
+                    id: spa::param::ParamType::Meta.as_raw(),
+                    properties: vec![
+                        spa::pod::Property::new(
+                            spa::sys::SPA_PARAM_META_type,
+                            spa::pod::Value::Id(spa::utils::Id(spa::sys::SPA_META_Header)),
+                        ),
+                        spa::pod::Property::new(
+                            spa::sys::SPA_PARAM_META_size,
+                            spa::pod::Value::Int(
+                                std::mem::size_of::<spa::sys::spa_meta_header>() as i32
+                            ),
+                        ),
+                    ],
+                }),
+            )
+            .unwrap()
+            .0
+            .into_inner();
             stream
-                .update_params(&mut [spa::pod::Pod::from_bytes(&bytes).unwrap()])
+                .update_params(&mut [
+                    spa::pod::Pod::from_bytes(&bytes).unwrap(),
+                    spa::pod::Pod::from_bytes(&header).unwrap(),
+                ])
                 .unwrap();
         })
         .process(move |stream, _| {
-            if root_path.join("stall").exists() {
+            if root_path.join("stall").exists() && streaming.get()
+                && format.borrow().is_some() && root_path.join("analysis-cancel-armed").exists() {
+                std::fs::write(root_path.join("analysis-stalled-stream"), b"streaming source withheld its frame").unwrap();
+            }
+            if root_path.join("stall").exists()
+                || (finite
+                    && (root_path.join("freshness-child-finished").exists()
+                        || root_path.join("freshness-paused").exists()))
+            {
                 return;
             }
-            let Some(mut buffer) = stream.dequeue_buffer() else {
-                return;
+            let mode_request = if finite {
+                std::fs::read_to_string(root_path.join("freshness-mode")).unwrap_or_default()
+            } else {
+                String::new()
             };
-            let datas = buffer.datas_mut();
-            if datas.len() != 1 {
-                return;
+            if mode_request != freshness_mode {
+                freshness_mode = mode_request.clone();
+                freshness_frames = 0;
+                last_pts = 0;
             }
-            let data = &mut datas[0];
-            let Some(bytes) = data.data() else {
-                return;
-            };
-            assert!(bytes.len() >= extent as usize);
-            for y in 0..height {
-                for x in 0..width {
-                    let at = (y * width + x) as usize * 4;
-                    bytes[at..at + 4].copy_from_slice(&expected(x, y));
+            let mode = mode_request.lines().next().unwrap_or_default().to_owned();
+            if !mode.is_empty() {
+                if freshness_frames == 1 && !root_path.join("ready-entered").is_file() {
+                    return;
+                }
+                if freshness_frames >= 2
+                    && (mode == "queued-quiet"
+                        || !root_path.join("source-start.json").is_file()
+                        || freshness_frames >= 256)
+                {
+                    return;
                 }
             }
-            *data.chunk_mut().offset_mut() = 0;
-            *data.chunk_mut().size_mut() = extent;
-            *data.chunk_mut().stride_mut() = stride as i32;
+            let Some(info)=format.borrow().as_ref().copied() else {return;};
+            let stride=width*fixture_bpp(info.format());
+            let extent=stride*height;
+            // Raw ownership lets this oracle stamp Header metadata and mark only after actual queueing.
+            let raw = unsafe { stream.dequeue_raw_buffer() };
+            if raw.is_null() {
+                return;
+            }
+            let body = unsafe { &mut *(*raw).buffer };
+            assert!(body.n_datas == 1 && !body.datas.is_null());
+            let data = unsafe { &mut *body.datas };
+            assert!(!data.data.is_null() && !data.chunk.is_null() && data.maxsize >= extent);
+            let bytes = unsafe {
+                std::slice::from_raw_parts_mut(data.data.cast::<u8>(), data.maxsize as usize)
+            };
+            let post_start = !mode.is_empty() && freshness_frames >= 2;
+            let scroll = if post_start {
+                7
+            } else if finite {
+                std::fs::read_to_string(root_path.join("scroll_rows"))
+                    .ok()
+                    .and_then(|text| text.parse::<u32>().ok())
+                    .unwrap_or(0)
+            } else {
+                0
+            };
+            if info.format()==wire && payload.is_some() {
+                let payload=payload.as_ref().unwrap();bytes[..payload.len()].copy_from_slice(payload);
+            } else if info.format()==spa::param::video::VideoFormat::RGBA_F16 {
+                // Genuine untagged FP16 producer data; never reinterpret RGBA8 as floats.
+                for pixel in bytes[..extent as usize].chunks_exact_mut(8) {
+                    pixel.copy_from_slice(&[0,0x3c,0,0x38,0,0x34,0,0x3c]);
+                }
+            } else {
+                assert_eq!(info.format(),spa::param::video::VideoFormat::RGBA);
+                for y in 0..height {for x in 0..width {
+                    let at=(y*width+x) as usize*4;bytes[at..at+4].copy_from_slice(&expected(x,y+scroll));
+                }}
+            }
+            let pts = if post_start && mode == "post-old" {
+                last_pts + 1
+            } else if post_start && mode == "post-unknown" {
+                i64::MIN
+            } else {
+                fixture_monotonic_ns()
+            };
+            let header = unsafe {
+                spa::sys::spa_buffer_find_meta_data(
+                    body,
+                    spa::sys::SPA_META_Header,
+                    std::mem::size_of::<spa::sys::spa_meta_header>(),
+                )
+                .cast::<spa::sys::spa_meta_header>()
+            };
+            assert!(
+                header.is_null() == false || mode.is_empty(),
+                "Private video freshness source did not negotiate Header metadata"
+            );
+            unsafe {
+                if !header.is_null() {
+                    (*header).flags = 0;
+                    (*header).offset = 0;
+                    (*header).pts = pts;
+                    (*header).dts_offset = 0;
+                    (*header).seq = u64::from(freshness_frames) + 1;
+                }
+                (*data.chunk).offset = 0;
+                (*data.chunk).size = extent;
+                (*data.chunk).stride = stride as i32;
+                stream.queue_raw_buffer(raw);
+            }
+            if !mode.is_empty() {
+                let marker = match freshness_frames {
+                    0 => "initial-queued.json",
+                    1 => "old-queued.json",
+                    _ => "post-queued.json",
+                };
+                let marker = root_path.join(marker);
+                let temporary = marker.with_extension("new");
+                std::fs::write(
+                    &temporary,
+                    serde_json::json!({"pts":pts,"sequence":freshness_frames + 1,"generation":mode_request}).to_string(),
+                )
+                .unwrap();
+                std::fs::rename(temporary, marker).unwrap();
+                freshness_frames += 1;
+            }
+            last_pts = pts;
         })
         .register()?;
     let mut info = spa::param::video::VideoInfoRaw::new();
-    info.set_format(spa::param::video::VideoFormat::RGBA);
+    info.set_format(wire);
     info.set_size(spa::utils::Rectangle { width, height });
     info.set_framerate(spa::utils::Fraction { num: 30, denom: 1 });
-    let object = spa::pod::Object {
+    let mut object = spa::pod::Object {
         type_: spa::utils::SpaTypes::ObjectParamFormat.as_raw(),
         id: spa::param::ParamType::EnumFormat.as_raw(),
         properties: vec![
@@ -1011,11 +1548,7 @@ fn publisher(root: &Path) -> Result<()> {
                 Id,
                 spa::param::format::MediaSubtype::Raw
             ),
-            spa::pod::property!(
-                spa::param::format::FormatProperties::VideoFormat,
-                Id,
-                spa::param::video::VideoFormat::RGBA
-            ),
+            spa::pod::property!(spa::param::format::FormatProperties::VideoFormat, Id, wire),
             spa::pod::property!(
                 spa::param::format::FormatProperties::VideoSize,
                 Rectangle,
@@ -1028,17 +1561,76 @@ fn publisher(root: &Path) -> Result<()> {
             ),
         ],
     };
-    let bytes = spa::pod::serialize::PodSerializer::serialize(
-        std::io::Cursor::new(Vec::new()),
-        &spa::pod::Value::Object(object),
-    )?
-    .0
-    .into_inner();
+    if color.is_some() {
+        for (key, value) in [
+            (
+                spa::param::format::FormatProperties::VideoColorRange.as_raw(),
+                spa::sys::SPA_VIDEO_COLOR_RANGE_0_255,
+            ),
+            (
+                spa::param::format::FormatProperties::VideoColorMatrix.as_raw(),
+                spa::sys::SPA_VIDEO_COLOR_MATRIX_RGB,
+            ),
+            (
+                spa::param::format::FormatProperties::VideoColorPrimaries.as_raw(),
+                primaries,
+            ),
+            (
+                spa::param::format::FormatProperties::VideoTransferFunction.as_raw(),
+                transfer,
+            ),
+        ] {
+            let omit = std::env::var("SCREENSHOTS_PORTAL_COLOR_OMIT").ok();
+            let omitted_key = match omit.as_deref() {
+                Some("range") => {
+                    Some(spa::param::format::FormatProperties::VideoColorRange.as_raw())
+                }
+                Some("matrix") => {
+                    Some(spa::param::format::FormatProperties::VideoColorMatrix.as_raw())
+                }
+                Some("primaries") => {
+                    Some(spa::param::format::FormatProperties::VideoColorPrimaries.as_raw())
+                }
+                Some("transfer") => {
+                    Some(spa::param::format::FormatProperties::VideoTransferFunction.as_raw())
+                }
+                Some(_) => panic!("Unknown private color-proof omission"),
+                None => None,
+            };
+            if omitted_key != Some(key) {
+                object.properties.push(spa::pod::Property::new(
+                    key,
+                    spa::pod::Value::Id(spa::utils::Id(value)),
+                ));
+            }
+        }
+    }
+    let primary = if negotiation.as_deref() == Some("untagged-dual") {
+        dual_source_format_pod()?
+    } else {
+        spa::pod::serialize::PodSerializer::serialize(
+            std::io::Cursor::new(Vec::new()),
+            &spa::pod::Value::Object(object),
+        )?
+        .0
+        .into_inner()
+    };
+    let mut offers = vec![primary];
+    if negotiation.as_deref() == Some("tagged-dual") {
+        offers.push(source_format_pod(
+            spa::param::video::VideoFormat::RGBA,
+            None,
+        )?);
+    }
+    let mut params = offers
+        .iter()
+        .map(|bytes| spa::pod::Pod::from_bytes(bytes).unwrap())
+        .collect::<Vec<_>>();
     stream.connect(
         spa::utils::Direction::Output,
         None,
         pw::stream::StreamFlags::DRIVER | pw::stream::StreamFlags::MAP_BUFFERS,
-        &mut [spa::pod::Pod::from_bytes(&bytes).unwrap()],
+        &mut params,
     )?;
     struct Graph {
         root: PathBuf,
@@ -1187,3 +1779,710 @@ fn publisher(root: &Path) -> Result<()> {
     main.run();
     Ok(())
 }
+
+/// This exercises native transport and installed codecs on owned services, not a real compositor or permission dialog.
+fn finite_case(root: &Path, address: &str, portal: &Portal) -> Result<()> {
+    assert_finite_preflight(root, address, Some(portal))?;
+    freshness_cases(root, address, portal)?;
+    for (mode, extension, audio) in [
+        ("portal-display", "mkv", true),
+        ("portal-window", "gif", false),
+    ] {
+        *portal.mode.lock().unwrap() = if mode == "portal-window" {
+            "v6-window"
+        } else {
+            "v6"
+        }
+        .into();
+        let output = root.join(format!("finite.{extension}"));
+        let mut command = Command::new(env!("CARGO_BIN_EXE_screenshots"));
+        private(&mut command, root, address);
+        let initial_calls = portal.observed.lock().unwrap().calls.len();
+        command.args(["record", mode]).arg(&output).args([
+            "--seconds",
+            "1",
+            "--fps",
+            "5",
+            "--width",
+            "16",
+            "--height",
+            "12",
+            "--cursor",
+            "hide",
+        ]);
+        if audio {
+            command.args(["--audio-mode", "test", "--audio-channels", "1"]);
+        }
+        let result = run(&mut command, Duration::from_secs(15))?;
+        ensure!(
+            result.status.success(),
+            "Finite portal recording failed: {}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        let calls = portal.observed.lock().unwrap().calls[initial_calls..].to_vec();
+        ensure!(
+            [
+                "CreateSession",
+                "SelectSources",
+                "Start",
+                "OpenPipeWireRemote"
+            ]
+            .iter()
+            .all(|method| calls.iter().any(|call| call == method)),
+            "Valid recording did not reach the owned portal control"
+        );
+        let report: serde_json::Value = serde_json::from_slice(&result.stdout)?;
+        ensure!(
+            report["frames"] == 5
+                && report["source"]
+                    == if audio {
+                        "portal:display"
+                    } else {
+                        "portal:window"
+                    },
+            "Missing truthful finite portal summary"
+        );
+        ensure!(
+            portal.observed.lock().unwrap().sessions.is_empty(),
+            "Finite recorder retained portal session"
+        );
+        if audio {
+            let mut decode = Command::new("ffmpeg");
+            private(&mut decode, root, address);
+            decode.args(["-v", "error", "-i"]).arg(&output).args([
+                "-map",
+                "0:v:0",
+                "-frames:v",
+                "1",
+                "-f",
+                "rawvideo",
+                "-pix_fmt",
+                "rgb24",
+                "pipe:1",
+            ]);
+            let pixels = run(&mut decode, Duration::from_secs(5))?;
+            ensure!(
+                pixels.status.success() && pixels.stdout.len() == 16 * 12 * 3,
+                "Finite portal decoder failed"
+            );
+            for y in 0..12u32 {
+                for x in 0..16u32 {
+                    let pixel = expected(x, y);
+                    let expected = std::array::from_fn::<_, 3, _>(|channel| {
+                        ((u16::from(pixel[channel]) * u16::from(pixel[3]) + 127) / 255) as u8
+                    });
+                    let offset = ((y * 16 + x) * 3) as usize;
+                    ensure!(
+                        pixels.stdout[offset..offset + 3] == expected,
+                        "Finite recorder encoded the wrong restricted source pixels"
+                    );
+                }
+            }
+        }
+    }
+    *portal.mode.lock().unwrap() = "v6-window".into();
+    let observed = portal.observed.clone();
+    let previous = observed.lock().unwrap().calls.len();
+    let rows = root.join("scroll_rows");
+    let driver = std::thread::spawn(move || -> Result<()> {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !observed.lock().unwrap().calls[previous..]
+            .iter()
+            .any(|call| call == "OpenPipeWireRemote")
+        {
+            ensure!(Instant::now() < deadline, "Manual source did not start");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        std::thread::sleep(Duration::from_millis(250));
+        std::fs::write(&rows, "3")?;
+        std::thread::sleep(Duration::from_millis(500));
+        std::fs::write(&rows, "6")?;
+        Ok(())
+    });
+    let output = root.join("manual.png");
+    let mut command = Command::new(env!("CARGO_BIN_EXE_screenshots"));
+    private(&mut command, root, address);
+    command
+        .args(["scroll-capture-portal", "window"])
+        .arg(&output)
+        .args([
+            "--width",
+            "16",
+            "--height",
+            "12",
+            "--frames",
+            "3",
+            "--interval-ms",
+            "500",
+            "--minimum-overlap",
+            "4",
+        ]);
+    let result = run(&mut command, Duration::from_secs(10))?;
+    driver
+        .join()
+        .map_err(|_| anyhow::anyhow!("Private manual-source driver failed"))??;
+    ensure!(
+        result.status.success(),
+        "Manual portal scrolling failed: {}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    let report: serde_json::Value = serde_json::from_slice(&result.stdout)?;
+    ensure!(
+        report["scroll_actions"] == 0
+            && report["complete"] == false
+            && report["vertical_advances"] == serde_json::json!([3, 3]),
+        "Manual source claimed input or wrong seams"
+    );
+    let pixels = image::open(&output)?.into_rgba8();
+    ensure!(
+        pixels.dimensions() == (16, 18),
+        "Manual source returned wrong raster"
+    );
+    for (x, y, pixel) in pixels.enumerate_pixels() {
+        ensure!(
+            pixel.0 == expected(x, y),
+            "Manual source stitched wrong pixels"
+        );
+    }
+    ensure!(
+        portal.observed.lock().unwrap().sessions.is_empty(),
+        "Manual source retained portal session"
+    );
+    let profile = root.join("manual-task.json");
+    let task_output = root.join("manual-task.png");
+    std::fs::write(
+        &profile,
+        serde_json::to_vec(
+            &serde_json::json!({"version":1,"source":{"type":"portal_scroll","request":{"stream":{"source":"window","cursor":"exclude","width":16,"height":12},"frames":2,"interval_ms":100,"minimum_overlap":4}},"actions":[{"type":"save","path":task_output}]}),
+        )?,
+    )?;
+    let mut task = Command::new(env!("CARGO_BIN_EXE_screenshots"));
+    private(&mut task, root, address);
+    task.args(["task", "run"]).arg(profile);
+    let result = run(&mut task, Duration::from_secs(10))?;
+    ensure!(
+        result.status.success() && task_output.is_file(),
+        "Task did not reach manual portal adapter: {}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    for mode in ["denied", "wrong-serial", "closed", "close-error"] {
+        *portal.mode.lock().unwrap() = mode.into();
+        let output = root.join(format!("failed-{mode}.mkv"));
+        let mut command = Command::new(env!("CARGO_BIN_EXE_screenshots"));
+        private(&mut command, root, address);
+        command
+            .args(["record", "portal-display"])
+            .arg(&output)
+            .args([
+                "--seconds",
+                "1",
+                "--fps",
+                "5",
+                "--width",
+                "16",
+                "--height",
+                "12",
+            ]);
+        let result = run(&mut command, Duration::from_secs(10))?;
+        ensure!(
+            !result.status.success() && !output.exists(),
+            "Portal source failure published a recording"
+        );
+        ensure!(
+            portal.observed.lock().unwrap().sessions.is_empty(),
+            "Failed source retained portal session"
+        );
+    }
+    ensure!(
+        !std::fs::read_dir(root)?.any(|entry| entry.is_ok_and(|entry| entry
+            .file_name()
+            .to_string_lossy()
+            .starts_with(".screenshots-record-"))),
+        "Finite source retained private staging"
+    );
+    eprintln!(
+        "Private portal/PipeWire finite MKV+synthetic-audio/GIF/manual-scroll/Task and failure fixtures passed; real compositor acceptance remains open"
+    );
+    Ok(())
+}
+
+fn invalid_finite_inputs() -> Vec<(Vec<&'static str>, &'static str)> {
+    vec![
+        (
+            vec![
+                "record",
+                "portal-window",
+                "out.mkv",
+                "--seconds",
+                "61",
+                "--fps",
+                "5",
+                "--width",
+                "16",
+                "--height",
+                "12",
+            ],
+            "Recording seconds must be 1–60",
+        ),
+        (
+            vec![
+                "record",
+                "portal-window",
+                "out.mkv",
+                "--seconds",
+                "1",
+                "--fps",
+                "5",
+                "--width",
+                "16",
+                "--height",
+                "12",
+                "--x",
+                "0",
+                "--y",
+                "0",
+            ],
+            "Offsets apply only to desktop recording",
+        ),
+        (
+            vec![
+                "record",
+                "portal-window",
+                "out.gif",
+                "--seconds",
+                "1",
+                "--fps",
+                "5",
+                "--width",
+                "16",
+                "--height",
+                "12",
+                "--audio-mode",
+                "test",
+            ],
+            "Audio recording requires Matroska output; GIF has no audio",
+        ),
+        (
+            vec![
+                "scroll-capture-portal",
+                "window",
+                "out.png",
+                "--width",
+                "16",
+                "--height",
+                "12",
+                "--frames",
+                "129",
+                "--interval-ms",
+                "5000",
+            ],
+            "Manual portal scrolling preflight rejected invalid limits",
+        ),
+        (
+            vec![
+                "scroll-capture-portal",
+                "window",
+                "out.png",
+                "--width",
+                "16",
+                "--height",
+                "12",
+                "--frames",
+                "3",
+                "--interval-ms",
+                "500",
+                "--minimum-overlap",
+                "12",
+            ],
+            "Manual portal scrolling preflight rejected invalid limits",
+        ),
+    ]
+}
+fn assert_finite_preflight(root: &Path, address: &str, portal: Option<&Portal>) -> Result<()> {
+    for (args, diagnostic) in invalid_finite_inputs() {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_screenshots"));
+        private(&mut command, root, address);
+        let before = portal.map(|portal| portal.observed.lock().unwrap().calls.len());
+        command.current_dir(&root).args(args);
+        let result = run(&mut command, Duration::from_secs(3))?;
+        ensure!(
+            !result.status.success(),
+            "Invalid finite request was accepted"
+        );
+        let error = String::from_utf8_lossy(&result.stderr);
+        ensure!(
+            error.contains(diagnostic),
+            "Wrong preflight failure; expected {diagnostic:?}, received {error:?}"
+        );
+        if let Some(before) = before {
+            ensure!(
+                portal.unwrap().observed.lock().unwrap().calls.len() == before,
+                "Invalid finite preflight initialized the owned portal"
+            );
+        }
+        ensure!(
+            !root.join("out.mkv").exists()
+                && !root.join("out.gif").exists()
+                && !root.join("out.png").exists(),
+            "Invalid finite request published output"
+        );
+    }
+    Ok(())
+}
+#[test]
+fn finite_portal_cli_rejects_invalid_bounds_before_opening_any_session() -> Result<()> {
+    let root = Folder::new();
+    assert_finite_preflight(
+        &root.0,
+        "unix:path=/missing-private-finite-portal-bus",
+        None,
+    )
+}
+
+fn fixture_monotonic_ns() -> i64 {
+    let mut time: libc::timespec = unsafe { std::mem::zeroed() };
+    assert_eq!(
+        unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut time) },
+        0
+    );
+    time.tv_sec as i64 * 1_000_000_000 + time.tv_nsec as i64
+}
+fn prepare_freshness_case(root: &Path, mode: &str) -> Result<()> {
+    std::fs::write(
+        root.join("freshness-paused"),
+        b"changing private source case",
+    )?;
+    for marker in [
+        "initial-queued.json",
+        "old-queued.json",
+        "post-queued.json",
+        "ready-entered",
+        "source-start.json",
+        "freshness-result.json",
+        "freshness-child-finished",
+        "encoder-started",
+    ] {
+        match std::fs::remove_file(root.join(marker)) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+        }
+    }
+    // Consecutive identical modes are distinct producer incarnations.
+    std::fs::write(
+        root.join("freshness-mode"),
+        format!("{mode}\n{}", uuid::Uuid::new_v4()),
+    )?;
+    std::fs::remove_file(root.join("freshness-paused"))?;
+    Ok(())
+}
+fn freshness_cases(root: &Path, address: &str, portal: &Portal) -> Result<()> {
+    *portal.mode.lock().unwrap() = "v6".into();
+    cli_queued_freshness_case(root, address, portal)?;
+    for mode in ["queued-quiet", "post-old", "post-unknown", "post-new"] {
+        prepare_freshness_case(root, mode)?;
+        let mut command = Command::new(std::env::current_exe()?);
+        private(&mut command, root, address);
+        command
+            .args([
+                "--exact",
+                "portal_video_freshness_fixture_child",
+                "--ignored",
+                "--nocapture",
+                "--test-threads=1",
+            ])
+            .env("SCREENSHOTS_PORTAL_FRESHNESS_CHILD", root)
+            .env("SCREENSHOTS_PORTAL_FRESHNESS_MODE", mode);
+        let result = run(&mut command, Duration::from_secs(15))?;
+        ensure!(
+            result.status.success(),
+            "Native PTS freshness case {mode} failed: {}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        let initial: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(root.join("initial-queued.json"))?)?;
+        let old: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(root.join("old-queued.json"))?)?;
+        let start: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(root.join("source-start.json"))?)?;
+        let generation = std::fs::read_to_string(root.join("freshness-mode"))?;
+        ensure!(
+            initial["generation"].as_str() == Some(generation.as_str())
+                && old["generation"].as_str() == Some(generation.as_str()),
+            "Source markers belong to an earlier case"
+        );
+        ensure!(
+            initial["pts"].as_i64().unwrap() < old["pts"].as_i64().unwrap()
+                && old["pts"].as_i64().unwrap() < start["cutoff_ns"].as_i64().unwrap(),
+            "Old source buffers did not precede the explicit source start boundary"
+        );
+        if mode == "queued-quiet" {
+            ensure!(
+                !root.join("post-queued.json").exists(),
+                "Quiet source unexpectedly produced a post-start buffer"
+            );
+        } else {
+            let post: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(root.join("post-queued.json"))?)?;
+            let pts = post["pts"].as_i64().unwrap();
+            let boundary = start["cutoff_ns"].as_i64().unwrap();
+            ensure!(
+                post["sequence"]
+                    .as_u64()
+                    .is_some_and(|sequence| sequence >= 3 && sequence <= 256),
+                "Post-start source buffer was not actually queued"
+            );
+            match mode {
+                "post-old" => ensure!(
+                    pts > old["pts"].as_i64().unwrap() && pts <= boundary,
+                    "Old replay was not monotonic but pre-boundary"
+                ),
+                "post-unknown" => ensure!(
+                    pts == i64::MIN,
+                    "Unknown-PTS control did not reach the producer"
+                ),
+                "post-new" => ensure!(
+                    pts > boundary,
+                    "Fresh control did not follow the source boundary"
+                ),
+                _ => unreachable!(),
+            }
+        }
+        let report: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(root.join("freshness-result.json"))?)?;
+        ensure!(
+            report["success"] == (mode == "post-new"),
+            "Freshness oracle accepted stale or unknown source PTS"
+        );
+        ensure!(
+            portal.observed.lock().unwrap().sessions.is_empty(),
+            "Freshness case retained an owned portal session"
+        );
+    }
+    std::fs::remove_file(root.join("freshness-mode"))?;
+    std::fs::remove_file(root.join("freshness-child-finished"))?;
+    Ok(())
+}
+
+/// Calls the real native adapter on the owned bus/PipeWire. The callback supplies the same
+/// post-handshake VideoStart proof as the worker; it is not a model or fake captured frame.
+#[test]
+#[ignore = "Owned private portal/PipeWire fixture subprocess only"]
+fn portal_video_freshness_fixture_child() -> Result<()> {
+    let root = PathBuf::from(
+        std::env::var_os("SCREENSHOTS_PORTAL_FRESHNESS_CHILD")
+            .ok_or_else(|| anyhow::anyhow!("Missing private freshness root"))?,
+    );
+    ensure!(
+        std::env::var_os("PIPEWIRE_RUNTIME_DIR").as_deref() == Some(root.as_os_str())
+            && root.join("private.conf").is_file(),
+        "Freshness child requires its owned native server"
+    );
+    let mode = std::env::var("SCREENSHOTS_PORTAL_FRESHNESS_MODE")?;
+    let (sink, mut reader) = std::os::unix::net::UnixStream::pair()?;
+    sink.set_nonblocking(true)?;
+    reader.set_read_timeout(Some(Duration::from_secs(12)))?;
+    let receiver = std::thread::spawn(move || -> Result<Vec<u8>> {
+        use std::io::Read;
+        let mut bytes = Vec::new();
+        reader.take(16 * 12 * 4 * 5 + 1).read_to_end(&mut bytes)?;
+        Ok(bytes)
+    });
+    let request = app_core::PortalVideoRequest {
+        stream: app_core::PortalStreamSource {
+            source: app_core::PortalCaptureSource::Display,
+            cursor: app_core::PortalCaptureCursor::Exclude,
+            width: 16,
+            height: 12,
+        },
+        seconds: 1,
+        fps: 5,
+    };
+    let result = finite_adapter::video(
+        request,
+        Instant::now() + Duration::from_secs(10),
+        sink,
+        &mut || {
+            std::fs::write(
+                root.join("ready-entered"),
+                b"encoder-start handshake fixture",
+            )
+            .map_err(|_| app_core::CaptureError::NativeCanceled)?;
+            let old = wait_file(
+                &root.join("old-queued.json"),
+                Instant::now() + Duration::from_secs(3),
+            )
+            .map_err(|_| app_core::CaptureError::NativeTimeout)?;
+            let old: serde_json::Value =
+                serde_json::from_str(&old).map_err(|_| app_core::CaptureError::NativeCanceled)?;
+            let start = finite_adapter::VideoStart::after_encoder_start()?;
+            if old["pts"]
+                .as_i64()
+                .is_none_or(|pts| pts >= start.cutoff_ns())
+            {
+                return Err(app_core::CaptureError::NativeCanceled);
+            }
+            std::fs::write(
+                root.join("source-start.json"),
+                serde_json::json!({"cutoff_ns":start.cutoff_ns()}).to_string(),
+            )
+            .map_err(|_| app_core::CaptureError::NativeCanceled)?;
+            Ok(start)
+        },
+    );
+    std::fs::write(
+        root.join("freshness-child-finished"),
+        b"native source finished",
+    )?;
+    let bytes = receiver
+        .join()
+        .map_err(|_| anyhow::anyhow!("Freshness raw receiver failed"))??;
+    if mode == "post-new" {
+        let summary = result?;
+        summary.validate(request)?;
+        ensure!(
+            bytes.len() == 16 * 12 * 4 * 5,
+            "Fresh source did not deliver the finite output count"
+        );
+        for frame in bytes.chunks_exact(16 * 12 * 4) {
+            for y in 0..12u32 {
+                for x in 0..16u32 {
+                    let pixel = expected(x, y + 7);
+                    let expected = [
+                        ((u16::from(pixel[2]) * u16::from(pixel[3]) + 127) / 255) as u8,
+                        ((u16::from(pixel[1]) * u16::from(pixel[3]) + 127) / 255) as u8,
+                        ((u16::from(pixel[0]) * u16::from(pixel[3]) + 127) / 255) as u8,
+                        255,
+                    ];
+                    let offset = ((y * 16 + x) * 4) as usize;
+                    ensure!(
+                        frame[offset..offset + 4] == expected,
+                        "Old queued pixels reached the fresh source output"
+                    );
+                }
+            }
+        }
+        let post: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(root.join("post-queued.json"))?)?;
+        let start: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(root.join("source-start.json"))?)?;
+        ensure!(
+            post["pts"].as_i64().unwrap() > start["cutoff_ns"].as_i64().unwrap(),
+            "Successful source PTS did not postdate its boundary"
+        );
+    } else {
+        match (&result, mode.as_str()) {
+            (Err(app_core::CaptureError::NativeTimeout), "queued-quiet" | "post-old") => {}
+            (Err(app_core::CaptureError::Unsupported(_)), "post-unknown") => {}
+            _ => anyhow::bail!(
+                "Freshness failure had the wrong native result: {:?}",
+                result
+            ),
+        }
+        ensure!(
+            bytes.is_empty(),
+            "Unproved source pixels escaped before the freshness failure"
+        );
+    }
+    std::fs::write(root.join("freshness-result.json"), serde_json::json!({"success":mode == "post-new", "raw_output_bytes":bytes.len(), "native_adapter":true, "mock_consent":true, "model_fixture":false}).to_string())?;
+    Ok(())
+}
+
+/// The real CLI/owned worker must send VIDEO_START only after this encoder gate.
+/// The publisher has already queued its old buffer, then remains quiet forever.
+fn cli_queued_freshness_case(root: &Path, address: &str, portal: &Portal) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    let search = std::env::var_os("PATH").unwrap_or_default();
+    let engine = std::env::split_paths(&search)
+        .map(|path| path.join("ffmpeg"))
+        .find(|path| {
+            path.metadata()
+                .is_ok_and(|info| info.is_file() && info.permissions().mode() & 0o111 != 0)
+        })
+        .ok_or_else(|| anyhow::anyhow!("Private codec fixture requires installed FFmpeg"))?;
+    let engine = std::path::absolute(engine)?;
+    let wrappers = root.join("freshness-engines");
+    std::fs::create_dir(&wrappers)?;
+    let wrapper = wrappers.join("ffmpeg");
+    std::fs::write(
+        &wrapper,
+        r#"#!/bin/sh
+if [ "$2" = "-h" ]; then
+    : > "$SCREENSHOTS_PRIVATE_SOURCE/ready-entered"
+    attempt=0
+    while ! python3 - "$SCREENSHOTS_PRIVATE_SOURCE" <<'SOURCE_GENERATION'
+import json,sys
+from pathlib import Path
+root=Path(sys.argv[1])
+try:
+    expected=(root/'freshness-mode').read_text()
+    observed=json.loads((root/'old-queued.json').read_text())
+    sys.exit(0 if observed.get('generation') == expected else 1)
+except (OSError,ValueError):
+    sys.exit(1)
+SOURCE_GENERATION
+    do
+        attempt=$((attempt + 1))
+        [ "$attempt" -le 500 ] || exit 71
+        sleep 0.01
+    done
+elif [ "$2" = "-loglevel" ]; then
+    : > "$SCREENSHOTS_PRIVATE_SOURCE/encoder-started"
+fi
+exec "$SCREENSHOTS_PRIVATE_FFMPEG" "$@"
+"#,
+    )?;
+    std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o700))?;
+    prepare_freshness_case(root, "queued-quiet")?;
+    let output = root.join("queued-worker-must-not-publish.mkv");
+    let mut command = Command::new(env!("CARGO_BIN_EXE_screenshots"));
+    private(&mut command, root, address);
+    let path =
+        std::env::join_paths(std::iter::once(wrappers).chain(std::env::split_paths(&search)))?;
+    command
+        .env("PATH", path)
+        .env("SCREENSHOTS_PRIVATE_FFMPEG", engine)
+        .env("SCREENSHOTS_PRIVATE_SOURCE", root)
+        .args(["record", "portal-display"])
+        .arg(&output)
+        .args([
+            "--seconds",
+            "1",
+            "--fps",
+            "5",
+            "--width",
+            "16",
+            "--height",
+            "12",
+        ]);
+    let started = Instant::now();
+    let result = run(&mut command, Duration::from_secs(15))?;
+    std::fs::write(
+        root.join("freshness-child-finished"),
+        b"native worker finished",
+    )?;
+    let error = String::from_utf8_lossy(&result.stderr);
+    ensure!(
+        !result.status.success()
+            && (error.contains("Native capture deadline exceeded")
+                || error.contains("Native capture canceled"))
+            && !output.exists(),
+        "Actual worker accepted the queued pre-VIDEO_START source or failed for the wrong reason: {error}"
+    );
+    ensure!(
+        started.elapsed() >= Duration::from_secs(4)
+            && started.elapsed() < Duration::from_secs(12)
+            && root.join("initial-queued.json").is_file()
+            && root.join("old-queued.json").is_file()
+            && root.join("encoder-started").is_file()
+            && !root.join("post-queued.json").exists(),
+        "Actual worker freshness gate did not exercise initial + queued-old + post-start quiet source"
+    );
+    ensure!(
+        portal.observed.lock().unwrap().sessions.is_empty(),
+        "Queued-worker freshness case retained portal session"
+    );
+    Ok(())
+}
+
+include!("fixtures/portal-negotiation-tests.rs");

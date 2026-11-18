@@ -30,7 +30,7 @@ pub(crate) type Peers = Box<
         + Send,
 >;
 pub(crate) struct Plan {
-    pub request: MacVideoRequest,
+    pub call: NativeCaptureCall,
     peers: Option<Peers>,
     reader: Option<UnixStream>,
     writer: Option<UnixStream>,
@@ -41,7 +41,20 @@ impl Plan {
             .validate()
             .map_err(|_| CaptureError::InvalidRegion)?;
         Ok(Self {
-            request,
+            call: NativeCaptureCall::MacVideo { request },
+            peers: Some(peers),
+            reader: None,
+            writer: None,
+        })
+    }
+    #[cfg(target_os = "linux")]
+    pub fn portal(
+        request: app_core::PortalVideoRequest,
+        peers: Peers,
+    ) -> Result<Self, CaptureError> {
+        request.validate()?;
+        Ok(Self {
+            call: NativeCaptureCall::PortalVideo { request },
             peers: Some(peers),
             reader: None,
             writer: None,
@@ -110,9 +123,7 @@ impl Plan {
         cancel: Arc<AtomicBool>,
         deadline: Instant,
     ) -> Result<NativeCaptureReply> {
-        let call = NativeCaptureCall::MacVideo {
-            request: self.request,
-        };
+        let call = self.call.clone();
         protocol::handshake(io, protocol::HELLO, nonce)?;
         protocol::expect_handshake(io, protocol::ACK, nonce)?;
         protocol::request(io, &call)?;
@@ -129,7 +140,7 @@ impl Plan {
         let (done_tx, done) = mpsc::sync_channel(1);
         let aborted = cancel.clone();
         let peer = std::thread::Builder::new()
-            .name("mac-video-peers".into())
+            .name("native-video-peers".into())
             .stack_size(256 * 1024)
             .spawn(move || {
                 let result = peers(group, input, aborted.clone(), deadline, ready_tx.clone());
@@ -190,10 +201,33 @@ pub(crate) fn execute(
     plan: Plan,
     check: &app_core::NativeCaptureCheck<'_>,
 ) -> Result<app_core::MacVideoSummary, CaptureError> {
-    let call = NativeCaptureCall::MacVideo {
-        request: plan.request,
+    let reply = execute_reply(plan, check)?;
+    let NativeCaptureReply::MacVideo { summary } = reply else {
+        return Err(CaptureError::Backend(
+            "Native video returned wrong result".into(),
+        ));
     };
-    let timeout = Duration::from_secs(u64::from(plan.request.seconds) + 10);
+    Ok(summary)
+}
+#[cfg(target_os = "linux")]
+pub(crate) fn execute_portal(
+    plan: Plan,
+    check: &app_core::NativeCaptureCheck<'_>,
+) -> Result<app_core::PortalVideoSummary, CaptureError> {
+    let reply = execute_reply(plan, check)?;
+    let NativeCaptureReply::PortalVideo { summary } = reply else {
+        return Err(CaptureError::Backend(
+            "Portal video returned wrong result".into(),
+        ));
+    };
+    Ok(summary)
+}
+fn execute_reply(
+    plan: Plan,
+    check: &app_core::NativeCaptureCheck<'_>,
+) -> Result<NativeCaptureReply, CaptureError> {
+    let call = plan.call.clone();
+    let timeout = super::operation_timeout(&call);
     let reply = super::execute_operation(
         || {
             super::command()
@@ -204,12 +238,7 @@ pub(crate) fn execute(
         timeout,
         super::Operation::Video(plan),
     )?;
-    let NativeCaptureReply::MacVideo { summary } = reply else {
-        return Err(CaptureError::Backend(
-            "Native video returned wrong result".into(),
-        ));
-    };
-    Ok(summary)
+    Ok(reply)
 }
 
 pub(super) fn inherited_sink(nonce: &[u8; 16], parent: u32) -> Result<UnixStream> {
@@ -419,3 +448,34 @@ pub(super) fn serve(
 #[cfg(test)]
 #[path = "capture_worker_video_completion_tests.rs"]
 mod completion_tests;
+
+#[cfg(target_os = "linux")]
+pub(super) fn serve_portal(
+    request: app_core::PortalVideoRequest,
+    io: &mut transport::ActiveIo<'_>,
+    nonce: &[u8; 16],
+    parent: u32,
+) -> Result<()> {
+    request.validate()?;
+    let sink = inherited_sink(nonce, parent)?;
+    let family = FamilyCompletion::new();
+    let deadline = io.deadline;
+    let result = super::portal::video(request, deadline, sink, &mut || {
+        protocol::handshake(io, protocol::VIDEO_READY, nonce)
+            .map_err(|_| CaptureError::NativeCanceled)?;
+        protocol::expect_handshake(io, protocol::VIDEO_START, nonce)
+            .map_err(|_| CaptureError::NativeCanceled)?;
+        super::portal::VideoStart::after_encoder_start()
+    });
+    match result {
+        Ok(summary) => {
+            protocol::reply(io, NativeCaptureReply::PortalVideo { summary })?;
+            protocol::expect_handshake(io, protocol::VIDEO_FINISH, nonce)?;
+            family.finish();
+        }
+        Err(error) => {
+            protocol::failure(io, &error)?;
+        }
+    }
+    Ok(())
+}

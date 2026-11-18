@@ -21,22 +21,34 @@ GUI ownership. macOS file URLs retain their existing bounded native-open route,
 including the pending early URL. This does not integrate the separate headless
 Task host into the GUI or claim Task-host hotkeys as main-app hotkeys.
 
-The normal Unix app retains its existing visible control window, window design,
-controls, keyboard Quit and Close-to-quit behavior. Its main-app native tray and
-global capture hotkeys are still follow-up work. It never starts headless or
-hides on Close without those capabilities. A launcher can request an existing
-window, and macOS also registers GPUI's native `Application::on_reopen` for Dock
-or Finder reopen. Reopen and IPC consumer work is deferred to GPUI's main thread;
+The normal scoped Unix app starts with its existing visible control window and
+then initializes singleton-owned native tray/global-shortcut services. Existing
+controls and design stay intact. With a real tray host, Close releases the control
+thumbnail atlas entry and destroys the native UI windows while a retained controller
+keeps services and recoverable source pixels owned. Unavailable tray or WindowedOnly
+fallback follows Quit. Linux releases the lazy GPU context after the final native
+window renderer drops; it retains the native display and clipboard connection,
+including descriptor-only Wayland. macOS retains Dock ownership and keeps only a
+weak reference to the shared Metal instance-buffer pool: actual renderers and
+in-flight GPU completions own that pool. The next window initializes graphics on
+demand. No headless-startup or measured memory acceptance is claimed from this
+source change; see [resident graphics lifetime](unix-resident-graphics.md).
+A launcher can reopen the existing or replacement control, and macOS also
+registers GPUI's native `Application::on_reopen` for Dock or Finder reopen. Reopen and IPC consumer work is deferred to GPUI's main thread;
 no native window operation runs in the IPC thread. Native focus policy can grant
 attention instead of focus on Wayland. Protocol success means Show was queued or
 coalesced, not proof of physical presentation or forced focus.
 
-Quit stops launch admission before the existing capture/save/editor/storage
-cancellation-and-wait flow. A stale Show cannot reopen a quitting controller.
-The ownership guard survives `Application::run` and GPUI teardown; only then does
-Drop wake/join the listener and release the lock. Unexpected listener closure
-also enters the existing Quit flow. No optional native registration is created
-from an unscoped fallback.
+Quit stays provisional while recoverable capture/save/editor/storage work is
+pending. Native capture input pauses, and Show can expose an existing or recreated
+busy window; it cannot start a replacement capture. Show during UI retirement is
+coalesced to one controller flag and applied after old window destruction. Failed output save cancels Quit
+and resumes the same owned services/listener. Only irreversible final exit stops
+Show admission. The ownership guard survives `Application::run`, native service
+cleanup and GPUI teardown; then Drop retires the listener and releases the lock.
+Unexpected listener closure enters Quit. Unscoped fallback starts no optional
+native registration. Current service/source and verification limits follow
+[Unix desktop services](unix-native-services.md).
 
 ## Authority and capability discovery
 
@@ -194,7 +206,9 @@ Private native runtime plan:
    Compare reference budgets in PLAN; do not interpret the declared 256 KiB stack
    or fd inventory as measured resident/private memory.
 
-Main-app Linux/macOS tray, native capture hotkeys, actual unknown-scope sessions,
+Main-app tray/global-shortcut implementation is integrated; its current source,
+private adapter results and remaining native Mac/GUI/physical/resource gates are
+recorded in [Unix desktop services](unix-native-services.md). Actual unknown-scope sessions,
 focus policy, sleep/session-lock/restart behavior, real permissions/accessibility,
 signed release and reference-hardware performance remain explicit follow-ups.
 
@@ -229,3 +243,14 @@ All-target optimized workspace Clippy and Windows GNU metadata compilation also
 passed. Source reviews reached two clean rounds; the test-only unsafe-directory
 fixture now sets its intended 0755 permissions explicitly rather than depending
 on the invoking shell umask. Full current native macOS execution remains pending.
+
+## Listener retirement ordering correction (2026-11-17)
+
+`b3f0a27` closes the native listener and shutdown reader before dropping the
+Show sender. Observing channel EOF therefore cannot race a still-connectable
+listener. Ownership still remains held through application teardown. The strict
+existing regression first failed in the full optimized workspace run; after the
+production correction its 16 focused controls and 32 fresh exact-case repeats
+pass. The later complete core run passes 523 cases (53 ignored), with optimized
+all-target Clippy and formatting passing. No polling or new worker is added;
+this is ordering of the same owned resources, not a hardware/idle measurement.

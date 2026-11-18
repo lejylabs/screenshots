@@ -1,6 +1,6 @@
 use crate::{
     AnyWindowHandle, Bounds, DevicePixels, DispatchEventResult, DisplayId, GpuSpecs, HeadlessAtlas,
-    Pixels, PlatformAtlas, PlatformDisplay, PlatformHeadlessRenderer, PlatformInput,
+    Pixels, Platform, PlatformAtlas, PlatformDisplay, PlatformHeadlessRenderer, PlatformInput,
     PlatformInputHandler, PlatformWindow, Point, PromptButton, RequestFrameOptions, Scene, Size,
     TestDisplay, TestPlatform, TextInputConfiguration, TextInputStateChange, WindowAppearance,
     WindowBackgroundAppearance, WindowBounds, WindowControlArea, WindowInsets, WindowParams,
@@ -35,6 +35,7 @@ pub(crate) struct TestWindowState {
     input_callback: Option<Box<dyn FnMut(PlatformInput) -> DispatchEventResult>>,
     active_status_change_callback: Option<Box<dyn FnMut(bool)>>,
     visibility: WindowVisibility,
+    visibility_callback_pending: bool,
     visibility_callback: Option<Box<dyn FnMut(WindowVisibility)>>,
     hover_status_change_callback: Option<Box<dyn FnMut(bool)>>,
     resize_callback: Option<Box<dyn FnMut(Size<Pixels>, f32)>>,
@@ -110,6 +111,7 @@ impl TestWindow {
             input_callback: None,
             active_status_change_callback: None,
             visibility: WindowVisibility::Visible,
+            visibility_callback_pending: false,
             visibility_callback: None,
             hover_status_change_callback: None,
             resize_callback: None,
@@ -167,6 +169,36 @@ impl TestWindow {
         self.0.lock().frame_scheduled
     }
 
+    fn request_visibility_change(&self, visibility: WindowVisibility) {
+        let platform = {
+            let mut state = self.0.lock();
+            if state.visibility == visibility {
+                return;
+            }
+            state.visibility = visibility;
+            if state.visibility_callback_pending {
+                return;
+            }
+            state.visibility_callback_pending = true;
+            state.platform.upgrade()
+        };
+        let Some(platform) = platform else {
+            self.0.lock().visibility_callback_pending = false;
+            return;
+        };
+        let this = self.clone();
+        platform
+            .foreground_executor()
+            .spawn(async move {
+                let visibility = {
+                    let mut state = this.0.lock();
+                    state.visibility_callback_pending = false;
+                    state.visibility
+                };
+                this.simulate_visibility_change(visibility);
+            })
+            .detach();
+    }
     pub fn simulate_visibility_change(&self, visibility: WindowVisibility) {
         let callback = {
             let mut state = self.0.lock();
@@ -421,6 +453,7 @@ impl PlatformWindow for TestWindow {
     }
 
     fn activate(&self) {
+        self.request_visibility_change(WindowVisibility::Visible);
         self.0
             .lock()
             .platform
@@ -470,7 +503,18 @@ impl PlatformWindow for TestWindow {
     }
 
     fn minimize(&self) {
-        unimplemented!()
+        self.request_visibility_change(WindowVisibility::Hidden);
+        let platform = self.0.lock().platform.upgrade();
+        if let Some(platform) = platform {
+            let active = platform
+                .active_window
+                .borrow()
+                .as_ref()
+                .is_some_and(|window| Rc::ptr_eq(&window.0, &self.0));
+            if active {
+                platform.set_active_window(None);
+            }
+        }
     }
 
     fn zoom(&self) {

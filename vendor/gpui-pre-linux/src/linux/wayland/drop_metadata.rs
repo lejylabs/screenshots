@@ -1,66 +1,7 @@
-//! Bounded native URI metadata. Never fetches an image or opens referenced files.
-use gpui::{ExternalPaths, ExternalUrlDrop};
-use http_client::Url;
-use std::{path::PathBuf, sync::Arc};
-pub(super) enum Metadata {
-    Files(ExternalPaths),
-    Url(ExternalUrlDrop),
-}
+//! Shared bounded native URI metadata. Never fetches or opens a reference.
+pub(super) use gpui::NativeDropMetadata as Metadata;
 pub(super) fn parse(bytes: &[u8]) -> anyhow::Result<Metadata> {
-    anyhow::ensure!(bytes.len() <= 64 * 1024, "Drag URI metadata exceeds64 KiB");
-    let text = std::str::from_utf8(bytes)?;
-    let mut files = smallvec::SmallVec::new();
-    let mut urls = Vec::new();
-    let mut count = 0usize;
-    for line in text.lines() {
-        let line = line.trim_end_matches('\r');
-        if line.is_empty() || line.starts_with('#') {
-            continue;
-        }
-        count += 1;
-        anyhow::ensure!(
-            count <= 32 && line.len() <= 12 * 1024,
-            "Too many or oversized drag references"
-        );
-        let url = Url::parse(line)?;
-        match url.scheme() {
-            "file" => {
-                let path = url
-                    .to_file_path()
-                    .map_err(|_| anyhow::anyhow!("Unsupported file URL"))?;
-                validate_path(&path)?;
-                files.push(path);
-            }
-            "http" | "https" => {
-                anyhow::ensure!(
-                    line.len() <= 4096 && url.username().is_empty() && url.password().is_none(),
-                    "Invalid image URL drop"
-                );
-                urls.push(Arc::<str>::from(line));
-            }
-            _ => anyhow::bail!("Unsupported drag URI scheme"),
-        }
-    }
-    anyhow::ensure!(count > 0, "Empty drag URI list");
-    if !files.is_empty() {
-        anyhow::ensure!(
-            urls.is_empty(),
-            "Mixed file and web URL drops are unsupported"
-        );
-        Ok(Metadata::Files(ExternalPaths(files)))
-    } else {
-        anyhow::ensure!(urls.len() == 1, "Drop exactly one image URL");
-        Ok(Metadata::Url(ExternalUrlDrop {
-            url: urls.remove(0),
-        }))
-    }
-}
-fn validate_path(path: &PathBuf) -> anyhow::Result<()> {
-    anyhow::ensure!(
-        path.is_absolute() && path.as_os_str().as_encoded_bytes().len() <= 4096,
-        "Invalid or oversized native drop path"
-    );
-    Ok(())
+    Metadata::parse(bytes)
 }
 #[cfg(test)]
 mod tests {

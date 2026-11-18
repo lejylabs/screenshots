@@ -1,0 +1,412 @@
+{
+  "version": 1,
+  "scope": "Conservative published-base advisory identities for selected path-patched third-party crates only;not actual source/build/license metadata.",
+  "first_party": [
+    {
+      "name": "app-core",
+      "manifest": "crates/app-core/Cargo.toml"
+    },
+    {
+      "name": "app-ui",
+      "manifest": "crates/app-ui/Cargo.toml"
+    },
+    {
+      "name": "screenshots",
+      "manifest": "apps/desktop/Cargo.toml"
+    },
+    {
+      "name": "shared",
+      "manifest": "crates/shared/Cargo.toml"
+    }
+  ],
+  "packages": [
+    {
+      "name": "accesskit_atspi_common",
+      "version": "0.19.1",
+      "path": "vendor/accesskit_atspi_common",
+      "published_archive_sha256": "023da0e5097f46df7092d5280b02efb9bbf8d93298daeced42652463e357d636",
+      "published_manifest_sha256": "9eadb3f1642e8136d507b13c910276debd203929d3acdcfe1370df4c79466e27",
+      "published_checksum_api": "https://crates.io/api/v1/crates/accesskit_atspi_common/0.19.1",
+      "local_source": {
+        "sha256": "d6a66c2082870c9799bb62c6d4ee8cfa2f0712fefc87f100102d1591ab5136f8",
+        "files": 20,
+        "bytes": 178895
+      }
+    },
+    {
+      "name": "accesskit_unix",
+      "version": "0.22.1",
+      "path": "vendor/accesskit_unix",
+      "published_archive_sha256": "03e156ed3802e35eefe894ef2671bc6c889303d8a7e110b5e1b48f504b91362f",
+      "published_manifest_sha256": "2f1bb12679396e02bed65a1e51bba2375f639cdbceb3773b5226f7dc8f3b9818",
+      "published_checksum_api": "https://crates.io/api/v1/crates/accesskit_unix/0.22.1",
+      "local_source": {
+        "sha256": "dc7f451f131265a408e1f19d909511ddee690983740000a775f015ef6d8a0512",
+        "files": 26,
+        "bytes": 120518
+      }
+    },
+    {
+      "name": "ashpd",
+      "version": "0.14.0",
+      "path": "vendor/ashpd",
+      "published_archive_sha256": "8ba377f1fb1e3972907220f1f8e7c0a45164580905c981d872c1fb90d921cbcc",
+      "published_manifest_sha256": "43cdfcbf90b17e53f9ff67247a962d29cd75bb712aa6b5a7dcd83fde53495b94",
+      "published_checksum_api": "https://crates.io/api/v1/crates/ashpd/0.14.0",
+      "local_source": {
+        "sha256": "ade2454bf5be193f95b1d8bfc33e78092119e53cf8c87bd52fb18cb62f5d9479",
+        "files": 86,
+        "bytes": 732489
+      }
+    },
+    {
+      "name": "atspi",
+      "version": "0.29.0",
+      "path": "vendor/atspi",
+      "published_archive_sha256": "c77886257be21c9cd89a4ae7e64860c6f0eefca799bb79127913052bd0eefb3d",
+      "published_manifest_sha256": "70c54d8697501dcc74e31ae1952bae47504cd2e4b2c24f638a16bced125b6a0c",
+      "published_checksum_api": "https://crates.io/api/v1/crates/atspi/0.29.0",
+      "local_source": {
+        "sha256": "0a9e30f4cd998e60a613c639c9625df1e9cab83009c35df77c9fe7c1c150d129",
+        "files": 7,
+        "bytes": 21847
+      }
+    },
+    {
+      "name": "atspi-common",
+      "version": "0.13.0",
+      "path": "vendor/atspi-common",
+      "published_archive_sha256": "20c5617155740c98003016429ad13fe43ce7a77b007479350a9f8bf95a29f63d",
+      "published_manifest_sha256": "95c9ca07b25ddf97f8177bd7fb6adbfeb00a95360aa357e228611a3a0a57c991",
+      "published_checksum_api": "https://crates.io/api/v1/crates/atspi-common/0.13.0",
+      "local_source": {
+        "sha256": "000cce4ad5635e502915aded398adc881957b7b1a2e2e814bcd4aa7495b3e047",
+        "files": 56,
+        "bytes": 678946
+      }
+    },
+    {
+      "name": "atspi-proxies",
+      "version": "0.13.0",
+      "path": "vendor/atspi-proxies",
+      "published_archive_sha256": "2230e48787ed3eb4088996eab66a32ca20c0b67bbd4fd6cdfe79f04f1f04c9fc",
+      "published_manifest_sha256": "5d5bb026caae947d9d46ee2f1b58a73f9511fc287de712a63960e9bf381d7e35",
+      "published_checksum_api": "https://crates.io/api/v1/crates/atspi-proxies/0.13.0",
+      "local_source": {
+        "sha256": "70c489ff4d63b3b45c5be5090afaec1408faab9a4b5348241afa9e2bf39706aa",
+        "files": 30,
+        "bytes": 82676
+      }
+    },
+    {
+      "name": "cosmic-text",
+      "version": "0.19.0",
+      "path": "vendor/cosmic-text",
+      "published_archive_sha256": "be17b688510d934ce13f48a2beba700e11583e281e0fda99c22bb256a14eda73",
+      "published_manifest_sha256": "da18f50fdb123874469241e32d6ff4014638984ca995b724e90769ceaed1d560",
+      "published_checksum_api": "https://crates.io/api/v1/crates/cosmic-text/0.19.0",
+      "local_source": {
+        "sha256": "253c8826696218bb3b95d11d68390cb38931619126493195b70f6a96dd53359c",
+        "files": 114,
+        "bytes": 5828428
+      }
+    },
+    {
+      "name": "curl-sys",
+      "version": "0.4.91+curl-8.22.0",
+      "path": "vendor/curl-sys",
+      "published_archive_sha256": "cd39579123e45bf762716bb893d43886ed1cabe6289455be29a4f1d4e37afb06",
+      "published_manifest_sha256": "8b059e25c0cfb113ba1019a21fe51cc515cb3796105c6d31cd2aa77a00760d1c",
+      "published_checksum_api": "https://crates.io/api/v1/crates/curl-sys/0.4.91+curl-8.22.0",
+      "local_source": {
+        "sha256": "9436afa3f8781aca33f1ae58d2de290fcf1d98a5f779e0e2cc073cf06aa3ba28",
+        "files": 762,
+        "bytes": 9153790
+      }
+    },
+    {
+      "name": "glib",
+      "version": "0.18.5",
+      "path": "vendor/glib",
+      "published_archive_sha256": "233daaf6e83ae6a12a52055f568f9d7cf4671dabb78ff9560ab6da230ce00ee5",
+      "published_manifest_sha256": "bcd52d812b4c111864ae8e88ba6c0a8311eb0cf781b5e81634950b4619592132",
+      "published_checksum_api": "https://crates.io/api/v1/crates/glib/0.18.5",
+      "local_source": {
+        "sha256": "a4b48ff0497e67cdb425dfc9fea5c95e7808fa0638e81e4b32767be7b531e1c8",
+        "files": 121,
+        "bytes": 1716429
+      }
+    },
+    {
+      "name": "glib-macros",
+      "version": "0.18.5",
+      "path": "vendor/glib-macros",
+      "published_archive_sha256": "0bb0228f477c0900c880fd78c8759b95c7636dbd7842707f49e132378aa2acdc",
+      "published_manifest_sha256": "1d7cd2a7224a56fed7c8865d76e4837aaad9daabc0b80a2387c0047fe59bc3e3",
+      "published_checksum_api": "https://crates.io/api/v1/crates/glib-macros/0.18.5",
+      "local_source": {
+        "sha256": "e9341bccd97ab33ffaeb470c9b360558bc69cac80843b5ec814ebfed1e50f641",
+        "files": 27,
+        "bytes": 272808
+      }
+    },
+    {
+      "name": "gpui-base",
+      "version": "0.9.1",
+      "path": "vendor/gpui-base",
+      "published_archive_sha256": "f3e9ae5237737cfd110d0ff513fcd9c20f97d98ebabd0a73164068177f0aca4f",
+      "published_manifest_sha256": "5d8806412859c3eb5123dddc8384c06592d1faeb08575fb5e69e6b778ddd7ce3",
+      "published_checksum_api": "https://crates.io/api/v1/crates/gpui-base/0.9.1",
+      "local_source": {
+        "sha256": "80053042b65da5b8501b026ee3ec2d7b1e85256c886e806f60b28e1059d1ed83",
+        "files": 226,
+        "bytes": 5110772
+      }
+    },
+    {
+      "name": "gpui-component",
+      "version": "0.9.1",
+      "path": "vendor/gpui-component",
+      "published_archive_sha256": "e155c4914bd809d966660610d596f7b57c5cd38979ca2c132215057a91f23f03",
+      "published_manifest_sha256": "3d9057419ce3e433547c8c4315a6a3882ccb38f2ff5fda511be91c5bb6a12f9f",
+      "published_checksum_api": "https://crates.io/api/v1/crates/gpui-component/0.9.1",
+      "local_source": {
+        "sha256": "1d5b4bb6b2ce65c0a7009e2a1d553176fc6e4a3e0962c4fc95091332b624977e",
+        "files": 285,
+        "bytes": 4210231
+      }
+    },
+    {
+      "name": "gpui-kit",
+      "version": "0.9.1",
+      "path": "vendor/gpui-kit",
+      "published_archive_sha256": "aca1dedfea73645b60b5893c9c16de0b1396f2cf4251d19e5f03a295c1b61879",
+      "published_manifest_sha256": "d2a3625611a2ea1fc6bcb844735cc8f2352c27b089fb02b74fb965deffeae04c",
+      "published_checksum_api": "https://crates.io/api/v1/crates/gpui-kit/0.9.1",
+      "local_source": {
+        "sha256": "1121f10c6a38733eff6b710747049d5532b7049b50d5ef7cbf745baa26acb91d",
+        "files": 56,
+        "bytes": 1119505
+      }
+    },
+    {
+      "name": "gpui-pre",
+      "version": "0.3.12",
+      "path": "vendor/gpui-pre",
+      "published_archive_sha256": "29db89613527079737f53752eab27fb65c9a7dd94979256c65a0e590c9fd34d8",
+      "published_manifest_sha256": "bc447800775eecc6d4abea6871735e1e1cc1c29f8f077a140bd89a38c5a01c39",
+      "published_checksum_api": "https://crates.io/api/v1/crates/gpui-pre/0.3.12",
+      "local_source": {
+        "sha256": "58657fdd0259a026e12fa3958675a5b5cdd50f34a793a35856a890b97006ffb0",
+        "files": 173,
+        "bytes": 9013855
+      }
+    },
+    {
+      "name": "gpui-pre-linux",
+      "version": "0.3.12",
+      "path": "vendor/gpui-pre-linux",
+      "published_archive_sha256": "54bab418d0b7c027af9495f278619b46887362b3bd6446e246c87c5b0fa167df",
+      "published_manifest_sha256": "4d7f4ced0337111de27421f163469dcdcd3a4f71831dec6757fbe3798e5fe622",
+      "published_checksum_api": "https://crates.io/api/v1/crates/gpui-pre-linux/0.3.12",
+      "local_source": {
+        "sha256": "b5eaf57da109490670d4a205dc67c7fea0b6821163b4313d998845b9829fce63",
+        "files": 40,
+        "bytes": 780713
+      }
+    },
+    {
+      "name": "gpui-pre-macos",
+      "version": "0.3.12",
+      "path": "vendor/gpui-pre-macos",
+      "published_archive_sha256": "2de7d3f4ad51ac387e822495db363fcc1188d349793365731d054444c4cb06ee",
+      "published_manifest_sha256": "7f721b65b56f64af2e61931d1680db535c91843ece93fee3cc1ec23fbe9ca98a",
+      "published_checksum_api": "https://crates.io/api/v1/crates/gpui-pre-macos/0.3.12",
+      "local_source": {
+        "sha256": "68429cd4f93b33021eebcbbae652f58f0d3e116eb7cd4fcf644f1fe1b700ff62",
+        "files": 17,
+        "bytes": 536629
+      }
+    },
+    {
+      "name": "gpui-pre-reqwest",
+      "version": "0.12.15",
+      "path": "vendor/gpui-pre-reqwest",
+      "published_archive_sha256": "05be23908e707966824f8c51a609904b7f30739e8d915e120a53c1b995ba964c",
+      "published_manifest_sha256": "cdfa4fd6cd772defd5f5e2900e6baeedb91595d179874782b412c904be9c5969",
+      "published_checksum_api": "https://crates.io/api/v1/crates/gpui-pre-reqwest/0.12.15",
+      "local_source": {
+        "sha256": "13fee52a85a71581dc1a2abc7bda4d067ea796c2f1d3c946c68a3130c9e44e5b",
+        "files": 76,
+        "bytes": 895402
+      }
+    },
+    {
+      "name": "gpui-pre-scheduler",
+      "version": "0.3.12",
+      "path": "vendor/gpui-pre-scheduler",
+      "published_archive_sha256": "b1d3fa97eeb4ea233635b756684affe96db9e29fc2af8cdc269268bd7ff649fc",
+      "published_manifest_sha256": "cce8fe2e0520ee39eee0db0163c9ef74164083f65ed714e7549232e3cbe5ed14",
+      "published_checksum_api": "https://crates.io/api/v1/crates/gpui-pre-scheduler/0.3.12",
+      "local_source": {
+        "sha256": "39aee5d1cedd62ab120b86f33c21e51bc4e827d950cd7e8d6d72297d3aa73af2",
+        "files": 10,
+        "bytes": 136965
+      }
+    },
+    {
+      "name": "gpui-pre-wgpu",
+      "version": "0.3.12",
+      "path": "vendor/gpui-pre-wgpu",
+      "published_archive_sha256": "dc76608d385f6d0dcbad44504b1bf669dac3b7d7ffa2885acdb7c1c358caf852",
+      "published_manifest_sha256": "ce0a25b448b1331505b457d4c0034a88ca8f21a4846698029a8844cec59f1184",
+      "published_checksum_api": "https://crates.io/api/v1/crates/gpui-pre-wgpu/0.3.12",
+      "local_source": {
+        "sha256": "1b0cdb19d6b07e190a5fd86732d116470ecdcb53cebcfe4e9f43d1e7f904a3b7",
+        "files": 16,
+        "bytes": 451740
+      }
+    },
+    {
+      "name": "gpui-pre-windows",
+      "version": "0.3.12",
+      "path": "vendor/gpui-pre-windows",
+      "published_archive_sha256": "7201762420222d5b5ce5bdf0056996199212a3349bfb2457a3a0238c688681f3",
+      "published_manifest_sha256": "487f6fb8650782588e18ea6ca3f5dd704fc9e7d54a6a4e0cce19ca4d40769d66",
+      "published_checksum_api": "https://crates.io/api/v1/crates/gpui-pre-windows/0.3.12",
+      "local_source": {
+        "sha256": "f18254d9e91b405f7500413df1d08d1a3fcec7ca62050e5f9c7d3c2d7fd83ed9",
+        "files": 43,
+        "bytes": 789673
+      }
+    },
+    {
+      "name": "gtk3-macros",
+      "version": "0.18.2",
+      "path": "vendor/gtk3-macros",
+      "published_archive_sha256": "52ff3c5b21f14f0736fed6dcfc0bfb4225ebf5725f3c0209edeec181e4d73e9d",
+      "published_manifest_sha256": "1f16acd147741cfc2edbe4475fccd34ee4d7da7428d1aa4f995786ead7bdcb04",
+      "published_checksum_api": "https://crates.io/api/v1/crates/gtk3-macros/0.18.2",
+      "local_source": {
+        "sha256": "85dbf45016b76df92924f6f5b5c9e06870b3a039e8158e858c5be839024cfca3",
+        "files": 8,
+        "bytes": 16677
+      }
+    },
+    {
+      "name": "harfrust",
+      "version": "0.15.0",
+      "path": "vendor/harfrust",
+      "published_archive_sha256": "865dcc4105d51c323d8fedbb2d75b5e9c8ecddf5613f74c82f851d0afbc97114",
+      "published_manifest_sha256": "c8089cc5b2758651a22eb6ad1d359b7f0c8ad1d6971ecbcd2ceba46835c628f0",
+      "published_checksum_api": "https://crates.io/api/v1/crates/harfrust/0.15.0",
+      "local_source": {
+        "sha256": "1d8897ab85871a698eb878606d02fa69fe2b42c71b8374f4fc14a4867022164e",
+        "files": 84,
+        "bytes": 1799828
+      }
+    },
+    {
+      "name": "moxcms",
+      "version": "0.8.1",
+      "path": "vendor/moxcms",
+      "published_archive_sha256": "bb85c154ba489f01b25c0d36ae69a87e4a1c73a72631fc6c0eb6dde34a73e44b",
+      "published_manifest_sha256": "290c7622a797623db3c35105061673a1231ee462e529fe717bde96b96ff49679",
+      "published_checksum_api": "https://crates.io/api/v1/crates/moxcms/0.8.1",
+      "local_source": {
+        "sha256": "05dc67cd0411632fbb947615cd7177e04f7dce5d0d8e338c839d1c4d1ec5d1f7",
+        "files": 129,
+        "bytes": 1568238
+      }
+    },
+    {
+      "name": "rav1e",
+      "version": "0.8.1",
+      "path": "vendor/rav1e",
+      "published_archive_sha256": "43b6dd56e85d9483277cde964fd1bdb0428de4fec5ebba7540995639a21cb32b",
+      "published_manifest_sha256": "31addb537f320450c199e4e4154c785ad563fe31ebd4c475228dc11743b6dd60",
+      "published_checksum_api": "https://crates.io/api/v1/crates/rav1e/0.8.1",
+      "local_source": {
+        "sha256": "f19346c6c46d9da26da077a0c01d6c17279c3949965ad9275e2ba31538832f2f",
+        "files": 220,
+        "bytes": 9880101
+      }
+    },
+    {
+      "name": "xcap",
+      "version": "0.9.10",
+      "path": "vendor/xcap",
+      "published_archive_sha256": "e833d39f662982a09608f2550fd4036725f98d78738e40fa7206a26258b06384",
+      "published_manifest_sha256": "49295b4ad89d023118c8edba630ea0df45c7c7c4ff5903cfad8a8198fe651ec1",
+      "published_checksum_api": "https://crates.io/api/v1/crates/xcap/0.9.10",
+      "local_source": {
+        "sha256": "543724471f2951c6f4a4328635b94e2d37485c3aa98cafb768145b655861da6c",
+        "files": 69,
+        "bytes": 365998
+      }
+    },
+    {
+      "name": "zbus-lockstep",
+      "version": "0.5.2",
+      "path": "vendor/zbus-lockstep",
+      "published_archive_sha256": "6998de05217a084b7578728a9443d04ea4cd80f2a0839b8d78770b76ccd45863",
+      "published_manifest_sha256": "d82454126f476bcca3b6fc708795bc53a808813b208e716a8d4a4567b8609d05",
+      "published_checksum_api": "https://crates.io/api/v1/crates/zbus-lockstep/0.5.2",
+      "local_source": {
+        "sha256": "5fb6b6e69a4a652c857fcbebafcd6c25ac65894b8ef73816d4e209191249b282",
+        "files": 8,
+        "bytes": 52954
+      }
+    },
+    {
+      "name": "zbus-lockstep-macros",
+      "version": "0.5.2",
+      "path": "vendor/zbus-lockstep-macros",
+      "published_archive_sha256": "10da05367f3a7b7553c8cdf8fa91aee6b64afebe32b51c95177957efc47ca3a0",
+      "published_manifest_sha256": "50cf448f06fc345dc38fb462ad9814930ef456f48fc5a4c57a54ae0abc219c17",
+      "published_checksum_api": "https://crates.io/api/v1/crates/zbus-lockstep-macros/0.5.2",
+      "local_source": {
+        "sha256": "03815e1c7cbc855d0f54ea020a1cebdb91030d84a0be727bdfb2180acb9e3543",
+        "files": 6,
+        "bytes": 16985
+      }
+    }
+  ],
+  "mitigations": [
+    {
+      "id": "RUSTSEC-2024-0429",
+      "package": "glib",
+      "version": "0.18.5",
+      "kind": "glib-variant-out-argument-v1",
+      "advisory_path": "crates/glib/RUSTSEC-2024-0429.md",
+      "advisory_sha256": "0c1ab1d4a0ebe5948e362728b31613ab588b84a0284dadbc119f7424fdd9c6d0",
+      "source_file": "src/variant_iter.rs",
+      "published_file_sha256": "1fd02859333761c45321b32f28b24233446b97d0022a90d3a937ed162585b90e",
+      "patched_file_sha256": "a0f5ee8acb8faa089bcdfbc9a57372609fce7654026ccef7d9a224d05a654ccc",
+      "upstream_fix": {
+        "url": "https://github.com/gtk-rs/gtk-rs-core/commit/b5a4071e439bef2b5eea76c3aa25e5ae84839e34.patch",
+        "sha256": "a742bf59f1b00af0f434623b34e2fd969dc8697d37c796efdf909dd9eb19b854"
+      },
+      "evidence": {
+        "scope": "Existing exact two-line source backport verified against published archive and official upstream fix;prior execution logs,not new author runs.",
+        "logs": [
+          {
+            "path_at_execution": "target/glib-upstream-variant-tests.log",
+            "sha256": "75480a116cad3b4e2a2af1ce6f5eeea5bdad8d45678030364b1c8a53fa319a51",
+            "meaning": "Prior optimized isolated upstream iterator suite:11 passed,0 failed;215 filtered."
+          },
+          {
+            "path_at_execution": "target/glib-variant-regression.log",
+            "sha256": "85d8a0e57c880b6530ce4ffaecafd72298185bb4088d4eca952cad4a7356ac9f",
+            "meaning": "Prior optimized actual workspace regression:1 passed,0 failed."
+          },
+          {
+            "path_at_execution": "target/glib-variant-tests.log",
+            "sha256": "20b876d3b9bbe2eaa51850a34857098d9130f262fd6acaafbcae6768648e229f",
+            "meaning": "Initial vendor workspace-admission attempt failed before tests;not a pass."
+          }
+        ]
+      }
+    }
+  ]
+}

@@ -4954,3 +4954,212 @@ fn history_previews_preserve_all_failed_capture_sources(cx: &mut TestAppContext)
     }
     std::fs::remove_dir_all(root).unwrap();
 }
+
+#[gpui::test]
+fn desktop_topology_cancels_owned_native_work_without_releasing_admission_or_previous_output(
+    cx: &mut TestAppContext,
+) {
+    let handle = open_workspace(cx);
+    handle
+        .update(cx, |this, _, cx| {
+            let previous = PathBuf::from("previous-confirmed-output.png");
+            this.last_saved = Some(previous.clone());
+            this.clipboard_status = "Previous clipboard ownership".into();
+            this.begin_capturing(cx);
+            this.capture_display_generation = Some(this.topology_generation);
+            let cancel = this.native_capture_cancel.as_ref().unwrap().clone();
+            this.invalidate_capture_topology(cx);
+            assert!(cancel.check().is_err());
+            assert!(
+                this.capturing,
+                "admission stays owned until the worker retires"
+            );
+            assert_eq!(this.last_saved.as_ref(), Some(&previous));
+            assert_eq!(this.clipboard_status, "Previous clipboard ownership");
+            this.finish_capturing(cx);
+            this.begin_capturing(cx);
+            let image_load = this.native_capture_cancel.as_ref().unwrap().clone();
+            this.invalidate_capture_topology(cx);
+            assert!(
+                image_load.check().is_ok(),
+                "frozen image/file operations survive display changes"
+            );
+            this.finish_capturing(cx);
+        })
+        .unwrap();
+}
+
+#[gpui::test]
+fn topology_change_discards_completed_native_pixels_before_output(cx: &mut TestAppContext) {
+    let handle = open_workspace(cx);
+    handle
+        .update(cx, |this, _, cx| {
+            this.begin_capturing(cx);
+            this.capture_display_generation = Some(this.topology_generation);
+            this.invalidate_capture_topology(cx);
+            this.finish_capture_work(
+                CaptureCompletion {
+                    result: Ok((vec![], HashMap::new())),
+                    preview: true,
+                    edit_selection: false,
+                    profile: CaptureOutputProfile::CopyOnly,
+                    exact_region: None,
+                    repeating_region: false,
+                },
+                cx,
+            );
+            assert!(!this.capturing && !this.preview_active);
+            assert!(this.last_capture.is_none() && this.last_saved.is_none());
+            assert!(this.capture_status.contains("canceled"));
+        })
+        .unwrap();
+}
+
+#[gpui::test]
+fn resized_overlay_drops_frozen_pixels_and_stale_cancel_cannot_close_later_preview(
+    cx: &mut TestAppContext,
+) {
+    let handle = open_workspace(cx);
+    let overlay = handle
+        .update(cx, |this, _, cx| {
+            let shot = CapturedImage {
+                desktop_layout: None,
+                display_id: u64::from(cx.primary_display().unwrap().id()).to_string(),
+                window_id: None,
+                width: 2,
+                height: 2,
+                pixels: Arc::new(image::RgbaImage::from_pixel(
+                    2,
+                    2,
+                    image::Rgba([9, 17, 33, 255]),
+                )),
+                png_path: PathBuf::from("synthetic-selection.png"),
+                elapsed_ms: 0,
+                source_format: app_core::PixelFormat::Rgba8UnormSrgb,
+                display_geometry: None,
+            };
+            let mut renders = HashMap::new();
+            renders.insert(shot.png_path.clone(), render_frame(&shot));
+            this.show_overlays(OverlayMode::Fullscreen, &[shot], &renders, cx);
+            this.overlays[0]
+        })
+        .unwrap();
+    overlay
+        .update(cx, |overlay, window, cx| {
+            overlay.drag_start = Some(point(px(0.), px(0.)));
+            window.set_scale_factor(window.scale_factor() + 0.25);
+            overlay.finish_drag(point(px(1.), px(1.)), window, cx);
+            assert!(!overlay.active);
+            assert!(overlay.snapshot.is_none() && overlay.render_image.is_none());
+            assert!(overlay.drag_start.is_none());
+            // Queued geometry cancellation belongs only to the previous selection.
+            overlay
+                .owner
+                .update(cx, |this, _| {
+                    this.capture_generation = this.capture_generation.wrapping_add(1);
+                    this.capture_status = "Later preview".into();
+                })
+                .unwrap();
+        })
+        .unwrap();
+    cx.run_until_parked();
+    handle
+        .update(cx, |this, _, _| {
+            assert!(this.preview_active);
+            assert_eq!(this.capture_status, "Later preview");
+            assert!(this.last_capture.is_none() && this.last_saved.is_none());
+        })
+        .unwrap();
+}
+
+#[gpui::test]
+fn deferred_topology_retirement_cannot_close_a_new_selection(cx: &mut TestAppContext) {
+    let handle = open_workspace(cx);
+    handle
+        .update(cx, |this, _, cx| {
+            this.preview_active = true;
+            this.invalidate_capture_topology(cx);
+            this.capture_generation = this.capture_generation.wrapping_add(1);
+            this.capture_status = "Later topology selection".into();
+        })
+        .unwrap();
+    cx.run_until_parked();
+    handle
+        .update(cx, |this, _, _| {
+            assert!(this.preview_active);
+            assert_eq!(this.capture_status, "Later topology selection");
+        })
+        .unwrap();
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[gpui::test]
+fn annotate_selection_topology_cancel_after_render_restores_the_same_hidden_control(
+    cx: &mut TestAppContext,
+) {
+    let control = open_workspace(cx);
+    let (overlay, source_pixels) = control
+        .update(cx, |this, window, cx| {
+            let source = CapturedImage {
+                desktop_layout: None,
+                display_id: u64::from(cx.primary_display().unwrap().id()).to_string(),
+                window_id: None,
+                width: 4,
+                height: 4,
+                pixels: Arc::new(image::RgbaImage::from_pixel(
+                    4,
+                    4,
+                    image::Rgba([9, 17, 33, 255]),
+                )),
+                png_path: PathBuf::from("synthetic-topology-annotation.png"),
+                elapsed_ms: 0,
+                source_format: app_core::PixelFormat::Rgba8UnormSrgb,
+                display_geometry: None,
+            };
+            let source_pixels = Arc::downgrade(&source.pixels);
+            let mut renders = HashMap::new();
+            renders.insert(source.png_path.clone(), render_frame(&source));
+            this.show_overlays(OverlayMode::Fullscreen, &[source], &renders, cx);
+            this.test_selection_topology_after_prepare = true;
+            window.minimize_window();
+            (this.overlays[0], source_pixels)
+        })
+        .unwrap();
+    cx.run_until_parked();
+    control
+        .update(cx, |this, window, _| {
+            assert!(
+                !window.is_visible(),
+                "fixture must own a hidden existing control"
+            );
+            assert!(this.preview_active && !this.capturing);
+            assert_eq!(this.control, Some(control.into()));
+        })
+        .unwrap();
+    overlay
+        .update(cx, |overlay, window, cx| {
+            overlay.output_profile = CaptureOutputProfile::AnnotateFirst;
+            overlay.drag_start = Some(point(px(0.), px(0.)));
+            let viewport = window.viewport_size();
+            overlay.finish_drag(point(viewport.width / 2., viewport.height / 2.), window, cx);
+        })
+        .unwrap();
+    // Exercises release -> real crop/render -> topology event -> rejected delivery,
+    // followed by the native test-window activation/visibility event.
+    cx.run_until_parked();
+    control
+        .update(cx, |this, window, _| {
+            assert_eq!(this.control, Some(control.into()));
+            assert!(
+                window.is_visible(),
+                "canceled annotation must restore the existing control"
+            );
+            assert!(!this.capturing && !this.preview_active);
+            assert!(this.native_capture_cancel.is_none() && this.editor.is_none());
+            assert!(this.capture_status.to_lowercase().contains("cancel"));
+            assert!(this.last_capture.is_none() && this.last_saved.is_none());
+            assert!(!this.copying && !this.saving);
+            assert!(source_pixels.upgrade().is_none());
+        })
+        .unwrap();
+}

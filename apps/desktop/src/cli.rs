@@ -90,6 +90,8 @@ Headless commands (no desktop UI; outputs and uploads require explicit actions):
   screenshots ocr INPUT [--language LANG]
   screenshots ocr-region DISPLAY X Y WIDTH HEIGHT [--language LANG]
   screenshots qr-region DISPLAY X Y WIDTH HEIGHT
+  screenshots ocr-portal-region display|window X Y WIDTH HEIGHT [--language LANG]
+  screenshots qr-portal-region display|window X Y WIDTH HEIGHT
   screenshots workflow RECIPE INPUT OUTPUT
   screenshots task run|validate PROFILE.json
   screenshots schedule add DATABASE ID PROFILE --at RFC3339 [--every-ms N --count N|--forever]
@@ -106,8 +108,10 @@ Headless commands (no desktop UI; outputs and uploads require explicit actions):
   screenshots gif OUTPUT.gif --delay-ms N INPUT INPUT... (2–16 images)
   screenshots stitch-scroll OUTPUT MIN_OVERLAP INPUT INPUT [INPUT...]
   screenshots scroll-capture WINDOW OUTPUT.png --region X Y WIDTH HEIGHT [--steps N] [--wheel N] [--settle-ms N] [--delay-ms N] [--min-overlap N] [--tolerance N] [--trim-top N] [--trim-bottom N]
-  screenshots record x11|gdigrab|avfoundation|test OUTPUT.mkv|OUTPUT.gif --seconds N --fps N --width N --height N
+  screenshots scroll-capture-portal display|window OUTPUT.png --width N --height N --frames N --interval-ms N [--minimum-overlap N]
+  screenshots record x11|gdigrab|avfoundation|portal-display|portal-window|test OUTPUT.mkv|OUTPUT.gif --seconds N --fps N --width N --height N
       [--x X --y Y] [--cursor show|hide] [--display ID] (display is required only for macOS avfoundation video)
+      Portal modes require the selected raster to match --width/--height; offsets are unavailable.
       [--audio-mode test|pulse|alsa|dshow|avfoundation --audio-device NAME --audio-channels 1|2] (MKV only)
   screenshots record-audio test|pulse|alsa|dshow|avfoundation OUTPUT.wav --seconds N [--device NAME] [--channels 1|2]
 
@@ -206,6 +210,12 @@ pub fn run(args: Vec<OsString>) -> Result<bool> {
         "qr-region" => {
             crate::region_analysis::run(&args[1..], crate::region_analysis::Analysis::Qr)?
         }
+        "ocr-portal-region" => {
+            crate::region_analysis::run_portal(&args[1..], crate::region_analysis::Analysis::Ocr)?
+        }
+        "qr-portal-region" => {
+            crate::region_analysis::run_portal(&args[1..], crate::region_analysis::Analysis::Qr)?
+        }
         "workflow" => crate::workflow::run(&args[1..])?,
         "task" => crate::task::run(&args[1..])?,
         "schedule" => crate::capture_scheduling::run(&args[1..])?,
@@ -215,6 +225,7 @@ pub fn run(args: Vec<OsString>) -> Result<bool> {
         "gif" => crate::gif_assembly::run(&args[1..])?,
         "stitch-scroll" => crate::scroll_stitch::run(&args[1..])?,
         "scroll-capture" => crate::scroll_capture::run(&args[1..])?,
+        "scroll-capture-portal" => crate::capture_portal::run_scroll(&args[1..])?,
         "record" => crate::record::run(&args[1..])?,
         "record-audio" => crate::audio_record::run(&args[1..])?,
         "desktop" => crate::desktop_integration::run(&args[1..])?,

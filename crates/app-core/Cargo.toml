@@ -8,6 +8,13 @@ rust-version.workspace = true
 publish.workspace = true
 description = "Application core. No GPUI dependency."
 
+[features]
+native-file-clipboard-fixture = []
+
+[[example]]
+name = "owned_file_clipboard_macos"
+required-features = ["native-file-clipboard-fixture"]
+
 [lints]
 workspace = true
 
@@ -21,8 +28,7 @@ unicode-segmentation = "=1.13.3"
 unicode-linebreak = "=0.1.5"
 anyhow.workspace = true
 base64.workspace = true
-arboard.workspace = true
-chrono.workspace = true
+jiff.workspace = true
 crc32fast = "1.5.0"
 directories.workspace = true
 image.workspace = true
@@ -50,14 +56,19 @@ uuid.workspace = true
 zeroize.workspace = true
 xcap.workspace = true
 
+[target.'cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))'.dependencies]
+global-hotkey.workspace = true
+
 [target.'cfg(unix)'.dependencies]
 libc = "0.2.191"
 
 [target.'cfg(target_os = "linux")'.dependencies]
+dbus = "=0.9.12"
 dbus-secret-service = { version = "=4.1.0", default-features = false }
-x11rb = { version = "=0.13.2", default-features = false, features = ["randr", "xfixes"] }
+x11rb = { version = "=0.13.2", default-features = false, features = ["randr", "xfixes", "xkb", "composite"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
+tray-icon.workspace = true
 objc2 = "=0.6.5"
 objc2-app-kit = { version = "=0.3.2", default-features = false, features = ["std", "NSCursor", "NSImage", "NSImageRep", "NSGraphicsContext", "objc2-core-graphics"] }
 block2 = "=0.6.2"
@@ -73,6 +84,6 @@ security-framework-sys = "=2.17.0"
 core-foundation = "0.10"
 
 [target.'cfg(target_os = "windows")'.dependencies]
-global-hotkey.workspace = true
+windows = { version = "=0.62.2", features = ["Foundation", "Graphics_Capture", "Graphics_DirectX_Direct3D11", "Win32_Foundation", "Win32_Graphics_Direct3D", "Win32_Graphics_Direct3D11", "Win32_Graphics_Dxgi", "Win32_Graphics_Dxgi_Common", "Win32_Graphics_Gdi", "Win32_System_WinRT", "Win32_System_WinRT_Direct3D11", "Win32_System_WinRT_Graphics_Capture"] }
 tray-icon.workspace = true
 windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Devices_Display", "Win32_UI_HiDpi", "Win32_UI_Shell", "Win32_System_Diagnostics_ToolHelp", "Win32_System_JobObjects", "Win32_System_Pipes", "Win32_System_SystemInformation", "Win32_Globalization", "Win32_UI_WindowsAndMessaging", "Win32_Graphics_Dwm", "Win32_Graphics_Gdi", "Win32_Graphics_Printing", "Win32_Storage_Xps", "Win32_System_LibraryLoader", "Win32_Storage_FileSystem", "Win32_System_Threading", "Win32_Security", "Win32_Security_Authorization", "Win32_Security_Credentials", "Win32_System_DataExchange", "Win32_System_Memory"] }

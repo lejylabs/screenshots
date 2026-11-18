@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, io::Read, path::Path, sync::Arc, time::Duration};
 use tokio::io::{AsyncReadExt, AsyncSeekExt};
 #[path = "upload_source.rs"]
-mod upload_source;
+pub(crate) mod upload_source;
 use upload_source::{TrackedUploadReader, UploadSourceGuard, verify_transfer};
 #[cfg(test)]
 #[path = "upload_source_tests.rs"]
@@ -2429,10 +2429,19 @@ async fn transfer(
     }
     if let Some(target) = destination.credential_target() {
         let authentication = destination.authentication.unwrap_or_default();
-        request = request.header(
-            authentication.header_name(),
-            crate::upload_credentials::read_header(&target, authentication)?,
-        );
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        let credential =
+            crate::upload_credentials::read_header_with_check(&target, authentication, &|| {
+                if cancel.is_canceled() {
+                    Err(crate::CaptureError::NativeCanceled)
+                } else {
+                    Ok(())
+                }
+            })?;
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+        let credential = crate::upload_credentials::read_header(&target, authentication)?;
+        cancel.check()?;
+        request = request.header(authentication.header_name(), credential);
     }
     let mut response = request
         .header(reqwest::header::ACCEPT_ENCODING, "identity")

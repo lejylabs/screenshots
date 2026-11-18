@@ -1,0 +1,618 @@
+{
+  "revision": 6,
+  "status": "AUTHORED_UNRUN",
+  "injections": [
+    {
+      "id": 1,
+      "symbol": "I_STARTUP",
+      "scenario": "startup-stall",
+      "runtime_cases": [
+        "startup-stall"
+      ],
+      "actor": "helper STA",
+      "kind": "Stall",
+      "requires": [
+        "visits > 0",
+        "fired > 0",
+        "immutable helper PID/TID matches exact owned process",
+        "actor PID/TID matches expected STA",
+        "guard == 1",
+        "sequence > 0 == armed_sequence",
+        "completion == 0",
+        "actual broker timeout on background thread",
+        "same helper and interval at timeout",
+        "exact process signaled, exit 70"
+      ],
+      "negative_control": "noop-startup-stall",
+      "teardown_after_initial_submit": false
+    },
+    {
+      "id": 2,
+      "symbol": "I_REGISTER",
+      "scenario": "register-stall",
+      "runtime_cases": [
+        "register-stall"
+      ],
+      "actor": "helper STA",
+      "kind": "Stall",
+      "requires": [
+        "visits > 0",
+        "fired > 0",
+        "immutable helper PID/TID matches exact owned process",
+        "actor PID/TID matches expected STA",
+        "guard == 1",
+        "sequence > 0 == armed_sequence",
+        "completion == 0",
+        "actual broker timeout on background thread",
+        "same helper and interval at timeout",
+        "exact process signaled, exit 70"
+      ],
+      "negative_control": "noop-register-stall",
+      "teardown_after_initial_submit": false
+    },
+    {
+      "id": 3,
+      "symbol": "I_REVOKE",
+      "scenario": "revoke-stall",
+      "runtime_cases": [
+        "revoke-stall"
+      ],
+      "actor": "helper STA",
+      "kind": "Stall",
+      "requires": [
+        "visits > 0",
+        "fired > 0",
+        "immutable helper PID/TID matches exact owned process",
+        "actor PID/TID matches expected STA",
+        "guard == 1",
+        "sequence > 0 == armed_sequence",
+        "completion == 0",
+        "actual broker timeout on background thread",
+        "same helper and interval at timeout",
+        "exact process signaled, exit 70"
+      ],
+      "negative_control": "noop-revoke-stall",
+      "teardown_after_initial_submit": true
+    },
+    {
+      "id": 4,
+      "symbol": "I_UNINITIALIZE",
+      "scenario": "uninitialize-stall",
+      "runtime_cases": [
+        "uninitialize-stall"
+      ],
+      "actor": "helper STA",
+      "kind": "Stall",
+      "requires": [
+        "visits > 0",
+        "fired > 0",
+        "immutable helper PID/TID matches exact owned process",
+        "actor PID/TID matches expected STA",
+        "guard == 1",
+        "sequence > 0 == armed_sequence",
+        "completion == 0",
+        "actual broker timeout on background thread",
+        "same helper and interval at timeout",
+        "exact process signaled, exit 70"
+      ],
+      "negative_control": "noop-uninitialize-stall",
+      "teardown_after_initial_submit": true
+    },
+    {
+      "id": 5,
+      "symbol": "I_QUERY_STALL",
+      "scenario": "query-stall",
+      "runtime_cases": [
+        "query-stall",
+        "ci-ole-query-stall"
+      ],
+      "actor": "source STA",
+      "kind": "Stall",
+      "requires": [
+        "visits > 0",
+        "fired > 0",
+        "immutable helper PID/TID matches exact owned process",
+        "actor PID/TID matches expected STA",
+        "guard == 1",
+        "sequence > 0 == armed_sequence",
+        "completion == 0",
+        "actual broker timeout on background thread",
+        "same helper and interval at timeout",
+        "exact process signaled, exit 70"
+      ],
+      "negative_control": "noop-query-stall",
+      "teardown_after_initial_submit": false
+    },
+    {
+      "id": 6,
+      "symbol": "I_GET_STALL",
+      "scenario": "get-stall",
+      "runtime_cases": [
+        "get-stall",
+        "ci-ole-get-stall"
+      ],
+      "actor": "source STA",
+      "kind": "Stall",
+      "requires": [
+        "visits > 0",
+        "fired > 0",
+        "immutable helper PID/TID matches exact owned process",
+        "actor PID/TID matches expected STA",
+        "guard == 1",
+        "sequence > 0 == armed_sequence",
+        "completion == 0",
+        "actual broker timeout on background thread",
+        "same helper and interval at timeout",
+        "exact process signaled, exit 70"
+      ],
+      "negative_control": "noop-get-stall",
+      "teardown_after_initial_submit": false
+    },
+    {
+      "id": 7,
+      "symbol": "I_MEDIUM_STALL",
+      "scenario": "release-stall",
+      "runtime_cases": [
+        "release-stall",
+        "ci-ole-release-stall"
+      ],
+      "actor": "source STA",
+      "kind": "Stall",
+      "requires": [
+        "visits > 0",
+        "fired > 0",
+        "immutable helper PID/TID matches exact owned process",
+        "actor PID/TID matches expected STA",
+        "guard == 1",
+        "sequence > 0 == armed_sequence",
+        "completion == 0",
+        "actual broker timeout on background thread",
+        "same helper and interval at timeout",
+        "exact process signaled, exit 70"
+      ],
+      "negative_control": "noop-release-stall",
+      "teardown_after_initial_submit": false
+    },
+    {
+      "id": 8,
+      "symbol": "I_UNMARSHAL_STALL",
+      "scenario": "custom-unmarshal-stall",
+      "runtime_cases": [
+        "custom-unmarshal-stall",
+        "ci-custom-ole-unmarshal-stall"
+      ],
+      "actor": "helper STA",
+      "kind": "Stall",
+      "requires": [
+        "visits > 0",
+        "fired > 0",
+        "immutable helper PID/TID matches exact owned process",
+        "actor PID/TID matches expected STA",
+        "guard == 1",
+        "sequence > 0 == armed_sequence",
+        "completion == 0",
+        "actual broker timeout on background thread",
+        "same helper and interval at timeout",
+        "exact process signaled, exit 70"
+      ],
+      "negative_control": "noop-custom-unmarshal-stall",
+      "teardown_after_initial_submit": false
+    },
+    {
+      "id": 9,
+      "symbol": "I_UNMARSHAL_MEMORY",
+      "scenario": "custom-unmarshal-memory",
+      "runtime_cases": [
+        "custom-unmarshal-memory",
+        "ci-custom-ole-unmarshal-memory"
+      ],
+      "actor": "helper STA",
+      "kind": "Memory",
+      "requires": [
+        "visits > 0",
+        "fired > 0",
+        "immutable helper PID/TID matches exact owned process",
+        "actor PID/TID matches expected STA",
+        "guard == 1",
+        "sequence > 0 == armed_sequence",
+        "completion > 0",
+        "actual 128 MiB attempt and required refusal/result"
+      ],
+      "negative_control": "noop-custom-unmarshal-memory",
+      "teardown_after_initial_submit": false
+    },
+    {
+      "id": 10,
+      "symbol": "I_MEDIUM_MEMORY",
+      "scenario": "over-memory",
+      "runtime_cases": [
+        "over-memory",
+        "ci-ole-over-memory"
+      ],
+      "actor": "source STA",
+      "kind": "Memory",
+      "requires": [
+        "visits > 0",
+        "fired > 0",
+        "immutable helper PID/TID matches exact owned process",
+        "actor PID/TID matches expected STA",
+        "guard == 1",
+        "sequence > 0 == armed_sequence",
+        "completion > 0",
+        "actual 128 MiB attempt and required refusal/result"
+      ],
+      "negative_control": "noop-over-memory",
+      "teardown_after_initial_submit": false
+    },
+    {
+      "id": 11,
+      "symbol": "I_QUERY_REENTER",
+      "scenario": "query-reenter",
+      "runtime_cases": [
+        "query-reenter"
+      ],
+      "actor": "source STA",
+      "kind": "Reentry",
+      "requires": [
+        "visits > 0",
+        "fired > 0",
+        "immutable helper PID/TID matches exact owned process",
+        "actor PID/TID matches expected STA",
+        "guard == 1",
+        "sequence > 0 == armed_sequence",
+        "completion > 0",
+        "returned DragLeave HRESULT == S_OK"
+      ],
+      "negative_control": "noop-query-reenter",
+      "teardown_after_initial_submit": false
+    },
+    {
+      "id": 12,
+      "symbol": "I_GET_REENTER",
+      "scenario": "get-reenter",
+      "runtime_cases": [
+        "get-reenter"
+      ],
+      "actor": "source STA",
+      "kind": "Reentry",
+      "requires": [
+        "visits > 0",
+        "fired > 0",
+        "immutable helper PID/TID matches exact owned process",
+        "actor PID/TID matches expected STA",
+        "guard == 1",
+        "sequence > 0 == armed_sequence",
+        "completion > 0",
+        "returned DragLeave HRESULT == S_OK"
+      ],
+      "negative_control": "noop-get-reenter",
+      "teardown_after_initial_submit": false
+    },
+    {
+      "id": 13,
+      "symbol": "I_MEDIUM_REENTER",
+      "scenario": "medium-reenter",
+      "runtime_cases": [
+        "medium-reenter"
+      ],
+      "actor": "source STA",
+      "kind": "Reentry",
+      "requires": [
+        "visits > 0",
+        "fired > 0",
+        "immutable helper PID/TID matches exact owned process",
+        "actor PID/TID matches expected STA",
+        "guard == 1",
+        "sequence > 0 == armed_sequence",
+        "completion > 0",
+        "returned DragLeave HRESULT == S_OK"
+      ],
+      "negative_control": "noop-medium-reenter",
+      "teardown_after_initial_submit": false
+    },
+    {
+      "id": 14,
+      "symbol": "I_HELPER_FACTORY",
+      "scenario": "helper-factory-stall",
+      "runtime_cases": [
+        "helper-factory-stall"
+      ],
+      "actor": "helper STA",
+      "kind": "Stall",
+      "requires": [
+        "visits > 0",
+        "fired > 0",
+        "immutable helper PID/TID matches exact owned process",
+        "actor PID/TID matches expected STA",
+        "guard == 1",
+        "sequence > 0 == armed_sequence",
+        "completion == 0",
+        "actual broker timeout on background thread",
+        "same helper and interval at timeout",
+        "exact process signaled, exit 70"
+      ],
+      "negative_control": "noop-helper-factory-stall",
+      "teardown_after_initial_submit": false
+    },
+    {
+      "id": 15,
+      "symbol": "I_HELPER_ENTER_STALL",
+      "scenario": "helper-enter-stall",
+      "runtime_cases": [
+        "helper-enter-stall"
+      ],
+      "actor": "helper STA",
+      "kind": "Stall",
+      "requires": [
+        "visits > 0",
+        "fired > 0",
+        "immutable helper PID/TID matches exact owned process",
+        "actor PID/TID matches expected STA",
+        "guard == 1",
+        "sequence > 0 == armed_sequence",
+        "completion == 0",
+        "actual broker timeout on background thread",
+        "same helper and interval at timeout",
+        "exact process signaled, exit 70"
+      ],
+      "negative_control": "noop-helper-enter-stall",
+      "teardown_after_initial_submit": false
+    },
+    {
+      "id": 16,
+      "symbol": "I_HELPER_DROP_STALL",
+      "scenario": "helper-drop-stall",
+      "runtime_cases": [
+        "helper-drop-stall"
+      ],
+      "actor": "helper STA",
+      "kind": "Stall",
+      "requires": [
+        "visits > 0",
+        "fired > 0",
+        "immutable helper PID/TID matches exact owned process",
+        "actor PID/TID matches expected STA",
+        "guard == 1",
+        "sequence > 0 == armed_sequence",
+        "completion == 0",
+        "actual broker timeout on background thread",
+        "same helper and interval at timeout",
+        "exact process signaled, exit 70"
+      ],
+      "negative_control": "noop-helper-drop-stall",
+      "teardown_after_initial_submit": false
+    },
+    {
+      "id": 17,
+      "symbol": "I_HELPER_RELEASE_STALL",
+      "scenario": "helper-release-stall",
+      "runtime_cases": [
+        "helper-release-stall"
+      ],
+      "actor": "helper STA",
+      "kind": "Stall",
+      "requires": [
+        "visits > 0",
+        "fired > 0",
+        "immutable helper PID/TID matches exact owned process",
+        "actor PID/TID matches expected STA",
+        "guard == 1",
+        "sequence > 0 == armed_sequence",
+        "completion == 0",
+        "actual broker timeout on background thread",
+        "same helper and interval at timeout",
+        "exact process signaled, exit 70"
+      ],
+      "negative_control": "noop-helper-release-stall",
+      "teardown_after_initial_submit": false
+    },
+    {
+      "id": 18,
+      "symbol": "I_HELPER_ENTER_REENTER",
+      "scenario": "helper-enter-reenter",
+      "runtime_cases": [
+        "helper-enter-reenter"
+      ],
+      "actor": "helper STA",
+      "kind": "Reentry",
+      "requires": [
+        "visits > 0",
+        "fired > 0",
+        "immutable helper PID/TID matches exact owned process",
+        "actor PID/TID matches expected STA",
+        "guard == 1",
+        "sequence > 0 == armed_sequence",
+        "completion > 0",
+        "returned DragLeave HRESULT == S_OK"
+      ],
+      "negative_control": "noop-helper-enter-reenter",
+      "teardown_after_initial_submit": false
+    },
+    {
+      "id": 19,
+      "symbol": "I_HELPER_DROP_REENTER",
+      "scenario": "helper-drop-reenter",
+      "runtime_cases": [
+        "helper-drop-reenter"
+      ],
+      "actor": "helper STA",
+      "kind": "Reentry",
+      "requires": [
+        "visits > 0",
+        "fired > 0",
+        "immutable helper PID/TID matches exact owned process",
+        "actor PID/TID matches expected STA",
+        "guard == 1",
+        "sequence > 0 == armed_sequence",
+        "completion > 0",
+        "returned DragLeave HRESULT == S_OK"
+      ],
+      "negative_control": "noop-helper-drop-reenter",
+      "teardown_after_initial_submit": false
+    },
+    {
+      "id": 20,
+      "symbol": "I_HELPER_RELEASE_REENTER",
+      "scenario": "helper-release-reenter",
+      "runtime_cases": [
+        "helper-release-reenter"
+      ],
+      "actor": "helper STA",
+      "kind": "Reentry",
+      "requires": [
+        "visits > 0",
+        "fired > 0",
+        "immutable helper PID/TID matches exact owned process",
+        "actor PID/TID matches expected STA",
+        "guard == 1",
+        "sequence > 0 == armed_sequence",
+        "completion > 0",
+        "returned DragLeave HRESULT == S_OK"
+      ],
+      "negative_control": "noop-helper-release-reenter",
+      "teardown_after_initial_submit": false
+    },
+    {
+      "id": 21,
+      "symbol": "I_ERROR_STALL",
+      "scenario": "error-release-stall",
+      "runtime_cases": [
+        "error-release-stall"
+      ],
+      "actor": "helper STA",
+      "kind": "Stall",
+      "requires": [
+        "visits > 0",
+        "fired > 0",
+        "immutable helper PID/TID matches exact owned process",
+        "actor PID/TID matches expected STA",
+        "guard == 1",
+        "sequence > 0 == armed_sequence",
+        "completion == 0",
+        "actual broker timeout on background thread",
+        "same helper and interval at timeout",
+        "exact process signaled, exit 70"
+      ],
+      "negative_control": "noop-error-release-stall",
+      "teardown_after_initial_submit": false
+    },
+    {
+      "id": 22,
+      "symbol": "I_ERROR_REENTER",
+      "scenario": "error-release-reenter",
+      "runtime_cases": [
+        "error-release-reenter"
+      ],
+      "actor": "helper STA",
+      "kind": "Reentry",
+      "requires": [
+        "visits > 0",
+        "fired > 0",
+        "immutable helper PID/TID matches exact owned process",
+        "actor PID/TID matches expected STA",
+        "guard == 1",
+        "sequence > 0 == armed_sequence",
+        "completion > 0",
+        "returned DragLeave HRESULT == S_OK"
+      ],
+      "negative_control": "noop-error-release-reenter",
+      "teardown_after_initial_submit": false
+    }
+  ],
+  "negative_control_acceptance": [
+    "same actual binary/spawner/helper",
+    "requested stage visited under required guard",
+    "matching injection id",
+    "fired == 0",
+    "mandatory validator false",
+    "exact app exit 1",
+    "no outer timeout",
+    "empty outer Job",
+    "unrelated failures do not count"
+  ],
+  "completion_and_consumers": {
+    "status": "AUTHORED_UNRUN",
+    "rejection": [
+      "actual helper BARRIER reply plus matching DONE or previously reaped/drained reader",
+      "all accepted and reader SUBMIT counts zero",
+      "actual returned effect/HRESULT or exact source/helper death",
+      "current exact LEAVE/FAILED consumed before close"
+    ],
+    "busy": [
+      "actual encoded-image busy guard within real native SUBMIT callback",
+      "positive token/generation acknowledgment before checking no editor"
+    ],
+    "cancel": [
+      "actual SUBMIT Delivery held",
+      "actual same-token/generation stale-body discard after cancellation",
+      "positive discard acknowledgment before checking no editor"
+    ],
+    "negative_controls": [
+      "control-late-submit",
+      "control-noop-barrier",
+      "gpui-control-noop-busy-ack",
+      "gpui-control-noop-cancel-ack",
+      "control-wrong-terminal",
+      "control-early-failure-ack"
+    ]
+  },
+  "ordering": {
+    "status": "AUTHORED_UNRUN",
+    "positive_controls": [
+      "ordered-enter-submit",
+      "ordered-replacement-enter-submit",
+      "ordered-failure-publish"
+    ],
+    "negative_controls": [
+      "control-wrong-terminal",
+      "control-early-failure-ack"
+    ],
+    "ordinary_cases": 52,
+    "genuine_input_cases": 9,
+    "injection_noop_controls": 22,
+    "oracle_controls": 6,
+    "full_owned_input_inventory": 89,
+    "without_input_inventory": 80,
+    "requirements": [
+      "real ENTER consumed before source Drop is released",
+      "current exact body consumed with bounded intermediate handling",
+      "actual reader reaped while real ENTER is retained before failure transition",
+      "completion stays pending until packet clearing/version advance/failure notification",
+      "deliberately early completion and wrong terminal are explicitly rejected"
+    ]
+  },
+  "source_result_and_counts": {
+    "status": "AUTHORED_UNRUN",
+    "rules_file": "source-oracle-rules.json",
+    "negative_controls": 14,
+    "non_input_source_controls": 11,
+    "genuine_input_source_controls": 3,
+    "ordinary_cases": 52,
+    "genuine_input_positive_cases": 9,
+    "injection_omission_controls": 22,
+    "existing_oracle_controls": 6,
+    "full_owned_input_inventory": 105,
+    "without_input_inventory": 93,
+    "requirements": [
+      "direct exact S_OK/COPY",
+      "OLE exact DRAGDROP_S_DROP/COPY",
+      "capacity NONE and zero actual payload calls",
+      "one selected actual payload query/GetData/ReleaseStgMedium lifetime",
+      "explicit bounded scoped-provider versus preflight/cache evidence",
+      "matching real mutation and failure reason",
+      "GPUI exact-pixel editor verification/close before reporting the source-oracle error"
+    ]
+  },
+  "exact_failure_terminal": {
+    "positive_cases": [
+      "source-death",
+      "custom-unmarshal-memory"
+    ],
+    "expected_kind": 14,
+    "actual_broker_mutation_controls": [
+      "control-failed-as-leave-source-death",
+      "control-failed-as-leave-unmarshal"
+    ],
+    "status": "AUTHORED_UNRUN"
+  }
+}

@@ -7,6 +7,10 @@ use std::{
     time::{Duration, Instant},
 };
 pub(crate) fn run(args: &[OsString]) -> Result<()> {
+    #[cfg(unix)]
+    if args.first().is_some_and(|arg| arg == "copy-file") {
+        return crate::file_clipboard::command(&args[1..]);
+    }
     let command = args
         .first()
         .and_then(|v| v.to_str())

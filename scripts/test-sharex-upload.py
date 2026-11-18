@@ -24,6 +24,7 @@ import threading
 import urllib.parse
 import uuid
 import zlib
+from datetime import datetime, timedelta, timezone
 
 
 class Server(http.server.HTTPServer):
@@ -38,7 +39,7 @@ class Server(http.server.HTTPServer):
             raise
 
 
-def handler(records, token):
+def handler(records, token, mutations=None):
     class Handler(http.server.BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
         def log_message(self, *_):
@@ -46,6 +47,14 @@ def handler(records, token):
         def handle_request(self):
             length = int(self.headers.get("Content-Length", "0"))
             assert 0 <= length <= 2 * 1024 * 1024
+            mutation = mutations.pop(self.path, None) if mutations is not None else None
+            if mutation:
+                with mutation["path"].open("r+b", buffering=0) as source:
+                    source.write(b"x")
+                    if mutation["grow"]:
+                        source.truncate(mutation["length"] + 1)
+                    os.fsync(source.fileno())
+                mutation["applied"] = True
             body = self.rfile.read(length)
             assert len(body) == length
             content_type = self.headers.get("Content-Type", "")
@@ -68,29 +77,50 @@ def handler(records, token):
             if body and not content_type.startswith("multipart/form-data"):
                 def is_auth(name):
                     name = name.split("}")[-1].lower().replace("_", "").replace("-", "")
-                    return name in ("key", "auth", "accesskey", "credentials", "cookie") or any(value in name for value in ("password", "secret", "token"))
+                    return name in ("key", "auth", "accesskey", "credentials", "authorization", "cookie", "setcookie") or any(value in name for value in ("password", "secret", "token"))
                 raw_body = body.decode("utf-8", errors="replace")
                 if content_type.lower().split(";",1)[0].strip() == "application/x-www-form-urlencoded":
                     reflected.extend(value for name, values in urllib.parse.parse_qs(raw_body).items() if is_auth(name) for value in values)
                 elif raw_body.lstrip().startswith("<"):
                     import xml.etree.ElementTree as ET
-                    for element in ET.fromstring(raw_body).iter():
-                        if is_auth(element.tag):
-                            reflected.append("".join(element.itertext()))
-                        reflected.extend(value for name, value in element.attrib.items() if is_auth(name))
+                    def xml_values(element, auth=False, cookie=None):
+                        name = element.tag.split("}")[-1].lower()
+                        kind = name if name in ("cookie", "set-cookie") else cookie
+                        auth = auth or is_auth(element.tag)
+                        def scalar(value, scope):
+                            if value is None or not value.strip():
+                                return
+                            if scope:
+                                pairs = value.split(";")[:1] if scope == "set-cookie" else value.split(";")
+                                reflected.extend(pair.split("=", 1)[1].strip().strip('"') for pair in pairs if "=" in pair)
+                            else:
+                                reflected.append(value)
+                        if auth:
+                            scalar(element.text if kind else "".join(element.itertext()), kind)
+                        for attribute, value in element.attrib.items():
+                            local = attribute.split("}")[-1].lower()
+                            if auth or is_auth(attribute):
+                                scalar(value, local if local in ("cookie", "set-cookie") else kind)
+                        for child in element:
+                            xml_values(child, auth, kind)
+                            if auth and kind:
+                                scalar(child.tail, kind)
+                    xml_values(ET.fromstring(raw_body))
                 elif raw_body.lstrip().startswith(("{", "[")):
-                    def body_values(value, auth=False):
+                    def body_values(value, auth=False, cookie=None):
                         if isinstance(value, dict):
                             for name, child in value.items():
-                                if name.lower() == "cookie" and isinstance(child, str):
-                                    reflected.extend(pair.split("=", 1)[1].strip().strip('"') for pair in child.split(";") if "=" in pair)
-                                else:
-                                    body_values(child, auth or is_auth(name))
+                                kind = name.lower() if name.lower() in ("cookie", "set-cookie") else cookie
+                                body_values(child, auth or is_auth(name), kind)
                         elif isinstance(value, list):
                             for child in value:
-                                body_values(child, auth)
+                                body_values(child, auth, cookie)
                         elif auth and value is not None:
-                            reflected.append(str(value))
+                            if cookie and isinstance(value, str):
+                                pairs = value.split(";")[:1] if cookie == "set-cookie" else value.split(";")
+                                reflected.extend(pair.split("=", 1)[1].strip().strip('"') for pair in pairs if "=" in pair)
+                            else:
+                                reflected.append(str(value))
                     body_values(json.loads(raw_body))
                 else:
                     reflected.extend(value for name, values in urllib.parse.parse_qs(raw_body).items() if is_auth(name) for value in values)
@@ -115,6 +145,10 @@ def handler(records, token):
                 status, value, kind = 200, b"<links><link type='public'>https://example.invalid/xml</link></links>", "application/xml"
             elif self.path.startswith("/regex-response"):
                 status, value, kind = 200, b'prefix href="https://example.invalid/regex" suffix', "text/plain"
+            elif self.path.startswith("/large-output"):
+                status, value, kind = 200, {"first": '"\\' * 2048, "second": "\t" * 4096,
+                    "files": [{"id": 2, "url": "https://example.invalid/public/large-output"}],
+                    "thumbnail": "", "deletion": ""}, "application/json"
             elif self.path.startswith("/no-link"):
                 status, value, kind = 200, b"acknowledged", "text/plain"
             else:
@@ -286,6 +320,7 @@ def main():
         context.minimum_version = ssl.TLSVersion.TLSv1_2
         context.load_cert_chain(cert, key)
         records, other_records, plain_records = [], [], []
+        mutations = {}
         token = "synthetic-sxcu-token-" + uuid.uuid4().hex
         servers, threads, cleanup = [], [], []
         snapshots = {}
@@ -298,7 +333,7 @@ def main():
 
         try:
             for record in (records, other_records, plain_records):
-                server = Server(("127.0.0.1", 0), handler(record, token))
+                server = Server(("127.0.0.1", 0), handler(record, token, mutations))
                 server.context = None if record is plain_records else context
                 servers.append(server)
                 thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": .1})
@@ -387,6 +422,20 @@ def main():
             # Explicit outputbox is a result event, without a fake link or clipboard side effect.
             _, outcome = execute("output", profile(URL="{outputbox:Result|uploaded}", ThumbnailURL="", DeletionURL=""), "file")
             assert outcome["url"] is None and outcome["events"] == [{"title": "Result", "text": "uploaded"}]
+            # A complete supported SXCU outcome must feed standalone Link/QR, even with large events.
+            large_profile = write("large-output.sxcu", profile(path="/large-output", Headers={"Authorization": "Bearer " + token},
+                URL="{outputbox:First|{json:first}}{outputbox:Second|{json:second}}{json:files[0].url}", ThumbnailURL="", DeletionURL=""))
+            large_result = command(binary, "upload-file", large_profile, source, env=env)
+            large = checked(large_result, token, "Large-event generic SXCU upload")[-1]
+            assert len(large_result.stdout) > 8192 and len(large["events"]) == 2
+            count = len(records)
+            formatted = checked(command(binary, "link", "format", "plain", env=env, input=large_result.stdout), token, "Full SXCU output to standalone Link")[-1]
+            assert formatted["text"] == large["url"]
+            large_qr = root / "large-output-qr.png"
+            checked(command(binary, "link", "qr", large_qr, env=env, input=large_result.stdout), token, "Full SXCU output to standalone QR")
+            scanned_large = checked(command(binary, "qr", "scan", large_qr, env=env), token, "Large-event standalone QR decode")[-1]
+            assert [value["text"] for value in scanned_large["codes"]] == [large["url"]]
+            assert len(records) == count
             # Failure functions work and redact known authentication material from explicit output.
             error = write("error.sxcu", profile(path="/error", ErrorMessage="{json:message}"))
             result = command(binary, "sharex", "file", error, source, "--options", options, env=env)
@@ -522,12 +571,99 @@ def main():
             assert by_id["ErrorMessage#0"]["default_text"] == "[redacted]"
             assert any(value["id"] == "URL#0" and value["answer_kind"] == "value" for value in inspection["answer_contracts"])
             assert len(records) == count and all(value not in json.dumps(inspection, ensure_ascii=False) for value in (inspect_known, inspect_cookie, "secondopaque", "private%2Fcredential", "private%252Fcredential", "opaquevalue%2bplus"))
+            # Inspection independently preserves Cookie kind through ordinary nested fields/arrays.
+            nested_cookie_cases = [
+                ({"Cookie":{"nested":{"value":"sid=opaque-cookie-private=="}},"caption":"sid=public-outside=="}, "opaque-cookie-private=="),
+                ({"Cookie":{"nested":[{"value":'sid="opaque+quoted=="; second=secondary-private=='}]},"caption":"sid=public-outside=="}, "opaque+quoted=="),
+                ({"Set-Cookie":{"nested":[{"value":'sid="opaque-set-cookie=="; Path=/; SameSite=None'}]},"caption":"sid=public-outside=="}, "opaque-set-cookie=="),
+                ({"Cookie":{"nested":{"Set-Cookie":{"value":"first=explicit-set==; next=public-attribute"}}}}, "explicit-set=="),
+                ({"Set-Cookie":{"nested":{"Cookie":[{"value":"first=explicit-cookie==; next=explicit-second=="}]}}}, "explicit-second==")]
+            for ordinal, (nested_body, bare) in enumerate(nested_cookie_cases):
+                nested_profile = write("nested-cookie-inspect-" + str(ordinal) + ".sxcu", profile(body="JSON", destination="TextUploader", Data=json.dumps(nested_body),
+                    URL="{inputbox:Caption|" + bare + "}", ThumbnailURL="{inputbox:Public|public-outside==}"))
+                before = len(records)
+                inspected_nested = checked(command(binary, "sharex", "inspect", nested_profile, env=absent_keyring), token, "Nested cookie inspection")[-1]
+                descriptions = {value["id"]:value for value in inspected_nested["answers"]}
+                assert descriptions["URL#0"]["default_text"] == "[redacted]"
+                assert descriptions["ThumbnailURL#0"]["default_text"] == "public-outside==" and len(records) == before
+            xml_cookie_cases = [
+                ("<Cookie><nested value='sid=opaque-xml-cookie-private=='/></Cookie>", "opaque-xml-cookie-private=="),
+                ("<Cookie><first>sid=xml-first==</first><second>other=xml-second==</second></Cookie>", "xml-second=="),
+                ("<Set-Cookie><nested value='sid=&quot;xml-quoted==&quot;; Path=/; SameSite=None'/></Set-Cookie>", "xml-quoted=="),
+                ("<Cookie><Set-Cookie><nested value='sid=xml-explicit-set==; next=public-attribute'/></Set-Cookie><sibling value='sid=xml-parent-cookie==; second=xml-parent-second=='/></Cookie>", "xml-parent-second=="),
+                ("<Set-Cookie><Cookie><nested>sid=xml-explicit-cookie==; second=xml-explicit-second==</nested></Cookie><sibling value='sid=xml-parent-set==; next=public-attribute'/></Set-Cookie>", "xml-parent-set==")]
+            for ordinal, (xml_body, bare) in enumerate(xml_cookie_cases):
+                xml_profile = write("xml-cookie-inspect-" + str(ordinal) + ".sxcu", profile(body="XML", destination="TextUploader", Data=xml_body,
+                    URL="{inputbox:Caption|" + bare + "}", ThumbnailURL="{inputbox:Public|public-outside==}"))
+                before = len(records)
+                inspected_xml = checked(command(binary, "sharex", "inspect", xml_profile, env=absent_keyring), token, "XML cookie ancestry inspection")[-1]
+                descriptions = {value["id"]:value for value in inspected_xml["answers"]}
+                assert descriptions["URL#0"]["default_text"] == "[redacted]"
+                assert descriptions["ThumbnailURL#0"]["default_text"] == "public-outside==" and len(records) == before
+            # Raw numeric auth lexemes and canonical numbers share the same bounded mask.
+            for ordinal, (raw_number, canonical_number) in enumerate((("1e5", "100000"), ("1.25E+4", "12500"), ("-2.5e-3", "-0.0025"))):
+                number_data = '{"credentials":{"values":[' + raw_number + ']}}'
+                numeric = profile(body="JSON", destination="TextUploader", path="/values", Data=number_data,
+                    URL="{outputbox:Raw|" + raw_number + "}{outputbox:Canonical|" + canonical_number + "}https://example.invalid/numeric-safe", ThumbnailURL="", DeletionURL="")
+                numeric_path, numeric_result = execute("numeric-" + str(ordinal), numeric, "text", text)
+                assert numeric_result["events"] == [{"title": "Raw", "text": "[redacted]"}, {"title": "Canonical", "text": "[redacted]"}]
+                numeric["URL"] = "{inputbox:Caption|" + raw_number + "}"
+                numeric_inspect = write("numeric-inspect.sxcu", numeric)
+                before = len(records)
+                inspected_numeric = checked(command(binary, "sharex", "inspect", numeric_inspect, env=absent_keyring), token, "Numeric authentication inspection")[-1]
+                assert inspected_numeric["answers"][0]["default_text"] == "[redacted]" and len(records) == before
+                numeric["URL"] = "https://example.invalid/share?v=" + raw_number
+                numeric_link = write("numeric-link.sxcu", numeric)
+                denied_numeric = command(binary, "sharex", "text", numeric_link, text, env=env)
+                assert denied_numeric.returncode != 0 and not denied_numeric.stdout and raw_number.encode() not in denied_numeric.stderr
+                forbidden_numeric = root / ("numeric-" + str(ordinal) + "-must-not-share.png")
+                numeric_task = write("numeric-task.json", {"version":1,"source":{"type":"raw_file","path":str(text)},"actions":[
+                    {"type":"sharex_upload","kind":"text","profile":str(numeric_link)}, {"type":"link","format":"plain"}, {"type":"qr","path":str(forbidden_numeric)}]})
+                refused_numeric_task = command(binary, "task", "run", numeric_task, env=env)
+                assert refused_numeric_task.returncode != 0 and not refused_numeric_task.stdout and not forbidden_numeric.exists()
+            # Public numeric spellings do not enter the authentication set or exhaust its slots.
+            public_numbers = ",".join("100000." + "0" * count for count in range(1, 128))
+            scoped_number_data = '{"password":1e5,"caption":[' + public_numbers + ']}'
+            _, scoped_number_result = execute("numeric-sensitive-scope", profile(body="JSON", destination="TextUploader", Data=scoped_number_data,
+                URL="{outputbox:Raw|1e5}https://example.invalid/numeric-safe", ThumbnailURL="", DeletionURL=""), "text", text)
+            assert scoped_number_result["events"] == [{"title":"Raw","text":"[redacted]"}]
+            # Json.NET ends line comments on CR, LF and CRLF; inspect must follow its exact token spans.
+            for ordinal, ending in enumerate(("\r", "\n", "\r\n")):
+                comment_data = '{// public 100000.00' + ending + '"password":1e5,"caption":100000.00}'
+                comment_profile = write("numeric-comment-inspect-" + str(ordinal) + ".sxcu", profile(body="JSON", destination="TextUploader", Data=comment_data, URL="{inputbox:Caption|1e5}"))
+                before = len(records)
+                comment_inspect = checked(command(binary, "sharex", "inspect", comment_profile, env=absent_keyring), token, "CR/LF numeric authentication inspection")[-1]
+                assert comment_inspect["answers"][0]["default_text"] == "[redacted]" and len(records) == before
+            # JSON constructor extensions are refused before secrets, output or any request.
+            constructor_cases = ('{"password":new Secret(1e5)}', '{"password": new Secret( 1e5 , 2e4 ) }',
+                '{"credentials":{"values":[new Secret(1e5,2e4)]}}', '{"credentials":new Outer(new Inner(1e5),2e4)}',
+                '{"caption":new Secret(1e5,2e4)}', '{"caption":{"child":new Secret(1e5,2e4)},"password":3e4}')
+            for ordinal, constructor_data in enumerate(constructor_cases):
+                constructor_profile = write("body-constructor-" + str(ordinal) + ".sxcu", profile(body="JSON", destination="TextUploader", Data=constructor_data))
+                before = (len(records), len(other_records), len(plain_records))
+                for arguments in (("sharex", "inspect", constructor_profile), ("sharex", "text", constructor_profile, text)):
+                    refused_constructor = command(binary, *arguments, "--options", refusal_options, env=absent_keyring)
+                    assert refused_constructor.returncode != 0 and not refused_constructor.stdout and b"body_json_constructor" in refused_constructor.stderr
+                    assert all(value not in refused_constructor.stderr for value in (b"new Secret", b"new Outer", b"1e5", b"2e4"))
+                    assert (len(records), len(other_records), len(plain_records)) == before
+            constructor_no_qr = root / "constructor-must-not-share.png"
+            constructor_task = write("constructor-task.json", {"version":1,"source":{"type":"raw_file","path":str(text)},"actions":[
+                {"type":"sharex_upload","kind":"text","profile":str(constructor_profile),"options":str(refusal_options)},
+                {"type":"link","format":"plain"}, {"type":"qr","path":str(constructor_no_qr)}]})
+            before = len(records)
+            refused_constructor_task = command(binary, "task", "run", constructor_task, env=absent_keyring)
+            assert refused_constructor_task.returncode != 0 and not refused_constructor_task.stdout and b"body_json_constructor" in refused_constructor_task.stderr
+            assert not constructor_no_qr.exists() and len(records) == before
             # Configured and resolved body auth share the same guard/mask across JSON, XML and raw forms.
             body_cases = [("XML", "<request><password>opaque-xml-42</password><caption>public</caption></request>", "opaque-xml-42", {}),
                           ("XML", "<request password='opaque-attribute-42'><caption>public</caption></request>", "opaque-attribute-42", {}),
+                          ("XML", "<Cookie><nested value='sid=opaque-xml-cookie-private=='/></Cookie>", "opaque-xml-cookie-private==", {}),
+                          ("XML", "<Set-Cookie><nested value='sid=opaque-xml-set-cookie==; Path=/; SameSite=None'/></Set-Cookie>", "opaque-xml-set-cookie==", {}),
                           ("JSON", '{"credentials":{"password":"opaque-json-42"},"caption":"public"}', "opaque-json-42", {}),
                           ("JSON", "password=opaque%2Bform&caption=public", "opaque+form", {"Content-Type": "application/x-www-form-urlencoded"}),
-                          ("JSON", '{"Cookie":"sid=opaque-body-cookie=="}', "opaque-body-cookie==", {})]
+                          ("JSON", '{"Cookie":"sid=opaque-body-cookie=="}', "opaque-body-cookie==", {}),
+                          ("JSON", '{"Cookie":{"nested":{"value":"sid=opaque-cookie-private=="}}}', "opaque-cookie-private==", {}),
+                          ("JSON", '{"Set-Cookie":{"nested":[{"value":"sid=opaque-set-cookie==; Path=/; SameSite=None"}]}}', "opaque-set-cookie==", {})]
             body_cases.extend(("JSON", prefix+"=public&password=opaque-prefix-51", "opaque-prefix-51", {"Content-Type":"application/x-www-form-urlencoded"})
                               for prefix in ["{caption}","[caption]","<caption>",'{"public":true}'])
             for body_mode, literal_body, body_secret, body_headers in body_cases:
@@ -592,6 +728,72 @@ def main():
                 assert len(failures) == 1 and failures[0]["type"] == "action_failed" and failures[0]["index"] == 1
                 assert failures[0]["result"]["error_message"] == "denied [redacted]"
                 assert failures[0]["result"]["events"] == [{"title": "Failure", "text": "denied [redacted]"}]
+            repeated_data = '{"password":[' + ",".join(["1e5"] * 128) + "]}"
+            repeated_profile = profile(body="JSON",destination="TextUploader",Data=repeated_data,URL="{outputbox:Raw|1e5}https://example.invalid/repeated-safe",ThumbnailURL="",DeletionURL="")
+            _, repeated_result = execute("repeated-auth-numbers",repeated_profile,"text",text)
+            assert repeated_result["events"]==[{"title":"Raw","text":"[redacted]"}]
+            for ordinal, mode in enumerate(("JSON","XML")):
+                contextual_data = '{"credentials":"sid=context-first==; next=context-second==","Cookie":{"nested":"sid=context-first==; next=context-second=="}}' if mode=="JSON" else "<r><credentials value='sid=context-first==; next=context-second=='/><Cookie><nested value='sid=context-first==; next=context-second=='/></Cookie></r>"
+                contextual_profile=write("repeated-cookie-context-"+str(ordinal)+".sxcu",profile(body=mode,destination="TextUploader",Data=contextual_data,URL="{inputbox:Caption|context-second==}"))
+                before=len(records)
+                contextual_inspect=checked(command(binary,"sharex","inspect",contextual_profile,env=absent_keyring),token,"Repeated scalar cookie context inspection")[-1]
+                assert contextual_inspect["answers"][0]["default_text"]=="[redacted]" and len(records)==before
+            for attach in (False,True):
+                arguments={"first":"one","second":"longer café","empty":""}
+                _, tracked_result=execute("tracked-multipart-"+str(attach),profile(body="MultipartFormData",destination="FileUploader" if attach else "TextUploader",FileFormName="file" if attach else "",Arguments=arguments),"file" if attach else "text",source if attach else text)
+                assert tracked_result["success"] and all(records[-1]["multipart"][key]["data"]==value.encode() for key,value in arguments.items())
+                assert ("file" in records[-1]["multipart"])==attach
+            for ordinal, (destination, kind) in enumerate((("URLShortener","url"),("URLSharingService","url-sharing"))):
+                arguments={"target":"{input}","short":"small","empty":""}
+                _, tracked_url=execute("tracked-url-multipart-"+str(ordinal),profile(body="MultipartFormData",destination=destination,FileFormName="",Arguments=arguments),kind,url_input)
+                assert tracked_url["success"] and records[-1]["multipart"]["target"]["data"]==url_input.read_text().strip().encode()
+                assert records[-1]["multipart"]["short"]["data"]==b"small" and records[-1]["multipart"]["empty"]["data"]==b"" and "file" not in records[-1]["multipart"]
+            _, mapped_projection=execute("mapped-cookie-projections",profile(body="MultipartFormData",destination="TextUploader",FileFormName="",Headers={"X-Token":"sid=mapped-first==; next=mapped-second=="},Arguments={"Cookie":"sid=mapped-first==; next=mapped-second=="},URL="{outputbox:Projection|mapped-second==}https://example.invalid/mapped-safe",ThumbnailURL="",DeletionURL=""),"text",text)
+            assert mapped_projection["events"]==[{"title":"Projection","text":"[redacted]"}]
+            # Header-barrier mutations must not confirm ordinary or sealed scheduled raw uploads.
+            guard_ordinal = 0
+            for scheduled in (False, True):
+                for body_mode in ("Binary", "MultipartFormData"):
+                    for mutation_kind in (("same-size", "growth") if scheduled else ("unchanged", "same-size", "growth")):
+                        guard_ordinal += 1
+                        guard_source = root / ("guard-source-" + str(guard_ordinal) + ".bin")
+                        guard_bytes = b"s" * (128 * 1024)
+                        guard_source.write_bytes(guard_bytes)
+                        guard_path = "/source-guard/" + str(guard_ordinal)
+                        guard_destination = write("source-guard-" + str(guard_ordinal) + ".sxcu", profile(body=body_mode, path=guard_path,
+                            URL="https://example.invalid/source-guard-safe", ThumbnailURL="", DeletionURL=""))
+                        guard_qr = root / ("source-guard-" + str(guard_ordinal) + ".png")
+                        guard_task = write("source-guard-task-" + str(guard_ordinal) + ".json", {"version":1,"source":{"type":"raw_file","path":str(guard_source)},"actions":[
+                            {"type":"sharex_upload","kind":"file","profile":str(guard_destination)}, {"type":"link","format":"plain"}, {"type":"qr","path":str(guard_qr)}]})
+                        planned = {"path":guard_source,"length":len(guard_bytes),"grow":mutation_kind=="growth","applied":False}
+                        if mutation_kind != "unchanged":
+                            mutations[guard_path] = planned
+                        before = len(records)
+                        if scheduled:
+                            database = root / ("source-guard-" + str(guard_ordinal) + ".sqlite")
+                            instant = (datetime.now(timezone.utc) + timedelta(seconds=.4)).isoformat(timespec="milliseconds").replace("+00:00","Z")
+                            admitted = command(binary,"schedule","add",database,"guarded",guard_task,"--at",instant,"--missed","once","--grace-ms",5000,env=absent_keyring)
+                            checked(admitted,token,"Scheduled raw SXCU admission")
+                            result = command(binary,"schedule","serve",database,env=absent_keyring)
+                            assert result.returncode != 0 and all(json.loads(line)["type"]=="schedule_ready" for line in result.stdout.splitlines())
+                            state = checked(command(binary,"schedule","list",database,env=absent_keyring),token,"Scheduled raw SXCU uncertain state")[-1]
+                            assert state["uncertain_run"] and state["schedules"][0]["state"]=="uncertain"
+                            no_retry = command(binary,"schedule","serve",database,env=absent_keyring)
+                            assert no_retry.returncode != 0 and len(records)==before+1
+                        else:
+                            result = command(binary,"task","run",guard_task,env=absent_keyring)
+                            if mutation_kind == "unchanged":
+                                events = checked(result,token,"Unchanged guarded SXCU Task")
+                                assert events[-1]["type"]=="complete" and guard_qr.exists() and guard_source.read_bytes()==guard_bytes
+                            else:
+                                assert result.returncode != 0 and not result.stdout
+                        assert len(records)==before+1
+                        if mutation_kind != "unchanged":
+                            assert planned["applied"] and not guard_qr.exists()
+                            if not scheduled:
+                                assert b"changed" in result.stderr and b"remote object" in result.stderr
+                            assert guard_source.stat().st_size==len(guard_bytes)+(mutation_kind=="growth")
+            assert not mutations
             # Original filenames/configs/source bytes are not rewritten or leaked by default.
             assert source.read_bytes() == original
             assert all(path.read_bytes() == original for path, original in snapshots.items())
@@ -658,7 +860,7 @@ def main():
                   "methods": ["GET", "POST", "PUT", "PATCH", "DELETE"], "text_body_modes": 6,
                   "native_auth_origin_binding_and_redaction": True, "templates_selectors_prompts_events": True,
                   "no_tls_keylog": True, "auth_alias_cookie_and_response_answer_regressions": True, "delivered_query_names_and_known_encoding_projections": True, "raw_known_links_and_inspect_metadata_redaction": True, "configured_body_auth_and_frozen_data_consistency": True, "task_failure_events_and_later_action_suppression": True, "finalized_memory_and_saved_task_pixels": not args.skip_task,
-                  "real_account_acceptance": False, "installed_runtime_lifecycle": lifecycle, "frozen_debug_stripped_copy_text_section_unchanged": True}
+                  "opened_source_header_barrier_and_scheduled_raw": True, "xml_cookie_ancestry": True, "real_account_acceptance": False, "installed_runtime_lifecycle": lifecycle, "frozen_debug_stripped_copy_text_section_unchanged": True}
         if args.report:
             args.report.parent.mkdir(parents=True, exist_ok=True)
             args.report.write_text(json.dumps(report, indent=2) + "\n")
