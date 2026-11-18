@@ -33,6 +33,18 @@ jobs:
           Get-ChildItem -LiteralPath $Fixture.directory -File | Where-Object {$_.Extension -in @('.log','.txt') -and $_.Length -le 4194304} | ForEach-Object {Copy-Item -LiteralPath $_.FullName -Destination (Join-Path target/preflight-only-proof $_.Name)}
           [ordered]@{source_commit=$env:GITHUB_SHA;scope='ownership-controls-only';product_executed=$false;controller_exit=$Code} | ConvertTo-Json | Set-Content target/preflight-only-proof/scope.json
           if ($Code -ne 0) {exit $Code}
+      - name: Read only spooler service and bounded matching crash events
+        if: always()
+        shell: pwsh
+        timeout-minutes: 1
+        run: |
+          $Service=Get-Service -Name Spooler
+          [ordered]@{name=$Service.Name;status=$Service.Status.ToString();read_only=$true;service_changed=$false} | ConvertTo-Json | Set-Content target/preflight-only-proof/spooler-status.json
+          foreach ($Log in @('Application','System')) {
+            $Events=@(Get-WinEvent -FilterHashtable @{LogName=$Log;StartTime=(Get-Date).AddMinutes(-10)} -MaxEvents 64 -ErrorAction SilentlyContinue)
+            $Rows=@($Events | Where-Object {$_.Message -match 'spoolsv[.]exe|PrintIsolationHost|Print Spooler|Spooler'} | Select-Object -First 8 | ForEach-Object {[ordered]@{id=$_.Id;time=$_.TimeCreated.ToUniversalTime().ToString('o');provider=$_.ProviderName;message=$_.Message.Substring(0,[Math]::Min(8192,$_.Message.Length))}})
+            $Rows | ConvertTo-Json -Depth 4 | Set-Content ('target/preflight-only-proof/'+$Log+'-spooler-events.json')
+          }
       - uses: actions/upload-artifact@v4
         if: always()
         with:
