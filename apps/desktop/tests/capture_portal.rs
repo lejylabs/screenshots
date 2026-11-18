@@ -749,7 +749,10 @@ fn portal_memory_capture_uses_the_authorized_fd_and_exact_serial() -> Result<()>
     let performance = std::env::var("SCREENSHOTS_PORTAL_PERFORMANCE").as_deref() == Ok("1");
     let finite = std::env::var("SCREENSHOTS_PORTAL_FINITE").as_deref() == Ok("1");
     let analysis = std::env::var("SCREENSHOTS_PORTAL_ANALYSIS").as_deref() == Ok("1");
-    ensure!(!analysis || (!performance && !finite), "Run analysis separately from timing/freshness modes");
+    ensure!(
+        !analysis || (!performance && !finite),
+        "Run analysis separately from timing/freshness modes"
+    );
     let color = color_fixture()?;
     let negotiation = negotiation_mode()?;
     match negotiation.as_deref() {
@@ -774,7 +777,10 @@ fn portal_memory_capture_uses_the_authorized_fd_and_exact_serial() -> Result<()>
         color.is_none() || (!performance && !finite),
         "Run native color fixtures separately from finite/performance fixture modes"
     );
-    ensure!(!analysis || (color.is_none() && negotiation.is_none()), "Analysis requires its own generated raster");
+    ensure!(
+        !analysis || (color.is_none() && negotiation.is_none()),
+        "Analysis requires its own generated raster"
+    );
     let root = Folder::new();
     let config = configuration(&root.0)?;
     let bus_config = root.0.join("bus.conf");
@@ -1249,7 +1255,10 @@ fn publisher(root: &Path) -> Result<()> {
         })
         .transpose()?;
     let payload = if std::env::var("SCREENSHOTS_PORTAL_ANALYSIS").as_deref() == Ok("1") {
-        ensure!((width, height) == (512, 384) && payload.is_none(), "Invalid private analysis publisher dimensions");
+        ensure!(
+            (width, height) == (512, 384) && payload.is_none(),
+            "Invalid private analysis publisher dimensions"
+        );
         Some(region_analysis_fixture::pixels()?.into_raw())
     } else {
         payload

@@ -223,7 +223,6 @@ name = "app-core"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "arboard",
  "base64 0.23.1",
  "block2 0.6.2",
  "core-foundation 0.10.1",
@@ -7692,6 +7691,7 @@ dependencies = [
  "jiff",
  "libc",
  "pipewire",
+ "png 0.18.1",
  "qrcode",
  "quircs",
  "rfd",
@@ -7705,7 +7705,12 @@ dependencies = [
  "tracing-subscriber",
  "tray-icon",
  "uuid",
+ "wayland-client",
+ "wayland-protocols",
+ "wayland-protocols-wlr",
+ "wayland-server",
  "windows-sys 0.61.2",
+ "x11rb",
  "zbus 6.2.1",
  "zeroize",
 ]
@@ -9428,6 +9433,7 @@ dependencies = [
  "wayland-backend",
  "wayland-client",
  "wayland-scanner",
+ "wayland-server",
 ]
 
 [[package]]
@@ -9454,6 +9460,7 @@ dependencies = [
  "wayland-client",
  "wayland-protocols",
  "wayland-scanner",
+ "wayland-server",
 ]
 
 [[package]]

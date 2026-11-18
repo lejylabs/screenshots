@@ -1531,6 +1531,52 @@ impl ShareXPrepared {
             permit,
         )
     }
+    /// Explicit private UTF-8 input; no plaintext file or diagnostic payload is retained.
+    pub fn upload_text(
+        &self,
+        text: &str,
+        cancel: crate::UploadCancellation,
+    ) -> Result<ShareXOutcome> {
+        ensure!(
+            self.0.kind == Some(ShareXInputKind::Text)
+                && text.len() <= 65536
+                && !text.contains('\0'),
+            "In-memory SXCU text requires KindText and at most 64 KiB without NUL"
+        );
+        cancel.check()?;
+        let permit = Permit::acquire()?;
+        let name = self
+            .0
+            .options
+            .filename
+            .clone()
+            .unwrap_or_else(|| format!("{}.txt", uuid::Uuid::new_v4().simple()));
+        let mut outcome = self
+            .run(
+                None,
+                Zeroizing::new(text.to_owned()),
+                name,
+                None,
+                cancel,
+                permit,
+            )
+            .map_err(|_| {
+                anyhow::anyhow!(
+                    "Private SXCU text upload failed; a remote object may exist; no retry"
+                )
+            })?;
+        // Imported profiles may reflect input into diagnostic events and error messages.
+        for event in &mut outcome.events {
+            event.title.zeroize();
+            event.text.zeroize();
+        }
+        outcome.events.clear();
+        if let Some(message) = outcome.error_message.as_mut() {
+            message.zeroize();
+        }
+        outcome.error_message = None;
+        Ok(outcome)
+    }
     fn execute(&self, path: &Path, cancel: crate::UploadCancellation) -> Result<ShareXOutcome> {
         cancel.check()?;
         let permit = Permit::acquire()?;
@@ -1751,6 +1797,19 @@ impl ShareXPrepared {
             let target = credential
                 .credential_target()
                 .context("Frozen SXCU credential target is missing")?;
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
+            let value = crate::upload_credentials::read_header_with_check(
+                &target,
+                authentication,
+                &|| {
+                    if cancel.is_canceled() {
+                        Err(crate::CaptureError::NativeCanceled)
+                    } else {
+                        Ok(())
+                    }
+                },
+            )?;
+            #[cfg(not(any(target_os = "linux", target_os = "macos")))]
             let value = crate::upload_credentials::read_header(&target, authentication)?;
             cancel.check()?;
             add_secret(
@@ -3074,6 +3133,35 @@ mod tests {
                     )
                     .unwrap();
                     stream.write_all(response).unwrap();
+                    if early {
+                        // Keep unread request bytes from resetting TCP before the client sees 201.
+                        // This drains transport teardown only; the early response accepted no body.
+                        stream.shutdown(std::net::Shutdown::Write).unwrap();
+                        let until = std::time::Instant::now() + Duration::from_secs(3);
+                        let mut discarded = [0; 1024];
+                        let mut count = 0;
+                        loop {
+                            assert!(std::time::Instant::now() < until);
+                            match stream.read(&mut discarded) {
+                                Ok(0) => break,
+                                Ok(length) => {
+                                    count += length;
+                                    assert!(count < 65536);
+                                }
+                                Err(error)
+                                    if error.kind() == std::io::ErrorKind::ConnectionReset =>
+                                {
+                                    break;
+                                }
+                                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {
+                                    continue;
+                                }
+                                Err(error) => {
+                                    panic!("Private early-response teardown failed: {error}")
+                                }
+                            }
+                        }
+                    }
                     body
                 });
                 let request = Request {
@@ -3113,6 +3201,7 @@ mod tests {
                     None,
                     crate::UploadCancellation::default(),
                 ));
+                drop(runtime);
                 let body = worker.join().unwrap();
                 if early {
                     let error = format!(

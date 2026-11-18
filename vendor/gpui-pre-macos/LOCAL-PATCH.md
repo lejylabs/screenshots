@@ -14,7 +14,15 @@ session, including close/end reentrancy. Original files are preserved.
 
 Two fresh immutable source reviews of the Unix revision-5 packet are clean.
 Root activation preserves the verified full package and uses genuine base/next
-merges. Native compilation, owned named-pasteboard fixtures, full gestures and
-resource/hardware acceptance remain pending; source review is not runtime proof.
+merges. The ARM macOS native SDK check passes for this source; owned named-pasteboard
+fixtures, full gestures and resource/hardware acceptance remain pending.
+Source review and compilation are not native transfer/runtime proof.
 Exact original-file hashes and patch evidence are retained under
 `target/verification/unix-native-drop-dragout-held/checkpoints/unix-native-r5/`.
+
+The platform also retains its Metal instance-buffer pool weakly; live renderers
+and their in-flight callbacks keep the strong owners. Closing the last window
+can release the pool, and reopening lazily recreates it. This adds no idle worker
+or timer. The two final resident-lifecycle source reviews are clean; actual macOS
+window/pool lifetime execution and whole-process resource acceptance remain
+separate gates. The native drag image uses the typed NSString AppKit image name.

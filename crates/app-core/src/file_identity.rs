@@ -94,7 +94,7 @@ impl FileIdentity {
     }
     /// Stable native object identity, independently of timestamps/length/attributes.
     /// Keep an original handle open while comparing so an object ID cannot be reused.
-    /// Full equality and verify_file still pin the complete admitted version.
+    /// Equality and verify_file compare observed metadata, not an immutable byte snapshot.
     pub fn same_object(&self, other: &Self) -> bool {
         !self.1.is_empty() && self.1 == other.1
     }

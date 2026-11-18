@@ -517,6 +517,7 @@ fn provider(case: &str, hwnd: HWND) -> Result<()> {
         "control-wrong-terminal" => Some(("normal", "wrong-terminal")),
         "control-failed-as-leave-source-death" => Some(("source-death", "failed-as-leave")),
         "control-failed-as-leave-unmarshal" => Some(("custom-unmarshal-memory", "failed-as-leave")),
+        "control-helper-unknown" => Some(("normal", "helper-unknown")),
         "control-source-error" => Some(("normal", "mutate-source-error")),
         "control-source-none" => Some(("normal", "mutate-source-none")),
         "control-duplicate-acquire" => Some(("normal", "mutate-duplicate-get")),
@@ -550,6 +551,8 @@ fn provider(case: &str, hwnd: HWND) -> Result<()> {
     );
     let allowed = [
         "normal",
+        "shell-private-normal",
+        "ci-ole-shell-private-normal",
         "custom-normal",
         "query-stall",
         "get-stall",
@@ -668,6 +671,8 @@ fn provider(case: &str, hwnd: HWND) -> Result<()> {
         && matches!(
             case,
             "normal"
+                | "shell-private-normal"
+                | "ci-ole-shell-private-normal"
                 | "custom-normal"
                 | "cancel-pending-body"
                 | "a-close-b-live"
@@ -807,6 +812,8 @@ fn provider(case: &str, hwnd: HWND) -> Result<()> {
         || !matches!(
             case,
             "normal"
+                | "shell-private-normal"
+                | "ci-ole-shell-private-normal"
                 | "custom-normal"
                 | "cancel-pending-body"
                 | "a-close-b-live"

@@ -7,8 +7,8 @@ from the reviewed revision-6 packet. Root subsequently corrected registration/
 ALLOW readiness with per-registration epochs and an exact current receiver stamp.
 A real reclaim registration wake must be rejected before ALLOW in a finite
 handshake. `provenance.json` records their
-identities. There are 105 authored cases with explicit owned input-desktop opt-in,
-93 without. An authored case count is not an executed test result.
+identities. There are 108 authored cases with explicit owned input-desktop opt-in,
+95 without, plus the separate private-format ownership/bounds self-check. An authored case count is not an executed test result.
 
 The runner refuses local and self-hosted machines. Direct native cases use a
 generated private station/desktop. GPUI cases use a generated private non-input
@@ -45,7 +45,28 @@ separates ordinary operation timeouts from wait failures, retains the original
 source-phase helper identity across receiver replacement, and records numeric
 native operation stages/HRESULTs to resolve the remaining provider failure.
 PowerShell records independent restoration/release evidence without replacing
-the primary failure. This correction still requires native compilation and
-execution. Full COM/OLE/editor/fault acceptance remains open.
+the primary failure. The subsequent fc5 hosted run44262524861 executed all105 then-authored cases:
+50 failed their complete acceptance checks. Numeric diagnostics localized normal,
+GPUI and OLE refusal to the real visual helper's DV_E_FORMATETC result. The new
+correction accepts that one unsupported optional visual-format result after the
+same operation/reentrancy checks, while preserving all real helper notifications,
+Release calls and unknown-error rejection. Basic sources still refuse private
+SetData/GetData. Two added cooperative source cases use the real Shell drag-image
+manager and bounded private-format storage; an unknown-HRESULT control must be
+rejected. This correction and its added controls still require native compilation
+and execution. Full COM/OLE/editor/fault acceptance remains open.
 Physical input, mixed DPI, hardware presentation and joint main/helper resource
 acceptance remain separate from this owned synthetic suite.
+
+The Shell helper displays optional drag images; it uses IDataObject private
+formats through SetData/GetData. A basic IDataObject may legitimately return
+E_NOTIMPL from SetData. Payload support is checked independently of those visual
+formats. The cooperative fixture delegates private storage to SHCreateDataObject,
+limited to eight registered HGLOBAL formats,64KiB each and256KiB total; it validates
+FORMATETC and tests borrowed/transferred/replaced/refused medium ownership. It
+never admits helper formats as capture/editor payloads. The source's synthetic
+two-pixel drag bitmap is transferred to the real drag-image manager.
+
+Primary contracts: [IDropTargetHelper](https://learn.microsoft.com/en-us/windows/win32/api/shobjidl_core/nn-shobjidl_core-idroptargethelper),
+[IDataObject::SetData](https://learn.microsoft.com/en-us/windows/win32/api/objidl/nf-objidl-idataobject-setdata),
+[SHCreateDataObject](https://learn.microsoft.com/en-us/windows/win32/api/shlobj_core/nf-shlobj_core-shcreatedataobject).

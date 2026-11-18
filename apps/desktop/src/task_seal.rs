@@ -205,9 +205,9 @@ mod tests {
         ));
         *LAST_FRAME.lock().unwrap() = Some(Arc::downgrade(&pixels));
         #[cfg(target_os = "macos")]
-        let desktop_layout = matches!(call, C::Desktop { .. }).then(|| Arc::new(
-            app_core::MacDesktopLayout::new(&[synthetic_mac_coordinates()]).unwrap()
-        ));
+        let desktop_layout = matches!(call, C::Desktop { .. }).then(|| {
+            Arc::new(app_core::MacDesktopLayout::new(&[synthetic_mac_coordinates()]).unwrap())
+        });
         #[cfg(not(target_os = "macos"))]
         let desktop_layout = None;
         Ok(R::Frames(vec![CapturedImage {

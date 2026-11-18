@@ -135,6 +135,20 @@ impl Budget {
         );
         Ok(())
     }
+    /// One encoded capacity plus macOS native data preparation and scratch; parent encoding is separate.
+    #[allow(dead_code)] // The desktop output helper includes this same guard source.
+    pub fn clipboard_output(&self, rgba_bytes: u64) -> Result<()> {
+        ensure!(
+            rgba_bytes <= 256 * 1024 * 1024,
+            "Clipboard output exceeds the RGBA limit"
+        );
+        self.limit(
+            rgba_bytes
+                .checked_mul(2)
+                .and_then(|n| n.checked_add(48 * 1024 * 1024))
+                .ok_or_else(|| anyhow::anyhow!("Clipboard output memory bound overflow"))?,
+        )
+    }
     pub fn decoding(&mut self) -> Result<()> {
         self.limit(DECODE_GROWTH)
     }

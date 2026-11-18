@@ -101,6 +101,12 @@ three Xft DPIs, runs the real desktop CLI and finalized Task recipe, checks
 Wayland/outputless-split refusal and a real restored RandR-monitor change.
 Xvfb's outputless second `--setmonitor` record is a negative fixture, not proof
 of two captured outputs. Pure geometry/provenance and scheduled-Task tests are
-separate. All newly added tests and optimized timing/resource checks were unrun
-when this held change was authored; native two-output, rotation, panel scaling,
-hotplug, process-memory and reference-hardware acceptance remain open.
+separate. Integrated optimized checks passed 12 desktop core cases and the strict
+Task validation/failure case. The private native runner passed ten actual CLI
+invocations, comparing all 24,576 RGBA bytes at Xft DPI 48/96/192, the finalized
+Task redaction, restored topology rejection and unsupported-source refusals.
+The tested CLI SHA256 was
+`ce5d3a761d00b2cc79914fba63e940a150c87b6d5ddda13e240201f93f48f9fa`.
+These are owned single-output software results; native two-output, rotation,
+panel scaling, hotplug, process-memory and reference-hardware acceptance remain
+open. Tiny-fixture command timings do not establish capture latency budgets.

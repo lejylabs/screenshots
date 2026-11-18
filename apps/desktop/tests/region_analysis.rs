@@ -165,14 +165,49 @@ fn portal_analysis_preflight_rejects_invalid_arguments_without_permission_or_sta
     let fixture = Fixture::new();
     for name in ["ocr-portal-region", "qr-portal-region"] {
         fixture.reject(name, &[], "Usage:", true);
-        fixture.reject(name, &args(&["fixture", "0", "0", "1", "1"]), "source must be", true);
-        fixture.reject(name, &args(&["display", "0", "0", "2049", "2048"]), "16 MiB", true);
-        fixture.reject(name, &args(&["display", "4294967295", "0", "2", "1"]), "coordinates overflow", true);
-        fixture.reject(name, &args(&["window", "-1", "0", "1", "1"]), "whole nonnegative", true);
+        fixture.reject(
+            name,
+            &args(&["fixture", "0", "0", "1", "1"]),
+            "source must be",
+            true,
+        );
+        fixture.reject(
+            name,
+            &args(&["display", "0", "0", "2049", "2048"]),
+            "16 MiB",
+            true,
+        );
+        fixture.reject(
+            name,
+            &args(&["display", "4294967295", "0", "2", "1"]),
+            "coordinates overflow",
+            true,
+        );
+        fixture.reject(
+            name,
+            &args(&["window", "-1", "0", "1", "1"]),
+            "whole nonnegative",
+            true,
+        );
     }
-    fixture.reject("ocr-portal-region", &args(&["display", "0", "0", "1", "1", "--language", "../eng"]), "OCR language", true);
-    fixture.reject("qr-portal-region", &args(&["display", "0", "0", "4097", "1"]), "4096 pixels", true);
-    fixture.reject("qr-portal-region", &args(&["window", "0", "0", "1", "1", "--language", "eng"]), "Usage:", true);
+    fixture.reject(
+        "ocr-portal-region",
+        &args(&["display", "0", "0", "1", "1", "--language", "../eng"]),
+        "OCR language",
+        true,
+    );
+    fixture.reject(
+        "qr-portal-region",
+        &args(&["display", "0", "0", "4097", "1"]),
+        "4096 pixels",
+        true,
+    );
+    fixture.reject(
+        "qr-portal-region",
+        &args(&["window", "0", "0", "1", "1", "--language", "eng"]),
+        "Usage:",
+        true,
+    );
 }
 
 #[cfg(not(target_os = "linux"))]
@@ -180,6 +215,11 @@ fn portal_analysis_preflight_rejects_invalid_arguments_without_permission_or_sta
 fn portal_analysis_refuses_other_platforms_after_preflight() {
     let fixture = Fixture::new();
     for name in ["ocr-portal-region", "qr-portal-region"] {
-        fixture.reject(name, &args(&["display", "0", "0", "1", "1"]), "requires Linux", false);
+        fixture.reject(
+            name,
+            &args(&["display", "0", "0", "1", "1"]),
+            "requires Linux",
+            false,
+        );
     }
 }

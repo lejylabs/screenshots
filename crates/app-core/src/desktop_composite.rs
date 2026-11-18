@@ -172,7 +172,11 @@ pub fn capture_stitched_desktop_with_cancel(
             "Wayland desktop coordinates are not physical pixels; use an explicit portal source",
         ));
     }
-    if !cfg!(any(target_os = "windows", target_os = "macos", target_os = "linux")) {
+    if !cfg!(any(
+        target_os = "windows",
+        target_os = "macos",
+        target_os = "linux"
+    )) {
         return Err(CaptureError::Unsupported(
             "stitched desktop capture requires a calibrated native display adapter",
         ));
@@ -184,8 +188,11 @@ pub(crate) fn capture_stitched_desktop_in_worker(
     backend: &XcapBackend,
     check: &crate::NativeCaptureCheck<'_>,
 ) -> Result<CapturedImage, CaptureError> {
-    if !cfg!(any(target_os = "windows", target_os = "macos", target_os = "linux"))
-        || crate::native_capture_job::executor().is_some()
+    if !cfg!(any(
+        target_os = "windows",
+        target_os = "macos",
+        target_os = "linux"
+    )) || crate::native_capture_job::executor().is_some()
     {
         return Err(CaptureError::Unsupported(
             "Desktop assembly requires its native isolated worker",
@@ -348,11 +355,18 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn owned_wayland_authority_refuses_desktop_before_native_dispatch() {
-        let backend = XcapBackend::new(PathBuf::new()).with_native_context(crate::NativeCaptureContext {
-            wayland_session: true,
-        });
-        assert!(matches!(capture_stitched_desktop(&backend), Err(CaptureError::Unsupported(_))));
-        assert!(matches!(capture_stitched_desktop_with_cancel(&backend, &|| Err(CaptureError::NativeCanceled)), Err(CaptureError::NativeCanceled)));
+        let backend =
+            XcapBackend::new(PathBuf::new()).with_native_context(crate::NativeCaptureContext {
+                wayland_session: true,
+            });
+        assert!(matches!(
+            capture_stitched_desktop(&backend),
+            Err(CaptureError::Unsupported(_))
+        ));
+        assert!(matches!(
+            capture_stitched_desktop_with_cancel(&backend, &|| Err(CaptureError::NativeCanceled)),
+            Err(CaptureError::NativeCanceled)
+        ));
     }
 
     #[test]

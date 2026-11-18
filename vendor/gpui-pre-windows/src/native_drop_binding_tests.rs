@@ -267,6 +267,11 @@ enum ReentryAt {
     GetData,
     HelperEnter,
     HelperDrop,
+    MissingVisualMetadata,
+    MissingVisualMetadataEnterReentry,
+    MissingVisualMetadataDropReentry,
+    UnknownVisualFailure,
+    UnknownVisualDropFailure,
 }
 struct Reentry {
     at: ReentryAt,
@@ -348,7 +353,7 @@ impl Drop for ReentrantHelper {
                 .helper_releases
                 .set(context.helper_releases.get() + 1);
             let target = context.target.borrow().upgrade().unwrap();
-            assert!(target.phase.get() == GesturePhase::Retired);
+            assert!(target.phase.get() == if matches!(context.at, ReentryAt::MissingVisualMetadata | ReentryAt::UnknownVisualDropFailure) {GesturePhase::Dropping} else {GesturePhase::Retired});
         }
     }
 }
@@ -363,10 +368,14 @@ impl IDropTargetHelper_Impl for ReentrantHelper_Impl {
     ) -> windows::core::Result<()> {
         let context = self.context.upgrade().unwrap();
         context.helper_enters.set(context.helper_enters.get() + 1);
-        if context.at == ReentryAt::HelperEnter {
+        if matches!(context.at, ReentryAt::HelperEnter | ReentryAt::MissingVisualMetadataEnterReentry) {
             context.leave_during_foreign_call();
         }
-        Ok(())
+        match context.at {
+            ReentryAt::MissingVisualMetadata | ReentryAt::MissingVisualMetadataEnterReentry | ReentryAt::MissingVisualMetadataDropReentry | ReentryAt::UnknownVisualDropFailure => Err(DV_E_FORMATETC.into()),
+            ReentryAt::UnknownVisualFailure => Err(E_UNEXPECTED.into()),
+            _ => Ok(()),
+        }
     }
     fn DragLeave(&self) -> windows::core::Result<()> {
         let context = self.context.upgrade().unwrap();
@@ -374,10 +383,12 @@ impl IDropTargetHelper_Impl for ReentrantHelper_Impl {
         let target = context.target.borrow().upgrade().unwrap();
         assert!(target.phase.get() == GesturePhase::Retired);
         assert!(target.operation.get().is_none());
-        Ok(())
+        if context.at == ReentryAt::MissingVisualMetadata {Err(DV_E_FORMATETC.into())} else {Ok(())}
     }
     fn DragOver(&self, _: *const POINT, _: DROPEFFECT) -> windows::core::Result<()> {
-        panic!("Recursive helper movement must be refused")
+        let context = self.context.upgrade().unwrap();
+        assert!(context.at == ReentryAt::MissingVisualMetadata, "Recursive helper movement must be refused");
+        Err(DV_E_FORMATETC.into())
     }
     fn Drop(
         &self,
@@ -389,10 +400,10 @@ impl IDropTargetHelper_Impl for ReentrantHelper_Impl {
         context.helper_drops.set(context.helper_drops.get() + 1);
         let target = context.target.borrow().upgrade().unwrap();
         assert!(target.phase.get() == GesturePhase::Dropping);
-        if context.at == ReentryAt::HelperDrop {
+        if matches!(context.at, ReentryAt::HelperDrop | ReentryAt::MissingVisualMetadataDropReentry) {
             context.leave_during_foreign_call();
         }
-        Ok(())
+        if context.at == ReentryAt::UnknownVisualDropFailure {Err(E_UNEXPECTED.into())} else if matches!(context.at, ReentryAt::MissingVisualMetadata | ReentryAt::MissingVisualMetadataDropReentry) {Err(DV_E_FORMATETC.into())} else {Ok(())}
     }
     fn Show(&self, _: BOOL) -> windows::core::Result<()> {
         Ok(())
@@ -553,10 +564,17 @@ fn actual_reentrant_leave(at: ReentryAt) {
                 )
                 .unwrap();
         }
-        if at != ReentryAt::HelperEnter {
+        let enter_refused = matches!(at, ReentryAt::HelperEnter | ReentryAt::MissingVisualMetadataEnterReentry | ReentryAt::UnknownVisualFailure);
+        if !enter_refused {
             assert_eq!(effect, DROPEFFECT_COPY);
             let entered = receiver.pending.borrow_mut().take().unwrap();
             assert_eq!(entered.header.kind, wire::ENTER);
+            if at == ReentryAt::MissingVisualMetadata {
+                effect = DROPEFFECT_COPY;
+                unsafe {interface.DragOver(MODIFIERKEYS_FLAGS(0), POINTL::default(), &mut effect).unwrap();}
+                assert_eq!(effect, DROPEFFECT_COPY);
+                assert_eq!(receiver.pending.borrow_mut().take().unwrap().header.kind, wire::MOTION);
+            }
             effect = DROPEFFECT_COPY;
             unsafe {
                 interface
@@ -569,12 +587,14 @@ fn actual_reentrant_leave(at: ReentryAt) {
                     .unwrap();
             }
         }
-        assert_eq!(effect, DROPEFFECT_NONE);
-        assert!(context.fired.get());
+        let success = at == ReentryAt::MissingVisualMetadata;
+        let unknown = matches!(at, ReentryAt::UnknownVisualFailure | ReentryAt::UnknownVisualDropFailure);
+        assert_eq!(effect, if success {DROPEFFECT_COPY} else {DROPEFFECT_NONE});
+        assert_eq!(context.fired.get(), !success && !unknown);
         let terminal = receiver.pending.borrow_mut().take().unwrap();
-        assert_eq!(terminal.header.kind, wire::LEAVE);
+        assert_eq!(terminal.header.kind, if success {wire::SUBMIT} else if unknown {wire::FAILED} else {wire::LEAVE});
         assert_eq!(terminal.header.generation, 1);
-        assert!(terminal.bytes.is_empty());
+        assert_eq!(terminal.bytes.is_empty(), !success);
         assert!(target.phase.get() == GesturePhase::Retired);
         assert!(target.operation.get().is_none());
         assert!(target.helper.borrow().is_none());
@@ -584,16 +604,16 @@ fn actual_reentrant_leave(at: ReentryAt) {
         assert_eq!(context.helper_releases.get(), 1);
         assert_eq!(
             context.reads.get(),
-            if at == ReentryAt::HelperEnter { 0 } else { 1 }
+            if enter_refused { 0 } else { 1 }
         );
         assert_eq!(context.helper_enters.get(), 1);
         assert_eq!(
             context.helper_drops.get(),
-            u32::from(at == ReentryAt::HelperDrop)
+            u32::from(matches!(at, ReentryAt::HelperDrop | ReentryAt::MissingVisualMetadataDropReentry | ReentryAt::MissingVisualMetadata | ReentryAt::UnknownVisualDropFailure))
         );
         assert_eq!(
             context.helper_leaves.get(),
-            u32::from(at != ReentryAt::HelperDrop)
+            u32::from(!matches!(at, ReentryAt::HelperDrop | ReentryAt::MissingVisualMetadataDropReentry | ReentryAt::MissingVisualMetadata | ReentryAt::UnknownVisualDropFailure))
         );
         context.interface.borrow_mut().take();
         context.source.borrow_mut().take();
@@ -621,6 +641,21 @@ fn actual_target_leave_during_helper_enter_cannot_publish_late_enter() {
 #[test]
 fn actual_target_leave_during_helper_drop_cannot_publish_late_submit() {
     actual_reentrant_leave(ReentryAt::HelperDrop);
+}
+
+#[test]
+fn missing_shell_visual_metadata_does_not_reject_valid_payload() {
+    actual_reentrant_leave(ReentryAt::MissingVisualMetadata);
+}
+#[test]
+fn missing_shell_visual_metadata_cannot_revive_reentrant_enter_or_drop() {
+    actual_reentrant_leave(ReentryAt::MissingVisualMetadataEnterReentry);
+    actual_reentrant_leave(ReentryAt::MissingVisualMetadataDropReentry);
+}
+#[test]
+fn unknown_shell_visual_failure_still_rejects_payload() {
+    actual_reentrant_leave(ReentryAt::UnknownVisualFailure);
+    actual_reentrant_leave(ReentryAt::UnknownVisualDropFailure);
 }
 
 #[test]

@@ -1,10 +1,10 @@
 # Explicit region OCR and QR
 
 Author: NewtTheWolf
-Date: 2026-11-15
-Status: source implementation; the added portal route and source/cancellation
-checks require the focused verification below. Earlier native evidence applies
-to its original image only, not automatically to this revision.
+Date: 2026-11-18
+Status: focused optimized checks and owned X11/private-portal OCR/QR execution
+pass. Windows/macOS native execution, physical-session and resource budgets
+remain separate acceptance gates.
 
 ## Contract
 
@@ -198,9 +198,29 @@ streaming/stalled marker armed after those admissions; CreateSession alone is
 not permission-completion evidence. Tesseract plus `eng` must already exist;
 missing tools fail this opt-in gate rather than producing a fake pass.
 
-No build, Rust test, native API, Xvfb, D-Bus/PipeWire service or OCR engine was run
-by the source-delivery agent. Root owns execution and compiler serialization.
-After applying the frozen files and formatting, run focused optimized checks:
+Integrated optimized verification passed ten region-source/cancellation cases
+and seven OCR cases, including cancellation before engine admission, during
+encoding and after engine completion, plus cleanup of an already started owned
+engine. Fifteen executable CLI cases also pass (three region preflight, seven
+OCR and five QR). Workspace/all-target Linux and Windows GNU metadata checks
+pass; GNU checking is not Windows execution.
+
+The authenticated private Xvfb runner passed two QR and two installed-Tesseract
+OCR operations using `deu`, exact synthetic pixels and isolated user paths. The
+tested CLI SHA256 was
+`24a0d4907b5038575c43df3ae80ee45a936beb6c293d2f9c9e15284cd9f6fafc`.
+The private portal gate also passed all eight display/window success/refusal
+cases, denial and cancellation after an authorized FD and confirmed stalled
+stream. Its 512×384 natural raster intentionally differs from 1×1 logical portal
+metadata. All sessions closed and no user state was created.
+
+The portal test used private `eng.traineddata` from the official tessdata_fast
+commit `923915d4ced2a7235221788285785a29c4a42d4a`, verified against its Git blob
+identity; no system language installation changed. Independent testing found
+the first hand-drawn numeral 3 was recognized as 5. Its strokes were corrected
+and the unchanged `HELLO 123` oracle then passed the actual portal route.
+
+Root owns compiler/native serialization. Reproduce the focused checks with:
 
 ```sh
 cargo test -p screenshots --profile release-fast --bin screenshots region_analysis::tests -- --test-threads=1

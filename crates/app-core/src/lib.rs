@@ -69,10 +69,10 @@ pub use capture_macos_model::{
     MacLogicalRect, MacMediaTimestamp, MacScrollRequest, MacScrollStop, MacScrollSummary,
     MacVideoRequest, MacVideoSummary, MacWindowProof,
 };
-mod image_url;
-mod native_capture_job;
 #[cfg(target_os = "linux")]
 mod capture_visibility;
+mod image_url;
+mod native_capture_job;
 #[cfg(target_os = "linux")]
 pub use capture_visibility::hide_capture_window;
 mod native_drop;
@@ -132,9 +132,9 @@ mod clipboard_input;
 pub use clipboard_input::{NativeAcquisitionBudget, native_acquisition_budget};
 mod managed_color;
 pub use clipboard_input::{
-    ClipboardFileReference, ClipboardInspectKind, ClipboardPathEncoding, ClipboardSnapshot,
-    NativeClipboardBackend, capture_clipboard_image_with_cancel, inspect_clipboard_with_cancel,
-    read_clipboard_image,
+    CLIPBOARD_FILE_BYTES, ClipboardFileReference, ClipboardInspectKind, ClipboardPathEncoding,
+    ClipboardSnapshot, NativeClipboardBackend, capture_clipboard_image_with_cancel,
+    inspect_clipboard_with_cancel, read_clipboard_image,
 };
 #[cfg(target_os = "windows")]
 mod clipboard_windows;
@@ -258,6 +258,7 @@ pub use upload::{
     upload_saved_image_with_progress,
 };
 
+pub use clipboard::validate_file_clipboard_path;
 pub use clipboard::{
     ImageClipboard, decode_editor_image_bytes, decode_editor_image_bytes_with_backing_and_cancel,
     decode_editor_image_bytes_with_cancel, load_editor_image, load_editor_image_with_cancel,
@@ -267,6 +268,8 @@ pub use clipboard::{
     load_editor_image_with_identity_limit_and_dimensions_with_cancel, load_editor_image_with_limit,
     load_png_thumbnail, load_saved_png,
 };
+#[cfg(unix)]
+pub use clipboard::{install_file_clipboard_spawner, prepare_file_clipboard_uri};
 
 mod capture_command;
 #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
@@ -324,4 +327,23 @@ pub use unix_desktop_services::{
 pub use unix_desktop_services::{
     LinuxDesktopProcess, LinuxDesktopProcessOwner, LinuxTaskPortal, install_linux_desktop_spawner,
     serve_linux_desktop_child,
+};
+
+#[cfg(all(target_os = "macos", feature = "native-file-clipboard-fixture"))]
+#[doc(hidden)]
+pub use clipboard_input::inspect_owned_macos_file_pasteboard;
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+mod native_credentials;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[doc(hidden)]
+pub use native_credentials::{
+    NativeCredentialCall, NativeCredentialExecutor, execute as execute_native_credential,
+    install_native_credential_executor,
+};
+
+#[doc(hidden)]
+pub use clipboard::{
+    FileClipboardOwner, MAX_CLIPBOARD_TEXT_BYTES, NativeClipboardOutput,
+    install_native_clipboard_spawner,
 };

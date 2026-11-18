@@ -958,7 +958,6 @@ mod tests {
     }
 }
 
-
 #[cfg(any(target_os = "macos", test))]
 pub(crate) fn capture_application_excluded(pid: i32, owner: u32, helper: u32) -> bool {
     u32::try_from(pid).is_ok_and(|pid| pid != 0 && (pid == owner || pid == helper))

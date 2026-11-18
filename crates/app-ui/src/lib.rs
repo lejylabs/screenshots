@@ -799,7 +799,9 @@ impl CaptureWorkspace {
         let owner = cx.entity().downgrade();
         let display_subscription = cx.observe_displays(move |event, cx| {
             if capture_lifecycle::invalidates_selection(event) {
-                owner.update(cx, |this, cx| this.invalidate_capture_topology(cx)).ok();
+                owner
+                    .update(cx, |this, cx| this.invalidate_capture_topology(cx))
+                    .ok();
             }
         });
         let mut shell = Self {
@@ -2627,10 +2629,14 @@ impl CaptureWorkspace {
         {
             for handle in self.overlays.clone() {
                 let stale = handle.read(cx).is_ok_and(|overlay| {
-                    !screens.iter().any(|(id, bounds)| *id == overlay.display_id && *bounds == overlay.bounds)
+                    !screens
+                        .iter()
+                        .any(|(id, bounds)| *id == overlay.display_id && *bounds == overlay.bounds)
                 });
                 if stale {
-                    handle.update(cx, |_, window, _| window.remove_window()).ok();
+                    handle
+                        .update(cx, |_, window, _| window.remove_window())
+                        .ok();
                 }
             }
             self.overlays.retain(|handle| handle.read(cx).is_ok());
@@ -3766,11 +3772,15 @@ impl CaptureWorkspace {
             let owner = cx.entity().downgrade();
             // Display callbacks may still own a window borrow; retire after native dispatch.
             cx.defer(move |cx| {
-                owner.update(cx, |this, cx| {
-                    if (this.capture_generation, this.topology_generation) == generation && this.preview_active {
-                        this.cancel_overlays(cx);
-                    }
-                }).ok();
+                owner
+                    .update(cx, |this, cx| {
+                        if (this.capture_generation, this.topology_generation) == generation
+                            && this.preview_active
+                        {
+                            this.cancel_overlays(cx);
+                        }
+                    })
+                    .ok();
             });
         }
         cx.notify();
@@ -6442,7 +6452,7 @@ impl CaptureWorkspace {
                     .background_spawn(async move {
                         let mut clipboard = clipboard.lock().map_err(|error| error.to_string())?;
                         match pixels {
-                            Some(pixels) => clipboard.copy_image(&pixels),
+                            Some(pixels) => clipboard.copy_shared_image(pixels),
                             None => clipboard.copy_saved_image(&path),
                         }
                         .map_err(|error| format!("{error:#}"))
@@ -6628,7 +6638,8 @@ impl CaptureWorkspace {
         let cancel = self.native_capture_cancel.as_ref().unwrap().clone();
         let generation = self.capture_generation;
         #[cfg(test)]
-        let topology_after_prepare = std::mem::take(&mut self.test_selection_topology_after_prepare);
+        let topology_after_prepare =
+            std::mem::take(&mut self.test_selection_topology_after_prepare);
         self.capture_status = "Preparing selection…".into();
         cx.notify();
         cx.spawn(async move |this, cx| {
@@ -6892,9 +6903,17 @@ impl CaptureWorkspace {
                                 window.minimize_window();
                                 Ok::<_, String>(None)
                             } else {
-                                match HasWindowHandle::window_handle(window).map(|handle| handle.as_raw()) {
-                                    Ok(RawWindowHandle::Xlib(handle)) => u32::try_from(handle.window).map(Some).map_err(|_| "Invalid X11 control window".into()),
-                                    Ok(RawWindowHandle::Xcb(handle)) => Ok(Some(handle.window.get())),
+                                match HasWindowHandle::window_handle(window)
+                                    .map(|handle| handle.as_raw())
+                                {
+                                    Ok(RawWindowHandle::Xlib(handle)) => {
+                                        u32::try_from(handle.window)
+                                            .map(Some)
+                                            .map_err(|_| "Invalid X11 control window".into())
+                                    }
+                                    Ok(RawWindowHandle::Xcb(handle)) => {
+                                        Ok(Some(handle.window.get()))
+                                    }
                                     _ => Err("Native X11 control identity is unavailable".into()),
                                 }
                             }
@@ -6902,12 +6921,21 @@ impl CaptureWorkspace {
                         #[cfg(target_os = "macos")]
                         {
                             use raw_window_handle::{HasWindowHandle, RawWindowHandle};
-                            match HasWindowHandle::window_handle(window).map(|handle| handle.as_raw()) {
-                                Ok(RawWindowHandle::AppKit(handle)) => unsafe { app_core::hide_macos_capture_view(handle.ns_view) }.map_err(|error| error.to_string()),
+                            match HasWindowHandle::window_handle(window)
+                                .map(|handle| handle.as_raw())
+                            {
+                                Ok(RawWindowHandle::AppKit(handle)) => {
+                                    unsafe { app_core::hide_macos_capture_view(handle.ns_view) }
+                                        .map_err(|error| error.to_string())
+                                }
                                 _ => Err("Native AppKit control identity is unavailable".into()),
                             }
                         }
-                        #[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
+                        #[cfg(not(any(
+                            target_os = "windows",
+                            target_os = "linux",
+                            target_os = "macos"
+                        )))]
                         {
                             window.minimize_window();
                             Ok::<(), String>(())
@@ -7129,17 +7157,25 @@ impl Overlay {
         let owner = self.owner.clone();
         let generation = self.selection_generation;
         cx.defer(move |cx| {
-            owner.update(cx, |this, cx| {
-                if (this.capture_generation, this.topology_generation) == generation {
-                    this.capture_status = "Selection canceled: display geometry changed. Try again.".into();
-                    this.cancel_overlays(cx);
-                }
-            }).ok();
+            owner
+                .update(cx, |this, cx| {
+                    if (this.capture_generation, this.topology_generation) == generation {
+                        this.capture_status =
+                            "Selection canceled: display geometry changed. Try again.".into();
+                        this.cancel_overlays(cx);
+                    }
+                })
+                .ok();
         });
         false
     }
 
-    fn finish_drag(&mut self, end: gpui::Point<Pixels>, window: &mut Window, cx: &mut Context<Self>) {
+    fn finish_drag(
+        &mut self,
+        end: gpui::Point<Pixels>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if !self.check_geometry(window, cx) {
             return;
         }

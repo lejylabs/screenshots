@@ -37,15 +37,77 @@ pub(crate) mod video;
 #[path = "capture_worker_windows.rs"]
 mod windows;
 
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[path = "credential_worker.rs"]
+mod credentials;
+
+/// Called after CLI/desktop completion, before process exit can discard retained ownership.
+pub(crate) fn drain_owned_workers() {
+    let pending = lock(&PENDING).take();
+    if let Some(pending) = pending {
+        if let Some(job) = lock(&pending.job).as_mut() {
+            job.stop();
+        }
+        let _ = pending.thread.join();
+        let mut slot = lock(&pending.job);
+        if let Some(job) = slot.as_mut() {
+            job.stop();
+            // An uninterruptible kernel wait must keep this process and ownership alive.
+            job.wait();
+            if !job.family_done() {
+                // Failed native cleanup proof must not release the last owner at process exit.
+                loop {
+                    std::thread::park();
+                }
+            }
+        }
+        slot.take();
+        drop(slot);
+        drop(pending._admission);
+    }
+}
+
 const CHILD_ARGUMENT: &str = "__native-capture-worker";
 const CLEANUP_GRACE: Duration = Duration::from_millis(250);
 static BUSY: AtomicBool = AtomicBool::new(false);
+/// Signal-handler safe; a successful caller must immediately exit without releasing this slot.
+#[cfg(unix)]
+pub(crate) fn reserve_signal_shutdown() -> bool {
+    if BUSY
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .is_err()
+    {
+        return false;
+    }
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    if !super::file_clipboard::reserve_signal_shutdown() {
+        BUSY.store(false, Ordering::SeqCst);
+        return false;
+    }
+    true
+}
+
 static PENDING: Mutex<Option<Pending>> = Mutex::new(None);
 static ACTIVE: Mutex<Option<Active>> = Mutex::new(None);
 static RELEASED: Condvar = Condvar::new();
 static HANDOFF: AtomicBool = AtomicBool::new(false);
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
+enum AdmissionPriority {
+    OptionalCredentials,
+    CaptureEnumeration,
+    Capture,
+}
+impl AdmissionPriority {
+    fn capture(call: &NativeCaptureCall) -> Self {
+        if call.is_enumeration() {
+            Self::CaptureEnumeration
+        } else {
+            Self::Capture
+        }
+    }
+}
 struct Active {
-    enumeration: bool,
+    priority: AdmissionPriority,
     cancel: Arc<AtomicBool>,
 }
 struct Admission;
@@ -63,8 +125,17 @@ impl Drop for Handoff {
         HANDOFF.store(false, Ordering::Release);
     }
 }
+#[cfg(test)]
 fn admit(
     call: &NativeCaptureCall,
+    cancel: Arc<AtomicBool>,
+    check: &NativeCaptureCheck<'_>,
+    deadline: Instant,
+) -> Result<Admission, CaptureError> {
+    admit_priority(AdmissionPriority::capture(call), cancel, check, deadline)
+}
+fn admit_priority(
+    priority: AdmissionPriority,
     cancel: Arc<AtomicBool>,
     check: &NativeCaptureCheck<'_>,
     deadline: Instant,
@@ -75,15 +146,18 @@ fn admit(
         if HANDOFF.load(Ordering::Acquire) {
             return Err(CaptureError::NativeBusy);
         }
-        *active = Some(Active {
-            enumeration: call.is_enumeration(),
-            cancel,
-        });
-        BUSY.store(true, Ordering::Release);
+        if BUSY
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .is_err()
+        {
+            return Err(CaptureError::NativeBusy);
+        }
+        *active = Some(Active { priority, cancel });
         return Ok(Admission);
     }
-    if call.is_enumeration()
-        || active.as_ref().is_none_or(|active| !active.enumeration)
+    if active
+        .as_ref()
+        .is_none_or(|active| priority <= active.priority)
         || HANDOFF
             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
             .is_err()
@@ -106,11 +180,13 @@ fn admit(
         }
         let mut active = lock(&ACTIVE);
         if !BUSY.load(Ordering::Acquire) {
-            *active = Some(Active {
-                enumeration: false,
-                cancel,
-            });
-            BUSY.store(true, Ordering::Release);
+            if BUSY
+                .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+                .is_err()
+            {
+                return Err(CaptureError::NativeBusy);
+            }
+            *active = Some(Active { priority, cancel });
             return Ok(Admission);
         }
         let (guard, _) = RELEASED
@@ -334,13 +410,16 @@ fn restrict_command_context(command: &mut Command, context: app_core::NativeCapt
     let _ = (command, context);
 }
 fn command() -> Result<Command> {
+    command_for(CHILD_ARGUMENT)
+}
+fn command_for(argument: &str) -> Result<Command> {
     #[cfg(target_os = "linux")]
     let executable = std::path::PathBuf::from("/proc/self/exe");
     #[cfg(not(target_os = "linux"))]
     let executable = std::env::current_exe()?;
     let mut command = Command::new(executable);
     command
-        .arg(CHILD_ARGUMENT)
+        .arg(argument)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
@@ -678,7 +757,13 @@ fn coordinate(
     if let Err(canceled) = check() {
         result = Err(canceled);
     }
-    let (complete, clean_success) = cleanup(&owned, result.is_err());
+    finish_owned(result, &owned)
+}
+fn finish_owned<T>(
+    mut result: Result<T, CaptureError>,
+    owned: &SharedJob,
+) -> Result<T, CaptureError> {
+    let (complete, clean_success) = cleanup(owned, result.is_err());
     if !complete {
         // Drop any completed/partial result before a kernel-pending reap can block.
         result = Err(CaptureError::NativeCleanupPending);
@@ -700,6 +785,8 @@ fn coordinate(
 
 pub(crate) fn install() -> Result<()> {
     app_core::install_native_capture_executor(execute)?;
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    credentials::install()?;
     Ok(())
 }
 fn execute(
@@ -788,9 +875,23 @@ fn execute_operation(
 ) -> Result<NativeCaptureReply, CaptureError> {
     check()?;
     call.validate()?;
+    let priority = AdmissionPriority::capture(&call);
+    execute_owned(priority, check, timeout, move |deadline, cancel, job| {
+        factory().and_then(|command| coordinate(command, call, deadline, cancel, job, operation))
+    })
+}
+fn execute_owned<T: Send + 'static>(
+    priority: AdmissionPriority,
+    check: &NativeCaptureCheck<'_>,
+    timeout: Duration,
+    coordinate: impl FnOnce(Instant, Arc<AtomicBool>, SharedJob) -> Result<T, CaptureError>
+    + Send
+    + 'static,
+) -> Result<T, CaptureError> {
+    check()?;
     let deadline = Instant::now() + timeout;
     let cancel = Arc::new(AtomicBool::new(false));
-    let admission = admit(&call, cancel.clone(), check, deadline)?;
+    let admission = admit_priority(priority, cancel.clone(), check, deadline)?;
     let worker_cancel = cancel.clone();
     let job: SharedJob = Arc::new(Mutex::new(None));
     let worker_job = job.clone();
@@ -799,16 +900,7 @@ fn execute_operation(
         .name("native-capture-job".into())
         .stack_size(256 * 1024)
         .spawn(move || {
-            let result = factory().and_then(|command| {
-                coordinate(
-                    command,
-                    call,
-                    deadline,
-                    worker_cancel,
-                    worker_job,
-                    operation,
-                )
-            });
+            let result = coordinate(deadline, worker_cancel, worker_job);
             let _ = sender.send(result);
         })
         .map_err(|_| CaptureError::Backend("Cannot start native capture coordinator".into()))?;
@@ -887,6 +979,10 @@ fn execute_operation(
 }
 
 pub(crate) fn try_child(arguments: &[OsString]) -> Result<bool> {
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    if credentials::try_child(arguments)? {
+        return Ok(true);
+    }
     if arguments
         .first()
         .is_none_or(|value| value != CHILD_ARGUMENT)
@@ -2091,7 +2187,10 @@ mod tests {
         assert!(!BUSY.load(Ordering::Acquire));
         resume.send(()).unwrap();
         owner_claimed.recv_timeout(Duration::from_secs(5)).unwrap();
-        assert!(BUSY.load(Ordering::Acquire) && !lock(&ACTIVE).as_ref().unwrap().enumeration);
+        assert!(
+            BUSY.load(Ordering::Acquire)
+                && lock(&ACTIVE).as_ref().unwrap().priority == AdmissionPriority::Capture
+        );
         finish.send(()).unwrap();
         owner.join().unwrap();
         settle();

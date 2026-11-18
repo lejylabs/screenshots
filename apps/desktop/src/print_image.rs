@@ -257,7 +257,11 @@ impl Native {
             let exited = unix::exited_without_reaping(self.group, false)?;
             #[cfg(all(test, target_os = "macos"))]
             if std::env::var_os("SCREENSHOTS_PRINT_TEST_TRACE").is_some() {
-                eprintln!("OWNED print mock: pid={}, exited={exited}, state={:?}", self.group, unix::process_state(self.group));
+                eprintln!(
+                    "OWNED print mock: pid={}, exited={exited}, state={:?}",
+                    self.group,
+                    unix::process_state(self.group)
+                );
             }
             if !exited {
                 return Ok(None);
@@ -266,7 +270,10 @@ impl Native {
             let members = unix::live_members(self.group)?;
             #[cfg(all(test, target_os = "macos"))]
             if std::env::var_os("SCREENSHOTS_PRINT_TEST_TRACE").is_some() {
-                eprintln!("OWNED print mock: pid={}, remaining={members:?}", self.group);
+                eprintln!(
+                    "OWNED print mock: pid={}, remaining={members:?}",
+                    self.group
+                );
             }
             if !members.is_empty() {
                 return Ok(None);

@@ -116,3 +116,9 @@ Linux/macOS as well as Windows; no new package/version is added.
 - Measure optimized native hide stages, end-to-end overlay/clipboard latency,
   memory and return to idle before/after this change. The extra X11 process may
   affect the warm-capture budget; no latency or memory acceptance is claimed.
+
+## Integrated software checks — 2026-11-18
+
+Optimized checks pass both pure topology/geometry cases, five connected topology UI cases and the resized-overlay regression, including actual synthetic crop/render followed by topology cancellation and restoration of the same hidden control. The 17 resident lifecycle cases remain green. Typed visibility metadata is validated independently of pixels. The authenticated private Xvfb hide gate passed its one exact opt-in case, including already-unmapped success, foreign/destroyed refusal and the missing-WM timeout. The executable SHA256 was `05077fee3f2746c8c14e4d94769c5088cc1ff876ae5bb3f64ad57d7d9d84d92d`. It proves X-server state only; mapped real-WM/compositor presentation and physical topology/performance gates above remain open. Workspace/all-target Linux and Windows GNU checks pass; the ARM macOS native SDK source check also passes. No hardware/resource budget is inferred.
+
+The toolkit's exact cached-display getter regression also executed and passed once in its optimized package unit binary. Its initial standalone package build exposed a missing test-only DisplayId import, which was corrected; the production getter/callback behavior was unchanged. The first attempted feature flag was rejected because this path dependency lies outside the workspace; that invocation is not counted as a compiled or passing test.

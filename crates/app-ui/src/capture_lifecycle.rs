@@ -36,7 +36,11 @@ mod tests {
         let id = DisplayId::from(7);
         assert!(invalidates_selection(DisplayEvent::Added(id)));
         assert!(invalidates_selection(DisplayEvent::Removed(id)));
-        for changes in [DisplayChanges::BOUNDS, DisplayChanges::empty(), DisplayChanges::all()] {
+        for changes in [
+            DisplayChanges::BOUNDS,
+            DisplayChanges::empty(),
+            DisplayChanges::all(),
+        ] {
             assert!(invalidates_selection(DisplayEvent::Changed { id, changes }));
         }
         assert!(!invalidates_selection(DisplayEvent::Changed {

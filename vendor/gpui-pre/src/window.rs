@@ -8566,6 +8566,7 @@ mod tests {
 
     #[gpui::test]
     fn test_cached_window_display_id_follows_native_move_notifications(cx: &mut TestAppContext) {
+        use crate::DisplayId;
         let window = cx.add_window(|_, _| EmptyView);
         window.update(cx, |_, window, _| {
             assert_eq!(window.display_id(), Some(DisplayId(1)));

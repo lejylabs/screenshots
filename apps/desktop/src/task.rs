@@ -29,6 +29,16 @@ enum Source {
         request: app_core::PortalScrollRequest,
     },
     None,
+    ClipboardImage {
+        allow_private_source: bool,
+    },
+    ClipboardText {
+        allow_private_source: bool,
+    },
+    ClipboardFile {
+        allow_private_source: bool,
+        kind: ClipboardFileKind,
+    },
     RawFile {
         path: PathBuf,
     },
@@ -67,6 +77,16 @@ enum Source {
         name: String,
     },
 }
+
+#[derive(Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum ClipboardFileKind {
+    Image,
+    RawFile,
+}
+
+#[path = "task_clipboard_input.rs"]
+mod clipboard_input;
 
 #[derive(Deserialize, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
@@ -259,6 +279,19 @@ impl Task {
         );
         let mut template = None;
         match &mut profile.source {
+            Source::ClipboardImage {
+                allow_private_source,
+            }
+            | Source::ClipboardText {
+                allow_private_source,
+            }
+            | Source::ClipboardFile {
+                allow_private_source,
+                ..
+            } => ensure!(
+                *allow_private_source,
+                "Clipboard Task sources require explicit allow_private_source=true; each run reads the current private clipboard"
+            ),
             Source::ImageUrl { url, allow_http } => {
                 app_core::ImageUrlSource::new(url.clone(), *allow_http)?;
             }
@@ -321,9 +354,20 @@ impl Task {
                 );
             }
         }
-        let has_image = !matches!(profile.source, Source::None | Source::RawFile { .. });
-        let raw_source = matches!(profile.source, Source::RawFile { .. });
-        let has_input_file = matches!(profile.source, Source::File { .. } | Source::RawFile { .. });
+        let text_source = matches!(profile.source, Source::ClipboardText { .. });
+        let raw_source = matches!(
+            profile.source,
+            Source::RawFile { .. }
+                | Source::ClipboardFile {
+                    kind: ClipboardFileKind::RawFile,
+                    ..
+                }
+        );
+        let has_image = !matches!(profile.source, Source::None) && !raw_source && !text_source;
+        let has_input_file = matches!(
+            profile.source,
+            Source::File { .. } | Source::RawFile { .. } | Source::ClipboardFile { .. }
+        );
         ensure!(
             profile.recipe.is_none() || has_image,
             "Image recipes require an image source"
@@ -380,13 +424,20 @@ impl Task {
                     options,
                     kind,
                 } => {
-                    let kind = kind.unwrap_or(if has_image {
+                    let kind = kind.unwrap_or(if text_source {
+                        app_core::ShareXInputKind::Text
+                    } else if has_image {
                         app_core::ShareXInputKind::Image
                     } else {
                         app_core::ShareXInputKind::File
                     });
                     ensure!(
-                        raw_source
+                        !text_source || kind == app_core::ShareXInputKind::Text,
+                        "Clipboard text supports only an explicit Text SXCU input"
+                    );
+                    ensure!(
+                        (text_source && kind == app_core::ShareXInputKind::Text)
+                            || raw_source
                             || (kind == app_core::ShareXInputKind::Image && has_image)
                             || (kind == app_core::ShareXInputKind::File && has_output),
                         "Task SXCU input requires an image source or an explicit local artifact"
@@ -510,18 +561,31 @@ impl Task {
         check()?;
         let native_check =
             || check().map_err(|error| app_core::CaptureError::Backend(error.to_string()));
-        if matches!(self.source, Source::None | Source::RawFile { .. }) {
+        if matches!(
+            self.source,
+            Source::None | Source::RawFile { .. } | Source::ClipboardText { .. }
+        ) {
             return Ok(None);
         }
         #[cfg(target_os = "windows")]
-        let _dpi = if matches!(&self.source, Source::File { .. } | Source::ImageUrl { .. }) {
+        let _dpi = if matches!(
+            &self.source,
+            Source::File { .. } | Source::ImageUrl { .. } | Source::ClipboardImage { .. }
+        ) {
             None
         } else {
             Some(crate::region_analysis::DpiContext::enter()?)
         };
         let backend = XcapBackend::new(PathBuf::new());
         Ok(Some(match &self.source {
-            Source::None | Source::RawFile { .. } => unreachable!(),
+            Source::None
+            | Source::RawFile { .. }
+            | Source::ClipboardText { .. }
+            | Source::ClipboardFile { .. } => unreachable!(),
+            Source::ClipboardImage { .. } => app_core::capture_clipboard_image_with_cancel(
+                app_core::NativeClipboardBackend::Automatic,
+                &native_check,
+            )?,
             Source::ImageUrl { url, allow_http } => {
                 app_core::ImageUrlSource::new(url.clone(), *allow_http)?
                     .capture_with_cancel(&native_check)?
@@ -532,7 +596,9 @@ impl Task {
             Source::Portal { source, cursor } => {
                 app_core::capture_portal_with_cancel(*source, *cursor, &native_check)?
             }
-            Source::Desktop {} => app_core::capture_stitched_desktop_with_cancel(&backend, &native_check)?,
+            Source::Desktop {} => {
+                app_core::capture_stitched_desktop_with_cancel(&backend, &native_check)?
+            }
             Source::PrimaryDisplay => {
                 let mut displays = backend
                     .list_displays_with_cancel(&native_check)?
@@ -638,15 +704,6 @@ impl Task {
             external_cancel.unwrap_or_else(|| Arc::new(std::sync::atomic::AtomicBool::new(false)));
         #[cfg(not(unix))]
         let upload_cancel = app_core::UploadCancellation::with_atomic_flag(task_flag.clone());
-        let raw_upload_cancel = if matches!(&self.source, Source::RawFile { .. }) {
-            if let Some(identity) = self.source_identity.as_ref() {
-                upload_cancel.clone().with_source_identity(identity.clone())
-            } else {
-                upload_cancel.clone()
-            }
-        } else {
-            upload_cancel.clone()
-        };
         let task_deadline = Instant::now() + Duration::from_secs(5400);
         let check = || -> Result<()> {
             ensure!(!upload_cancel.is_canceled(), "Task canceled");
@@ -655,6 +712,17 @@ impl Task {
                 "Task exceeded its duration budget"
             );
             Ok(())
+        };
+        // Sample once after preparation; neither validation nor sealing opens a clipboard.
+        let clipboard_text = self.read_clipboard_source(&check)?;
+        let raw_upload_cancel = if matches!(&self.source, Source::RawFile { .. }) {
+            if let Some(identity) = self.source_identity.as_ref() {
+                upload_cancel.clone().with_source_identity(identity.clone())
+            } else {
+                upload_cancel.clone()
+            }
+        } else {
+            upload_cancel.clone()
         };
         let mut frame = self.capture(&|| {
             check()?;
@@ -720,7 +788,9 @@ impl Task {
                         value
                     }
                     Ready::Sharex(prepared,kind) => {
-                        let result = if kind==app_core::ShareXInputKind::Image && raw_source.is_none() && last_saved_image.is_none() {
+                        let result = if let Some(text) = clipboard_text.as_ref() {
+                            prepared.upload_text(text.as_str(), upload_cancel.clone())?
+                        } else if kind==app_core::ShareXInputKind::Image && raw_source.is_none() && last_saved_image.is_none() {
                             prepared.upload_png_bytes(frame.as_ref().context("SXCU requires finalized image pixels")?.png_bytes_with_cancel(||upload_cancel.is_canceled() || Instant::now()>=task_deadline)?,upload_cancel.clone())?
                         } else {
                             let path = if kind==app_core::ShareXInputKind::Image {last_saved_image.as_deref().or(raw_source.as_deref())} else {raw_source.as_deref().or(last_output.as_deref())}.context("SXCU requires a local artifact")?;
@@ -758,12 +828,12 @@ impl Task {
                     }
                     Ready::CopyImage => {
                         let pixels=&frame.as_ref().context("Copy requires an image source")?.pixels;
-                        if let Some(client)=bridge.as_mut() {client.copy_image(pixels)?;} else {clipboard.copy_image(pixels)?;owns_clipboard=true;}
+                        if let Some(client)=bridge.as_mut() {client.copy_image(pixels)?;} else {clipboard.copy_shared_image_with_cancel(pixels.clone(),&|| check().map_err(|_|app_core::CaptureError::NativeCanceled))?;owns_clipboard=true;}
                         serde_json::json!({"action":"copy_image"})
                     }
                     Ready::CopyLink => {
                         let text=&upload.as_ref().context("Task upload returned no shareable link")?.url;
-                        if let Some(client)=bridge.as_mut() {client.copy_text(text)?;} else {clipboard.copy_text(text.clone())?;owns_clipboard=true;}
+                        if let Some(client)=bridge.as_mut() {client.copy_text(text)?;} else {clipboard.copy_text_with_cancel(text,&|| check().map_err(|_|app_core::CaptureError::NativeCanceled))?;owns_clipboard=true;}
                         serde_json::json!({"action":"copy_link"})
                     }
                     Ready::Command(program, args, timeout) => {
@@ -795,6 +865,7 @@ impl Task {
             )
         })?;
         drop(frame);
+        drop(clipboard_text);
         #[cfg(unix)]
         cancel.output_phase(true);
         receipt(

@@ -171,7 +171,10 @@ impl Drop for DpiContext {
     }
 }
 
-fn capture(options: &Options<'_>, check: &app_core::NativeCaptureCheck<'_>) -> Result<CapturedImage> {
+fn capture(
+    options: &Options<'_>,
+    check: &app_core::NativeCaptureCheck<'_>,
+) -> Result<CapturedImage> {
     check()?;
     #[cfg(target_os = "linux")]
     require_x11(
@@ -183,33 +186,49 @@ fn capture(options: &Options<'_>, check: &app_core::NativeCaptureCheck<'_>) -> R
     let _dpi = DpiContext::enter()?;
     let backend = XcapBackend::new(std::path::PathBuf::new());
     let displays = backend.list_capture_displays_with_cancel(check)?;
-    let mut matches = displays.iter().filter(|display| display.id == options.display);
+    let mut matches = displays
+        .iter()
+        .filter(|display| display.id == options.display);
     let display = matches.next().context("Analysis display not found")?;
-    ensure!(matches.next().is_none(), "Analysis display identity is ambiguous");
+    ensure!(
+        matches.next().is_none(),
+        "Analysis display identity is ambiguous"
+    );
     validate_geometry(display, options.area, cfg!(target_os = "linux"))?;
     let region = app_core::RememberedRegion::from_display(display, options.area)?;
-    let mut frames = backend.capture_batch_with_cancel(
-        vec![app_core::CaptureRequest::ExactRegion(region)], check,
-    )?;
-    ensure!(frames.len() == 1, "Region capture returned the wrong frame count");
+    let mut frames = backend
+        .capture_batch_with_cancel(vec![app_core::CaptureRequest::ExactRegion(region)], check)?;
+    ensure!(
+        frames.len() == 1,
+        "Region capture returned the wrong frame count"
+    );
     Ok(frames.remove(0))
 }
 
 /// Reject unrelated/changed sources before ownership transfer or processing.
 fn owned_pixels(frame: CapturedImage, identity: &str, limit: u64) -> Result<image::RgbaImage> {
     ensure!(
-        frame.display_id == identity && frame.window_id.is_none()
-            && frame.display_geometry.is_none() && frame.desktop_layout.is_none()
+        frame.display_id == identity
+            && frame.window_id.is_none()
+            && frame.display_geometry.is_none()
+            && frame.desktop_layout.is_none()
             && frame.source_format == app_core::PixelFormat::Rgba8UnormSrgb,
         "Analysis capture source proof changed"
     );
     app_core::validate_image_size(frame.width, frame.height)?;
-    ensure!(frame.pixels.dimensions() == (frame.width, frame.height),
-        "Captured region dimensions changed");
+    ensure!(
+        frame.pixels.dimensions() == (frame.width, frame.height),
+        "Captured region dimensions changed"
+    );
     let bytes = u64::from(frame.width) * u64::from(frame.height) * 4;
-    ensure!(bytes <= limit, "Analysis source exceeds its RGBA byte limit");
-    ensure!(frame.pixels.as_raw().len() as u64 == bytes,
-        "Captured region backing does not match its dimensions");
+    ensure!(
+        bytes <= limit,
+        "Analysis source exceeds its RGBA byte limit"
+    );
+    ensure!(
+        frame.pixels.as_raw().len() as u64 == bytes,
+        "Captured region backing does not match its dimensions"
+    );
     Arc::try_unwrap(frame.pixels)
         .map_err(|_| anyhow::anyhow!("Region capture retained its source pixels"))
 }
@@ -223,8 +242,10 @@ fn execute_checked(
     check()?;
     let frame = capture(options).context("Analysis region capture failed")?;
     check()?;
-    ensure!((frame.width, frame.height) == (options.area.width, options.area.height),
-        "Captured region dimensions changed");
+    ensure!(
+        (frame.width, frame.height) == (options.area.width, options.area.height),
+        "Captured region dimensions changed"
+    );
     let pixels = owned_pixels(frame, options.display, crate::qr::MAX_SCAN_RGBA_BYTES)?;
     check()?;
     let result = process(pixels)?;
@@ -241,9 +262,15 @@ fn execute(
     execute_checked(options, capture, process, &|| Ok(()))
 }
 
-fn portal_options(args: &[OsString], analysis: Analysis) -> Result<(Options<'_>, app_core::PortalCaptureSource)> {
-    ensure!(args.len() == 5 || (analysis == Analysis::Ocr && args.len() == 7 && args[5] == "--language"),
-        "Usage: screenshots ocr-portal-region display|window X Y WIDTH HEIGHT [--language LANG]; screenshots qr-portal-region display|window X Y WIDTH HEIGHT");
+fn portal_options(
+    args: &[OsString],
+    analysis: Analysis,
+) -> Result<(Options<'_>, app_core::PortalCaptureSource)> {
+    ensure!(
+        args.len() == 5
+            || (analysis == Analysis::Ocr && args.len() == 7 && args[5] == "--language"),
+        "Usage: screenshots ocr-portal-region display|window X Y WIDTH HEIGHT [--language LANG]; screenshots qr-portal-region display|window X Y WIDTH HEIGHT"
+    );
     let source = match args[0].to_str() {
         Some("display") => app_core::PortalCaptureSource::Display,
         Some("window") => app_core::PortalCaptureSource::Window,
@@ -264,14 +291,24 @@ fn execute_portal(
     check()?;
     let pixels = owned_pixels(frame, source.identifier(), app_core::MAX_CAPTURE_BYTES)?;
     let area = options.area;
-    ensure!(area.x.checked_add(area.width).is_some_and(|end| end <= pixels.width())
-        && area.y.checked_add(area.height).is_some_and(|end| end <= pixels.height()),
-        "Analysis region is outside the selected portal raster");
+    ensure!(
+        area.x
+            .checked_add(area.width)
+            .is_some_and(|end| end <= pixels.width())
+            && area
+                .y
+                .checked_add(area.height)
+                .is_some_and(|end| end <= pixels.height()),
+        "Analysis region is outside the selected portal raster"
+    );
     // Portal selection has no physical monitor binding: crop only its verified natural raster.
-    let pixels = if (area.x, area.y, area.width, area.height) == (0, 0, pixels.width(), pixels.height()) {
+    let pixels = if (area.x, area.y, area.width, area.height)
+        == (0, 0, pixels.width(), pixels.height())
+    {
         pixels
     } else {
-        let cropped = image::imageops::crop_imm(&pixels, area.x, area.y, area.width, area.height).to_image();
+        let cropped =
+            image::imageops::crop_imm(&pixels, area.x, area.y, area.width, area.height).to_image();
         drop(pixels);
         cropped
     };
@@ -306,11 +343,26 @@ fn run_source(args: &[OsString], analysis: Analysis, portal: bool) -> Result<()>
         Analysis::Qr => crate::qr::scan_pixels(pixels),
     };
     let result = if let Some(source) = source {
-        execute_portal(&options, source,
-            || Ok(app_core::capture_portal_with_cancel(source, app_core::PortalCaptureCursor::Exclude, &check)?),
-            process, &check)?
+        execute_portal(
+            &options,
+            source,
+            || {
+                Ok(app_core::capture_portal_with_cancel(
+                    source,
+                    app_core::PortalCaptureCursor::Exclude,
+                    &check,
+                )?)
+            },
+            process,
+            &check,
+        )?
     } else {
-        execute_checked(&options, |options| capture(options, &check), process, &check)?
+        execute_checked(
+            &options,
+            |options| capture(options, &check),
+            process,
+            &check,
+        )?
     };
     check()?;
     use std::io::Write;
@@ -489,21 +541,12 @@ mod tests {
         });
         let args = args(&["fixture", "0", "0", &side.to_string(), &side.to_string()]);
         let options = options(&args, Analysis::Qr).unwrap();
-        let result = execute(
-            &options,
-            |_| Ok(frame(pixels)),
-            crate::qr::scan_pixels,
-        )
-        .unwrap();
+        let result = execute(&options, |_| Ok(frame(pixels)), crate::qr::scan_pixels).unwrap();
         assert_eq!(result["codes"][0]["text"], text);
         assert!(
             execute(
                 &options,
-                |_| Ok(frame(RgbaImage::from_pixel(
-                    side,
-                    side,
-                    Rgba([255; 4])
-                ))),
+                |_| Ok(frame(RgbaImage::from_pixel(side, side, Rgba([255; 4])))),
                 crate::qr::scan_pixels
             )
             .is_err()
@@ -536,30 +579,51 @@ mod tests {
         assert!(portal_options(&input, Analysis::Ocr).is_err());
         assert!(portal_options(&[], Analysis::Ocr).is_err());
         // These remain display identifiers for the original API, never a portal switch.
-        assert_eq!(options(&args(&["window", "0", "0", "1", "1"]), Analysis::Qr).unwrap().display, "window");
+        assert_eq!(
+            options(&args(&["window", "0", "0", "1", "1"]), Analysis::Qr)
+                .unwrap()
+                .display,
+            "window"
+        );
     }
 
     #[test]
     fn portal_crop_uses_exact_natural_pixels_and_full_raster_moves_without_copy() {
         let input = args(&["display", "1", "1", "2", "2"]);
         let (options, source) = portal_options(&input, Analysis::Qr).unwrap();
-        let result = execute_portal(&options, source,
-            || Ok(portal_frame(RgbaImage::from_fn(4, 3, |x, y| Rgba([x as u8, y as u8, 19, 255])))),
+        let result = execute_portal(
+            &options,
+            source,
+            || {
+                Ok(portal_frame(RgbaImage::from_fn(4, 3, |x, y| {
+                    Rgba([x as u8, y as u8, 19, 255])
+                })))
+            },
             |pixels| {
                 assert_eq!(pixels.dimensions(), (2, 2));
                 assert_eq!(pixels.get_pixel(0, 0).0, [1, 1, 19, 255]);
                 assert_eq!(pixels.get_pixel(1, 1).0, [2, 2, 19, 255]);
                 Ok(serde_json::json!({"crop": true}))
-            }, &|| Ok(())).unwrap();
+            },
+            &|| Ok(()),
+        )
+        .unwrap();
         assert_eq!(result["crop"], true);
         let input = args(&["display", "0", "0", "4", "3"]);
         let (options, source) = portal_options(&input, Analysis::Qr).unwrap();
         let pixels = RgbaImage::new(4, 3);
         let pointer = pixels.as_ptr();
-        execute_portal(&options, source, || Ok(portal_frame(pixels)), |pixels| {
-            assert_eq!(pixels.as_ptr(), pointer);
-            Ok(serde_json::json!({}))
-        }, &|| Ok(())).unwrap();
+        execute_portal(
+            &options,
+            source,
+            || Ok(portal_frame(pixels)),
+            |pixels| {
+                assert_eq!(pixels.as_ptr(), pointer);
+                Ok(serde_json::json!({}))
+            },
+            &|| Ok(()),
+        )
+        .unwrap();
     }
 
     #[test]
@@ -572,16 +636,34 @@ mod tests {
         wrong_window.window_id = Some("selected-window".into());
         let mut wrong_geometry = portal_frame(RgbaImage::new(4, 3));
         wrong_geometry.display_geometry = Some(app_core::DisplayGeometry {
-            mac_coordinates: None, x: 0, y: 0, width: 4, height: 3,
-            scale_factor: 1.0, rotation: 0.0,
+            mac_coordinates: None,
+            x: 0,
+            y: 0,
+            width: 4,
+            height: 3,
+            scale_factor: 1.0,
+            rotation: 0.0,
         });
         let shared = portal_frame(RgbaImage::new(4, 3));
         let retained = shared.pixels.clone();
-        for frame in [wrong_identity, wrong_window, wrong_geometry, shared,
+        for frame in [
+            wrong_identity,
+            wrong_window,
+            wrong_geometry,
+            shared,
             portal_frame(RgbaImage::new(2, 2)),
-            portal_frame(RgbaImage::from_raw(4, 3, vec![0; 52]).unwrap())] {
-            assert!(execute_portal(&options, source, || Ok(frame),
-                |_| panic!("Unproved raster reached processor"), &|| Ok(())).is_err());
+            portal_frame(RgbaImage::from_raw(4, 3, vec![0; 52]).unwrap()),
+        ] {
+            assert!(
+                execute_portal(
+                    &options,
+                    source,
+                    || Ok(frame),
+                    |_| panic!("Unproved raster reached processor"),
+                    &|| Ok(())
+                )
+                .is_err()
+            );
         }
         assert_eq!(Arc::strong_count(&retained), 1);
         assert!(owned_pixels(portal_frame(RgbaImage::new(4, 3)), "portal:display", 47).is_err());
@@ -596,12 +678,26 @@ mod tests {
             let checks = Cell::new(0);
             let captured = Cell::new(false);
             let processed = Cell::new(false);
-            let result = execute_checked(&options,
-                |_| { captured.set(true); Ok(frame(RgbaImage::new(2, 2))) },
-                |_| { processed.set(true); Ok(serde_json::json!({"must_not_publish":true})) },
-                &|| { let call = checks.get(); checks.set(call + 1);
-                    if call == cancel_at { Err(app_core::CaptureError::NativeCanceled) } else { Ok(()) }
-                });
+            let result = execute_checked(
+                &options,
+                |_| {
+                    captured.set(true);
+                    Ok(frame(RgbaImage::new(2, 2)))
+                },
+                |_| {
+                    processed.set(true);
+                    Ok(serde_json::json!({"must_not_publish":true}))
+                },
+                &|| {
+                    let call = checks.get();
+                    checks.set(call + 1);
+                    if call == cancel_at {
+                        Err(app_core::CaptureError::NativeCanceled)
+                    } else {
+                        Ok(())
+                    }
+                },
+            );
             assert!(result.is_err());
             assert_eq!(captured.get(), cancel_at != 0);
             assert_eq!(processed.get(), cancel_at == 3);
@@ -610,12 +706,27 @@ mod tests {
         let (options, source) = portal_options(&input, Analysis::Qr).unwrap();
         for cancel_at in 0..4 {
             let checks = Cell::new(0);
-            let result = execute_portal(&options, source,
-                || { assert!(cancel_at != 0); Ok(portal_frame(RgbaImage::new(4, 3))) },
-                |_| { assert_eq!(cancel_at, 3); Ok(serde_json::json!({})) },
-                &|| { let call = checks.get(); checks.set(call + 1);
-                    if call == cancel_at { Err(app_core::CaptureError::NativeCanceled) } else { Ok(()) }
-                });
+            let result = execute_portal(
+                &options,
+                source,
+                || {
+                    assert!(cancel_at != 0);
+                    Ok(portal_frame(RgbaImage::new(4, 3)))
+                },
+                |_| {
+                    assert_eq!(cancel_at, 3);
+                    Ok(serde_json::json!({}))
+                },
+                &|| {
+                    let call = checks.get();
+                    checks.set(call + 1);
+                    if call == cancel_at {
+                        Err(app_core::CaptureError::NativeCanceled)
+                    } else {
+                        Ok(())
+                    }
+                },
+            );
             assert!(result.is_err());
         }
     }
@@ -624,8 +735,14 @@ mod tests {
     fn named_region_source_identity_is_not_replaced_by_equal_sized_pixels() {
         let input = args(&["fixture", "0", "0", "2", "2"]);
         let options = options(&input, Analysis::Qr).unwrap();
-        assert!(execute(&options, |_| Ok(portal_frame(RgbaImage::new(2, 2))),
-            |_| panic!("Portal substituted for physical display")).is_err());
+        assert!(
+            execute(
+                &options,
+                |_| Ok(portal_frame(RgbaImage::new(2, 2))),
+                |_| panic!("Portal substituted for physical display")
+            )
+            .is_err()
+        );
     }
 
     #[cfg(not(target_os = "macos"))]
@@ -634,7 +751,12 @@ mod tests {
         let mut display = display();
         display.scale_factor = 1.5;
         display.rotation = 90.0;
-        let area = PixelRegion { x: 10, y: 20, width: 30, height: 40 };
+        let area = PixelRegion {
+            x: 10,
+            y: 20,
+            width: 30,
+            height: 40,
+        };
         assert!(validate_geometry(&display, area, false).is_ok());
         assert!(app_core::RememberedRegion::from_display(&display, area).is_ok());
         assert!(validate_geometry(&display, area, true).is_err());
@@ -646,16 +768,34 @@ mod tests {
     #[test]
     fn macos_region_requires_complete_native_raster_proof() {
         let coordinates = app_core::MacDisplayCoordinates {
-            display_id: 1, display_uuid: [1;16],
-            logical: app_core::MacLogicalRect { x: -100.0, y: 0.0, width: 100.0, height: 80.0 },
-            mode_pixel_width: 160, mode_pixel_height: 200, rotation: 90.0,
-            pixel_width: 200, pixel_height: 160, pixels_per_point: 2.0,
+            display_id: 1,
+            display_uuid: [1; 16],
+            logical: app_core::MacLogicalRect {
+                x: -100.0,
+                y: 0.0,
+                width: 100.0,
+                height: 80.0,
+            },
+            mode_pixel_width: 160,
+            mode_pixel_height: 200,
+            rotation: 90.0,
+            pixel_width: 200,
+            pixel_height: 160,
+            pixels_per_point: 2.0,
         };
         let mut display = display();
         display.id = "1".into();
-        display.width = 200; display.height = 160; display.scale_factor = 2.0;
-        display.rotation = 90.0; display.mac_coordinates = Some(coordinates);
-        let area = PixelRegion { x: 10, y: 20, width: 30, height: 40 };
+        display.width = 200;
+        display.height = 160;
+        display.scale_factor = 2.0;
+        display.rotation = 90.0;
+        display.mac_coordinates = Some(coordinates);
+        let area = PixelRegion {
+            x: 10,
+            y: 20,
+            width: 30,
+            height: 40,
+        };
         assert!(validate_geometry(&display, area, false).is_ok());
         assert!(app_core::RememberedRegion::from_display(&display, area).is_ok());
         display.mac_coordinates.as_mut().unwrap().pixel_width = 160;
@@ -663,5 +803,4 @@ mod tests {
         display.mac_coordinates = None;
         assert!(validate_geometry(&display, area, false).is_err());
     }
-
 }

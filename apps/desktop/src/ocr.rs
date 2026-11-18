@@ -81,9 +81,13 @@ pub(crate) fn recognize_pixels_with_cancel(
     #[cfg(any(unix, target_os = "windows"))]
     recognize_pixels_with_engine(pixels, language, check, |input, language| {
         #[cfg(unix)]
-        { engine::recognize(input, language, check) }
+        {
+            engine::recognize(input, language, check)
+        }
         #[cfg(target_os = "windows")]
-        { crate::ocr_windows::recognize(input, language, check) }
+        {
+            crate::ocr_windows::recognize(input, language, check)
+        }
     })
 }
 
@@ -105,7 +109,10 @@ fn recognize_pixels_with_engine(
     // Observe the same latched request before admitting any new engine process.
     check()?;
     let input = encoded?;
-    ensure!(input.len() <= MAX_OCR_PNG_BYTES, "OCR PNG input exceeds the 32 MiB pipe limit");
+    ensure!(
+        input.len() <= MAX_OCR_PNG_BYTES,
+        "OCR PNG input exceeds the 32 MiB pipe limit"
+    );
     let text = recognize(input, language)?;
     check()?;
     Ok(serde_json::json!({"text": text, "engine": "tesseract"}))
@@ -291,20 +298,25 @@ mod engine {
     }
 
     pub(super) fn recognize(
-        input: Vec<u8>, language: &str, check: &app_core::NativeCaptureCheck<'_>,
+        input: Vec<u8>,
+        language: &str,
+        check: &app_core::NativeCaptureCheck<'_>,
     ) -> Result<String> {
         recognize_with_spawn(input, language, check, Command::spawn)
     }
 
     fn recognize_with_spawn(
-        input: Vec<u8>, language: &str, check: &app_core::NativeCaptureCheck<'_>,
+        input: Vec<u8>,
+        language: &str,
+        check: &app_core::NativeCaptureCheck<'_>,
         spawn: impl FnOnce(&mut Command) -> std::io::Result<Child>,
     ) -> Result<String> {
         check()?;
         let cancellation = Cancellation::new()?;
         let deadline = Instant::now() + DEADLINE;
         let mut command = Command::new("tesseract");
-        command.args(["stdin", "stdout", "-l", language, "--psm", "6"])
+        command
+            .args(["stdin", "stdout", "-l", language, "--psm", "6"])
             .env("OMP_THREAD_LIMIT", "2")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -394,32 +406,60 @@ mod engine {
         fn latched_outer_cancellation_stops_an_already_started_owned_engine() {
             let canceled = std::cell::Cell::new(false);
             let started = Instant::now();
-            let result = recognize_with_spawn(Vec::new(), "eng",
-                &|| if canceled.get() { Err(app_core::CaptureError::NativeCanceled) } else { Ok(()) },
+            let result = recognize_with_spawn(
+                Vec::new(),
+                "eng",
+                &|| {
+                    if canceled.get() {
+                        Err(app_core::CaptureError::NativeCanceled)
+                    } else {
+                        Ok(())
+                    }
+                },
                 |_| {
-                    let child = Command::new("/bin/sh").args(["-c", "sleep 60"])
-                        .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped())
-                        .process_group(0).spawn()?;
+                    let child = Command::new("/bin/sh")
+                        .args(["-c", "sleep 60"])
+                        .stdin(Stdio::piped())
+                        .stdout(Stdio::piped())
+                        .stderr(Stdio::piped())
+                        .process_group(0)
+                        .spawn()?;
                     canceled.set(true);
                     Ok(child)
-                });
-            assert!(matches!(result.unwrap_err().downcast_ref::<app_core::CaptureError>(),
-                Some(app_core::CaptureError::NativeCanceled)));
-            assert!(started.elapsed() < Duration::from_secs(5), "Outer cancellation did not clean up promptly");
+                },
+            );
+            assert!(matches!(
+                result.unwrap_err().downcast_ref::<app_core::CaptureError>(),
+                Some(app_core::CaptureError::NativeCanceled)
+            ));
+            assert!(
+                started.elapsed() < Duration::from_secs(5),
+                "Outer cancellation did not clean up promptly"
+            );
         }
 
         #[test]
         fn canceled_before_engine_start_never_spawns_a_process() {
             for cancel_at in 0..2 {
                 let checks = std::cell::Cell::new(0);
-                let result = recognize_with_spawn(Vec::new(), "eng",
+                let result = recognize_with_spawn(
+                    Vec::new(),
+                    "eng",
                     &|| {
-                        let call = checks.get(); checks.set(call + 1);
-                        if call >= cancel_at { Err(app_core::CaptureError::NativeCanceled) } else { Ok(()) }
+                        let call = checks.get();
+                        checks.set(call + 1);
+                        if call >= cancel_at {
+                            Err(app_core::CaptureError::NativeCanceled)
+                        } else {
+                            Ok(())
+                        }
                     },
-                    |_| panic!("Canceled OCR must not spawn an engine"));
-                assert!(matches!(result.unwrap_err().downcast_ref::<app_core::CaptureError>(),
-                    Some(app_core::CaptureError::NativeCanceled)));
+                    |_| panic!("Canceled OCR must not spawn an engine"),
+                );
+                assert!(matches!(
+                    result.unwrap_err().downcast_ref::<app_core::CaptureError>(),
+                    Some(app_core::CaptureError::NativeCanceled)
+                ));
             }
         }
     }
@@ -496,26 +536,52 @@ mod tests {
     #[test]
     fn cancellation_latched_by_png_encoding_never_admits_an_engine() {
         let checks = std::cell::Cell::new(0);
-        let result = recognize_pixels_with_engine(image::RgbaImage::new(4, 3), "eng",
+        let result = recognize_pixels_with_engine(
+            image::RgbaImage::new(4, 3),
+            "eng",
             &|| {
-                let call = checks.get(); checks.set(call + 1);
-                if call == 0 { Ok(()) } else { Err(app_core::CaptureError::NativeCanceled) }
+                let call = checks.get();
+                checks.set(call + 1);
+                if call == 0 {
+                    Ok(())
+                } else {
+                    Err(app_core::CaptureError::NativeCanceled)
+                }
             },
-            |_, _| panic!("Canceled encoding admitted a new OCR engine"));
-        assert!(checks.get() >= 3, "Encoding and post-encoding must observe the same cancellation");
-        assert!(matches!(result.unwrap_err().downcast_ref::<app_core::CaptureError>(),
-            Some(app_core::CaptureError::NativeCanceled)));
+            |_, _| panic!("Canceled encoding admitted a new OCR engine"),
+        );
+        assert!(
+            checks.get() >= 3,
+            "Encoding and post-encoding must observe the same cancellation"
+        );
+        assert!(matches!(
+            result.unwrap_err().downcast_ref::<app_core::CaptureError>(),
+            Some(app_core::CaptureError::NativeCanceled)
+        ));
     }
 
     #[cfg(any(unix, target_os = "windows"))]
     #[test]
     fn cancellation_after_engine_completion_rejects_late_text() {
         let canceled = std::cell::Cell::new(false);
-        let result = recognize_pixels_with_engine(image::RgbaImage::new(4, 3), "eng",
-            &|| if canceled.get() { Err(app_core::CaptureError::NativeCanceled) } else { Ok(()) },
-            |_, _| { canceled.set(true); Ok("late text".into()) });
-        assert!(matches!(result.unwrap_err().downcast_ref::<app_core::CaptureError>(),
-            Some(app_core::CaptureError::NativeCanceled)));
+        let result = recognize_pixels_with_engine(
+            image::RgbaImage::new(4, 3),
+            "eng",
+            &|| {
+                if canceled.get() {
+                    Err(app_core::CaptureError::NativeCanceled)
+                } else {
+                    Ok(())
+                }
+            },
+            |_, _| {
+                canceled.set(true);
+                Ok("late text".into())
+            },
+        );
+        assert!(matches!(
+            result.unwrap_err().downcast_ref::<app_core::CaptureError>(),
+            Some(app_core::CaptureError::NativeCanceled)
+        ));
     }
-
 }

@@ -20,6 +20,23 @@ use windows::{
     core::*,
 };
 
+// Shell drag images use optional private IDataObject formats; payload admission is separate.
+fn drag_image_result(result: windows::core::Result<()>) -> Result<()> {
+    if let Err(error) = result {
+        let code = error.code();
+        #[cfg(screenshots_native_drop_acceptance)]
+        super::native_drop_acceptance::hook(82, code.0 as u32 as u64, std::ptr::null_mut());
+        if code != DV_E_FORMATETC {
+            #[cfg(screenshots_native_drop_acceptance)]
+            super::native_drop_acceptance::hook(84, code.0 as u32 as u64, std::ptr::null_mut());
+            return Err(anyhow::anyhow!("Native drag helper failed"));
+        }
+        #[cfg(screenshots_native_drop_acceptance)]
+        super::native_drop_acceptance::hook(83, code.0 as u32 as u64, std::ptr::null_mut());
+    }
+    Ok(())
+}
+
 pub(super) const PROPERTY: PCWSTR = w!("Screenshots.NativeDrop.Target.v1");
 const ARM: u32 = 30;
 const DONE: u32 = 31;
@@ -267,8 +284,7 @@ impl Target {
         let open = self.open.replace(false);
         if let Some(helper) = helper {
             if open {
-                unsafe { helper.DragLeave() }
-                    .map_err(|_| anyhow::anyhow!("Native drag helper failed"))?;
+                drag_image_result(unsafe { helper.DragLeave() })?;
             }
             drop(helper);
         }
@@ -375,16 +391,12 @@ impl Target {
             #[cfg(screenshots_native_drop_acceptance)]
             super::native_drop_acceptance::hook(80, 4, std::ptr::null_mut());
             let result =
-                unsafe { helper.DragEnter(self.hwnd, source, &POINT { x: pt.x, y: pt.y }, effect) }
-                    .map_err(|_error| {
-                        #[cfg(screenshots_native_drop_acceptance)]
-                        super::native_drop_acceptance::hook(82, _error.code().0 as u32 as u64, std::ptr::null_mut());
-                        anyhow::anyhow!("Native drag helper failed")
-                    });
+                unsafe { helper.DragEnter(self.hwnd, source, &POINT { x: pt.x, y: pt.y }, effect) };
             self.check_operation(operation)?;
             drop(helper);
             self.check_operation(operation)?;
-            result?;
+            drag_image_result(result)?;
+            self.check_operation(operation)?;
             #[cfg(screenshots_native_drop_acceptance)]
             super::native_drop_acceptance::hook(80, 5, std::ptr::null_mut());
             self.stage(operation.generation, wire::ENTER, code, pt, body)?;
@@ -403,12 +415,12 @@ impl Target {
                 .borrow()
                 .clone()
                 .ok_or_else(|| anyhow::anyhow!("Native drag helper unavailable"))?;
-            let result = unsafe { helper.DragOver(&POINT { x: pt.x, y: pt.y }, effect) }
-                .map_err(|_| anyhow::anyhow!("Native drag helper failed"));
+            let result = unsafe { helper.DragOver(&POINT { x: pt.x, y: pt.y }, effect) };
             self.check_operation(operation)?;
             drop(helper);
             self.check_operation(operation)?;
-            result?;
+            drag_image_result(result)?;
+            self.check_operation(operation)?;
             self.stage(operation.generation, wire::MOTION, 0, pt, Vec::new())?;
             Ok(true)
         })();
@@ -461,14 +473,13 @@ impl Target {
             if let Some(helper) = helper {
                 let result = if open {
                     unsafe { helper.Drop(source, &POINT { x: pt.x, y: pt.y }, effect) }
-                        .map_err(|_| anyhow::anyhow!("Native drag helper failed"))
                 } else {
                     Ok(())
                 };
                 self.check_operation(operation)?;
                 drop(helper);
                 self.check_operation(operation)?;
-                result?;
+                drag_image_result(result)?;
             }
             self.check_operation(operation)?;
             self.retire_gesture();

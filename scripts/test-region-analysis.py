@@ -79,7 +79,11 @@ def main():
             raise SystemExit("No unused fixture X display from :90 through :149")
         auth = root / "authority"
         env = {key: value for key, value in os.environ.items()
-               if key not in ["WAYLAND_DISPLAY", "DBUS_SESSION_BUS_ADDRESS"]}
+               if key not in ["WAYLAND_DISPLAY", "WAYLAND_SOCKET", "DBUS_SESSION_BUS_ADDRESS",
+                              "DBUS_STARTER_ADDRESS", "AT_SPI_BUS_ADDRESS"]}
+        runtime = root / "runtime"
+        runtime.mkdir(mode=0o700)
+        env["XDG_RUNTIME_DIR"] = str(runtime)
         env.update(DISPLAY=display, XAUTHORITY=str(auth), XDG_SESSION_TYPE="x11",
                    MESA_SHADER_CACHE_DISABLE="true")
         state = ["HOME", "USERPROFILE", "APPDATA", "LOCALAPPDATA", "XDG_CONFIG_HOME",

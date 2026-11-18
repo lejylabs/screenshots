@@ -113,6 +113,7 @@ pub(super) fn read_request(input: &mut impl Read) -> Result<NativeCaptureCall> {
         Some("portal") => &["operation", "source", "cursor"],
         Some("image_url") => &["operation", "source"],
         Some("native_drop") => &["operation", "source", "image"],
+        Some("hide_capture_window") => &["operation", "window"],
         Some("clipboard_image") => &["operation", "backend"],
         Some("clipboard_inspect") => &["operation", "kind", "backend"],
         _ => anyhow::bail!("Unknown native operation"),
@@ -1244,9 +1245,18 @@ mod capture_visibility_wire_tests {
     #[test]
     fn native_visibility_proof_has_no_pixels_and_cannot_impersonate_capture_or_inventory() {
         let call = NativeCaptureCall::HideCaptureWindow { window: 7 };
+        let mut request_bytes = Vec::new();
+        request(&mut request_bytes, &call).unwrap();
+        assert!(matches!(
+            read_request(&mut request_bytes.as_slice()).unwrap(),
+            NativeCaptureCall::HideCaptureWindow { window: 7 }
+        ));
         let mut bytes = Vec::new();
         reply(&mut bytes, NativeCaptureReply::CaptureWindowHidden).unwrap();
-        assert!(matches!(read_reply(&mut bytes.as_slice(), &call).unwrap(), NativeCaptureReply::CaptureWindowHidden));
+        assert!(matches!(
+            read_reply(&mut bytes.as_slice(), &call).unwrap(),
+            NativeCaptureReply::CaptureWindowHidden
+        ));
         assert!(bytes.len() < 128);
         assert!(read_reply(&mut bytes.as_slice(), &NativeCaptureCall::Windows).is_err());
         let mut wrong = Vec::new();

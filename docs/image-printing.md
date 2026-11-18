@@ -201,8 +201,19 @@ remain unverified. Metadata checking and private Unix success do not accept them
    failure, cancellation and uninterruptible cleanup. Exercise the GDI calls
    through a fake native API or an exclusively owned, non-forwarding virtual
    print driver; never select a user's queue, built-in prompt-to-file queue, or
-   physical printer in unattended CI. GDI end-to-end output is a gate until that
-   private fixture exists and is run, not established by the Unix fixture.
+   physical printer in unattended CI. Explicitly run the ignored core tests
+   `windows_owned_gdi_pixels_geometry_and_cleanup` and
+   `windows_owned_gdi_failures_latch_and_cleanup` with `--test-threads=1` in an
+   optimized Windows test build. Their owned memory DC/DIB exercises the exact
+   shipping geometry, alpha/BGRA conversion, SetStretchBltMode/SetBrushOrgEx and
+   StretchDIBits body with native GDI and validates output pixels and DC/DIB
+   cleanup. Device capabilities and successful document callbacks are controlled
+   test inputs; StartDocW on the memory DC is also exercised as a real native
+   refusal. These cases establish no Winspool, printer driver, successful native
+   StartDoc/EndDoc, worker-to-GDI or spooler acceptance. That complete native
+   print-output gate stays open until an exclusively owned, non-forwarding
+   virtual-driver fixture exists and is run. The Unix and owned process-mock
+   fixtures do not establish it either.
 4. Inject missing queue/service/driver, malformed images, unsupported paper, invalid
    device geometry, stream break, StartDoc/EndDoc failure, stdout failure and
    timeout after accepted submission. Confirm no automatic duplicate/remote
@@ -247,3 +258,7 @@ ARM runtime check after the earlier pre-exec EINVAL failure; Intel job 134043931
 pass. Windows GDI output/driver faults, calibrated physical output and reference
 hardware resource acceptance remain separate gates. Later source changes are
 not covered by this snapshot.
+
+## Owned native Windows GDI evidence — 2026-11-18
+
+Both exact optimized ignored GDI cases executed and passed in Windows job134704173055, run44276006510 (snapshot55a202af57187a63f9ebcbbc405ef4d39186a50d). The independent step requires exactly two discovered cases and retained the native output log even though the earlier unrelated drop-fixture C++ compile failed. This establishes actual owned memory-DC raster geometry/color/alpha-composition/cleanup and native StartDoc refusal, plus the separately labeled controlled document-fault branches. It does not establish real Winspool/driver submission, physical printing or resource budgets. The exact source changes are committed in `b411f73`.

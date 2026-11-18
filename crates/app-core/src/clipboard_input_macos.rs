@@ -133,6 +133,30 @@ impl Session {
         }
         Ok(items)
     }
+    fn files(
+        &self,
+        items: Vec<usize>,
+        check: &crate::NativeCaptureCheck<'_>,
+    ) -> Result<ClipboardSnapshot> {
+        let mut files = Vec::new();
+        for item in items {
+            ensure!(
+                self.has(item, "public.file-url")?,
+                "Pasteboard item is not a file reference"
+            );
+            let mut bytes =
+                self.data(item, "public.file-url", CLIPBOARD_FILE_BYTES * 3 + 1, check)?;
+            if bytes.last() == Some(&0) {
+                bytes.pop();
+            }
+            let ClipboardSnapshot::Files { files: mut next } = uri_files(&bytes)? else {
+                unreachable!()
+            };
+            ensure!(next.len() == 1, "Pasteboard file item must name one file");
+            files.append(&mut next);
+        }
+        Ok(ClipboardSnapshot::Files { files })
+    }
     fn has(&self, item: usize, name: &str) -> Result<bool> {
         let name = string(name)?;
         let mut flags = 0;
@@ -248,26 +272,7 @@ pub(super) fn inspect(
             };
             ClipboardSnapshot::Text { text }
         }
-        ClipboardInspectKind::Files => {
-            let mut files = Vec::new();
-            for item in items {
-                ensure!(
-                    session.has(item, "public.file-url")?,
-                    "Pasteboard item is not a file reference"
-                );
-                let mut bytes =
-                    session.data(item, "public.file-url", CLIPBOARD_FILE_BYTES * 3 + 1, check)?;
-                if bytes.last() == Some(&0) {
-                    bytes.pop();
-                }
-                let ClipboardSnapshot::Files { files: mut next } = uri_files(&bytes)? else {
-                    unreachable!()
-                };
-                ensure!(next.len() == 1, "Pasteboard file item must name one file");
-                files.append(&mut next);
-            }
-            ClipboardSnapshot::Files { files }
-        }
+        ClipboardInspectKind::Files => session.files(items, check)?,
     };
     session.check(check)?;
     value.validate()?;
@@ -409,4 +414,19 @@ pub(super) fn native_drop(
         bytes,
         root_offset: None,
     })
+}
+
+#[cfg(feature = "native-file-clipboard-fixture")]
+pub(super) fn inspect_owned_named_files(name: &str) -> Result<ClipboardSnapshot> {
+    ensure!(
+        name.starts_with("screenshots.owned-file-fixture.") && name.len() <= 128,
+        "Only an explicitly owned fixture pasteboard may be inspected"
+    );
+    let _budget = budget::Budget::enter()?;
+    let check = || Ok(());
+    let session = Session::named(name, Instant::now() + Duration::from_secs(4))?;
+    let value = session.files(session.items(&check)?, &check)?;
+    session.check(&check)?;
+    value.validate()?;
+    Ok(value)
 }

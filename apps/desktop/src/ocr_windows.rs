@@ -110,7 +110,9 @@ fn run_command(command: Command, input: Vec<u8>, timeout: Duration) -> Result<St
 }
 
 fn run_command_with_cancel(
-    command: Command, input: Vec<u8>, timeout: Duration,
+    command: Command,
+    input: Vec<u8>,
+    timeout: Duration,
     check: &app_core::NativeCaptureCheck<'_>,
 ) -> Result<String> {
     check()?;
@@ -184,7 +186,9 @@ fn run_command_with_cancel(
 }
 
 pub(crate) fn recognize(
-    input: Vec<u8>, language: &str, check: &app_core::NativeCaptureCheck<'_>,
+    input: Vec<u8>,
+    language: &str,
+    check: &app_core::NativeCaptureCheck<'_>,
 ) -> Result<String> {
     let mut command = Command::new("tesseract.exe");
     command

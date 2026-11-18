@@ -471,9 +471,43 @@ impl Read for Transport {
         self.read.read(&mut bytes[..count])
     }
 }
+#[cfg(all(test, target_os = "windows"))]
+#[derive(Default)]
+pub(super) struct WriteProbe {
+    pub entered: std::sync::atomic::AtomicUsize,
+    pub finished: std::sync::atomic::AtomicUsize,
+}
+#[cfg(all(test, target_os = "windows"))]
+pub(super) static WRITE_PROBE: std::sync::Mutex<Option<std::sync::Arc<WriteProbe>>> =
+    std::sync::Mutex::new(None);
+#[cfg(all(test, target_os = "windows"))]
+struct WriteCompleted(Option<std::sync::Arc<WriteProbe>>);
+#[cfg(all(test, target_os = "windows"))]
+impl Drop for WriteCompleted {
+    fn drop(&mut self) {
+        if let Some(probe) = &self.0 {
+            probe
+                .finished
+                .fetch_add(1, std::sync::atomic::Ordering::Release);
+        }
+    }
+}
 #[cfg(target_os = "windows")]
 impl Write for Transport {
     fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        #[cfg(test)]
+        let _completed = {
+            let probe = WRITE_PROBE
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner())
+                .clone();
+            if let Some(probe) = &probe {
+                probe
+                    .entered
+                    .fetch_add(1, std::sync::atomic::Ordering::Release);
+            }
+            WriteCompleted(probe)
+        };
         self.write.write(bytes)
     }
     fn flush(&mut self) -> std::io::Result<()> {
