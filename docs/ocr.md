@@ -22,8 +22,17 @@ external diagnostics. The file utility does not expose an editor action.
 captures an explicitly selected display-local rectangle and sends its owned
 pixels through the same processor. It creates no screenshot file. The
 [region analysis contract](region-analysis.md) describes session, scale,
-coordinate and source limits; Wayland, rotated displays and scale other than
-100% are rejected for this path. Native acceptance is tracked separately.
+coordinate and source limits. X11 requires an unrotated 100%-scale display;
+Windows reuses calibrated physical pixels and macOS requires its complete native
+raster proof. Native acceptance is tracked separately.
+
+`screenshots ocr-portal-region display|window X Y WIDTH HEIGHT [--language LANG]`
+explicitly asks the Linux portal to select one source, then analyzes a rectangle
+in that frame's verified natural raster. These coordinates have no physical
+monitor or global desktop meaning. The full selected frame remains bounded by
+the 256 MiB capture cap and the analyzed crop by 16 MiB. It uses the same optional
+installed engine and no image-file handoff; source selection is an explicit OS
+permission step. See the [portal analysis contract](region-analysis.md#explicit-portal-selected-region).
 
 Input is limited to 32 MiB encoded and 16 MiB decoded RGBA. TIFF input is one
 uncompressed RGB8 or explicit straight-RGBA8 image in top-left chunky strips;
@@ -32,7 +41,13 @@ The existing decoder applies admission before pixel decode and EXIF
 orientation for applicable formats. TIFF's immutable snapshot and temporary
 decoder raster follow its [input memory contract](tiff-input.md#resource-cost-and-cancellation).
 Pixels are encoded once to an in-memory PNG, at most 32 MiB, and released before the engine starts;
-there is no image-file handoff. One invocation owns at most three pipe workers
+there is no image-file handoff. Region analysis carries the same latched
+cancellation check through the existing PNG encoder and checks it again before
+engine admission; it is never reset when the engine installs its own signal
+flags. The Unix and Windows engine launchers check the request before process
+creation and during their existing bounded active waits. A canceled encode or
+pre-start request cannot admit a new engine. Legacy file-command callers retain
+the existing pixel entry point and JSON schema. One invocation owns at most three pipe workers
 with requested 256 KiB stacks, one three-message channel, 256 KiB recognized
 output and an 8 KiB read chunk per reader. Stderr is capped at 16 KiB and never
 retained. The optional engine receives `OMP_THREAD_LIMIT=2`.

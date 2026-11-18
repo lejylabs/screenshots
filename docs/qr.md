@@ -39,6 +39,13 @@ rectangle directly into the same processor, without a screenshot file. See the
 [region analysis contract](region-analysis.md) for geometry/session restrictions
 and native verification limits. This does not add an editor action.
 
+`screenshots qr-portal-region display|window X Y WIDTH HEIGHT` explicitly selects
+one Linux portal source and scans a rectangle of its verified natural raster.
+It never treats portal logical position/size as physical monitor coordinates.
+The full frame uses the 256 MiB capture cap; the crop retains the 16 MiB and
+4096-pixel-per-side QR limits. The [portal analysis contract](region-analysis.md#explicit-portal-selected-region)
+describes ownership, cancellation and the separate native acceptance gates.
+
 Scanning admits at most 16 MiB of decoded RGBA source, 4 MiB of grayscale
 bytes, and 4096 pixels per side. Source RGBA is released before detector buffers
 are allocated. At most seven result strings of 8192 bytes each are retained. The
