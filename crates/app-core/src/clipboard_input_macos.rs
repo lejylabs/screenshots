@@ -1,6 +1,6 @@
 //! Main-thread Pasteboard Manager input in the bounded isolated worker.
 use super::*;
-use std::ffi::{CString, c_void};
+use std::ffi::{CString, c_ulong, c_void};
 type Cf = *const c_void;
 type Board = *mut c_void;
 #[link(name = "CoreFoundation", kind = "framework")]
@@ -18,8 +18,9 @@ unsafe extern "C" {
 unsafe extern "C" {
     fn PasteboardCreate(name: Cf, board: *mut Board) -> i32;
     fn PasteboardSynchronize(board: Board) -> u32;
-    fn PasteboardGetItemCount(board: Board, count: *mut u32) -> i32;
-    fn PasteboardGetItemIdentifier(board: Board, index: u32, item: *mut usize) -> i32;
+    // ItemCount is unsigned long, including on 64-bit macOS; u32 corrupts the caller stack.
+    fn PasteboardGetItemCount(board: Board, count: *mut c_ulong) -> i32;
+    fn PasteboardGetItemIdentifier(board: Board, index: isize, item: *mut usize) -> i32;
     fn PasteboardCopyItemFlavors(board: Board, item: usize, flavors: *mut Cf) -> i32;
     fn PasteboardGetItemFlavorFlags(board: Board, item: usize, flavor: Cf, flags: *mut u32) -> i32;
     fn PasteboardCopyItemFlavorData(board: Board, item: usize, flavor: Cf, data: *mut Cf) -> i32;
@@ -126,7 +127,8 @@ impl Session {
         for index in 1..=count {
             let mut item = 0;
             ensure!(
-                unsafe { PasteboardGetItemIdentifier(self.board(), index, &mut item) } == 0,
+                unsafe { PasteboardGetItemIdentifier(self.board(), index as isize, &mut item) }
+                    == 0,
                 "Could not inspect pasteboard item"
             );
             items.push(item);

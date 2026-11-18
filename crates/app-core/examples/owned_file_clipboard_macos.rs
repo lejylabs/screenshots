@@ -14,14 +14,19 @@ fn main() -> anyhow::Result<()> {
     std::fs::write(&source, b"private synthetic reference; no image decoding")?;
     let name = format!("screenshots.owned-file-fixture.{}", uuid::Uuid::new_v4());
     let result = (|| -> anyhow::Result<()> {
+        eprintln!("owned-file-board phase=retain-board");
         let _board = named_pasteboard::Retained::new(&name)?;
+        eprintln!("owned-file-board phase=prepare-uri");
         let uri = app_core::prepare_file_clipboard_uri(&source)?;
+        eprintln!("owned-file-board phase=publish");
         publisher::publish(&uri, &name)?;
+        eprintln!("owned-file-board phase=read");
         let app_core::ClipboardSnapshot::Files { files } =
             app_core::inspect_owned_macos_file_pasteboard(&name)?
         else {
             anyhow::bail!("Owned native file reader returned another representation");
         };
+        eprintln!("owned-file-board phase=validate-reference");
         anyhow::ensure!(
             files.len() == 1
                 && files[0].native == std::fs::canonicalize(&source)?.as_os_str().as_bytes(),
@@ -34,9 +39,14 @@ fn main() -> anyhow::Result<()> {
         println!(
             "{{\"owned_named_pasteboard\":true,\"file_reference_round_trip\":true,\"source_unchanged\":true}}"
         );
+        eprintln!("owned-file-board phase=release-board");
+        drop(_board);
+        eprintln!("owned-file-board phase=board-released");
         Ok(())
     })();
+    eprintln!("owned-file-board phase=cleanup-source");
     std::fs::remove_dir_all(&root)?;
+    eprintln!("owned-file-board phase=source-cleaned");
     result
 }
 #[cfg(not(target_os = "macos"))]
