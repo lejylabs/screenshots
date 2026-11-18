@@ -109,9 +109,21 @@ tone mapping, a wide gamut, ICC conversion or physical display color matching.
 The exact vendored pure decoder is also included through an app-core test seam.
 The owned authenticated `scripts/test-x11-native-pixels.py` fixture paints literal
 native colors on separate depth-16/24/30 Xvfb servers and checks odd-width root
-regions plus window capture against independent RGBA literals. Its source exists;
-compilation, pure tests and the native fixture have not been run for this change.
-Optimized before/after latency/private-memory comparison and real X11 color/
-hardware/cancellation acceptance remain open. Existing capture-process deadline,
+regions plus window capture against independent RGBA literals. All seven decoder
+controls pass in the current617-test optimized core run, and the actual owned
+16/24/30-bit root/window fixture passes. Evidence:
+`target/verification/current-linux-eight-integration/native-pixels-report.json`.
+
+A controlled optimized private24-bit CLI pair (two warmups and ten interleaved
+samples per binary/resolution) verifies the full saved RGBA raster.1440p p95 wall
+moves22.80→16.86ms and waited-family CPU22.76→16.83ms;4K moves40.15→25.50ms and
+40.55→25.64ms. Maximum single-process RSS is48,344/48,536KiB and84,420/84,224KiB,
+respectively. The aligned8-bit fast path avoids the initially measured generic
+channel-scaling regression. This includes process startup, metadata, capture,
+PNG and save; it is not joint private/GPU memory or a100-sample reference-hardware
+acceptance run. Evidence:
+`target/verification/current-linux-eight-integration/cli-performance-pair.json`.
+Real X11 profile/HDR, physical color/transform and hardware/cancellation gates
+remain open. Existing capture-process deadline,
 cancel, stale-result and reap ownership applies; the legacy XCap API exposes no
 row cancellation callback, so this decoder adds no in-process cancellation claim.

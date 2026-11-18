@@ -63,6 +63,12 @@ jobs:
               found=source.find(name,start)
               print('SDK contract',name,source[max(start,found-2300):found+700])
           HEADER
+      - uses: actions/cache/save@v4
+        if: ${{ always() && steps.native_target_cache.outputs.cache-hit != 'true' }}
+        with:
+          path: target/release-fast
+          key: sdk-target-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Cargo.lock') }}-${{ github.sha }}
+
       - name: Run private named macOS clipboard lifetime fixtures
         run: |
           cargo run --locked --profile release-fast -p app-core --example owned_image_text_clipboard_macos -j 2
@@ -82,12 +88,6 @@ jobs:
           if status:
               raise SystemExit(status)
           PRIVATE_FILE_BOARD
-
-      - uses: actions/cache/save@v4
-        if: ${{ always() && steps.native_target_cache.outputs.cache-hit != 'true' }}
-        with:
-          path: target/release-fast
-          key: sdk-target-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Cargo.lock') }}-${{ github.sha }}
 
   windows-native-witness:
     if: false
@@ -223,3 +223,22 @@ jobs:
           if (@($Listed | Where-Object {$_.Trim() -eq ($Test+': test')}).Count -ne 1) {throw 'Exact owned WARP case was not selected exactly once'}
           cargo test --workspace --lib --bins -j 2 --locked --profile release-fast $Test -- --ignored --exact --nocapture --test-threads=1
           if ($LASTEXITCODE -ne 0) {exit $LASTEXITCODE}
+
+      - name: Verify atomic native worker commit limit
+        run: cargo test --locked --profile release-fast -p screenshots --bin screenshots -j 2 native_worker_job_has_an_explicit_commit_ceiling -- --test-threads=1
+      - name: Run Windows native portability signing fixtures only
+        run: python scripts/test-native-signing.py
+
+      - name: Run owned Windows print process and pixel fixtures
+        shell: pwsh
+        run: |
+          cargo test --workspace --lib --bins -j 2 --locked --profile release-fast image_print -- --test-threads=1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo test --workspace --lib --bins -j 2 --locked --profile release-fast print_image::tests:: -- --test-threads=1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          New-Item -ItemType Directory -Path target/owned-print-fixture -Force | Out-Null
+          rustc --edition 2024 -O apps/desktop/tests/fixtures/print_image/fake_worker_windows.rs -o target/owned-print-fixture/fake-worker.exe
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $env:SCREENSHOTS_PRINT_TEST_HELPER = Join-Path $PWD 'target/owned-print-fixture/fake-worker.exe'
+          cargo test --workspace --lib --bins -j 2 --locked --profile release-fast print_image::tests::windows_owned_job_acceptance_rejection_timeout_and_cancel -- --ignored --exact --test-threads=1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
