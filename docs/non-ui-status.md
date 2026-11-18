@@ -20,7 +20,10 @@ the named-board lifetime fixture and native reader ABI corrections. The separate
 Windows clipboard two-case gate also passes. The real-driver gate is blocked on
 the current CI host: original native preflight passes, but queue creation causes
 a verified Windows spooler/localspl access violation before product execution.
-The original full run remains separately pending under its hard job cap.
+The same fault persists with winprint/RAW present and the already-assigned caller
+privilege enabled only for the call and exactly restored afterward; that probe
+certifies no product/pixel/cleanup pass. The original full run remains separately
+pending under its hard job cap.
 
 Resident private memory is an observed failed gate: earlier actual-main/helper
 runs ended at 232,255,488 and 231,153,664 bytes against the unchanged 52,428,800-byte

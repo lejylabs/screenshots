@@ -158,3 +158,14 @@ The full run44355258320 is separately pending with hard cap20:08:29UTC on
 2026-11-18 and remains untouched. Detailed source hashes, verified preflight and
 crash artifact identities, event versions/offset and scope are retained in
 `target/verification/windows-spool-blocked-host-final/evidence-index.json`.
+
+
+A final explicit API-precondition probe confirms winprint/RAW support and uses
+only the controller's already-assigned SeLoadDriverPrivilege:0→2 enabled and
+verified→0 restored and verified, scoped around AddPrinter. The same1726 and
+spoolsv/localspl access violation persist. The reviewed/exercised fixture guard
+is integrated; it grants no privilege or policy and preserves the exact ACL,
+parameters, uncertainty, ownership and cleanup rules. Verified artifact14463708225
+(run44381333600) and source/event hashes are referenced by the final evidence
+index. This closes the enabled-caller verification gap, not product or pixel
+acceptance; no causal claim about the earlier disabled state is made.

@@ -312,3 +312,22 @@ simulate its product result. Exact source/event/error hashes and scope are in
 `target/verification/windows-spool-blocked-host-final/evidence-index.json`.
 The50MiB resident target still fails, and physical printing, GPU/reference
 hardware, account and signing/certificate gates remain separate.
+
+
+The last concrete API precondition was checked explicitly. The elevated native
+controller owns SeLoadDriverPrivilege but initially leaves it disabled; winprint
+and RAW are installed. A separately reviewed fixture-only guard enables only
+that already-present LUID on its own process immediately around AddPrinter and
+restores/verifies the exact previous attributes on every returning path. It
+grants no privilege or account policy, and does not alter product code or ACLs.
+
+Actual run44381333600 verifies attributes0 before,2 during with enabled-state
+verification, and exact restoration to0 before the original failure path.
+AddPrinter still returns1726 and the same spoolsv/localspl access violation is
+recorded. Artifact14463708225 was verified against SHA256
+`17ad7e41ca86c9574c756fbf9398c34fe0c07a9fb84fd5a2ce50804149507f5f`.
+Thus the observed processor/datatype and enabled-caller preconditions are met in
+that probe; the RPC fault persists. This does not attribute the crash to the
+earlier disabled state. Original uncertain acquisition/cleanup retention stays
+in force, and no product, ownership-control or pixel-output pass is claimed.
+The exercised guard is retained for future correctly contextualized fixture runs.
