@@ -46,6 +46,7 @@ struct Shared {
     LONG admission_epoch,allow_epoch,registration_probe_epoch,probe_reclaim;
     DWORD allow_pid,allow_tid,registration_probe_pid;
     DWORD controller_pid;
+    LONG registration_stage,revoke_hresult,registration_hresult,registration_sequence,registration_epoch_observed;DWORD registration_pid,registration_tid;
     LONG private_trace_count;PrivateCallTrace private_trace[32];
     LONG phase_helper_pid,operation_stage,failed_operation_stage,operation_hresult;
     LONG visual_format_refusals,visual_unexpected_count,visual_unexpected_hresult,helper_unknown_control_calls,helper_unknown_inner_hresult;
@@ -375,22 +376,69 @@ static HRESULT record_private_call(PrivateCallTrace row,HRESULT result) {
     }
     return result;
 }
+static bool private_stream_canceled() {return stop_event && WaitForSingleObject(stop_event,0)!=WAIT_TIMEOUT;}
+static HRESULT snapshot_private_stream(IStream* source,STGMEDIUM* owned,SIZE_T* bytes) {
+    if(!source || !owned || !bytes) return E_POINTER;
+    *owned=STGMEDIUM{};*bytes=0;
+    if(private_stream_canceled()) return E_ABORT;
+    IStream* input{};HRESULT result=source->Clone(&input);if(FAILED(result))return result;if(!input)return E_UNEXPECTED;
+    IStream* output{};STATSTG info{};ULARGE_INTEGER position{};LARGE_INTEGER zero{};
+    result=private_stream_canceled()?E_ABORT:input->Stat(&info,STATFLAG_NONAME);
+    if(SUCCEEDED(result) && private_stream_canceled()) result=E_ABORT;
+    if(SUCCEEDED(result) && info.cbSize.QuadPart>64*1024) result=STG_E_MEDIUMFULL;
+    if(SUCCEEDED(result)) result=input->Seek(zero,STREAM_SEEK_CUR,&position);
+    if(SUCCEEDED(result) && private_stream_canceled()) result=E_ABORT;
+    if(SUCCEEDED(result) && position.QuadPart>info.cbSize.QuadPart) result=STG_E_SEEKERROR;
+    if(SUCCEEDED(result)) result=input->Seek(zero,STREAM_SEEK_SET,nullptr);
+    if(SUCCEEDED(result) && private_stream_canceled()) result=E_ABORT;
+    if(SUCCEEDED(result)) result=CreateStreamOnHGlobal(nullptr,TRUE,&output);
+    BYTE chunk[4096];ULONGLONG remaining=info.cbSize.QuadPart;
+    while(SUCCEEDED(result) && remaining) {
+        if(private_stream_canceled()) {result=E_ABORT;break;}
+        ULONG wanted=remaining>sizeof(chunk)?sizeof(chunk):static_cast<ULONG>(remaining),read{},written{};
+        result=input->Read(chunk,wanted,&read);
+        if(SUCCEEDED(result) && read!=wanted) result=STG_E_READFAULT;
+        if(SUCCEEDED(result) && private_stream_canceled()) result=E_ABORT;
+        if(SUCCEEDED(result)) result=output->Write(chunk,read,&written);
+        if(SUCCEEDED(result) && written!=read) result=STG_E_WRITEFAULT;
+        if(SUCCEEDED(result)) remaining-=read;
+    }
+    if(SUCCEEDED(result)) {
+        BYTE extra{};ULONG read{};result=input->Read(&extra,1,&read);
+        if(SUCCEEDED(result) && read!=0) result=STG_E_MEDIUMFULL;
+    }
+    if(SUCCEEDED(result) && private_stream_canceled()) result=E_ABORT;
+    if(SUCCEEDED(result)) {LARGE_INTEGER original{};original.QuadPart=static_cast<LONGLONG>(position.QuadPart);result=output->Seek(original,STREAM_SEEK_SET,nullptr);}
+    if(SUCCEEDED(result) && private_stream_canceled()) result=E_ABORT;
+    input->Release();
+    if(SUCCEEDED(result) && private_stream_canceled()) result=E_ABORT;
+    HGLOBAL backing{};SIZE_T capacity=0;
+    if(SUCCEEDED(result)) result=GetHGlobalFromStream(output,&backing);
+    if(SUCCEEDED(result)) {capacity=GlobalSize(backing);if(capacity>64*1024 || capacity<info.cbSize.QuadPart)result=STG_E_MEDIUMFULL;}
+    if(SUCCEEDED(result) && private_stream_canceled()) result=E_ABORT;
+    if(FAILED(result)) {if(output)output->Release();return result;}
+    owned->tymed=TYMED_ISTREAM;owned->pstm=output;*bytes=capacity;return S_OK;
+}
+
 struct Source final : IDataObject {
     LONG refs = 1;
     IDataObject* private_data = nullptr;
-    struct PrivateSlot {CLIPFORMAT format{};SIZE_T bytes{};};
+    struct PrivateSlot {CLIPFORMAT format{};SIZE_T bytes{};DWORD tymed{};};
     PrivateSlot private_slots[8]{};SIZE_T private_bytes=0;bool private_busy=false;
-    bool has_private(CLIPFORMAT format) const {for(const auto& item:private_slots) if(item.format==format)return true;return false;}
+    PrivateSlot* private_slot(CLIPFORMAT format) {for(auto& item:private_slots) if(item.format==format)return &item;return nullptr;}
+    bool has_private(CLIPFORMAT format) {return private_slot(format)!=nullptr;}
     ~Source() {
-        if (private_data) private_data->Release();
+        private_busy=true;IDataObject* data=private_data;private_data=nullptr;
+        private_bytes=0;for(auto& slot:private_slots)slot={};
         state->private_live_slots=0;state->private_live_bytes=0;
+        if (data) data->Release();
     }
     bool cooperative() const {return wcsstr(scenario,L"shell-private")!=nullptr;}
     HRESULT private_descriptor(FORMATETC* format) const {
         if (!format || format->cfFormat<0xc000 || format->cfFormat==production_format() || format->ptd) return DV_E_FORMATETC;
         if (format->dwAspect!=DVASPECT_CONTENT) return DV_E_DVASPECT;
         if (format->lindex!=-1) return DV_E_LINDEX;
-        if (!(format->tymed&TYMED_HGLOBAL)) return DV_E_TYMED;
+        if (!(format->tymed&(TYMED_HGLOBAL|TYMED_ISTREAM))) return DV_E_TYMED;
         return S_OK;
     }
     HRESULT STDMETHODCALLTYPE QueryInterface(REFIID iid, void** out) override {
@@ -403,7 +451,7 @@ struct Source final : IDataObject {
     ULONG STDMETHODCALLTYPE Release() override { LONG n = InterlockedDecrement(&refs); if (!n) delete this; return n; }
     HRESULT STDMETHODCALLTYPE QueryGetData(FORMATETC* format) override {
         if (cooperative() && format && format->cfFormat!=production_format() && private_data && has_private(format->cfFormat)) {
-            HRESULT descriptor=private_descriptor(format);return FAILED(descriptor)?descriptor:private_data->QueryGetData(format);
+            HRESULT descriptor=private_descriptor(format);if(SUCCEEDED(descriptor) && !(format->tymed&private_slot(format->cfFormat)->tymed)) descriptor=DV_E_TYMED;return FAILED(descriptor)?descriptor:private_data->QueryGetData(format);
         }
         bool target_entered=InterlockedCompareExchange(&state->payload_phase,0,0)==1 && state->payload_format==(format?format->cfFormat:0);
         bool selected=format && format->cfFormat==production_format() && (format->tymed&TYMED_HGLOBAL)!=0;
@@ -435,8 +483,14 @@ struct Source final : IDataObject {
             // Format availability precedes descriptor validation, including for basic sources.
             if (!cooperative() || !private_data || !has_private(format->cfFormat)) {InterlockedIncrement(&state->private_refusals);return record_private_call(trace,DV_E_FORMATETC);}
             HRESULT descriptor=private_descriptor(format);
+            if(SUCCEEDED(descriptor) && !(format->tymed&private_slot(format->cfFormat)->tymed)) descriptor=DV_E_TYMED;
             if (FAILED(descriptor)) {InterlockedIncrement(&state->private_refusals);return record_private_call(trace,descriptor);}
             trace.native_called=1;HRESULT result=private_data->GetData(format,medium);trace.native_result=result;trace.medium_tymed=medium->tymed;
+            if(SUCCEEDED(result) && medium->tymed!=private_slot(format->cfFormat)->tymed) {ReleaseStgMedium(medium);*medium=STGMEDIUM{};result=DV_E_TYMED;}
+            if(SUCCEEDED(result) && medium->tymed==TYMED_ISTREAM) {
+                STGMEDIUM copy{};SIZE_T bytes{};result=snapshot_private_stream(medium->pstm,&copy,&bytes);ReleaseStgMedium(medium);*medium=copy;
+            }
+            trace.medium_tymed=medium->tymed;
             if (FAILED(result)) InterlockedIncrement(&state->private_refusals);
             return record_private_call(trace,result);
         }
@@ -479,21 +533,28 @@ struct Source final : IDataObject {
         HRESULT result=store_private(format,medium,release,trace);return record_private_call(trace,result);
     }
     HRESULT store_private(FORMATETC* format,STGMEDIUM* medium,BOOL release,PrivateCallTrace& trace) {
+        if (private_busy) return E_UNEXPECTED;
+        private_busy=true;struct StoreGuard {bool& busy;~StoreGuard(){busy=false;}} guard{private_busy};
         if (!cooperative()) {InterlockedIncrement(&state->private_refusals);return E_NOTIMPL;}
         HRESULT descriptor=private_descriptor(format);
         if (FAILED(descriptor)) return descriptor;
-        if (!medium || medium->tymed!=TYMED_HGLOBAL || !medium->hGlobal) return DV_E_TYMED;
-        SIZE_T bytes=GlobalSize(medium->hGlobal);
-        if (!bytes || bytes>64*1024) return STG_E_MEDIUMFULL;
+        if (!medium || !(format->tymed&medium->tymed) || (medium->tymed!=TYMED_HGLOBAL && medium->tymed!=TYMED_ISTREAM)) return DV_E_TYMED;
+        SIZE_T bytes=0;
+        if(medium->tymed==TYMED_HGLOBAL) {if(!medium->hGlobal)return DV_E_TYMED;bytes=GlobalSize(medium->hGlobal);if(!bytes || bytes>64*1024)return STG_E_MEDIUMFULL;}
+        else {if(!medium->pstm)return DV_E_TYMED;if(private_stream_canceled())return E_ABORT;STATSTG info{};HRESULT result=medium->pstm->Stat(&info,STATFLAG_NONAME);if(FAILED(result))return result;if(info.cbSize.QuadPart>64*1024)return STG_E_MEDIUMFULL;bytes=static_cast<SIZE_T>(info.cbSize.QuadPart);}
         PrivateSlot* slot=nullptr;
         for (auto& item:private_slots) if(item.format==format->cfFormat) {slot=&item;break;}
         if (!slot) for(auto& item:private_slots) if(!item.format) {slot=&item;break;}
+        if (slot && slot->format && slot->tymed!=medium->tymed) return DV_E_TYMED;
         if (!slot || private_bytes-slot->bytes+bytes>256*1024) return STG_E_MEDIUMFULL;
-        if (private_busy) return E_UNEXPECTED;
-        private_busy=true;struct StoreGuard {bool& busy;~StoreGuard(){busy=false;}} guard{private_busy};
         if (!private_data) {HRESULT result=SHCreateDataObject(nullptr,0,nullptr,nullptr,IID_PPV_ARGS(&private_data));if(FAILED(result))return result;}
         STGMEDIUM owned=*medium;
-        if (!release) {
+        bool copied=medium->tymed==TYMED_ISTREAM || !release;
+        if(medium->tymed==TYMED_ISTREAM) {
+            HRESULT result=snapshot_private_stream(medium->pstm,&owned,&bytes);if(FAILED(result))return result;
+            if(private_bytes-slot->bytes+bytes>256*1024) {ReleaseStgMedium(&owned);return STG_E_MEDIUMFULL;}
+        }
+        else if (!release) {
             owned.hGlobal=static_cast<HGLOBAL>(OleDuplicateData(medium->hGlobal,format->cfFormat,GMEM_MOVEABLE|GMEM_ZEROINIT));owned.pUnkForRelease=nullptr;
             if (!owned.hGlobal) return E_OUTOFMEMORY;
             SIZE_T copied_bytes=GlobalSize(owned.hGlobal);
@@ -503,13 +564,14 @@ struct Source final : IDataObject {
         // Own borrowed data before transferring it to the native Shell store.
         trace.native_called=1;trace.native_release=1;
         HRESULT result=private_data->SetData(format,&owned,TRUE);trace.native_result=result;
-        if (FAILED(result) && !release) ReleaseStgMedium(&owned);
+        if (FAILED(result) && copied) ReleaseStgMedium(&owned);
         if (SUCCEEDED(result)) {
             if (!slot->format) ++state->private_live_slots;
-            private_bytes=private_bytes-slot->bytes+bytes;*slot={format->cfFormat,bytes};
+            private_bytes=private_bytes-slot->bytes+bytes;*slot={format->cfFormat,bytes,medium->tymed};
             state->private_live_bytes=static_cast<LONG>(private_bytes);
             if (state->private_live_bytes>state->private_peak_bytes) state->private_peak_bytes=state->private_live_bytes;
             if (state->private_live_slots>state->private_peak_slots) state->private_peak_slots=state->private_live_slots;
+            if(release && medium->tymed==TYMED_ISTREAM) ReleaseStgMedium(medium);
         }
         return result;
     }

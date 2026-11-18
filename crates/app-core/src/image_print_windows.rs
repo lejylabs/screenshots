@@ -275,7 +275,10 @@ pub fn print_windows_pixels(
     // Only an explicitly instrumented build can admit its one baked-in owned sink.
     #[cfg(screenshots_native_print_acceptance)]
     let permitted = permitted || owned_fixture_port(&name, &port);
-    ensure!(permitted, "Printer requires an unsupported or interactive port");
+    ensure!(
+        permitted,
+        "Printer requires an unsupported or interactive port"
+    );
     let mode = validated_mode(&printer, &name, paper)?;
     let handle = unsafe { CreateDCW(null(), name.as_ptr(), null(), mode.as_ptr().cast()) };
     ensure!(
@@ -437,6 +440,8 @@ use native_fixture::{AbortDoc, DeleteDC, EndDoc, EndPage, GetDeviceCaps, StartDo
 fn owned_fixture_port(name: &[u16], port: &str) -> bool {
     let expected_name = env!("SCREENSHOTS_NATIVE_PRINT_QUEUE");
     let expected_port = env!("SCREENSHOTS_NATIVE_PRINT_PORT");
-    name.iter().copied().eq(expected_name.encode_utf16().chain(Some(0)))
+    name.iter()
+        .copied()
+        .eq(expected_name.encode_utf16().chain(Some(0)))
         && port == expected_port
 }

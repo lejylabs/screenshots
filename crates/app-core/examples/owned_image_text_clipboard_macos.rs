@@ -108,7 +108,7 @@ fn main() -> anyhow::Result<()> {
             .env_clear()
             .stdin(Stdio::null())
             .stdout(Stdio::null())
-            .stderr(Stdio::null())
+            .stderr(Stdio::inherit())
             .process_group(0);
         for key in ["HOME", "PATH", "LANG", "LC_ALL", "LC_CTYPE", "TMPDIR"] {
             if let Some(value) = std::env::var_os(key) {
@@ -131,9 +131,10 @@ fn main() -> anyhow::Result<()> {
         };
         loop {
             if unix::exited_without_reaping(group, false)? {
+                let status = native.reap();
                 ensure!(
-                    native.reap().success(),
-                    "Owned native pasteboard phase failed"
+                    status.success(),
+                    "Owned native pasteboard phase {mode} failed ({status})"
                 );
                 break;
             }

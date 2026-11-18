@@ -69,7 +69,8 @@ jobs:
           actual = subprocess.check_output([str(binary), "--version"], text=True).strip()
           assert actual == f"cargo-deny {version}", actual
           inputs = ["Cargo.toml", "Cargo.lock", "rust-toolchain.toml", "deny.toml", ".github/workflows/dependencies.yml",
-                    "config/vendored-upstream-advisories.json", "scripts/vendored-advisory-view.py", "scripts/test-vendored-advisory-view.py"]
+                    "config/vendored-upstream-advisories.json", "scripts/vendored-advisory-view.py", "scripts/test-vendored-advisory-view.py",
+                    "scripts/test-dependency-policy-engine.py"]
           provenance = {"source_commit": os.environ["GITHUB_SHA"], "rust_toolchain": toolchain,
                         "cargo_deny": actual, "tool_source_sha256": expected,
                         "tool_binary_sha256": hashlib.sha256(binary.read_bytes()).hexdigest(),
@@ -117,6 +118,18 @@ jobs:
             --config "$SCREENSHOTS_POLICY_EVIDENCE/upstream-view/upstream-advisory-policy.toml" \
             --metadata-path "$SCREENSHOTS_POLICY_EVIDENCE/upstream-view/upstream-advisory-only-view.json" \
             check advisories 2>&1 | tee "$SCREENSHOTS_POLICY_EVIDENCE/vendored-upstream-advisories.log"
+      - name: Prove actual engine advisory and license rejection controls
+        shell: bash
+        env:
+          RUSTUP_TOOLCHAIN: "1.100.0"
+          PYTHONDONTWRITEBYTECODE: "1"
+        run: |
+          set -euo pipefail
+          python3 scripts/test-dependency-policy-engine.py \
+            --tool "$SCREENSHOTS_DENY_ROOT/bin/cargo-deny" \
+            --evidence "$SCREENSHOTS_POLICY_EVIDENCE" --policy deny.toml \
+            --advisory-db-root target/dependency-audit/advisory-dbs \
+            2>&1 | tee "$SCREENSHOTS_POLICY_EVIDENCE/engine-controls.log"
           touch "$SCREENSHOTS_POLICY_EVIDENCE/check-succeeded"
       - name: Record exact advisory and lockfile provenance
         if: always()

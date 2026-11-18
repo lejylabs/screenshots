@@ -100,10 +100,41 @@ Metadata is capped at 16 MiB, provenance at 1 MiB and selected listings at 4 MiB
 This is CI-only work: no application dependency, startup action, resident worker,
 runtime/timer, background network check, pixel allocation or PLAN budget change.
 
-The held revision has passing synthetic Python controls. Actual Cargo Deny
-projection matching, selected-list equality, known-advisory positive/negative
-controls and the pinned CI path remain root execution gates. Source review alone
-is not an accepted complete dependency check.
+After the normal checks and selected-list comparison, CI runs
+`scripts/test-dependency-policy-engine.py` with the installed pinned engine and
+already checked metadata/policies. In one private bounded copy of the freshly
+fetched database it requires actual/projected baselines to pass, removal of only
+the generated mitigation to fail specifically on RUSTSEC-2024-0429, and an added
+test GLib vulnerability with a distinct ID to fail despite that mitigation. It
+also requires license rejection for private metadata copies carrying GPL-3.0-only
+on app-core and option-ext 0.2.1 with its original MPL-2.0 license. The latter is
+an artificial version-scope probe, not a claim about a published future release.
+A fresh empty private database root and one owned HTTPS localhost endpoint prove
+fetch failure remains a failure; endpoint contact and the exact fetch diagnostic
+are required. No production database, metadata, vendor source or lockfile is
+changed. Expected advisory/fetch exits are 1 and license rejection exits are 4;
+unrelated errors cannot satisfy the specific negative predicates.
+
+Controls retain individual logs, input hashes and results under the evidence
+artifact, including failures; temporary database/metadata copies are removed.
+The database copy admits at most 32768 entries/256 MiB, individual files 64 MiB;
+each subprocess has a 180-second deadline (40 seconds for fetch failure), process
+group cleanup and an 8 MiB log cap. Controls run sequentially and add no package
+resolution, download of production archives or application build. The one
+operation-scoped loopback listener/thread is bounded to 45 seconds. These are
+CI resource limits, not application resource acceptance measurements.
+
+Current local execution passes the online primary advisory/license gate, verified
+published-base advisory view, exact selected-list equality and all seven actual
+engine controls. Expected exits are 0,0,1,1,4,4,1; each negative also requires its
+specific advisory/license/fetch evidence. RustSec snapshot:
+`472a4c9a785030434f15d7da84964d60fbe789ab`. Cargo.lock and protected inputs remain
+unchanged. Two fresh source reviews are clean. Hosted run44317516920 on source
+`12c6f97` also passes the complete workflow. Its downloaded evidence archive
+`14434050589` was verified against SHA256
+`9b9a0e3ffa5c742e5fe750799d5d1ff7f9a8f4e60cd883dee994c19806fce7a2`;
+the success marker, source-commit provenance and all seven actual-engine results
+were checked. Earlier local-only results are retained separately.
 
 References: [Cargo Deny configuration](https://embarkstudios.github.io/cargo-deny/checks/cfg.html),
 [pinned advisory matching](https://github.com/EmbarkStudios/cargo-deny/blob/bca0dde53651ee946720e4540b5ce2610bec8f06/src/advisories/helpers/db.rs),

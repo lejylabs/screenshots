@@ -1,7 +1,7 @@
 {
   "origin": "Reviewed HELD revision6 native fixture plus root correction from actual applied-source review11",
   "source_patch_sha256": "58d915d226a30f570f815b79458046bb3580c7aeecd41dd52334b63e2fc2d45f",
-  "authoring_status": "108 authored cases with owned hosted CI input;95 without; added private-format ownership self-check. Current correction native execution pending; prior fc5 executed105 with50failures.",
+  "authoring_status": "108 authored exact cases with owned hosted CI input;95 without. Actual96be run executed108:104passed4failed, privateHGLOBALself-checkPASS. FinalfourR2 expandedstream/reentryself-check and native108 executionpending.",
   "root_compatibility_corrections": [
     "IsWindow(Some(window))",
     "DESKTOP_ACCESS_FLAGS raw bitmask constructor",
@@ -13,10 +13,10 @@
     "run.ps1": "c27342cf639a0670395f95765bcf735e66d96775a926e621aae7945c69385f4f",
     "assertion-matrix.json": "7123bbe6891244c4d5bdddfcc8e49b1c0901e42baade49fcbd7beb945759fd11",
     "source-oracle-rules.json": "0c3c7bb9ea73f16a5ca58313fb2f61422ae2f83d7a20f9f223208bef9f1dc919",
-    "native/production_source.cpp": "6e6c624ac34ff711a4064f138e2a23f77311d6348b341fc7b9ac21fc1536f46d",
-    "native/production_support.cpp": "8125daafdafc105f4d1e0b841cb8ef342f78c7f8d816bf7fbf7f2f80fba6f9dc",
-    "native/production_bridge.cpp": "c95f6a1aa2adf80769a66fb4ba00b4072fa8fbd2c1e230a92447d0c8512a27ab",
-    "native/production_controller.cpp": "62c19863eabd8a53f29b1b700cc93bc03c5f36cf1a55aae7fbf4a98dfa754b71",
+    "native/production_source.cpp": "77403b8e587f713b2b359d7e09f28f6988b47303ffb4ae3eae9bed48d5e8b3f7",
+    "native/production_support.cpp": "4ec07ef4c0a489357ab443c1e2c386e4d294f67f532fdd6fc036de3b5e6fe800",
+    "native/production_bridge.cpp": "796fd4329a7ebea090586e9b0d9f26f101fc719c98fd40f69d7536f9b5d33566",
+    "native/production_controller.cpp": "f22fc5dc48e313125adee1beab7cb7699cbf8a0225d637eaa4eb85665571718f",
     "native/custom_marshal.hpp": "cf822d62264e3c43fe5065620b5184a4e84dc4ccfcea606e6fea6bfd7c66a2fb"
   },
   "root_readiness_correction": {
@@ -60,5 +60,35 @@
     "current_source_sha256": "6e6c624ac34ff711a4064f138e2a23f77311d6348b341fc7b9ac21fc1536f46d",
     "native_gdi": "both exact owned raster/fault cases actually passed in same Windows job",
     "native_drop": "0cases executed in55a because C++compile failed; next runtime pending"
+  },
+  "root_final_four_correction": {
+    "reviewed_packet": "target/verification/windows-runtime-final-four-held/revision2",
+    "patch_sha256": "43720907c672805e8fe35c628071c7c6532568ee2f92833f63eceeede7756ff2",
+    "source_reviews": [
+      "review3 actualfinalclean",
+      "review4 actualfinalclean"
+    ],
+    "previous_run": 44302687234,
+    "previous_job": 134796184677,
+    "previous_executed": 108,
+    "previous_passed": 104,
+    "previous_failed": 4,
+    "fixes": [
+      "ActualboundedprivateTYMED_ISTREAM4ownership/cursor/mutation/reentrycontrols",
+      "Nativecaptureexecutorinstallation + finiteownedHTTPcleanup forURL",
+      "ExactsameHWNDregistration/ALLOW/ownedexitdiagnostics; causependingactualrun"
+    ],
+    "gnu_both_cfgs": "PASS; metadata/APIonly",
+    "previous_files_sha256": {
+      "run.ps1": "c27342cf639a0670395f95765bcf735e66d96775a926e621aae7945c69385f4f",
+      "assertion-matrix.json": "7123bbe6891244c4d5bdddfcc8e49b1c0901e42baade49fcbd7beb945759fd11",
+      "source-oracle-rules.json": "0c3c7bb9ea73f16a5ca58313fb2f61422ae2f83d7a20f9f223208bef9f1dc919",
+      "native/production_source.cpp": "6e6c624ac34ff711a4064f138e2a23f77311d6348b341fc7b9ac21fc1536f46d",
+      "native/production_support.cpp": "8125daafdafc105f4d1e0b841cb8ef342f78c7f8d816bf7fbf7f2f80fba6f9dc",
+      "native/production_bridge.cpp": "c95f6a1aa2adf80769a66fb4ba00b4072fa8fbd2c1e230a92447d0c8512a27ab",
+      "native/production_controller.cpp": "62c19863eabd8a53f29b1b700cc93bc03c5f36cf1a55aae7fbf4a98dfa754b71",
+      "native/custom_marshal.hpp": "cf822d62264e3c43fe5065620b5184a4e84dc4ccfcea606e6fea6bfd7c66a2fb"
+    },
+    "current_native_acceptance": "pendingactualMSVC/PSparse/expandedselfcheck/108;nooracleorHRESULTwaiver"
   }
 }

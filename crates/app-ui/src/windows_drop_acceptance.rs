@@ -5,7 +5,8 @@ use anyhow::{Result, ensure};
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use std::{
     io::{Read, Write},
-    net::TcpListener,
+    net::{TcpListener, TcpStream},
+    os::windows::io::AsRawSocket,
     time::{Duration, Instant},
 };
 #[repr(C)]
@@ -26,6 +27,33 @@ unsafe extern "system" {
     fn ClientToScreen(hwnd: *mut std::ffi::c_void, point: *mut NativePoint) -> i32;
     fn GetClientRect(hwnd: *mut std::ffi::c_void, rect: *mut NativeRect) -> i32;
     fn GetClipboardSequenceNumber() -> u32;
+}
+#[repr(C)]
+struct NativePollFd {
+    socket: usize,
+    events: i16,
+    returned: i16,
+}
+#[link(name = "ws2_32")]
+unsafe extern "system" {
+    fn WSAPoll(descriptors: *mut NativePollFd, count: u32, timeout_ms: i32) -> i32;
+}
+fn accept_owned_http(listener: &TcpListener) -> Result<TcpStream> {
+    let mut descriptor = NativePollFd {
+        socket: listener.as_raw_socket() as usize,
+        events: 0x0100,
+        returned: 0,
+    };
+    ensure!(
+        unsafe { WSAPoll(&mut descriptor, 1, 30_000) } == 1 && descriptor.returned & 0x0100 != 0,
+        "Owned HTTP accept deadline/readiness"
+    );
+    // Avoid a second blocking wait if a peer resets after readiness.
+    listener.set_nonblocking(true)?;
+    let (stream, peer) = listener.accept()?;
+    ensure!(peer.ip().is_loopback(), "Only owned loopback source");
+    stream.set_nonblocking(false)?;
+    Ok(stream)
 }
 fn native(window: &Window) -> Result<usize> {
     match HasWindowHandle::window_handle(window)
@@ -118,7 +146,7 @@ fn run_private(case: String) -> Result<()> {
         let address = listener.local_addr()?;
         let body = original.clone();
         server = Some(std::thread::Builder::new().name("owned-one-image-http".into()).stack_size(256 * 1024).spawn(move || -> Result<()> {
-            let (mut socket, peer) = listener.accept()?; ensure!(peer.ip().is_loopback(), "Only owned loopback source");
+            let mut socket = accept_owned_http(&listener)?;
             socket.set_read_timeout(Some(Duration::from_secs(5)))?; socket.set_write_timeout(Some(Duration::from_secs(5)))?;
             let mut request=[0u8;4096]; let mut read=0;
             while read<request.len() {
@@ -126,7 +154,7 @@ fn run_private(case: String) -> Result<()> {
                 if request[..read].windows(4).any(|bytes|bytes==b"\r\n\r\n") {break;}
             }
             ensure!(request[..read].starts_with(b"GET /owned.png ") && request[..read].windows(4).any(|bytes|bytes==b"\r\n\r\n"),"Exact bounded owned image request");
-            write!(socket, "HTTP/1.1 200 OK\r\nContent-Type: image/png\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len())?; socket.write_all(&body)?; Ok(())
+            write!(socket, "HTTP/1.1 200 OK\r\nContent-Type: image/png\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len())?; socket.write_all(&body)?; println!("{{\"owned_http_source_served\":true,\"bytes\":{}}}",body.len()); Ok(())
         })?);
         format!("http://{address}/owned.png")
     } else {
@@ -364,26 +392,43 @@ fn run_private(case: String) -> Result<()> {
         .unwrap()
         .take()
         .ok_or_else(|| anyhow::anyhow!("Actual GPUI acceptance did not report"))?;
-    if let Some(server) = server {
+    if outcome.is_err() {
+        eprintln!("Owned GPUI check failed before bounded HTTP cleanup");
+    }
+    let server_outcome = if let Some(server) = server {
         server
             .join()
-            .map_err(|_| anyhow::anyhow!("Owned HTTP source panicked"))??;
-    }
-    ensure!(
-        unsafe { GetClipboardSequenceNumber() } == clipboard,
-        "Owned private clipboard changed"
+            .map_err(|_| anyhow::anyhow!("Owned HTTP source panicked"))
+            .and_then(|result| result)
+    } else {
+        Ok(())
+    };
+    let cleanup_outcome: Result<()> = (|| {
+        ensure!(
+            unsafe { GetClipboardSequenceNumber() } == clipboard,
+            "Owned private clipboard changed"
+        );
+        ensure!(
+            std::fs::read(&source)? == original,
+            "Original synthetic file changed"
+        );
+        ensure!(
+            std::fs::read_dir(source.parent().unwrap())?.count() == 1,
+            "Acceptance created an output or history file"
+        );
+        std::fs::remove_file(&source)?;
+        std::fs::remove_dir(source.parent().unwrap())?;
+        Ok(())
+    })();
+    println!(
+        "{{\"owned_editor_cleanup\":true,\"primary_ok\":{},\"http_ok\":{},\"storage_clipboard_ok\":{}}}",
+        outcome.is_ok(),
+        server_outcome.is_ok(),
+        cleanup_outcome.is_ok()
     );
-    ensure!(
-        std::fs::read(&source)? == original,
-        "Original synthetic file changed"
-    );
-    ensure!(
-        std::fs::read_dir(source.parent().unwrap())?.count() == 1,
-        "Acceptance created an output or history file"
-    );
-    std::fs::remove_file(&source)?;
-    std::fs::remove_dir(source.parent().unwrap())?;
     outcome?;
+    server_outcome?;
+    cleanup_outcome?;
     println!(
         "{{\"acceptance_case\":\"{case}\",\"actual_gpui_helper_editor\":true,\"exact_pixels_alpha_checked\":{},\"outputs\":0,\"private_clipboard_unchanged\":true}}",
         !matches!(case.as_str(), "gpui-busy" | "gpui-cancel")

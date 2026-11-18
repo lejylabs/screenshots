@@ -81,6 +81,8 @@ fn main() {
                 .to_str()
                 .ok_or_else(|| anyhow::anyhow!("Invalid acceptance case"))?;
             if case.starts_with("gpui-") {
+                // URL drops use the real isolated executor; installation stores only a function pointer.
+                capture_worker::install()?;
                 app_ui::run_windows_native_drop_editor_acceptance(case)
             } else {
                 app_ui::run_windows_native_drop_acceptance(case)

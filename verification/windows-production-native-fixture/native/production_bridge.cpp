@@ -81,13 +81,17 @@ extern "C" __declspec(dllexport) void __cdecl acceptance_attach(const wchar_t* c
     state = static_cast<Shared*>(MapViewOfFile(context_mapping, FILE_MAP_ALL_ACCESS, 0, 0, sizeof(Shared))); require(state != nullptr && state->owner_pid != GetCurrentProcessId(), "receiver mapping identity");
     initialize_events(false); bridge_attached = true;
     state->receiver_pid=GetCurrentProcessId();state->receiver_tid=GetCurrentThreadId();
+    state->registration_pid=GetCurrentProcessId();state->registration_tid=GetCurrentThreadId();state->registration_epoch_observed=state->admission_epoch;state->registration_sequence=0;state->revoke_hresult=0;state->registration_hresult=0;InterlockedExchange(&state->registration_stage,1);
     if (!state->phase_helper_pid) {InterlockedExchange(&state->payload_phase,0);state->payload_format=0;}
 }
 extern "C" __declspec(dllexport) void __cdecl acceptance_hook(unsigned code, unsigned long long sequence, void* pointer) {
     if (!bridge_attached) return;
     // A replacement receiver may register, but cannot overwrite the active source's evidence.
     bool phase_helper=!state->phase_helper_pid || state->phase_helper_pid==GetCurrentProcessId();
-    if (!phase_helper && code!=3 && code!=4 && code!=8 && code!=9) return;
+    if (!phase_helper && code!=3 && code!=4 && code!=8 && code!=9 && code!=90 && code!=91 && code!=92) return;
+    if(code==90 || code==91) {if(code==90)state->registration_sequence=static_cast<LONG>(sequence);else state->revoke_hresult=static_cast<LONG>(sequence);InterlockedExchange(&state->registration_stage,code==90?2:3);return;}
+    if(code==92) {state->registration_hresult=static_cast<LONG>(sequence);InterlockedExchange(&state->registration_stage,5);return;}
+    if(code==20) InterlockedExchange(&state->registration_stage,4);
     if (code==80) {InterlockedExchange(&state->operation_stage,static_cast<LONG>(sequence));return;}
     if (code==81) {if(sequence) InterlockedExchange(&state->failed_operation_stage,state->operation_stage);return;}
     if (code==82) {state->operation_hresult=static_cast<LONG>(sequence);return;}
@@ -106,6 +110,7 @@ extern "C" __declspec(dllexport) void __cdecl acceptance_hook(unsigned code, uns
         factory_cookie = register_owned_unmarshaler();
         if (!std::wcscmp(scenario,L"startup-stall") && try_injection(I_STARTUP)) {SetEvent(ready_event);Sleep(INFINITE);}
     } else if (code == 4) {
+        state->registration_sequence=static_cast<LONG>(sequence);InterlockedExchange(&state->registration_stage,5);
         actual_target = static_cast<IDropTarget*>(pointer);
         // Only the actual Rust target, after real RegisterDragDrop, supplies this pointer.
         if (exported_target) { LARGE_INTEGER zero{}; exported_target->Seek(zero, STREAM_SEEK_SET, nullptr); CoReleaseMarshalData(exported_target); exported_target->Release(); }
@@ -117,11 +122,12 @@ extern "C" __declspec(dllexport) void __cdecl acceptance_hook(unsigned code, uns
         void* bytes = GlobalLock(data); require(bytes != nullptr, "actual target bytes");
         memcpy(state->marshal, bytes, info.cbSize.LowPart); GlobalUnlock(data); state->marshal_bytes = info.cbSize.LowPart; state->registration = S_OK;
         registration_epoch=InterlockedCompareExchange(&state->admission_epoch,0,0);
+        state->registration_epoch_observed=registration_epoch;InterlockedExchange(&state->registration_stage,6);
         if (registration_epoch>1 && InterlockedCompareExchange(&state->probe_reclaim,0,0)==1) {
             // Prove a real registration wake cannot release the next source before ALLOW.
             state->registration_probe_pid=GetCurrentProcessId();
             InterlockedExchange(&state->registration_probe_epoch,registration_epoch);
-            SetEvent(ready_event);
+            InterlockedExchange(&state->registration_stage,7);SetEvent(ready_event);
             require(WaitForSingleObject(registration_probe_event,3000)==WAIT_OBJECT_0,"registration wake rejection handshake");
         }
     } else if (code == 5) {
@@ -141,6 +147,7 @@ extern "C" __declspec(dllexport) void __cdecl acceptance_hook(unsigned code, uns
     } else if (code == 11) {
         state->get_result = static_cast<LONG>(sequence);
     } else if (code == 9) {
+        InterlockedExchange(&state->registration_stage,8);
         state->allow_pid=GetCurrentProcessId();state->allow_tid=GetCurrentThreadId();
         InterlockedExchange(&state->allow_epoch,registration_epoch);
         SetEvent(ready_event);
@@ -260,7 +267,11 @@ extern "C" __declspec(dllexport) int __cdecl acceptance_drive() {
                     std::printf("{\"registration_wake_rejected_before_allow\":true,\"epoch\":%ld,\"receiver_pid\":%lu}\n",epoch,state->receiver_pid);std::fflush(stdout);
                     SetEvent(registration_probe_event);
                 }
-                ULONGLONG now=GetTickCount64();require(now<until && bridge_wait(ready_event,static_cast<DWORD>(until-now)),"actual current helper ALLOW ready");
+                ULONGLONG now=GetTickCount64();bool woke=now<until && bridge_wait(ready_event,static_cast<DWORD>(until-now));
+                if(!woke) {
+                    std::printf("{\"registration_lifecycle\":true,\"timed_out\":true,\"stage\":%ld,\"revoke_hresult\":%ld,\"registration_hresult\":%ld,\"registration_pid\":%lu,\"registration_tid\":%lu,\"registration_sequence\":%ld,\"observed_epoch\":%ld,\"required_epoch\":%ld,\"receiver_pid\":%lu,\"allow_pid\":%lu,\"allow_epoch\":%ld,\"probe_pid\":%lu,\"probe_epoch\":%ld}\n",state->registration_stage,state->revoke_hresult,state->registration_hresult,state->registration_pid,state->registration_tid,state->registration_sequence,state->registration_epoch_observed,state->admission_epoch,state->receiver_pid,state->allow_pid,state->allow_epoch,state->registration_probe_pid,state->registration_probe_epoch);std::fflush(stdout);SetLastError(ERROR_TIMEOUT);
+                }
+                require(woke,"actual current helper ALLOW ready");
             }
             require(admitted(),"current receiver ALLOW stamp");
             std::printf("{\"current_receiver_admitted\":true,\"epoch\":%ld,\"receiver_pid\":%lu,\"allow_pid\":%lu,\"allow_tid\":%lu}\n",state->admission_epoch,state->receiver_pid,state->allow_pid,state->allow_tid);std::fflush(stdout);

@@ -101,10 +101,30 @@ jobs:
           cargo test --workspace --lib --bins -j 2 --locked --profile release-fast single_instance_unix::tests:: -- --test-threads=1
           cargo test --workspace --lib --bins -j 2 --locked --profile release-fast desktop_startup_tests:: -- --test-threads=1
 
+      - name: Run private named macOS clipboard lifetime fixtures
+        run: |
+          cargo run --locked --profile release-fast -p app-core --example owned_image_text_clipboard_macos -j 2
+          cargo build --locked --profile release-fast -p app-core --example owned_file_clipboard_macos --features native-file-clipboard-fixture -j 2
+          python3 - <<'PRIVATE_FILE_BOARD'
+          import os, signal, subprocess
+          child = subprocess.Popen(['target/release-fast/examples/owned_file_clipboard_macos'], stdin=subprocess.DEVNULL, start_new_session=True)
+          try:
+              status = child.wait(timeout=5)
+          finally:
+              if child.returncode is None:
+                  try:
+                      os.killpg(child.pid, signal.SIGKILL)
+                  except ProcessLookupError:
+                      pass
+                  child.wait()
+          if status:
+              raise SystemExit(status)
+          PRIVATE_FILE_BOARD
+
       - name: Run owned Unix print acceptance
         run: |
           cargo test --workspace --lib --bins -j 2 --locked --profile release-fast image_print -- --test-threads=1
-          SCREENSHOTS_PRINT_TEST_TRACE=1 SCREENSHOTS_PRINT_TEST_PYTHON="$(xcrun --find python3)" SCREENSHOTS_PRINT_TEST_TRACE=1 SCREENSHOTS_PRINT_TEST_PYTHON="$(xcrun --find python3)" SCREENSHOTS_PRINT_TEST_TRACE=1 cargo test --workspace --lib --bins -j 2 --locked --profile release-fast print_image::tests:: -- --test-threads=1
+          SCREENSHOTS_PRINT_TEST_TRACE=1 SCREENSHOTS_PRINT_TEST_PYTHON="$(xcrun --find python3)" SCREENSHOTS_PRINT_TEST_TRACE=1 SCREENSHOTS_PRINT_TEST_PYTHON="$(xcrun --find python3)" SCREENSHOTS_PRINT_TEST_TRACE=1 SCREENSHOTS_PRINT_TEST_PYTHON="$(xcrun --find python3)" SCREENSHOTS_PRINT_TEST_TRACE=1 cargo test --workspace --lib --bins -j 2 --locked --profile release-fast print_image::tests:: -- --test-threads=1
           cargo build --locked --profile release-fast -p screenshots -j 2
           python3 scripts/verify-image-print-virtual-ipp.py "$PWD/target/release-fast/screenshots"
 
@@ -115,11 +135,6 @@ jobs:
         with:
           path: target/release-fast
           key: sdk-target-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Cargo.lock') }}-${{ github.sha }}
-
-      - name: Run private named macOS clipboard lifetime fixtures
-        run: |
-          cargo run --locked --profile release-fast -p app-core --example owned_image_text_clipboard_macos -j 2
-          cargo run --locked --profile release-fast -p app-core --example owned_file_clipboard_macos --features native-file-clipboard-fixture -j 2
 
   windows-native-witness:
     if: false
