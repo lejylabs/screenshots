@@ -38,3 +38,9 @@ logs and restoration proofs are under
 `target/verification/pathless-render-targets-integration/`. Actual shell path
 count/sample choice, surface/device-loss behavior and native platform/resource
 acceptance remain separate checks.
+
+## Unused surface pipeline removal — 2026-11-18
+
+Remove the unreferenced surface render pipeline and its sole-use layout/parameter types (85 lines). PrimitiveBatch::Surfaces was already ignored; the eight supported pipeline constructors, shader interfaces, backend preference/fallback, alpha/subpixel and recovery paths remain unchanged. Two independent source reviews are clean, and47 optimized renderer tests pass using exact verified upstream font fixtures and a temporary test-only naga declaration; all current production manifests/lockfiles were restored byte-for-byte.
+
+A strict same-other-source baseline/fixed diagnostic pair completed eight real Close/Show cycles each. Tracked allocation peak fell93,021,212→91,476,989bytes, graphics-pipeline domain peak18,188,870→16,650,203, and allocation calls fell53,222. Windowless tracked live bytes were essentially unchanged (5,546,768→5,567,760). One render pipeline and pipeline layout are avoided per pipeline rebuild; a bind-group layout is additionally avoided per new core/device recovery, not transparency-only rebuild. This is transient-work evidence, not a resident-memory saving, timing improvement, hardware result or50MiBpass. The uninstrumented joint memory target remains failed. Exact sources,47-test log and A/B traces/hashes are retained under target/verification/unix-resident-memory-analysis.
