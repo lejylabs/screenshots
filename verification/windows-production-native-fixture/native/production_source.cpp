@@ -73,9 +73,20 @@ static STGMEDIUM check_stream(unsigned fault,LONG* released=nullptr,StreamStoreR
     STGMEDIUM medium{};medium.tymed=TYMED_ISTREAM;medium.pstm=new CheckedStream(stream,fault,released,reentry);return medium;
 }
 static void check_stream_value(Source* source,FORMATETC* format) {
-    STGMEDIUM medium{};require_hr(source->GetData(format,&medium),"self-check copied private stream");require(medium.tymed==TYMED_ISTREAM && medium.pstm,"self-check private stream type");
-    LARGE_INTEGER zero{};ULARGE_INTEGER position{};require_hr(medium.pstm->Seek(zero,STREAM_SEEK_CUR,&position),"self-check returned stream cursor");require(position.QuadPart==1,"private stream cursor preserved");
-    require_hr(medium.pstm->Seek(zero,STREAM_SEEK_SET,nullptr),"self-check returned stream rewind");BYTE bytes[5]{};ULONG read{};HRESULT result=medium.pstm->Read(bytes,sizeof(bytes),&read);require(SUCCEEDED(result) && read==4,"private stream exact length");for(unsigned index=0;index<read;++index)require(bytes[index]==11,"private stream exact original bytes");ReleaseStgMedium(&medium);
+    STGMEDIUM media[2]{};LARGE_INTEGER zero{};
+    for(unsigned copy=0;copy<2;++copy) {
+        auto& medium=media[copy];require_hr(source->GetData(format,&medium),"self-check copied private stream");require(medium.tymed==TYMED_ISTREAM && medium.pstm,"self-check private stream type");
+        STATSTG info{};require_hr(medium.pstm->Stat(&info,STATFLAG_NONAME),"self-check returned stream size");require(info.cbSize.QuadPart==4,"private stream snapshot has exact four-byte size");
+        ULARGE_INTEGER position{};require_hr(medium.pstm->Seek(zero,STREAM_SEEK_CUR,&position),"self-check returned stream cursor");require(position.QuadPart==4,"GetData cursor marks end of complete snapshot");
+        BYTE extra{};ULONG read{};HRESULT result=medium.pstm->Read(&extra,1,&read);require(SUCCEEDED(result) && read==0,"returned stream cursor is at payload end");
+        require_hr(medium.pstm->Seek(zero,STREAM_SEEK_SET,nullptr),"self-check returned stream rewind");BYTE bytes[5]{};result=medium.pstm->Read(bytes,sizeof(bytes),&read);require(SUCCEEDED(result) && read==4,"private stream exact length");for(unsigned index=0;index<read;++index)require(bytes[index]==11,"private stream exact original bytes");
+        if(copy==0) {
+            require_hr(medium.pstm->Seek(zero,STREAM_SEEK_SET,nullptr),"self-check returned stream mutation position");const BYTE changed=99;ULONG written{};require_hr(medium.pstm->Write(&changed,1,&written),"self-check returned stream mutation");require(written==1,"self-check returned stream mutation complete");
+        }
+    }
+    ULARGE_INTEGER position{};require_hr(media[0].pstm->Seek(zero,STREAM_SEEK_CUR,&position),"self-check first returned stream cursor remains independent");require(position.QuadPart==1,"second GetData never changes first returned stream seek position");
+    require_hr(media[0].pstm->Seek(zero,STREAM_SEEK_SET,nullptr),"self-check first returned stream mutation preserved");BYTE changed{};ULONG read{};require_hr(media[0].pstm->Read(&changed,1,&read),"self-check first returned stream remains caller-owned");require(read==1 && changed==99,"second GetData leaves first returned stream bytes unchanged");
+    for(auto& medium:media)ReleaseStgMedium(&medium);
 }
 static void private_stream_self_check(FORMATETC format) {
     format.tymed=TYMED_ISTREAM;LONG borrowed_release=0;STGMEDIUM borrowed=check_stream(0,&borrowed_release);auto* source=new Source;
@@ -161,7 +172,7 @@ static int private_formats_self_check() {
     private_stream_self_check(formats[0]);
     private_stream_reentry_self_check(formats[0],formats[1]);
     require(state->private_live_slots==0 && state->private_live_bytes==0,"private stream storage released");
-    OleUninitialize();CloseHandle(budget);std::printf("{\"private_formats_self_check\":true,\"passed\":true,\"basic_refusal_owns_nothing\":true,\"borrowed_copy_independent\":true,\"transferred_release_exact\":true,\"descriptor_validated\":true,\"stream_ownership_seek_short_read_cancel\":true,\"stream_stat_release_reentry_guard\":true,\"slots_limit\":8,\"per_format_bytes\":65536,\"aggregate_bytes\":262144}\n");return 0;
+    OleUninitialize();CloseHandle(budget);std::printf("{\"private_formats_self_check\":true,\"passed\":true,\"basic_refusal_owns_nothing\":true,\"borrowed_copy_independent\":true,\"transferred_release_exact\":true,\"descriptor_validated\":true,\"stream_ownership_seek_short_read_cancel\":true,\"stream_getdata_end_cursor_and_independent_snapshots\":true,\"stream_stat_release_reentry_guard\":true,\"slots_limit\":8,\"per_format_bytes\":65536,\"aggregate_bytes\":262144}\n");return 0;
 }
 
 int wmain(int argc, wchar_t** argv) {

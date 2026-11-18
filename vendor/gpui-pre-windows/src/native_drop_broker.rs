@@ -508,6 +508,48 @@ fn supervise(shared: Arc<Shared>) {
         let _ = result; // Error strings and source data never enter logs.
     }
 }
+#[derive(Debug)]
+struct ReceiverEof;
+impl std::fmt::Display for ReceiverEof {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Native receiver pipe ended before another header")
+    }
+}
+impl std::error::Error for ReceiverEof {}
+fn read_receiver(input: &mut impl std::io::Read) -> Result<wire::Packet> {
+    use std::io::{Cursor, ErrorKind, Read as _};
+    let mut first = [0u8; 1];
+    loop {
+        match input.read(&mut first) {
+            Ok(0) => return Err(ReceiverEof.into()),
+            Ok(_) => break,
+            Err(error) if error.kind() == ErrorKind::Interrupted => continue,
+            Err(error) if error.kind() == ErrorKind::BrokenPipe => return Err(ReceiverEof.into()),
+            Err(error) => return Err(error.into()),
+        }
+    }
+    // Only zero bytes before a header is clean EOF. Partial/corrupt packets stay errors.
+    wire::read(&mut Cursor::new(first).chain(input))
+}
+fn complete_interval(
+    shared: &Shared,
+    initial_cancel: u64,
+    deadline: &mut super::native_drop_deadline::Deadline,
+    sequence: u64,
+    processed: u64,
+    now: Instant,
+) -> bool {
+    let state = lock(&shared.state);
+    if state.fatal {
+        return false;
+    }
+    // cancel() takes this same lock: cancellation before DONE cannot be missed
+    // while DONE clears the active cutoff. Cancellation afterward is an idle stop.
+    if state.cancel != initial_cancel {
+        deadline.retire(now);
+    }
+    deadline.done(sequence, processed, now)
+}
 struct ChildOwner(process::NativeDropProcess);
 impl ChildOwner {
     fn reap(&self) {
@@ -562,7 +604,7 @@ fn run_one(shared: &Arc<Shared>) -> Result<()> {
         .spawn(move || {
             let mut input = input;
             loop {
-                let packet = wire::read(&mut input);
+                let packet = read_receiver(&mut input);
                 let failed = packet.is_err();
                 #[cfg(screenshots_native_drop_acceptance)]
                 if let Ok(packet) = &packet {
@@ -606,10 +648,12 @@ fn run_one(shared: &Arc<Shared>) -> Result<()> {
         loop {
             {
                 let state = lock(&shared.state);
-                ensure!(
-                    !state.fatal && state.cancel == initial_cancel,
-                    "Native operation canceled"
-                );
+                ensure!(!state.fatal, "Native operation canceled");
+                // Revoke on the original STA before replacing an ordinarily canceled
+                // receiver. Its current absolute deadline still bounds retirement.
+                if state.cancel != initial_cancel {
+                    deadline.retire(Instant::now());
+                }
             }
             ensure!(
                 deadline.unexpired(Instant::now()),
@@ -633,11 +677,29 @@ fn run_one(shared: &Arc<Shared>) -> Result<()> {
                 "Native receiver deadline expired"
             );
             if signaled == 0 {
-                ensure!(stopped, "Native receiver exited unexpectedly");
+                ensure!(
+                    stopped && idle && !deadline.pending(),
+                    "Native receiver exited before STOP completion"
+                );
+                let mut code = 259u32;
+                unsafe { GetExitCodeProcess(event::raw(&child.0.process), &mut code) }?;
+                ensure!(code == 0, "Native receiver did not stop cleanly");
                 return Ok(());
             }
             while let Ok(packet) = rx.try_recv() {
-                let packet = packet?;
+                let packet = match packet {
+                    Ok(packet) => packet,
+                    // DONE/permit precedes ExitProcess; EOF may win the event race.
+                    Err(error)
+                        if error.is::<ReceiverEof>() && stopped && idle && !deadline.pending() =>
+                    {
+                        continue;
+                    }
+                    Err(error) => return Err(error),
+                };
+                if lock(&shared.state).cancel != initial_cancel {
+                    deadline.retire(Instant::now());
+                }
                 ensure!(
                     deadline.unexpired(Instant::now()),
                     "Native packet deadline expired"
@@ -668,7 +730,14 @@ fn run_one(shared: &Arc<Shared>) -> Result<()> {
                             .expires_at()
                             .ok_or_else(|| anyhow::anyhow!("Missing native interval deadline"))?;
                         ensure!(
-                            deadline.done(h.reader, h.generation, Instant::now()),
+                            complete_interval(
+                                shared,
+                                initial_cancel,
+                                &mut deadline,
+                                h.reader,
+                                h.generation,
+                                Instant::now()
+                            ),
                             "Invalid native interval completion"
                         );
                         idle = true;
@@ -744,7 +813,16 @@ fn run_one(shared: &Arc<Shared>) -> Result<()> {
                         if h.kind == wire::ENTER {
                             allowed = false;
                         }
-                        publish(shared, packet, initial_cancel, &deadline, Instant::now)?;
+                        if let Err(error) =
+                            publish(shared, packet, initial_cancel, &deadline, Instant::now)
+                        {
+                            let state = lock(&shared.state);
+                            // publish rejects canceled data under the same lock before
+                            // changing admission; only this canceled result is discarded.
+                            if state.fatal || state.cancel == initial_cancel {
+                                return Err(error);
+                            }
+                        }
                     }
                     _ => anyhow::bail!("Invalid native receiver reply"),
                 }
@@ -753,7 +831,16 @@ fn run_one(shared: &Arc<Shared>) -> Result<()> {
                 let mut state = lock(&shared.state);
                 let version = state.version;
                 let mut next = None;
-                if let Some((window, generation)) = state.released.take() {
+                if state.cancel != initial_cancel {
+                    stopped = true;
+                    next = Some((
+                        wire::Header {
+                            kind: wire::STOP,
+                            ..Default::default()
+                        },
+                        Vec::new(),
+                    ));
+                } else if let Some((window, generation)) = state.released.take() {
                     allowed = true;
                     next = Some((
                         wire::Header {
@@ -865,6 +952,10 @@ fn run_one(shared: &Arc<Shared>) -> Result<()> {
                         deadline.issue(command_sequence, Instant::now()),
                         "Native command already pending"
                     );
+                    if header.kind == wire::STOP {
+                        // DONE must retain the finite bound until actual process exit.
+                        deadline.retire(Instant::now());
+                    }
                     // Bounds plus one in-flight command make this write non-growing.
                     wire::write(&mut child.0.write, header, &bytes)?;
                     event::signal(&command_event)?;
@@ -928,6 +1019,70 @@ mod tests {
             }),
             wake: event::event(false).unwrap(),
         })
+    }
+    #[test]
+    fn cancel_between_packet_sample_and_done_keeps_the_active_cutoff() {
+        use std::time::Duration;
+        let shared = shared();
+        let initial_cancel = lock(&shared.state).cancel;
+        let start = Instant::now();
+        let mut deadline = super::super::native_drop_deadline::Deadline::startup(start);
+        assert!(deadline.arm(1, start));
+        // Deterministically place foreground cancellation after the stale packet sample.
+        assert_eq!(lock(&shared.state).cancel, initial_cancel);
+        lock(&shared.state).cancel += 1;
+        let done = start + Duration::from_millis(4800);
+        assert!(complete_interval(
+            &shared,
+            initial_cancel,
+            &mut deadline,
+            1,
+            0,
+            done
+        ));
+        assert!(deadline.issue(1, done));
+        deadline.retire(done);
+        assert_eq!(deadline.expires_at(), Some(start + Duration::from_secs(5)));
+        assert!(!deadline.unexpired(start + Duration::from_secs(5)));
+    }
+    #[test]
+    fn receiver_eof_is_distinct_from_partial_or_corrupt_trailing_packets() {
+        use std::io::Cursor;
+        let clean = read_receiver(&mut Cursor::new([]));
+        assert!(
+            clean
+                .as_ref()
+                .err()
+                .is_some_and(|error| error.is::<ReceiverEof>())
+        );
+        for bytes in [vec![1], vec![0; 64]] {
+            let invalid = read_receiver(&mut Cursor::new(bytes));
+            assert!(invalid.is_err());
+            assert!(!invalid.as_ref().err().unwrap().is::<ReceiverEof>());
+        }
+        let mut raw = Vec::new();
+        wire::write(
+            &mut raw,
+            wire::Header {
+                kind: wire::SUBMIT,
+                format: wire::URL,
+                ..Default::default()
+            },
+            b"x",
+        )
+        .unwrap();
+        let mut valid = Cursor::new(raw.clone());
+        assert_eq!(read_receiver(&mut valid).unwrap().bytes, b"x");
+        assert!(
+            read_receiver(&mut valid)
+                .as_ref()
+                .err()
+                .is_some_and(|error| error.is::<ReceiverEof>())
+        );
+        raw.pop();
+        let partial = read_receiver(&mut Cursor::new(raw));
+        assert!(partial.is_err());
+        assert!(!partial.as_ref().err().unwrap().is::<ReceiverEof>());
     }
     fn held(shared: Arc<Shared>) -> Delivery {
         Delivery {

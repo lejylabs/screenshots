@@ -275,9 +275,9 @@
       "published_manifest_sha256": "487f6fb8650782588e18ea6ca3f5dd704fc9e7d54a6a4e0cce19ca4d40769d66",
       "published_checksum_api": "https://crates.io/api/v1/crates/gpui-pre-windows/0.3.12",
       "local_source": {
-        "sha256": "f88c01165f60ce206a2757f1fb87ae8ec0cb4eac6366170f4f10cfe67e662350",
+        "sha256": "f18254d9e91b405f7500413df1d08d1a3fcec7ca62050e5f9c7d3c2d7fd83ed9",
         "files": 43,
-        "bytes": 781672
+        "bytes": 789673
       }
     },
     {

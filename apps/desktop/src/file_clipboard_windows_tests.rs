@@ -497,12 +497,19 @@ fn run_owned_controller(mode: &str) -> Result<()> {
     // The outer controller is itself inside an owned Job. Failure/timeout retains that Job
     // through actual family cleanup, including all nested clipboard-helper Jobs.
     let container = Arc::new(windows::container()?);
-    let child = windows::spawn(&command(mode, &station), &container, &[])?;
+    let (child, mut stderr) =
+        windows::spawn_fixture_diagnostic(&command(mode, &station), &container)?;
     let mut native = Native { child, container };
+    let mut diagnostic = Vec::new();
     let until = Instant::now() + Duration::from_secs(30);
     loop {
-        if let Some(success) = native.child.try_wait()? {
-            ensure!(success, "Private Windows clipboard fixture failed");
+        drain_fixture_diagnostic(&mut stderr, &mut diagnostic)?;
+        if let Some(status) = native.child.fixture_status()? {
+            ensure!(
+                status.success(),
+                "Private Windows clipboard fixture {mode} failed ({status}): {}",
+                String::from_utf8_lossy(&diagnostic)
+            );
             return Ok(());
         }
         if Instant::now() >= until {
@@ -510,6 +517,46 @@ fn run_owned_controller(mode: &str) -> Result<()> {
         }
         std::thread::park_timeout(Duration::from_millis(1));
     }
+}
+
+fn drain_fixture_diagnostic(pipe: &mut std::fs::File, prefix: &mut Vec<u8>) -> Result<()> {
+    use std::{io::Read, os::windows::io::AsRawHandle};
+    use windows_sys::Win32::{
+        Foundation::{ERROR_BROKEN_PIPE, GetLastError},
+        System::Pipes::PeekNamedPipe,
+    };
+    // Only synthetic private-fixture stderr; drain excess without blocking its owned Job.
+    for _ in 0..4 {
+        let mut available = 0;
+        if unsafe {
+            PeekNamedPipe(
+                pipe.as_raw_handle(),
+                std::ptr::null_mut(),
+                0,
+                std::ptr::null_mut(),
+                &mut available,
+                std::ptr::null_mut(),
+            )
+        } == 0
+        {
+            ensure!(
+                unsafe { GetLastError() } == ERROR_BROKEN_PIPE,
+                "Private fixture stderr inspection failed"
+            );
+            return Ok(());
+        }
+        if available == 0 {
+            return Ok(());
+        }
+        let mut chunk = [0; 4096];
+        let count = pipe.read(&mut chunk[..(available as usize).min(4096)])?;
+        let retain = count.min((16 * 1024usize).saturating_sub(prefix.len()));
+        prefix.extend_from_slice(&chunk[..retain]);
+        if count == 0 {
+            return Ok(());
+        }
+    }
+    Ok(())
 }
 
 fn framed_png(pixels: &image::RgbaImage) -> Result<Vec<u8>> {
