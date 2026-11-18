@@ -475,6 +475,97 @@ fn stalled_bus_fixture(
         .map_err(|_| anyhow::anyhow!("Stalled peer panicked"))??;
     Ok(())
 }
+// Private fixture only: the measured process is the normal screenshots executable.
+fn resident_host() -> Result<()> {
+    use std::io::Read as _;
+    use x11rb::{
+        connection::Connection as _,
+        protocol::xproto::{
+            AtomEnum, ClientMessageEvent, ConnectionExt as _, EventMask, MapState,
+        },
+    };
+    let (x11, screen) = x11rb::rust_connection::RustConnection::connect(None)?;
+    let root = x11.setup().roots[screen].root;
+    let atom = |name: &[u8]| -> Result<u32> {
+        Ok(x11.intern_atom(false, name)?.reply()?.atom)
+    };
+    let pid_atom = atom(b"_NET_WM_PID")?;
+    let protocols = atom(b"WM_PROTOCOLS")?;
+    let delete = atom(b"WM_DELETE_WINDOW")?;
+    let state = Arc::new(State::default());
+    state.host.store(true, Ordering::Release);
+    let shared = state.clone();
+    let (ready, receiver) = std::sync::mpsc::sync_channel(1);
+    let (wake, mut writer) = UnixStream::pair()?;
+    let worker = std::thread::spawn(move || mock(shared, ready, wake));
+    receiver.recv_timeout(Duration::from_secs(5))?;
+    let bus = Connection::new_session()?;
+    println!("RESIDENT_HOST_READY");
+    std::io::stdout().flush()?;
+    let result = (|| -> Result<()> {
+        let mut stdin = std::io::stdin().lock();
+        loop {
+            let mut line = Vec::with_capacity(64);
+            loop {
+                let mut byte = [0];
+                stdin.read_exact(&mut byte)?;
+                if byte[0] == b'\n' { break; }
+                ensure!(line.len() < 64, "Private command exceeds admission");
+                line.push(byte[0]);
+            }
+            let command = std::str::from_utf8(&line)?;
+            if command == "STOP" { break; }
+            let (operation, pid) = command.split_once(' ').context("Invalid private command")?;
+            let pid: u32 = pid.parse()?;
+            ensure!(pid > 1, "Invalid owned PID");
+            let registered = state.registered.lock().unwrap().clone();
+            let tray_pid = if let Some(owner) = &registered {
+                let daemon = bus.with_proxy("org.freedesktop.DBus", "/org/freedesktop/DBus", Duration::from_secs(2));
+                let (owner_pid,): (u32,) = daemon.method_call("org.freedesktop.DBus", "GetConnectionUnixProcessID", (owner.clone(),))?;
+                owner_pid
+            } else { 0 };
+            if operation == "QUIT" {
+                ensure!(pid == tray_pid, "Tray owner does not match authenticated helper");
+                let tray = bus.with_proxy(registered.context("No registered tray")?, "/Menu", Duration::from_secs(2));
+                let _: () = tray.method_call("com.canonical.dbusmenu", "Event", (8i32, "clicked", Variant(0i32), 0u32))?;
+                println!("QUIT_SENT");
+            } else {
+                ensure!(matches!(operation, "PROBE" | "CLOSE"), "Unknown private command");
+                let children = x11.query_tree(root)?.reply()?.children;
+                ensure!(children.len() <= 256, "Private X11 window admission exceeded");
+                let mut owned = Vec::new();
+                let mut mapped = 0usize;
+                for window in children {
+                    let property = x11.get_property(false, window, pid_atom, AtomEnum::CARDINAL, 0, 1)?.reply()?;
+                    if property.value32().and_then(|mut values| values.next()) != Some(pid) { continue; }
+                    let attributes = x11.get_window_attributes(window)?.reply()?;
+                    mapped += usize::from(attributes.map_state == MapState::VIEWABLE);
+                    owned.push(window);
+                }
+                if operation == "CLOSE" {
+                    ensure!(owned.len() == 1 && mapped == 1 && tray_pid > 1, "Close requires one visible control and a registered tray");
+                    let window = owned[0];
+                    let supported = x11.get_property(false, window, protocols, AtomEnum::ATOM, 0, 32)?.reply()?;
+                    ensure!(supported.value32().is_some_and(|values| values.into_iter().any(|value| value == delete)), "Control lacks WM_DELETE_WINDOW");
+                    let message = ClientMessageEvent::new(32, window, protocols, [delete, 0, 0, 0, 0]);
+                    x11.send_event(false, window, EventMask::NO_EVENT, message)?.check()?;
+                    x11.flush()?;
+                    println!("CLOSE_SENT");
+                } else {
+                    println!("STATE {} {} {}", owned.len(), mapped, tray_pid);
+                }
+            }
+            std::io::stdout().flush()?;
+        }
+        Ok(())
+    })();
+    state.stop.store(true, Ordering::Release);
+    let _ = writer.write_all(&[1]);
+    let stopped = worker.join().map_err(|_| anyhow::anyhow!("Private host thread panicked"))?;
+    result?;
+    stopped
+}
+
 fn main() -> Result<()> {
     if desktop_services_process::try_child(&std::env::args_os().skip(1).collect::<Vec<_>>())? {
         return Ok(());
@@ -494,6 +585,9 @@ fn main() -> Result<()> {
         bus.starts_with(&format!("unix:path={runtime}/bus")),
         "Refusing a real session bus"
     );
+    if std::env::args().any(|v| v == "resident_host") {
+        return resident_host();
+    }
     if std::env::args().any(|v| v == "--activated-portal-mock") {
         let state = Arc::new(State::default());
         state.host.store(true, Ordering::Release);
