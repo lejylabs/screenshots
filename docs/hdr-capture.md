@@ -93,3 +93,25 @@ PipeWire color/refusal/dual-format cases pass; exact evidence and producer limit
 are recorded in [finite Wayland capture](wayland-finite-capture.md). Exact current source/checkpoint evidence lives under
 `target/verification/hdr-integration/` and the independently reviewed frozen
 packets under `target/verification/hdr-capture-delivery-held/`.
+
+
+Legacy X11 GetImage capture now verifies the returned window visual against its
+setup screen/depth and requires TrueColor RGB masks. It uses native image byte
+order, pixmap bits per pixel and padded scanlines, with checked protocol extents,
+source/wire lengths and RGBA admission before indexing. This accepts proven
+RGB565, packed RGB888, XRGB8888 and depth-30 RGB101010 packing; other byte-aligned
+TrueColor layouts use their validated masks. Missing/non-TrueColor/invalid format
+proof fails. The existing Composite alpha-preservation route is unchanged;
+legacy output remains opaque. Integer channel rescaling into RGBA8 is SDR
+quantization. Neither depth 30 nor a TrueColor visual proves sRGB, PQ, HLG, HDR
+tone mapping, a wide gamut, ICC conversion or physical display color matching.
+
+The exact vendored pure decoder is also included through an app-core test seam.
+The owned authenticated `scripts/test-x11-native-pixels.py` fixture paints literal
+native colors on separate depth-16/24/30 Xvfb servers and checks odd-width root
+regions plus window capture against independent RGBA literals. Its source exists;
+compilation, pure tests and the native fixture have not been run for this change.
+Optimized before/after latency/private-memory comparison and real X11 color/
+hardware/cancellation acceptance remain open. Existing capture-process deadline,
+cancel, stale-result and reap ownership applies; the legacy XCap API exposes no
+row cancellation callback, so this decoder adds no in-process cancellation claim.

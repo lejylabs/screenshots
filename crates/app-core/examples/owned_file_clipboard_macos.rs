@@ -1,5 +1,8 @@
 //! Native-main-thread fixture: a uniquely named private board, never the user's clipboard.
 #[cfg(target_os = "macos")]
+#[path = "support/named_pasteboard_macos.rs"]
+mod named_pasteboard;
+#[cfg(target_os = "macos")]
 #[path = "../../../apps/desktop/src/file_clipboard_macos.rs"]
 mod publisher;
 #[cfg(target_os = "macos")]
@@ -11,6 +14,7 @@ fn main() -> anyhow::Result<()> {
     std::fs::write(&source, b"private synthetic reference; no image decoding")?;
     let name = format!("screenshots.owned-file-fixture.{}", uuid::Uuid::new_v4());
     let result = (|| -> anyhow::Result<()> {
+        let _board = named_pasteboard::Retained::new(&name)?;
         let uri = app_core::prepare_file_clipboard_uri(&source)?;
         publisher::publish(&uri, &name)?;
         let app_core::ClipboardSnapshot::Files { files } =

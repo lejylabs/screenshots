@@ -28,7 +28,7 @@ $PrivateCheckTimedOut = -not $PrivateCheck.WaitForExit(10000)
 if ($PrivateCheckTimedOut) {$PrivateCheck.Kill(); $PrivateCheck.WaitForExit()}
 $PrivateCheck.Refresh(); $PrivateCheckProof = $null; $PrivateCheckParseError = $null
 try {$PrivateCheckProof = Get-Content -Raw (Join-Path $OutputDirectory 'private-formats-self-check.json') | ConvertFrom-Json} catch {$PrivateCheckParseError = $_.Exception.Message}
-$PrivateCheckPassed = -not $PrivateCheckTimedOut -and $PrivateCheck.ExitCode -eq 0 -and $PrivateCheckProof.private_formats_self_check -eq $true -and $PrivateCheckProof.passed -eq $true
+$PrivateCheckPassed = -not $PrivateCheckTimedOut -and $PrivateCheck.ExitCode -eq 0 -and $PrivateCheckProof.private_formats_self_check -eq $true -and $PrivateCheckProof.passed -eq $true -and $PrivateCheckProof.stream_getdata_end_cursor_and_independent_snapshots -eq $true
 $PrivateCheckResult = [pscustomobject]@{passed=$PrivateCheckPassed; exit_code=$PrivateCheck.ExitCode; timed_out=$PrivateCheckTimedOut; proof=$PrivateCheckProof; parse_error=$PrivateCheckParseError}
 $Cases = @(
     'protocol-register-remove-stop','protocol-bad-auth','protocol-withheld-startup-permit',
@@ -182,7 +182,17 @@ foreach ($Case in $Cases) {
         if ($Case -eq 'gpui-busy') {$ConsumerPassed=@($Proof|Where-Object {$_.consumer_path -eq 'busy-admission' -and $_.consumer_acknowledged -eq $true}).Count -eq 1}
         if ($Case -eq 'gpui-cancel') {$Held=@($Proof|Where-Object {$_.consumer_path -eq 'body-held' -and $_.consumer_acknowledged -eq $true});$Discard=@($Proof|Where-Object {$_.consumer_path -eq 'cancel-discard' -and $_.consumer_acknowledged -eq $true});$ConsumerPassed=$Held.Count -eq 1 -and $Discard.Count -eq 1 -and $Held[0].consumer_token -eq $Discard[0].consumer_token -and $Held[0].consumer_generation -eq $Discard[0].consumer_generation}
         $CompletionPassed=$true
-        if ($Case -eq 'same-hwnd-reclaim') {$ConsumerPassed=$ConsumerPassed -and @($Proof|Where-Object {$_.registration_wake_rejected_before_allow -eq $true -and $_.epoch -gt 1 -and $_.receiver_pid -gt 0}).Count -eq 1 -and @($Proof|Where-Object {$_.current_receiver_admitted -eq $true -and $_.epoch -gt 1 -and $_.receiver_pid -eq $_.allow_pid -and $_.allow_tid -gt 0}).Count -eq 1}
+        if ($Case -eq 'same-hwnd-reclaim') {
+            $Initial=@($Proof|Where-Object {$_.current_receiver_admitted -eq $true -and $_.epoch -eq 1})
+            $Replacement=@($Proof|Where-Object {$_.current_receiver_admitted -eq $true -and $_.epoch -gt 1 -and $_.receiver_pid -eq $_.allow_pid -and $_.allow_tid -gt 0})
+            $Exits=@($Proof|Where-Object {$_.actual_receiver_exit -eq $true})
+            $ConsumerPassed=$ConsumerPassed -and @($Proof|Where-Object {$_.registration_wake_rejected_before_allow -eq $true -and $_.epoch -gt 1 -and $_.receiver_pid -gt 0}).Count -eq 1 -and $Initial.Count -eq 1 -and $Replacement.Count -eq 1 -and $Exits.Count -eq 2
+            if ($ConsumerPassed) {
+                # The observed killed owner left a registration the replacement could not revoke.
+                # Require its actual orderly exit before the replacement ALLOW.
+                $ConsumerPassed=$Exits[0].verified -eq $true -and $Exits[0].exit_code -eq 0 -and $Exits[0].pid -eq $Initial[0].receiver_pid -and $Exits[1].verified -eq $true -and $Exits[1].exit_code -eq 0 -and $Exits[1].pid -eq $Replacement[0].receiver_pid -and $Exits[0].pid -ne $Exits[1].pid -and [Array]::IndexOf($Proof,$Exits[0]) -lt [Array]::IndexOf($Proof,$Replacement[0])
+            }
+        }
         if (-not $OracleControl -and -not $Negative -and @($Proof|Where-Object {$_.completion_barrier -eq $true}).Count) {$CompletionPassed=@($Proof|Where-Object {$_.completion_barrier -eq $true -and $_.barrier_acknowledged -eq $true -and $_.submits -eq 0 -and $_.reader_submits -eq 0 -and $_.rejection_verified -eq $true}).Count -eq 1 -and @($Proof|Where-Object {$_.terminal_rejection_consumed -eq $true -and $_.terminal_kind -in @(12,14)}).Count -eq 1}
         if ($Case -in @('source-death','custom-unmarshal-memory')) {$CompletionPassed=$CompletionPassed -and @($Proof|Where-Object {$_.terminal_rejection_consumed -eq $true -and $_.terminal_kind -eq 14}).Count -eq 1 -and @($Proof|Where-Object {$_.ordered_delivery -eq $true -and $_.expected_kind -eq 14 -and $_.actual_kind -eq 14 -and $_.current -eq $true}).Count -eq 1}
         $Results += [pscustomobject]@{case=$Case; exit_code=$Process.ExitCode; controller=$ControllerProof; proof=$Proof; negative_control=$Negative; omitted_injection_rejected=$NegativePassed; positive_injection_proved=$PositivePassed; teardown_proved=$TeardownPassed; oracle_control_rejected=$OraclePassed; source_oracle_proved=$SourcePassed; shell_visual_proved=$VisualPassed; ordering_proved=$OrderingPassed; consumer_proved=$ConsumerPassed; completion_proved=$CompletionPassed; external_desktop_restored=$null; external_input_release_verified=$null}

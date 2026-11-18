@@ -724,12 +724,11 @@ fixtures; the general pasteboard is never used by development tests.
 
 `clipboard copy-file ABSOLUTE_FILE --hold-ms 1000..300000` is an explicit CLI
 route that retains Linux delayed ownership for the requested duration. Ctrl+C
-ends that lifetime and begins cleanup. No new UI controls are added. Existing
-image/text setters retain their previous native-call deadline limitations;
-this file-output implementation does not establish their hard deadline gate.
-The existing Windows file setter likewise retains its previous native-call
-deadline limit. Standalone CLI completion awaits file-owner reap and reports
-that its requested Linux ownership lifetime has ended.
+ends that lifetime and begins cleanup. No new UI controls are added. At this historical file-only checkpoint, image/text and
+Windows-file setters still had their earlier native-call deadline limitations.
+The integrated native-setter checkpoint below supersedes those limitations.
+Standalone CLI completion awaits file-owner reap and reports that its requested
+Linux ownership lifetime has ended.
 
 Resource acceptance remains unmeasured: helper private/resident VM, Wayland/X11
 connection buffers, native pasteboard objects, supervisor stack/RSS (plus the
@@ -778,4 +777,29 @@ The optimized private X11 drag/drop suite passed 25 native cases, including real
 
 Unix file output also passed six ordinary regressions and all five explicitly enabled private cases: stalled publication, seven-second delayed actual reap across standalone errors, authenticated X11 roundtrip through the existing isolated reader, both ext/wlr data-control paths and explicit refusal without data-control. Exact writer test SHA256 was `560ab575dbc3772245cc9e2d0f6713642d04f6277bcbf8282567ed8140616869`; the independent CLI reader SHA256 was `24a0d4907b5038575c43df3ae80ee45a936beb6c293d2f9c9e15284cd9f6fafc`. The test requires every ignored case to run; zero selection is failure. No user clipboard or desktop was touched.
 
-Linux workspace/all-target and Windows GNU metadata checks pass. Windows production COM/editor acceptance is running separately after the optional visual-helper correction; the earlier complete 105-case run had 50 failures and is retained as failed evidence. macOS named-pasteboard runtime, real compositor/native gesture coverage, whole main/helper private memory and PLAN hardware budgets remain open. Later image/text setter isolation is a separate change; this checkpoint does not certify that path.
+Linux workspace/all-target and Windows GNU metadata checks pass. These file-only results are historical; the broader native-setter checkpoint below covers the later image/text implementation. Complete Windows COM/editor acceptance, macOS named-board runtime, real compositor/native gesture coverage, whole main/helper private memory and PLAN hardware budgets remain open.
+
+## Integrated operation-owned native setters — 2026-11-18
+
+Image/text output on the supported native platforms and Windows file output now
+use the installed operation-owned helper. Publication has a five-second external
+native deadline and the existing 250 ms cleanup grace. An API timeout does not
+release admission or claim completed reap: the same supervisor retains its child
+and ownership until actual family cleanup. Ordinary main/CLI exit drains pending
+capture and clipboard owners. A kernel-pending cleanup retains that authority.
+Shared image buffers remain in memory through preparation and publication.
+
+The fresh optimized Linux run passed 12 regular clipboard cases and all eight
+explicit private native cases, including stalled setters, delayed actual reap,
+X11 INCR PNG/text/file transfer and owned ext/wlr data-control offers. Evidence:
+`target/verification/platform-current-validation/clipboard-native.log`; the
+separate earlier eight-case log is retained at
+`target/verification/native-clipboard-deadline-integration/revision4/file-clipboard-native-short-root.log`.
+No general user clipboard, keyring or desktop was used. These ignored native
+cases are separate from the 1,262 regular workspace-test total.
+
+Windows and macOS native runtime qualification remains open. The current Mac
+named image/text board fixture has an actual phase failure under diagnosis;
+source isolation and SDK checking do not turn it into a pass. Windows native
+clipboard execution, physical recipient paste/input, whole-process/GPU memory
+and PLAN reference-hardware budgets remain independent gates.

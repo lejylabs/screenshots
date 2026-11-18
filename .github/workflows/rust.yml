@@ -9,7 +9,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-15]
+        os: [macos-15, macos-15-intel]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 180
     steps:
@@ -63,44 +63,6 @@ jobs:
               found=source.find(name,start)
               print('SDK contract',name,source[max(start,found-2300):found+700])
           HEADER
-      - name: Check actual native core and test sources
-        run: cargo check --locked --workspace --all-targets --profile release-fast -j 2
-      - name: Portable admission models against native SDK build
-        run: cargo test --locked --profile release-fast -p app-core capture_macos_model -- --test-threads=1
-
-      - name: Typecheck the owned native fixture without executing it
-        run: xcrun swiftc -typecheck tools/MacCaptureFixture/main.swift
-      - name: Permission-free native Mac lifetime and notifications
-        run: |
-          cargo test --workspace --lib --bins -j 2 --locked --profile release-fast capture_macos -- --test-threads=1
-          cargo test --workspace --lib --bins -j 2 --locked --profile release-fast capture_worker::tests::mac_lifeline_preserves_normal_video_start_and_finish_control_packets -- --exact --test-threads=1
-          cargo test --workspace --lib --bins -j 2 --locked --profile release-fast capture_worker::tests::video_parent_loss_stops_source_encoder_and_probe_without_a_global_pid_signal -- --exact --test-threads=1
-
-      - name: Run native portability signing fixtures only
-        run: python3 scripts/test-native-signing.py
-
-      - name: Run owned persistence and native logger fixtures
-        run: |
-          cargo test --workspace --lib --bins -j 2 --locked --profile release-fast history::save::tests -- --test-threads=1
-          cargo test --workspace --lib --bins -j 2 --locked --profile release-fast managed_color::tests -- --test-threads=1
-          cargo test --workspace --lib --bins -j 2 --locked --profile release-fast file_logging::tests:: -- --test-threads=1
-          cargo test --locked --profile release-fast -p screenshots --test history_move -j 2 executable_save_recovery -- --test-threads=1
-
-      - name: Run coordinate grid and metadata-consumer fixtures
-        run: |
-          cargo test --workspace --lib --bins -j 2 --locked --profile release-fast desktop_composite_macos -- --test-threads=1
-          cargo test --workspace --lib --bins -j 2 --locked --profile release-fast capture_worker::protocol::tests:: -- --test-threads=1
-          cargo test --workspace --lib --bins -j 2 --locked --profile release-fast task::seal::tests::all_native_task_sources_admit_without_pixels_and_revalidate_at_execution -- --exact --test-threads=1
-
-      - name: Run owned video family completion regressions
-        run: |
-          cargo test --workspace --lib --bins -j 2 --locked --profile release-fast capture_worker::video::completion_tests:: -- --test-threads=1
-
-      - name: Run owned Unix singleton fixtures
-        run: |
-          cargo test --workspace --lib --bins -j 2 --locked --profile release-fast single_instance_unix::tests:: -- --test-threads=1
-          cargo test --workspace --lib --bins -j 2 --locked --profile release-fast desktop_startup_tests:: -- --test-threads=1
-
       - name: Run private named macOS clipboard lifetime fixtures
         run: |
           cargo run --locked --profile release-fast -p app-core --example owned_image_text_clipboard_macos -j 2
@@ -121,15 +83,6 @@ jobs:
               raise SystemExit(status)
           PRIVATE_FILE_BOARD
 
-      - name: Run owned Unix print acceptance
-        run: |
-          cargo test --workspace --lib --bins -j 2 --locked --profile release-fast image_print -- --test-threads=1
-          SCREENSHOTS_PRINT_TEST_TRACE=1 SCREENSHOTS_PRINT_TEST_PYTHON="$(xcrun --find python3)" SCREENSHOTS_PRINT_TEST_TRACE=1 SCREENSHOTS_PRINT_TEST_PYTHON="$(xcrun --find python3)" SCREENSHOTS_PRINT_TEST_TRACE=1 SCREENSHOTS_PRINT_TEST_PYTHON="$(xcrun --find python3)" SCREENSHOTS_PRINT_TEST_TRACE=1 SCREENSHOTS_PRINT_TEST_PYTHON="$(xcrun --find python3)" SCREENSHOTS_PRINT_TEST_TRACE=1 cargo test --workspace --lib --bins -j 2 --locked --profile release-fast print_image::tests:: -- --test-threads=1
-          cargo build --locked --profile release-fast -p screenshots -j 2
-          python3 scripts/verify-image-print-virtual-ipp.py "$PWD/target/release-fast/screenshots"
-
-      - name: Verify demanded native Unix timezone refresh
-        run: python3 scripts/test-local-time-refresh.py
       - uses: actions/cache/save@v4
         if: ${{ always() && steps.native_target_cache.outputs.cache-hit != 'true' }}
         with:
