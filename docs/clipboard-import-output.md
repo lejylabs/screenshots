@@ -770,3 +770,11 @@ both existing thresholds, and permit ordinary error exit only after the same
 owned child.wait marker. Their isolated Linux controller is a subreaper and
 actually reaps adopted providers even when an early-exit regression fails.
 These new source regressions remain unrun by the delivery agent.
+
+## Integrated owned transfer checks — 2026-11-18
+
+The optimized private X11 drag/drop suite passed 25 native cases, including real incoming provider cancellation/staleness, URL handoff into exact editor pixels and outgoing Copy/Status/Finish/Escape/close paths. All 23 observed authenticated helper identities exited. The real XI2 implicit press requires grabbing the matching XI device; unrelated devices cannot advance or release its transfer. These are owned virtual-server software results, not physical input or compositor-presentation acceptance.
+
+Unix file output also passed six ordinary regressions and all five explicitly enabled private cases: stalled publication, seven-second delayed actual reap across standalone errors, authenticated X11 roundtrip through the existing isolated reader, both ext/wlr data-control paths and explicit refusal without data-control. Exact writer test SHA256 was `560ab575dbc3772245cc9e2d0f6713642d04f6277bcbf8282567ed8140616869`; the independent CLI reader SHA256 was `24a0d4907b5038575c43df3ae80ee45a936beb6c293d2f9c9e15284cd9f6fafc`. The test requires every ignored case to run; zero selection is failure. No user clipboard or desktop was touched.
+
+Linux workspace/all-target and Windows GNU metadata checks pass. Windows production COM/editor acceptance is running separately after the optional visual-helper correction; the earlier complete 105-case run had 50 failures and is retained as failed evidence. macOS named-pasteboard runtime, real compositor/native gesture coverage, whole main/helper private memory and PLAN hardware budgets remain open. Later image/text setter isolation is a separate change; this checkpoint does not certify that path.

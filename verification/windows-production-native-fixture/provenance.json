@@ -13,7 +13,7 @@
     "run.ps1": "c27342cf639a0670395f95765bcf735e66d96775a926e621aae7945c69385f4f",
     "assertion-matrix.json": "7123bbe6891244c4d5bdddfcc8e49b1c0901e42baade49fcbd7beb945759fd11",
     "source-oracle-rules.json": "0c3c7bb9ea73f16a5ca58313fb2f61422ae2f83d7a20f9f223208bef9f1dc919",
-    "native/production_source.cpp": "30f3967d22ed11e79a5a7ba6e5d07a881e4fbfc1cb94c1b5bf69c229a70da31d",
+    "native/production_source.cpp": "6e6c624ac34ff711a4064f138e2a23f77311d6348b341fc7b9ac21fc1536f46d",
     "native/production_support.cpp": "8125daafdafc105f4d1e0b841cb8ef342f78c7f8d816bf7fbf7f2f80fba6f9dc",
     "native/production_bridge.cpp": "c95f6a1aa2adf80769a66fb4ba00b4072fa8fbd2c1e230a92447d0c8512a27ab",
     "native/production_controller.cpp": "62c19863eabd8a53f29b1b700cc93bc03c5f36cf1a55aae7fbf4a98dfa754b71",
@@ -51,5 +51,14 @@
     "historical_executed": 105,
     "historical_failures": 50,
     "current_native_acceptance": "pending"
+  },
+  "root_msvc_compile_correction": {
+    "failed_run": 44276006510,
+    "reason": "Windows RPC SDK defines small as a char macro; fixture local STGMEDIUM small failedMSVC before anyCOMcases",
+    "correction": "rename only self-check local identifier to private_medium",
+    "previous_source_sha256": "30f3967d22ed11e79a5a7ba6e5d07a881e4fbfc1cb94c1b5bf69c229a70da31d",
+    "current_source_sha256": "6e6c624ac34ff711a4064f138e2a23f77311d6348b341fc7b9ac21fc1536f46d",
+    "native_gdi": "both exact owned raster/fault cases actually passed in same Windows job",
+    "native_drop": "0cases executed in55a because C++compile failed; next runtime pending"
   }
 }

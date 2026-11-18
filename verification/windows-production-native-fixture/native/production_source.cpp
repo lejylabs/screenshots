@@ -42,12 +42,12 @@ static int private_formats_self_check() {
     auto* changed=static_cast<BYTE*>(GlobalLock(borrowed.hGlobal));require(changed!=nullptr,"self-check borrowed change");changed[0]=99;GlobalUnlock(borrowed.hGlobal);ReleaseStgMedium(&borrowed);check_private_value(source,&formats[0],11);
     LONG transferred_release=0;STGMEDIUM transferred=check_medium(4,23,&transferred_release);require_hr(source->SetData(&formats[1],&transferred,TRUE),"self-check transferred private store");check_private_value(source,&formats[1],23);
     STGMEDIUM replacement=check_medium(4,37);require_hr(source->SetData(&formats[1],&replacement,FALSE),"self-check private replacement");ReleaseStgMedium(&replacement);check_private_value(source,&formats[1],37);
-    STGMEDIUM small=check_medium(4,43);
-    for(unsigned index=2;index<8;++index)require_hr(source->SetData(&formats[index],&small,FALSE),"self-check bounded distinct private format");
-    require(source->SetData(&formats[8],&small,FALSE)==STG_E_MEDIUMFULL,"ninth private format refused");
-    FORMATETC invalid=formats[0];invalid.lindex=0;require(source->SetData(&invalid,&small,FALSE)==DV_E_LINDEX,"private lindex validated");
-    invalid=formats[0];invalid.dwAspect=DVASPECT_ICON;require(source->SetData(&invalid,&small,FALSE)==DV_E_DVASPECT,"private aspect validated");
-    invalid=formats[0];invalid.tymed=TYMED_ISTREAM;require(source->SetData(&invalid,&small,FALSE)==DV_E_TYMED,"private medium descriptor validated");ReleaseStgMedium(&small);
+    STGMEDIUM private_medium=check_medium(4,43);
+    for(unsigned index=2;index<8;++index)require_hr(source->SetData(&formats[index],&private_medium,FALSE),"self-check bounded distinct private format");
+    require(source->SetData(&formats[8],&private_medium,FALSE)==STG_E_MEDIUMFULL,"ninth private format refused");
+    FORMATETC invalid=formats[0];invalid.lindex=0;require(source->SetData(&invalid,&private_medium,FALSE)==DV_E_LINDEX,"private lindex validated");
+    invalid=formats[0];invalid.dwAspect=DVASPECT_ICON;require(source->SetData(&invalid,&private_medium,FALSE)==DV_E_DVASPECT,"private aspect validated");
+    invalid=formats[0];invalid.tymed=TYMED_ISTREAM;require(source->SetData(&invalid,&private_medium,FALSE)==DV_E_TYMED,"private medium descriptor validated");ReleaseStgMedium(&private_medium);
     LONG oversize_release=0;STGMEDIUM oversize=check_medium(64*1024+1,59,&oversize_release);
     require(source->SetData(&formats[0],&oversize,TRUE)==STG_E_MEDIUMFULL && oversize_release==0,"oversized private medium refused without ownership transfer");ReleaseStgMedium(&oversize);require(oversize_release==1,"caller owns rejected oversized medium");
     source->Release();require(transferred_release==1 && state->private_live_slots==0 && state->private_live_bytes==0,"accepted private ownership released exactly once");
