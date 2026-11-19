@@ -331,7 +331,7 @@ fn snapshot(
 }
 
 pub fn inspect_saved_image(path: &Path) -> Result<SavedImageInfo> {
-    let (mut file, _) = open(path)?;
+    let (file, _) = open(path)?;
     inspect_saved_image_file(&file, &|| false)
 }
 
@@ -367,7 +367,7 @@ pub fn load_saved_image(path: &Path, cancelled: impl Fn() -> bool) -> Result<ima
     let cancelled = crate::image_cancel::latch(cancelled);
     let start = Instant::now();
     check(&cancelled, start)?;
-    let (mut file, admitted) = open(path)?;
+    let (file, admitted) = open(path)?;
     let info = inspect_saved_image_file(&file, &cancelled)?;
     let pixels = if info.format == ImageExportFormat::Png {
         crate::clipboard::decode_saved_png(
